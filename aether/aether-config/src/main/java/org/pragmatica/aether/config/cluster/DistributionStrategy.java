@@ -20,10 +20,9 @@ public enum DistributionStrategy {
     }
     /// Parse a distribution strategy from its string representation.
     public static Result<DistributionStrategy> distributionStrategy(String raw) {
-        return Arrays.stream(values())
-                     .filter(ds -> ds.value.equals(raw))
-                     .findFirst()
-                     .map(Result::success)
-                     .orElseGet(INVALID_STRATEGY::result);
+        return Arrays.stream(values()).filter(ds -> ds.value.equals(raw))
+                            .findFirst()
+                            .map(Result::success)
+                            .orElseGet(INVALID_STRATEGY::result);
     }
 }

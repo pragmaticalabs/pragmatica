@@ -2,6 +2,7 @@ package org.pragmatica.aether.metrics.artifact;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -27,12 +28,10 @@ import org.slf4j.LoggerFactory;
 /// Key format watched: `slices/{nodeId`/{artifact}}
 public interface ArtifactDeploymentTracker {
     /// Handle NodeArtifactKey put — tracks deployment count.
-    @SuppressWarnings("JBCT-RET-01") // Event callback
-    void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
+    @Contract void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
 
     /// Handle NodeArtifactKey remove — decrements deployment count.
-    @SuppressWarnings("JBCT-RET-01") // Event callback
-    void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
+    @Contract void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
 
     /// Check if an artifact is deployed anywhere in the cluster.
     boolean isDeployed(Artifact artifact);
@@ -56,11 +55,9 @@ class ArtifactDeploymentTrackerImpl implements ArtifactDeploymentTracker {
     private final ConcurrentHashMap<Artifact, Integer> deploymentCounts = new ConcurrentHashMap<>();
 
     @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
-        var artifact = valuePut.cause()
-                               .key()
-                               .artifact();
+    @Contract public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+        var artifact = valuePut.cause().key()
+                                     .artifact();
         deploymentCounts.compute(artifact, (_, count) -> incrementCount(count));
         log.debug("Artifact deployed (NodeArtifactKey): {} (total: {})",
                   artifact.asString(),
@@ -68,11 +65,9 @@ class ArtifactDeploymentTrackerImpl implements ArtifactDeploymentTracker {
     }
 
     @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
-        var artifact = valueRemove.cause()
-                                  .key()
-                                  .artifact();
+    @Contract public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+        var artifact = valueRemove.cause().key()
+                                        .artifact();
         deploymentCounts.compute(artifact, (_, count) -> decrementCount(count));
         log.debug("Artifact undeployed (NodeArtifactKey): {} (remaining: {})",
                   artifact.asString(),
@@ -93,18 +88,15 @@ class ArtifactDeploymentTrackerImpl implements ArtifactDeploymentTracker {
                : count - 1;
     }
 
-    @Override
-    public boolean isDeployed(Artifact artifact) {
+    @Override public boolean isDeployed(Artifact artifact) {
         return deploymentCounts.containsKey(artifact);
     }
 
-    @Override
-    public Set<Artifact> deployedArtifacts() {
+    @Override public Set<Artifact> deployedArtifacts() {
         return Set.copyOf(deploymentCounts.keySet());
     }
 
-    @Override
-    public int deployedCount() {
+    @Override public int deployedCount() {
         return deploymentCounts.size();
     }
 }

@@ -80,63 +80,52 @@ public interface SliceRegistry {
     Option<Slice> findByArtifactKey(String groupId, String artifactId, VersionPattern versionPattern);
 
     record SliceRegistryImpl(ConcurrentMap<Artifact, Slice> registry) implements SliceRegistry {
-        @Override
-        public Result<Unit> register(Artifact artifact, Slice slice) {
+        @Override public Result<Unit> register(Artifact artifact, Slice slice) {
             // putIfAbsent returns null on success (nothing was there), returns existing value on failure
             return option(registry.putIfAbsent(artifact, slice))
             .fold(Result::unitResult,
-                  _ -> ALREADY_REGISTERED.apply(artifact.asString())
-                                         .result());
+                  _ -> ALREADY_REGISTERED.apply(artifact.asString()).result());
         }
 
-        @Override
-        public Result<Unit> unregister(Artifact artifact) {
+        @Override public Result<Unit> unregister(Artifact artifact) {
             return option(registry.remove(artifact)).toResult(NOT_FOUND.apply(artifact.asString()))
                          .mapToUnit();
         }
 
-        @Override
-        public Option<Slice> lookup(Artifact artifact) {
+        @Override public Option<Slice> lookup(Artifact artifact) {
             return option(registry.get(artifact));
         }
 
-        @Override
-        public Option<Slice> find(String className, VersionPattern versionPattern) {
-            return registry.entrySet()
-                           .stream()
-                           .filter(entry -> matchesClassName(entry.getKey(),
-                                                             className))
-                           .filter(entry -> versionPattern.matches(entry.getKey()
-                                                                        .version()))
-                           .map(Map.Entry::getValue)
-                           .findFirst()
-                           .map(Option::option)
-                           .orElse(none());
+        @Override public Option<Slice> find(String className, VersionPattern versionPattern) {
+            return registry.entrySet().stream()
+                                    .filter(entry -> matchesClassName(entry.getKey(),
+                                                                      className))
+                                    .filter(entry -> versionPattern.matches(entry.getKey().version()))
+                                    .map(Map.Entry::getValue)
+                                    .findFirst()
+                                    .map(Option::option)
+                                    .orElse(none());
         }
 
-        @Override
-        public List<Artifact> allArtifacts() {
+        @Override public List<Artifact> allArtifacts() {
             return List.copyOf(registry.keySet());
         }
 
-        @Override
-        public Option<Slice> findByArtifactKey(String groupId, String artifactId, VersionPattern versionPattern) {
-            return registry.entrySet()
-                           .stream()
-                           .filter(entry -> entry.getKey()
-                                                 .groupId()
-                                                 .id()
-                                                 .equals(groupId))
-                           .filter(entry -> entry.getKey()
-                                                 .artifactId()
-                                                 .id()
-                                                 .equals(artifactId))
-                           .filter(entry -> versionPattern.matches(entry.getKey()
-                                                                        .version()))
-                           .map(Map.Entry::getValue)
-                           .findFirst()
-                           .map(Option::option)
-                           .orElse(none());
+        @Override public Option<Slice> findByArtifactKey(String groupId,
+                                                         String artifactId,
+                                                         VersionPattern versionPattern) {
+            return registry.entrySet().stream()
+                                    .filter(entry -> entry.getKey().groupId()
+                                                                 .id()
+                                                                 .equals(groupId))
+                                    .filter(entry -> entry.getKey().artifactId()
+                                                                 .id()
+                                                                 .equals(artifactId))
+                                    .filter(entry -> versionPattern.matches(entry.getKey().version()))
+                                    .map(Map.Entry::getValue)
+                                    .findFirst()
+                                    .map(Option::option)
+                                    .orElse(none());
         }
 
         private boolean matchesClassName(Artifact artifact, String className) {
@@ -144,9 +133,8 @@ public interface SliceRegistry {
             // Convention: artifact ID is typically the class name or last part of package
             // For exact matching, we'd need to load the class, but that's expensive
             // So we use a simple string match on the artifact ID
-            return artifact.artifactId()
-                           .id()
-                           .equals(extractSimpleName(className));
+            return artifact.artifactId().id()
+                                      .equals(extractSimpleName(className));
         }
 
         private String extractSimpleName(String className) {

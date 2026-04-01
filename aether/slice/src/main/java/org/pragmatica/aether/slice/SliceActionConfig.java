@@ -29,13 +29,13 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///                            pragmatica-lite, slice-api, and serialization classes.
 ///                            If empty, uses Application ClassLoader (no isolation).
 @SuppressWarnings("JBCT-SEQ-01")
-public record SliceActionConfig(TimeSpan loadingTimeout,
-                                TimeSpan activatingTimeout,
-                                TimeSpan deactivatingTimeout,
-                                TimeSpan unloadingTimeout,
-                                TimeSpan startStopTimeout,
-                                List<Repository> repositories,
-                                Option<Path> frameworkJarsPath) {
+public record SliceActionConfig( TimeSpan loadingTimeout,
+                                 TimeSpan activatingTimeout,
+                                 TimeSpan deactivatingTimeout,
+                                 TimeSpan unloadingTimeout,
+                                 TimeSpan startStopTimeout,
+                                 List<Repository> repositories,
+                                 Option<Path> frameworkJarsPath) {
     public static SliceActionConfig sliceActionConfig() {
         return new SliceActionConfig(timeSpan(2).minutes(),
                                      timeSpan(1).minutes(),
@@ -61,14 +61,8 @@ public record SliceActionConfig(TimeSpan loadingTimeout,
     }
 
     public Result<TimeSpan> timeoutFor(SliceState state) {
-        return switch (state) {
-            case SliceState.LOADING -> success(loadingTimeout);
-            case SliceState.ACTIVATING -> success(activatingTimeout);
-            case SliceState.DEACTIVATING -> success(deactivatingTimeout);
-            case SliceState.UNLOADING -> success(unloadingTimeout);
-            default -> NO_TIMEOUT_CONFIGURED.apply(state)
-                                            .result();
-        };
+        return switch (state) {case SliceState.LOADING -> success(loadingTimeout);case SliceState.ACTIVATING -> success(activatingTimeout);case SliceState.DEACTIVATING -> success(deactivatingTimeout);case SliceState.UNLOADING -> success(unloadingTimeout);default -> NO_TIMEOUT_CONFIGURED.apply(state)
+        .result();};
     }
 
     private static final Fn1<Cause, SliceState> NO_TIMEOUT_CONFIGURED = Causes.forOneValue("No timeout configured for state: %s");

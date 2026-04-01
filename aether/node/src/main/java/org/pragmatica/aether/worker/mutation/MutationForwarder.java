@@ -41,32 +41,28 @@ public interface MutationForwarder {
     /// Used by AetherNode where a RabiaNode (not PassiveNode) provides the network.
     static MutationForwarder mutationForwarder(NodeId selfId,
                                                DelegateRouter delegateRouter) {
-        record mutationForwarder(NodeId selfId,
-                                 DelegateRouter delegateRouter,
-                                 AtomicReference<Option<NodeId>> currentGovernor) implements MutationForwarder {
-            @Override
-            public void forward(WorkerMutation mutation) {
+        record mutationForwarder( NodeId selfId,
+                                  DelegateRouter delegateRouter,
+                                  AtomicReference<Option<NodeId>> currentGovernor) implements MutationForwarder {
+            @Override public void forward(WorkerMutation mutation) {
                 var governor = currentGovernor.get();
-                if (governor.isEmpty() || isGovernor(governor)) {
+                if ( governor.isEmpty() || isGovernor(governor)) {
                     forwardToCore(mutation);
                     return;
                 }
                 forwardToGovernor(mutation, governor.unwrap());
             }
 
-            @Override
-            public void onMutationFromFollower(WorkerMutation mutation) {
+            @Override public void onMutationFromFollower(WorkerMutation mutation) {
                 forwardToCore(mutation);
             }
 
-            @Override
-            public void updateGovernor(Option<NodeId> governor) {
+            @Override public void updateGovernor(Option<NodeId> governor) {
                 currentGovernor.set(governor);
             }
 
             private boolean isGovernor(Option<NodeId> governor) {
-                return governor.map(selfId::equals)
-                               .or(false);
+                return governor.map(selfId::equals).or(false);
             }
 
             private void forwardToCore(WorkerMutation mutation) {

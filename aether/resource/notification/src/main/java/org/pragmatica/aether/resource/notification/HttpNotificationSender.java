@@ -21,11 +21,8 @@ final class HttpNotificationSender implements NotificationSender {
         this.retryConfig = retryConfig;
     }
 
-    @Override
-    public Promise<NotificationResult> send(Notification notification) {
-        return switch (notification) {
-            case Notification.Email email -> sendEmail(email);
-        };
+    @Override public Promise<NotificationResult> send(Notification notification) {
+        return switch (notification) {case Notification.Email email -> sendEmail(email);};
     }
 
     private Promise<NotificationResult> sendEmail(Notification.Email email) {
@@ -34,20 +31,16 @@ final class HttpNotificationSender implements NotificationSender {
     }
 
     private Promise<NotificationResult> sendWithRetry(EmailMessage message, int attempt, long delayMs) {
-        return sender.send(message)
-                     .map(response -> notificationResult(response, "http"))
-                     .fold(result -> result.fold(cause -> {
-                                                     if (attempt >= retryConfig.maxAttempts()) {
-                                                         return new NotificationError.DeliveryFailed("HTTP delivery failed after " + attempt
-                                                                                                     + " attempts: " + cause.message())
-        .<NotificationResult>promise();
-                                                     }
-                                                     return delayThen(delayMs)
+        return sender.send(message).map(response -> notificationResult(response, "http"))
+                          .fold(result -> result.fold(cause -> {
+                                                          if ( attempt >= retryConfig.maxAttempts()) {
+        return new NotificationError.DeliveryFailed("HTTP delivery failed after " + attempt + " attempts: " + cause.message()).<NotificationResult>promise();}
+                                                          return delayThen(delayMs)
         .flatMap(_ -> sendWithRetry(message,
                                     attempt + 1,
                                     nextDelay(delayMs)));
-                                                 },
-                                                 Promise::success));
+                                                      },
+                                                      Promise::success));
     }
 
     private long nextDelay(long currentDelayMs) {
@@ -57,35 +50,34 @@ final class HttpNotificationSender implements NotificationSender {
     private static Promise<Unit> delayThen(long delayMs) {
         return Promise.promise(promise -> {
                                    Thread.ofVirtual()
-                                         .start(() -> {
-                                                    try{
-                                                        TimeUnit.MILLISECONDS.sleep(delayMs);
-                                                        promise.succeed(unit());
-                                                    } catch (InterruptedException _) {
-                                                        Thread.currentThread()
-                                                              .interrupt();
-                                                        promise.succeed(unit());
-                                                    }
-                                                });
+        .start(() -> {
+                   try {
+                       TimeUnit.MILLISECONDS.sleep(delayMs);
+                       promise.succeed(unit());
+                   }
+
+
+
+
+
+        catch (InterruptedException _) {
+                       Thread.currentThread().interrupt();
+                       promise.succeed(unit());
+                   }
+               });
                                });
     }
 
     static EmailMessage toEmailMessage(Notification.Email email) {
-        var body = switch (email.body()) {
-            case NotificationBody.Text text -> EmailBody.Text.text(text.content());
-            case NotificationBody.Html html -> html.fallback()
-                                                   .map(fallback -> EmailBody.Html.html(html.content(),
-                                                                                        fallback))
-                                                   .or(EmailBody.Html.html(html.content()));
-        };
+        var body = switch (email.body()) {case NotificationBody.Text text -> EmailBody.Text.text(text.content());case NotificationBody.Html html -> html.fallback().map(fallback -> EmailBody.Html.html(html.content(),
+                                                                                                                                                                                                        fallback))
+                                                                                                                                                                 .or(EmailBody.Html.html(html.content()));};
         var message = EmailMessage.emailMessage(email.from(),
                                                 email.to(),
                                                 email.subject(),
-                                                body)
-                                  .withCc(email.cc())
-                                  .withBcc(email.bcc());
-        return email.replyTo()
-                    .map(message::withReplyTo)
-                    .or(message);
+                                                body).withCc(email.cc())
+                                               .withBcc(email.bcc());
+        return email.replyTo().map(message::withReplyTo)
+                            .or(message);
     }
 }

@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit;
 /// disabled for automated provisioning.
 @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01", "JBCT-RET-01", "JBCT-EX-01"})
 sealed interface RemoteCommandRunner {
-    record unused() implements RemoteCommandRunner {}
+    record unused() implements RemoteCommandRunner{}
 
     int DEFAULT_COMMAND_TIMEOUT_SECONDS = 120;
     int SCP_TIMEOUT_SECONDS = 300;
@@ -46,9 +46,9 @@ sealed interface RemoteCommandRunner {
     /// Wait until SSH connectivity is established to the given host.
     static Result<Unit> waitForSsh(String host, SshConfig config, Duration timeout) {
         var deadline = System.currentTimeMillis() + timeout.toMillis();
-        while (System.currentTimeMillis() < deadline) {
+        while ( System.currentTimeMillis() < deadline) {
             var result = ssh(host, "echo ok", config);
-            if (result.isSuccess()) {
+            if ( result.isSuccess()) {
                 System.out.printf("  SSH connection established to %s%n", host);
                 return Result.unitResult();
             }
@@ -85,62 +85,64 @@ sealed interface RemoteCommandRunner {
     }
 
     private static Result<String> executeProcess(List<String> command, int timeoutSeconds) {
-        try{
+        try {
             var process = new ProcessBuilder(command).redirectErrorStream(true)
                                                      .start();
             var completed = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-            if (!completed) {
+            if ( !completed) {
                 process.destroyForcibly();
                 return new RemoteCommandError.CommandTimeout(String.join(" ", command), timeoutSeconds).result();
             }
-            var output = new String(process.getInputStream()
-                                           .readAllBytes()).trim();
-            if (process.exitValue() != 0) {
-                return new RemoteCommandError.CommandFailed(String.join(" ", command), process.exitValue(), output).result();
-            }
+            var output = new String(process.getInputStream().readAllBytes()).trim();
+            if ( process.exitValue() != 0) {
+            return new RemoteCommandError.CommandFailed(String.join(" ", command), process.exitValue(), output).result();}
             return Result.success(output);
-        } catch (Exception e) {
+        }
+
+
+
+
+        catch (Exception e) {
             return new RemoteCommandError.CommandException(String.join(" ", command), e).result();
         }
     }
 
     private static void sleepQuietly(long millis) {
-        try{
+        try {
             Thread.sleep(millis);
-        } catch (InterruptedException _) {
-            Thread.currentThread()
-                  .interrupt();
+        }
+
+
+
+
+        catch (InterruptedException _) {
+            Thread.currentThread().interrupt();
         }
     }
 
     /// Error causes for remote command operations.
     sealed interface RemoteCommandError extends Cause {
         record SshTimeout(String host, Duration timeout) implements RemoteCommandError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "SSH connection to " + host + " timed out after " + timeout;
             }
         }
 
         record CommandFailed(String command, int exitCode, String output) implements RemoteCommandError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Command failed (exit " + exitCode + "): " + command + " - " + output;
             }
         }
 
         record CommandTimeout(String command, int timeoutSeconds) implements RemoteCommandError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Command timed out after " + timeoutSeconds + "s: " + command;
             }
         }
 
         record CommandException(String command, Throwable cause) implements RemoteCommandError {
-            @Override
-            public String message() {
-                return "Command failed with exception: " + command + " - " + Causes.fromThrowable(cause)
-                                                                                  .message();
+            @Override public String message() {
+                return "Command failed with exception: " + command + " - " + Causes.fromThrowable(cause).message();
             }
         }
     }

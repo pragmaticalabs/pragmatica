@@ -30,7 +30,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final EvictionListener evictionListener;
     private final ReplicationManager replicationManager;
 
-    private StreamPartitionManager(long maxTotalBytes, EvictionListener evictionListener,
+    private StreamPartitionManager(long maxTotalBytes,
+                                   EvictionListener evictionListener,
                                    ReplicationManager replicationManager) {
         this.maxTotalBytes = maxTotalBytes;
         this.evictionListener = evictionListener;
@@ -53,8 +54,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// Create a new StreamPartitionManager with a custom memory cap, eviction listener, and replication manager.
-    public static StreamPartitionManager streamPartitionManager(long maxTotalBytes, EvictionListener evictionListener,
-                                                                 ReplicationManager replicationManager) {
+    public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
+                                                                EvictionListener evictionListener,
+                                                                ReplicationManager replicationManager) {
         return new StreamPartitionManager(maxTotalBytes, evictionListener, replicationManager);
     }
 
@@ -66,24 +68,17 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Create a stream with the given config. Creates ring buffers for locally-owned partitions.
     /// Returns failure if a stream with the same name already exists or if the memory cap would be exceeded.
     public Result<Unit> createStream(StreamConfig config) {
-        if (streams.containsKey(config.name())) {
-            return StreamError.General.STREAM_ALREADY_EXISTS.result();
-        }
-
+        if ( streams.containsKey(config.name())) {
+        return StreamError.General.STREAM_ALREADY_EXISTS.result();}
         var requiredBytes = calculateStreamBytes(config);
-
-        if (totalAllocatedBytes.get() + requiredBytes > maxTotalBytes) {
-            return StreamError.General.STREAM_MEMORY_EXCEEDED.result();
-        }
-
+        if ( totalAllocatedBytes.get() + requiredBytes > maxTotalBytes) {
+        return StreamError.General.STREAM_MEMORY_EXCEEDED.result();}
         var entry = StreamEntry.fromConfig(config, evictionListener);
         var previous = streams.putIfAbsent(config.name(), entry);
-
-        if (previous != null) {
+        if ( previous != null) {
             entry.close();
             return StreamError.General.STREAM_ALREADY_EXISTS.result();
         }
-
         totalAllocatedBytes.addAndGet(requiredBytes);
         return success(unit());
     }
@@ -103,7 +98,11 @@ public final class StreamPartitionManager implements AutoCloseable {
         return resolveStreamEntry(streamName).flatMap(entry -> checkEventSize(entry, payload))
                                  .flatMap(_ -> resolvePartitionBuffer(streamName, partition))
                                  .flatMap(buffer -> buffer.append(payload, timestamp))
-                                 .onSuccess(offset -> replicationManager.replicateEvent(streamName, partition, offset, payload, timestamp));
+                                 .onSuccess(offset -> replicationManager.replicateEvent(streamName,
+                                                                                        partition,
+                                                                                        offset,
+                                                                                        payload,
+                                                                                        timestamp));
     }
 
     /// Read events from a locally-owned partition.
@@ -121,11 +120,10 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// List all streams managed by this node.
     public List<StreamInfo> listStreams() {
-        return streams.entrySet()
-                      .stream()
-                      .map(e -> buildStreamInfo(e.getKey(),
-                                                e.getValue()))
-                      .toList();
+        return streams.entrySet().stream()
+                               .map(e -> buildStreamInfo(e.getKey(),
+                                                         e.getValue()))
+                               .toList();
     }
 
     /// Reap idle streams — destroy streams where all partitions are empty and the stream
@@ -133,26 +131,21 @@ public final class StreamPartitionManager implements AutoCloseable {
     public int reapIdleStreams() {
         var now = System.currentTimeMillis();
         var reaped = new ArrayList<String>();
-
         streams.forEach((name, entry) -> {
-            var maxAge = entry.config().retention().maxAgeMs();
-            var isEmpty = java.util.Arrays.stream(entry.partitions()).allMatch(b -> b.eventCount() == 0);
-            var isExpired = (now - entry.createdAt()) > maxAge;
-
-            if (isEmpty && isExpired) {
-                reaped.add(name);
-            }
-        });
-
+                            var maxAge = entry.config().retention()
+                                                     .maxAgeMs();
+                            var isEmpty = java.util.Arrays.stream(entry.partitions()).allMatch(b -> b.eventCount() == 0);
+                            var isExpired = (now - entry.createdAt()) > maxAge;
+                            if ( isEmpty && isExpired) {
+        reaped.add(name);}
+                        });
         reaped.forEach(this::destroyStream);
         return reaped.size();
     }
 
     @Contract
-    @Override
-    public void close() {
-        streams.values()
-               .forEach(StreamEntry::close);
+    @Override public void close() {
+        streams.values().forEach(StreamEntry::close);
         streams.clear();
         totalAllocatedBytes.set(0);
     }
@@ -160,37 +153,31 @@ public final class StreamPartitionManager implements AutoCloseable {
     // --- Private helpers ---
     private Result<StreamEntry> resolveStreamEntry(String streamName) {
         var entry = streams.get(streamName);
-        if (entry == null) {
-            return new StreamError.StreamNotFound(streamName).result();
-        }
+        if ( entry == null) {
+        return new StreamError.StreamNotFound(streamName).result();}
         return success(entry);
     }
 
     private static Result<Unit> checkEventSize(StreamEntry entry, byte[] payload) {
-        if (payload.length > entry.config()
-                                  .maxEventSizeBytes()) {
-            return new StreamError.EventTooLarge(payload.length,
-                                                 entry.config()
-                                                      .maxEventSizeBytes()).result();
-        }
+        if ( payload.length > entry.config().maxEventSizeBytes()) {
+        return new StreamError.EventTooLarge(payload.length,
+                                             entry.config().maxEventSizeBytes()).result();}
         return success(unit());
     }
 
     private Result<OffHeapRingBuffer> resolvePartitionBuffer(String streamName, int partition) {
         var entry = streams.get(streamName);
-        if (entry == null) {
-            return new StreamError.StreamNotFound(streamName).result();
-        }
-        if (partition < 0 || partition >= entry.partitions().length) {
-            return new StreamError.PartitionOutOfRange(streamName, partition, entry.partitions().length).result();
-        }
+        if ( entry == null) {
+        return new StreamError.StreamNotFound(streamName).result();}
+        if ( partition < 0 || partition >= entry.partitions().length) {
+        return new StreamError.PartitionOutOfRange(streamName, partition, entry.partitions().length).result();}
         return success(entry.partitions() [partition]);
     }
 
     private static StreamInfo buildStreamInfo(String name, StreamEntry entry) {
         var totalEvents = 0L;
         var totalBytes = 0L;
-        for (var buffer : entry.partitions()) {
+        for ( var buffer : entry.partitions()) {
             totalEvents += buffer.eventCount();
             totalBytes += buffer.allocatedBytes();
         }
@@ -198,7 +185,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private Result<Unit> closeAndRelease(StreamEntry entry) {
-        totalAllocatedBytes.addAndGet(-calculateStreamBytes(entry.config()));
+        totalAllocatedBytes.addAndGet(- calculateStreamBytes(entry.config()));
         entry.close();
         return success(unit());
     }
@@ -221,11 +208,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Get all partition details for a stream.
     public Result<List<PartitionInfo>> allPartitionInfo(String streamName) {
         var entry = streams.get(streamName);
-        if (entry == null) {
-            return new StreamError.StreamNotFound(streamName).result();
-        }
+        if ( entry == null) {
+        return new StreamError.StreamNotFound(streamName).result();}
         var infos = new ArrayList<PartitionInfo>();
-        for (int i = 0; i < entry.partitions().length; i++) {
+        for ( int i = 0; i < entry.partitions().length; i++) {
             var buffer = entry.partitions() [i];
             infos.add(PartitionInfo.partitionInfo(i, buffer.headOffset(), buffer.tailOffset(), buffer.eventCount()));
         }
@@ -251,20 +237,19 @@ public final class StreamPartitionManager implements AutoCloseable {
         static StreamEntry fromConfig(StreamConfig config, EvictionListener listener) {
             var retention = config.retention();
             var buffers = new OffHeapRingBuffer[config.partitions()];
-            for (int i = 0; i < config.partitions(); i++) {
-                buffers[i] = OffHeapRingBuffer.offHeapRingBuffer(config.name(), i,
-                                                                  retention.maxCount(), retention.maxBytes(),
-                                                                  listener);
-            }
+            for ( int i = 0; i < config.partitions(); i++) {
+            buffers[i] = OffHeapRingBuffer.offHeapRingBuffer(config.name(),
+                                                             i,
+                                                             retention.maxCount(),
+                                                             retention.maxBytes(),
+                                                             listener);}
             return new StreamEntry(config, buffers, System.currentTimeMillis());
         }
 
         @Contract
-        @Override
-        public void close() {
-            for (var buffer : partitions) {
-                buffer.close();
-            }
+        @Override public void close() {
+            for ( var buffer : partitions) {
+            buffer.close();}
         }
     }
 }

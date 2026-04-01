@@ -52,9 +52,8 @@ public interface SliceManifest {
     /// @return SliceManifestInfo or error if manifest is missing/invalid
     static Result<SliceManifestInfo> readFromClassLoader(ClassLoader classLoader) {
         return Result.lift(Causes::fromThrowable,
-                           () -> classLoader.getResource(JarFile.MANIFEST_NAME))
-                     .flatMap(SliceManifest::resolveManifestUrl)
-                     .flatMap(SliceManifest::parseManifest);
+                           () -> classLoader.getResource(JarFile.MANIFEST_NAME)).flatMap(SliceManifest::resolveManifestUrl)
+                          .flatMap(SliceManifest::parseManifest);
     }
 
     private static Result<Manifest> resolveManifestUrl(URL url) {
@@ -64,23 +63,19 @@ public interface SliceManifest {
 
     private static Result<Manifest> readManifest(URL jarUrl) {
         var path = jarUrl.getPath();
-        if (path.startsWith("file:")) {
-            path = path.substring(5);
-        }
+        if ( path.startsWith("file:")) {
+        path = path.substring(5);}
         // Remove trailing !/ if present (jar: URL format)
-        if (path.contains("!")) {
-            path = path.substring(0, path.indexOf("!"));
-        }
+        if ( path.contains("!")) {
+        path = path.substring(0, path.indexOf("!"));}
         var jarPath = path;
-        return Result.lift(Causes::fromThrowable,
-                           () -> new JarFile(jarPath))
-                     .flatMap(jarFile -> extractManifest(jarFile, jarUrl));
+        return Result.lift(Causes::fromThrowable, () -> new JarFile(jarPath))
+        .flatMap(jarFile -> extractManifest(jarFile, jarUrl));
     }
 
     private static Result<Manifest> extractManifest(JarFile jarFile, URL jarUrl) {
-        return Result.lift(Causes::fromThrowable,
-                           () -> extractManifestFromJar(jarFile))
-                     .flatMap(opt -> opt.toResult(MANIFEST_NOT_FOUND_FN.apply(jarUrl.toString())));
+        return Result.lift(Causes::fromThrowable, () -> extractManifestFromJar(jarFile))
+        .flatMap(opt -> opt.toResult(MANIFEST_NOT_FOUND_FN.apply(jarUrl.toString())));
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -107,13 +102,11 @@ public interface SliceManifest {
                      .flatMap(artifactStr -> option(mainAttrs.getValue(SLICE_CLASS_ATTR)).filter(s -> !s.isBlank())
                                                    .toResult(MISSING_CLASS_ATTR)
                                                    .flatMap(sliceClass -> Artifact.artifact(artifactStr)
-                                                                                  .map(artifact -> new SliceManifestInfo(artifact,
-                                                                                                                         sliceClass,
-                                                                                                                         envelopeVersion))));
+        .map(artifact -> new SliceManifestInfo(artifact, sliceClass, envelopeVersion))));
     }
 
     /// Information extracted from a slice JAR manifest.
-    record SliceManifestInfo(Artifact artifact, String sliceClassName, Option<String> envelopeVersion) {}
+    record SliceManifestInfo(Artifact artifact, String sliceClassName, Option<String> envelopeVersion){}
 
     /// Check whether the envelope version is compatible with this runtime.
     ///
@@ -124,28 +117,22 @@ public interface SliceManifest {
     ///
     /// @return success if compatible, failure with descriptive cause otherwise
     static Result<Unit> checkEnvelopeCompatibility(Option<String> envelopeVersion) {
-        return envelopeVersion.map(SliceManifest::validateEnvelopeVersion)
-                              .or(Result::unitResult);
+        return envelopeVersion.map(SliceManifest::validateEnvelopeVersion).or(Result::unitResult);
     }
 
     private static Result<Unit> validateEnvelopeVersion(String version) {
-        if ("dev".equals(version)) {
-            return Result.unitResult();
-        }
+        if ( "dev".equals(version)) {
+        return Result.unitResult();}
         return Result.lift1(Integer::parseInt, version)
-                     .flatMap(v -> SUPPORTED_ENVELOPE_VERSIONS.contains(v)
-                                   ? Result.unitResult()
-                                   : UNSUPPORTED_ENVELOPE_VERSION.apply(version)
-                                                                 .result());
+        .flatMap(v -> SUPPORTED_ENVELOPE_VERSIONS.contains(v)
+                     ? Result.unitResult()
+                     : UNSUPPORTED_ENVELOPE_VERSION.apply(version).result());
     }
 
     // Error causes
     Fn1<Cause, String> MANIFEST_NOT_FOUND_FN = Causes.forOneValue("Manifest not found in JAR: %s");
-    Fn1<Cause, String> UNSUPPORTED_ENVELOPE_VERSION = Causes.forOneValue("Envelope format version %s not supported by this runtime (supported: " + SUPPORTED_ENVELOPE_VERSIONS
-                                                                         + ")");
+    Fn1<Cause, String> UNSUPPORTED_ENVELOPE_VERSION = Causes.forOneValue("Envelope format version %s not supported by this runtime (supported: " + SUPPORTED_ENVELOPE_VERSIONS + ")");
     Cause MANIFEST_NOT_FOUND = Causes.cause("Manifest not found in ClassLoader resources");
-    Cause MISSING_ARTIFACT_ATTR = Causes.cause("Missing required manifest attribute: " + SLICE_ARTIFACT_ATTR
-                                               + ". Slice JARs must declare artifact coordinates in manifest.");
-    Cause MISSING_CLASS_ATTR = Causes.cause("Missing required manifest attribute: " + SLICE_CLASS_ATTR
-                                            + ". Slice JARs must declare the main slice class in manifest.");
+    Cause MISSING_ARTIFACT_ATTR = Causes.cause("Missing required manifest attribute: " + SLICE_ARTIFACT_ATTR + ". Slice JARs must declare artifact coordinates in manifest.");
+    Cause MISSING_CLASS_ATTR = Causes.cause("Missing required manifest attribute: " + SLICE_CLASS_ATTR + ". Slice JARs must declare the main slice class in manifest.");
 }

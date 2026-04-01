@@ -17,7 +17,7 @@ import static org.pragmatica.lang.Result.success;
 /// Pattern: `${choice:A,B,C`} where A, B, C are comma-separated options.
 ///
 /// Example: `${choice:NYC,LAX,CHI`} randomly picks one of the three values
-public record ChoiceGenerator(List<String> choices) implements PatternGenerator {
+public record ChoiceGenerator( List<String> choices) implements PatternGenerator {
     public static final String TYPE = "choice";
 
     public static Result<ChoiceGenerator> choiceGenerator(List<String> choices) {
@@ -34,28 +34,23 @@ public record ChoiceGenerator(List<String> choices) implements PatternGenerator 
     }
 
     private static Result<PatternGenerator> toChoices(String choiceSpec) {
-        var choices = Arrays.stream(choiceSpec.split(","))
-                            .map(String::trim)
-                            .filter(s -> !s.isEmpty())
-                            .toList();
+        var choices = Arrays.stream(choiceSpec.split(",")).map(String::trim)
+                                   .filter(s -> !s.isEmpty())
+                                   .toList();
         return ensureNonEmpty(choices, choiceSpec);
     }
 
     private static Result<PatternGenerator> ensureNonEmpty(List<String> choices, String choiceSpec) {
         return choices.isEmpty()
-               ? INVALID_CHOICE.apply(choiceSpec)
-                               .result()
+               ? INVALID_CHOICE.apply(choiceSpec).result()
                : choiceGenerator(choices).map(gen -> gen);
     }
 
-    @Override
-    public String generate() {
-        return choices.get(ThreadLocalRandom.current()
-                                            .nextInt(choices.size()));
+    @Override public String generate() {
+        return choices.get(ThreadLocalRandom.current().nextInt(choices.size()));
     }
 
-    @Override
-    public String pattern() {
+    @Override public String pattern() {
         return "${choice:" + String.join(",", choices) + "}";
     }
 }

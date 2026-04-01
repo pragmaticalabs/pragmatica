@@ -1,10 +1,5 @@
 package org.pragmatica.aether.slice;
-/// Aspect for intercepting slice method invocations.
-/// Wraps a slice instance to add cross-cutting behavior (logging, metrics, etc.).
-///
-/// @param <T> The slice type being wrapped
-@FunctionalInterface
-public interface Aspect<T> {
+@FunctionalInterface public interface Aspect<T> {
     /// Wrap a slice instance with aspect behavior.
     ///
     /// @param instance The slice instance to wrap

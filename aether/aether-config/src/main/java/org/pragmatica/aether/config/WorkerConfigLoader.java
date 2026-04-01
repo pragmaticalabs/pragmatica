@@ -39,30 +39,23 @@ public final class WorkerConfigLoader {
 
     /// Load worker configuration from file path.
     public static Result<WorkerConfig> load(Path path) {
-        return TomlParser.parseFile(path)
-                         .flatMap(WorkerConfigLoader::fromDocument);
+        return TomlParser.parseFile(path).flatMap(WorkerConfigLoader::fromDocument);
     }
 
     /// Load worker configuration from TOML string content.
     public static Result<WorkerConfig> loadFromString(String content) {
-        return TomlParser.parse(content)
-                         .flatMap(WorkerConfigLoader::fromDocument);
+        return TomlParser.parse(content).flatMap(WorkerConfigLoader::fromDocument);
     }
 
     private static Result<WorkerConfig> fromDocument(TomlDocument doc) {
         var coreNodes = parseCoreNodes(doc);
-        var clusterPort = doc.getInt("worker", "cluster_port")
-                             .or(WorkerConfig.DEFAULT_CLUSTER_PORT);
-        var swimPort = doc.getInt("worker", "swim_port")
-                          .or(WorkerConfig.DEFAULT_SWIM_PORT);
+        var clusterPort = doc.getInt("worker", "cluster_port").or(WorkerConfig.DEFAULT_CLUSTER_PORT);
+        var swimPort = doc.getInt("worker", "swim_port").or(WorkerConfig.DEFAULT_SWIM_PORT);
         var swimSettings = parseSwimSettings(doc);
         var sliceConfig = parseSliceConfig(doc);
-        var groupName = doc.getString("worker", "group_name")
-                           .or(WorkerConfig.DEFAULT_GROUP_NAME);
-        var zone = doc.getString("worker", "zone")
-                      .or(WorkerConfig.DEFAULT_ZONE);
-        var maxGroupSize = doc.getInt("worker", "max_group_size")
-                              .or(WorkerConfig.DEFAULT_MAX_GROUP_SIZE);
+        var groupName = doc.getString("worker", "group_name").or(WorkerConfig.DEFAULT_GROUP_NAME);
+        var zone = doc.getString("worker", "zone").or(WorkerConfig.DEFAULT_ZONE);
+        var maxGroupSize = doc.getInt("worker", "max_group_size").or(WorkerConfig.DEFAULT_MAX_GROUP_SIZE);
         var heartbeatInterval = parseTimeSpanOrMs(doc,
                                                   "worker",
                                                   "heartbeat_interval",
@@ -73,8 +66,7 @@ public final class WorkerConfigLoader {
                                                  "heartbeat_timeout",
                                                  "heartbeat_timeout_ms",
                                                  WorkerConfig.DEFAULT_HEARTBEAT_TIMEOUT);
-        var advertiseAddress = doc.getString("worker", "advertise_address")
-                                  .or(WorkerConfig.DEFAULT_ADVERTISE_ADDRESS);
+        var advertiseAddress = doc.getString("worker", "advertise_address").or(WorkerConfig.DEFAULT_ADVERTISE_ADDRESS);
         var metricsAggregation = parseTimeSpanOrMs(doc,
                                                    "worker",
                                                    "metrics_aggregation",
@@ -121,38 +113,33 @@ public final class WorkerConfigLoader {
     }
 
     private static List<String> parseCoreNodes(TomlDocument doc) {
-        return doc.getStringList("worker", "core_nodes")
-                  .or(List.of());
+        return doc.getStringList("worker", "core_nodes").or(List.of());
     }
 
     @SuppressWarnings("JBCT-STY-05")
     private static Result<SwimSettings> parseSwimSettings(TomlDocument doc) {
-        if (!doc.hasSection("worker.swim")) {
-            return success(SwimSettings.swimSettings());
-        }
+        if ( !doc.hasSection("worker.swim")) {
+        return success(SwimSettings.swimSettings());}
         var period = parseTimeSpanOrMs(doc, "worker.swim", "period", "period_ms", SwimSettings.DEFAULT_PERIOD);
         var probeTimeout = parseTimeSpanOrMs(doc,
                                              "worker.swim",
                                              "probe_timeout",
                                              "probe_timeout_ms",
                                              SwimSettings.DEFAULT_PROBE_TIMEOUT);
-        var indirectProbes = doc.getInt("worker.swim", "indirect_probes")
-                                .or(SwimSettings.DEFAULT_INDIRECT_PROBES);
+        var indirectProbes = doc.getInt("worker.swim", "indirect_probes").or(SwimSettings.DEFAULT_INDIRECT_PROBES);
         var suspectTimeout = parseTimeSpanOrMs(doc,
                                                "worker.swim",
                                                "suspect_timeout",
                                                "suspect_timeout_ms",
                                                SwimSettings.DEFAULT_SUSPECT_TIMEOUT);
-        var maxPiggyback = doc.getInt("worker.swim", "max_piggyback")
-                              .or(SwimSettings.DEFAULT_MAX_PIGGYBACK);
+        var maxPiggyback = doc.getInt("worker.swim", "max_piggyback").or(SwimSettings.DEFAULT_MAX_PIGGYBACK);
         return SwimSettings.swimSettings(period, probeTimeout, indirectProbes, suspectTimeout, maxPiggyback);
     }
 
     @SuppressWarnings("JBCT-STY-05")
     private static Result<SliceConfig> parseSliceConfig(TomlDocument doc) {
-        return doc.getStringList("slice", "repositories")
-                  .map(SliceConfig::sliceConfigFromNames)
-                  .or(success(SliceConfig.sliceConfig()));
+        return doc.getStringList("slice", "repositories").map(SliceConfig::sliceConfigFromNames)
+                                .or(success(SliceConfig.sliceConfig()));
     }
 
     /// Parse a TimeSpan from either a new string key or a legacy _ms long key.
@@ -161,15 +148,12 @@ public final class WorkerConfigLoader {
                                               String stringKey,
                                               String msKey,
                                               TimeSpan defaultValue) {
-        var fromString = doc.getString(section, stringKey)
-                            .flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
-                                             .option())
-                            .map(ts -> TimeSpan.fromDuration(ts.duration()));
-        if (fromString.isPresent()) {
-            return fromString.unwrap();
-        }
-        return doc.getLong(section, msKey)
-                  .map(ms -> timeSpan(ms).millis())
-                  .or(defaultValue);
+        var fromString = doc.getString(section, stringKey).flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
+        .option())
+                                      .map(ts -> TimeSpan.fromDuration(ts.duration()));
+        if ( fromString.isPresent()) {
+        return fromString.unwrap();}
+        return doc.getLong(section, msKey).map(ms -> timeSpan(ms).millis())
+                          .or(defaultValue);
     }
 }

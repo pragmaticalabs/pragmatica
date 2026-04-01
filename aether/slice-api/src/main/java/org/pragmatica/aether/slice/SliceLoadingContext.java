@@ -79,22 +79,18 @@ public final class SliceLoadingContext implements SliceCreationContext {
         return new NoOpResourceProvider();
     }
 
-    @Override
-    public SliceInvokerFacade invoker() {
+    @Override public SliceInvokerFacade invoker() {
         return bufferingInvoker;
     }
 
-    @Override
-    public Option<String> sliceId() {
+    @Override public Option<String> sliceId() {
         return delegate.sliceId();
     }
 
-    @Override
-    public ResourceProviderFacade resources() {
-        return delegate.sliceId()
-                       .map(id -> sliceAwareResourceProvider(delegate.resources(),
-                                                             id))
-                       .or(delegate.resources());
+    @Override public ResourceProviderFacade resources() {
+        return delegate.sliceId().map(id -> sliceAwareResourceProvider(delegate.resources(),
+                                                                       id))
+                               .or(delegate.resources());
     }
 
     /// Materialize all buffered handles by verifying their target endpoints exist.
@@ -104,11 +100,10 @@ public final class SliceLoadingContext implements SliceCreationContext {
     ///
     /// @return Success if all handles materialized, or the first failure cause
     public Result<Unit> materializeAll() {
-        for (var handle : bufferingInvoker.bufferedHandles()) {
+        for ( var handle : bufferingInvoker.bufferedHandles()) {
             var result = handle.materialize();
-            if (result.isFailure()) {
-                return result;
-            }
+            if ( result.isFailure()) {
+            return result;}
         }
         return Result.unitResult();
     }
@@ -136,8 +131,7 @@ public final class SliceLoadingContext implements SliceCreationContext {
     ///
     /// @return Number of buffered handles
     public int bufferedHandleCount() {
-        return bufferingInvoker.bufferedHandles()
-                               .size();
+        return bufferingInvoker.bufferedHandles().size();
     }
 
     /// Get the underlying delegate (for testing/debugging).
@@ -166,18 +160,17 @@ public final class SliceLoadingContext implements SliceCreationContext {
             this.sliceId = sliceId;
         }
 
-        @Override
-        public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+        @Override public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
             return delegate.provide(resourceType, configSection);
         }
 
-        @Override
-        public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
+        @Override public <T> Promise<T> provide(Class<T> resourceType,
+                                                String configSection,
+                                                ProvisioningContext context) {
             return delegate.provide(resourceType, configSection, context.withExtension(String.class, sliceId));
         }
 
-        @Override
-        public Promise<Unit> releaseAll(String releaseSliceId) {
+        @Override public Promise<Unit> releaseAll(String releaseSliceId) {
             return delegate.releaseAll(releaseSliceId);
         }
     }
@@ -186,13 +179,13 @@ public final class SliceLoadingContext implements SliceCreationContext {
     private static final class NoOpResourceProvider implements ResourceProviderFacade {
         private static final Cause NOT_CONFIGURED = cause("Resource provisioning not configured");
 
-        @Override
-        public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+        @Override public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
             return NOT_CONFIGURED.promise();
         }
 
-        @Override
-        public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
+        @Override public <T> Promise<T> provide(Class<T> resourceType,
+                                                String configSection,
+                                                ProvisioningContext context) {
             return NOT_CONFIGURED.promise();
         }
     }
@@ -207,19 +200,17 @@ public final class SliceLoadingContext implements SliceCreationContext {
             this.delegate = delegate;
         }
 
-        @Override
-        public <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
-                                                              String methodName,
-                                                              TypeToken<T> requestType,
-                                                              TypeToken<R> responseType) {
+        @Override public <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
+                                                                        String methodName,
+                                                                        TypeToken<T> requestType,
+                                                                        TypeToken<R> responseType) {
             return delegate.methodHandle(sliceArtifact, methodName, requestType, responseType)
-                           .onSuccess(this::bufferHandleIfActive);
+            .onSuccess(this::bufferHandleIfActive);
         }
 
         private <R, T> void bufferHandleIfActive(MethodHandle<R, T> handle) {
-            if (buffering.get()) {
-                bufferedHandles.add(handle);
-            }
+            if ( buffering.get()) {
+            bufferedHandles.add(handle);}
         }
 
         List<MethodHandle<?, ?>> bufferedHandles() {

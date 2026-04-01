@@ -1,9 +1,5 @@
 package org.pragmatica.aether.deployment.schema;
-/// Configuration controlling failure and failover behavior during schema migrations.
-///
-/// @param failureMode  how to handle a migration step failure
-/// @param failoverMode how to handle migration resumption after node failover
-public record SchemaPolicy(FailureMode failureMode, FailoverMode failoverMode) {
+public record SchemaPolicy( FailureMode failureMode, FailoverMode failoverMode) {
     /// Controls behavior when a migration step fails.
     public enum FailureMode {
         /// Leave the database in its current state (partially migrated).

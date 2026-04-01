@@ -110,15 +110,14 @@ public final class ComprehensiveSnapshotCollector {
 
     /// Start collecting snapshots on 1-second interval.
     public Result<Unit> start() {
-        if (started) {
-            return unitResult();
-        }
+        if ( started) {
+        return unitResult();}
         started = true;
         gcCollector.start();
         eventLoopCollector.start();
         collectionTask.set(Option.some(SharedScheduler.scheduleAtFixedRate(this::collectSnapshot,
                                                                            TimeSpan.timeSpan(COLLECTION_INTERVAL_MS)
-                                                                                   .millis())));
+        .millis())));
         log.info("Comprehensive snapshot collection started (interval: {}ms)", COLLECTION_INTERVAL_MS);
         return unitResult();
     }
@@ -126,12 +125,10 @@ public final class ComprehensiveSnapshotCollector {
     /// Stop collecting snapshots.
     @SuppressWarnings("JBCT-EX-01")
     public Result<Unit> stop() {
-        if (!started) {
-            return unitResult();
-        }
+        if ( !started) {
+        return unitResult();}
         started = false;
-        collectionTask.getAndSet(Option.none())
-                      .onPresent(task -> task.cancel(false));
+        collectionTask.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
         gcCollector.stop();
         eventLoopCollector.stop();
         log.info("Comprehensive snapshot collection stopped");
@@ -151,7 +148,7 @@ public final class ComprehensiveSnapshotCollector {
     /// Collect a single comprehensive snapshot from all subsystems.
     @SuppressWarnings("JBCT-EX-01")
     private void collectSnapshot() {
-        try{
+        try {
             var snapshot = buildSnapshot();
             minuteAggregator.addSample(snapshot);
             derivedCalculator.addSample(snapshot);
@@ -159,7 +156,12 @@ public final class ComprehensiveSnapshotCollector {
                       snapshot.cpuUsage(),
                       snapshot.heapUsage(),
                       snapshot.totalInvocations());
-        } catch (Exception e) {
+        }
+
+
+
+
+        catch (Exception e) {
             log.warn("Failed to collect comprehensive snapshot: {}", e.getMessage());
         }
     }
@@ -179,7 +181,7 @@ public final class ComprehensiveSnapshotCollector {
         long successfulInvocations = 0;
         long failedInvocations = 0;
         double totalLatencyMs = 0;
-        for (var methodSnapshot : invocationSnapshots) {
+        for ( var methodSnapshot : invocationSnapshots) {
             var metrics = methodSnapshot.metrics();
             totalInvocations += metrics.count();
             successfulInvocations += metrics.successCount();
@@ -206,7 +208,7 @@ public final class ComprehensiveSnapshotCollector {
 
     private double collectCpuUsage() {
         double systemLoad = osMxBean.getSystemLoadAverage();
-        if (systemLoad >= 0) {
+        if ( systemLoad >= 0) {
             int processors = osMxBean.getAvailableProcessors();
             return Math.min(1.0, systemLoad / processors);
         }

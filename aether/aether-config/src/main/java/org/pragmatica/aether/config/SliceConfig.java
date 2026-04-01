@@ -21,7 +21,7 @@ import static org.pragmatica.lang.Result.success;
 ///
 /// @param repositories Ordered list of repository types to search for slices
 @SuppressWarnings({"JBCT-ZONE-02", "JBCT-ZONE-03"})
-public record SliceConfig(List<RepositoryType> repositories) {
+public record SliceConfig( List<RepositoryType> repositories) {
     private static final SliceConfig DEFAULT = sliceConfig(List.of(new RepositoryType.Local())).unwrap();
 
     /// Factory method following JBCT naming convention.
@@ -64,17 +64,14 @@ public record SliceConfig(List<RepositoryType> repositories) {
 
     @SuppressWarnings("JBCT-NAM-01")
     private static Result<SliceConfig> toRepositoryTypes(List<String> names) {
-        return Result.allOf(names.stream()
-                                 .map(RepositoryType::repositoryType)
-                                 .toList())
-                     .map(SliceConfig::new);
+        return Result.allOf(names.stream().map(RepositoryType::repositoryType)
+                                        .toList()).map(SliceConfig::new);
     }
 
     /// Error hierarchy for slice configuration failures.
     public sealed interface SliceConfigError extends Cause {
         record unused() implements SliceConfigError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "unused";
             }
         }
@@ -90,8 +87,7 @@ public record SliceConfig(List<RepositoryType> repositories) {
                 return invalidSliceConfig(detail, true).unwrap();
             }
 
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Invalid slice configuration: " + detail;
             }
         }

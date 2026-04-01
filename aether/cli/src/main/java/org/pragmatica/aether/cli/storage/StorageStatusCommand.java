@@ -14,10 +14,8 @@ import picocli.CommandLine.Command;
 /// Without `--node`, queries the cluster-wide detail endpoint.
 /// With `--node`, queries the per-node detail endpoint on the specified node.
 @Command(name = "status", description = "Show storage instance status")
-@SuppressWarnings("JBCT-RET-01")
-class StorageStatusCommand implements Callable<Integer> {
-    @CommandLine.ParentCommand
-    private StorageCommand parent;
+@SuppressWarnings("JBCT-RET-01") class StorageStatusCommand implements Callable<Integer> {
+    @CommandLine.ParentCommand private StorageCommand parent;
 
     @CommandLine.Parameters(index = "0", description = "Storage instance name")
     private String name;
@@ -25,14 +23,10 @@ class StorageStatusCommand implements Callable<Integer> {
     @CommandLine.Option(names = "--node", description = "Target specific node")
     private String nodeId;
 
-    @Override
-    public Integer call() {
-        var path = Option.option(nodeId)
-                         .fold(() -> "/api/cluster/storage/" + name,
-                               _ -> "/api/storage/" + name);
-
+    @Override public Integer call() {
+        var path = Option.option(nodeId).fold(() -> "/api/cluster/storage/" + name, _ -> "/api/storage/" + name);
         return ClusterHttpClient.fetchFromCluster(path)
-                                .fold(StorageCliHelper::onFailure,
-                                      json -> OutputFormatter.printQuery(json, parent.outputOptions()));
+        .fold(StorageCliHelper::onFailure,
+              json -> OutputFormatter.printQuery(json, parent.outputOptions()));
     }
 }

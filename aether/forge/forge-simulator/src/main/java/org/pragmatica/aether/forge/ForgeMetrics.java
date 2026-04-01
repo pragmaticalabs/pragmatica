@@ -80,7 +80,7 @@ public final class ForgeMetrics {
         var totalDelta = successDelta + failureDelta;
         var instantRps = (totalDelta * 1000.0) / elapsed;
         requestsPerSecond = smoothEma(requestsPerSecond, instantRps);
-        if (Verify.Is.positive(totalDelta)) {
+        if ( Verify.Is.positive(totalDelta)) {
             var instantSuccessRate = (double) successDelta / totalDelta;
             successRate = EMA_ALPHA * instantSuccessRate + (1 - EMA_ALPHA) * successRate;
         }
@@ -97,7 +97,7 @@ public final class ForgeMetrics {
     private void updateLatency() {
         var count = requestCount.sumThenReset();
         var latency = totalLatencyNanos.sumThenReset();
-        if (Verify.Is.positive(count)) {
+        if ( Verify.Is.positive(count)) {
             var instantLatencyMs = (latency / count) / 1_000_000.0;
             avgLatencyMs = smoothEma(avgLatencyMs, instantLatencyMs);
         }
@@ -116,7 +116,7 @@ public final class ForgeMetrics {
                                                avgLatencyMs,
                                                totalSuccess.get(),
                                                totalFailures.get())
-                              .unwrap();
+        .unwrap();
     }
 
     /// Reset all metrics.

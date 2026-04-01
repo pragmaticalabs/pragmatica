@@ -11,26 +11,22 @@ import java.util.Arrays;
 /// it wraps the serialized payload in this envelope and sends it to the target
 /// community's governor. The governor then forwards the relay to the actual
 /// target node via cluster network.
-@Codec
-public record DHTRelayMessage(NodeId actualTarget, byte[] serializedPayload) implements Message.Wired {
+@Codec public record DHTRelayMessage( NodeId actualTarget, byte[] serializedPayload) implements Message.Wired {
     public DHTRelayMessage {
         serializedPayload = serializedPayload.clone();
     }
 
-    @Override
-    public byte[] serializedPayload() {
+    @Override public byte[] serializedPayload() {
         return serializedPayload.clone();
     }
 
-    @Override
-    public boolean equals(Object o) {
-        return o instanceof DHTRelayMessage other
-               && actualTarget.equals(other.actualTarget)
-               && Arrays.equals(serializedPayload, other.serializedPayload);
+    @Override public boolean equals(Object o) {
+        return o instanceof DHTRelayMessage other &&
+        actualTarget.equals(other.actualTarget) &&
+        Arrays.equals(serializedPayload, other.serializedPayload);
     }
 
-    @Override
-    public int hashCode() {
+    @Override public int hashCode() {
         return 31 * actualTarget.hashCode() + Arrays.hashCode(serializedPayload);
     }
 

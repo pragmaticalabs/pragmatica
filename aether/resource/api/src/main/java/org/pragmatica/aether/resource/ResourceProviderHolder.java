@@ -30,5 +30,5 @@ sealed interface ResourceProviderHolder {
         return unitResult();
     }
 
-    record unused() implements ResourceProviderHolder {}
+    record unused() implements ResourceProviderHolder{}
 }

@@ -34,12 +34,10 @@ public interface EnvironmentIntegrationFactory {
 
     /// Look up a factory by provider name via ServiceLoader.
     static Option<EnvironmentIntegrationFactory> forProvider(String providerName) {
-        return Option.from(ServiceLoader.load(EnvironmentIntegrationFactory.class)
-                                        .stream()
-                                        .map(ServiceLoader.Provider::get)
-                                        .filter(f -> f.providerName()
-                                                      .equals(providerName))
-                                        .findFirst());
+        return Option.from(ServiceLoader.load(EnvironmentIntegrationFactory.class).stream()
+                                             .map(ServiceLoader.Provider::get)
+                                             .filter(f -> f.providerName().equals(providerName))
+                                             .findFirst());
     }
 
     /// Create an EnvironmentIntegration for the given CloudConfig by looking up the factory.

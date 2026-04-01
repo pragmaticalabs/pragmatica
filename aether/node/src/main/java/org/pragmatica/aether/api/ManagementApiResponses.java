@@ -7,12 +7,12 @@ import java.util.Map;
 
 /// Typed response records for all Management API endpoints.
 public sealed interface ManagementApiResponses {
-    record unused() implements ManagementApiResponses {}
+    record unused() implements ManagementApiResponses{}
 
     // ===== Common =====
-    record SuccessResponse(String status) {}
+    record SuccessResponse(String status){}
 
-    record ErrorResponse(String error) {}
+    record ErrorResponse(String error){}
 
     // ===== Status Routes =====
     record StatusResponse(long uptimeSeconds,
@@ -22,24 +22,24 @@ public sealed interface ManagementApiResponses {
                           String nodeId,
                           String status,
                           boolean isLeader,
-                          String leader) {}
+                          String leader){}
 
     record ClusterInfo(int nodeCount,
                        String leaderId,
-                       List<NodeInfo> nodes) {}
+                       List<NodeInfo> nodes){}
 
     record NodeInfo(String id,
-                    boolean isLeader) {}
+                    boolean isLeader){}
 
     record MetricsSummary(double requestsPerSecond,
                           double successRate,
-                          double avgLatencyMs) {}
+                          double avgLatencyMs){}
 
-    record NodesResponse(List<EnrichedNodeInfo> nodes) {}
+    record NodesResponse(List<EnrichedNodeInfo> nodes){}
 
     record EnrichedNodeInfo(String nodeId,
                             String role,
-                            boolean isLeader) {}
+                            boolean isLeader){}
 
     record HealthResponse(String status,
                           boolean ready,
@@ -47,100 +47,100 @@ public sealed interface ManagementApiResponses {
                           int nodeCount,
                           int connectedPeers,
                           int metricsNodeCount,
-                          int sliceCount) {}
+                          int sliceCount){}
 
     // ===== Probe Routes =====
     record LivenessResponse(String status,
-                            String nodeId) {}
+                            String nodeId){}
 
     record ReadinessResponse(String status,
                              String nodeId,
-                             List<ComponentHealth> components) {}
+                             List<ComponentHealth> components){}
 
     record ComponentHealth(String name,
                            String status,
-                           String detail) {}
+                           String detail){}
 
     // ===== Certificate Status =====
     record CertificateStatusResponse(String expiresAt,
                                      long secondsUntilExpiry,
                                      String lastRenewalAt,
-                                     String renewalStatus) {}
+                                     String renewalStatus){}
 
     // ===== Slice Routes =====
-    record SlicesResponse(List<String> slices) {}
+    record SlicesResponse(List<String> slices){}
 
-    record ClusterSlicesResponse(List<ClusterSliceInfo> slices) {}
+    record ClusterSlicesResponse(List<ClusterSliceInfo> slices){}
 
     record ClusterSliceInfo(String artifact,
                             int targetInstances,
                             int minInstances,
                             String version,
-                            List<ClusterSliceInstance> instances) {}
+                            List<ClusterSliceInstance> instances){}
 
-    record ClusterSliceInstance(String nodeId, String state, String failureReason) {}
+    record ClusterSliceInstance(String nodeId, String state, String failureReason){}
 
-    record SlicesStatusResponse(List<SliceStatus> slices) {}
+    record SlicesStatusResponse(List<SliceStatus> slices){}
 
     record SliceStatus(String artifact,
                        String state,
-                       List<SliceInstanceInfo> instances) {}
+                       List<SliceInstanceInfo> instances){}
 
     record SliceInstanceInfo(String nodeId,
                              String state,
-                             String health) {}
+                             String health){}
 
-    record RoutesResponse(List<RouteInfo> routes) {}
+    record RoutesResponse(List<RouteInfo> routes){}
 
     record RouteInfo(String method,
                      String path,
                      List<String> nodes,
-                     String security) {}
+                     String security){}
 
     record ScaleResponse(String status,
                          String artifact,
-                         int instances) {}
+                         int instances){}
 
     record BlueprintResponse(String status,
                              String blueprint,
-                             int slices) {}
+                             int slices){}
 
     // ===== Blueprint Management Routes =====
-    record BlueprintListResponse(List<BlueprintSummary> blueprints) {}
+    record BlueprintListResponse(List<BlueprintSummary> blueprints){}
 
     record BlueprintSummary(String id,
-                            int sliceCount) {}
+                            int sliceCount){}
 
     record BlueprintDetailResponse(String id,
                                    List<BlueprintSliceInfo> slices,
-                                   List<String> dependencies) {}
+                                   List<String> dependencies){}
 
     record BlueprintSliceInfo(String artifact,
                               int instances,
                               boolean isDependency,
-                              List<String> dependencies) {}
+                              List<String> dependencies){}
 
     record BlueprintStatusResponse(String id,
                                    String overallStatus,
-                                   List<BlueprintSliceStatus> slices) {}
+                                   List<BlueprintSliceStatus> slices){}
 
     record BlueprintSliceStatus(String artifact,
                                 int targetInstances,
                                 int activeInstances,
-                                String status) {}
+                                String status){}
 
     record BlueprintDeleteResponse(String status,
-                                   String id) {}
+                                   String id){}
 
     record BlueprintValidationResponse(boolean valid,
                                        String id,
                                        int sliceCount,
                                        List<String> errors,
-                                       List<String> warnings) {}
+                                       List<String> warnings){}
 
     // ===== Metrics Routes =====
     record MetricsFullResponse(Map<String, Map<String, Double>> load,
-                               Map<String, List<DeploymentMetrics>> deployments) {}
+                               Map<String, List<DeploymentMetrics>> deployments){}
 
     record DeploymentMetrics(String nodeId,
                              String status,
@@ -148,7 +148,7 @@ public sealed interface ManagementApiResponses {
                              long netDeploymentMs,
                              Map<String, Long> transitions,
                              long startTime,
-                             long activeTime) {}
+                             long activeTime){}
 
     record ComprehensiveMetricsResponse(long minuteTimestamp,
                                         double avgCpuUsage,
@@ -162,7 +162,7 @@ public sealed interface ManagementApiResponses {
                                         double latencyP99,
                                         double errorRate,
                                         long eventCount,
-                                        long sampleCount) {}
+                                        long sampleCount){}
 
     record DerivedMetricsResponse(double requestRate,
                                   double errorRate,
@@ -177,23 +177,23 @@ public sealed interface ManagementApiResponses {
                                   double errorTrend,
                                   double healthScore,
                                   boolean stressed,
-                                  boolean hasCapacity) {}
+                                  boolean hasCapacity){}
 
-    record NodeMetricsResponse(List<NodeMetric> metrics) {}
+    record NodeMetricsResponse(List<NodeMetric> metrics){}
 
     record NodeMetric(String nodeId,
                       double cpuUsage,
                       long heapUsedMb,
-                      long heapMaxMb) {}
+                      long heapMaxMb){}
 
     record ArtifactMetricsResponse(int artifactCount,
                                    int chunkCount,
                                    long memoryBytes,
                                    String memoryMB,
                                    int deployedCount,
-                                   List<String> deployedArtifacts) {}
+                                   List<String> deployedArtifacts){}
 
-    record InvocationMetricsResponse(List<InvocationSnapshot> snapshots) {}
+    record InvocationMetricsResponse(List<InvocationSnapshot> snapshots){}
 
     record InvocationSnapshot(String artifact,
                               String method,
@@ -204,9 +204,9 @@ public sealed interface ManagementApiResponses {
                               long p50DurationNs,
                               long p95DurationNs,
                               double avgDurationMs,
-                              int slowInvocations) {}
+                              int slowInvocations){}
 
-    record SlowInvocationsResponse(List<SlowInvocation> slowInvocations) {}
+    record SlowInvocationsResponse(List<SlowInvocation> slowInvocations){}
 
     record SlowInvocation(String artifact,
                           String method,
@@ -214,44 +214,44 @@ public sealed interface ManagementApiResponses {
                           double durationMs,
                           long timestampNs,
                           boolean success,
-                          Option<String> error) {}
+                          Option<String> error){}
 
     sealed interface StrategyResponse {
-        record Fixed(String type, long thresholdMs) implements StrategyResponse {}
+        record Fixed(String type, long thresholdMs) implements StrategyResponse{}
 
-        record Adaptive(String type, long minMs, long maxMs, double multiplier) implements StrategyResponse {}
+        record Adaptive(String type, long minMs, long maxMs, double multiplier) implements StrategyResponse{}
 
-        record PerMethod(String type, long defaultMs) implements StrategyResponse {}
+        record PerMethod(String type, long defaultMs) implements StrategyResponse{}
 
-        record Composite(String type) implements StrategyResponse {}
+        record Composite(String type) implements StrategyResponse{}
     }
 
     // ===== Alert Routes =====
     record ThresholdSetResponse(String status,
                                 String metric,
                                 double warning,
-                                double critical) {}
+                                double critical){}
 
     record ThresholdRemovedResponse(String status,
-                                    String metric) {}
+                                    String metric){}
 
-    record AlertsClearedResponse(String status) {}
+    record AlertsClearedResponse(String status){}
 
     record AlertsResponse(Object active,
-                          Object history) {}
+                          Object history){}
 
     // ===== Log Level Routes =====
     record LogLevelSetResponse(String status,
                                String logger,
-                               String level) {}
+                               String level){}
 
     record LogLevelResetResponse(String status,
-                                 String logger) {}
+                                 String logger){}
 
     // ===== Controller Routes =====
     record ControllerStatusResponse(boolean enabled,
                                     long evaluationIntervalMs,
-                                    Object config) {}
+                                    Object config){}
 
     record TtmStatusResponse(boolean enabled,
                              boolean active,
@@ -261,19 +261,19 @@ public sealed interface ManagementApiResponses {
                              long evaluationIntervalMs,
                              double confidenceThreshold,
                              boolean hasForecast,
-                             Option<TtmForecast> lastForecast) {}
+                             Option<TtmForecast> lastForecast){}
 
     record TtmForecast(long timestamp,
                        double confidence,
-                       String recommendation) {}
+                       String recommendation){}
 
     record ControllerConfigUpdatedResponse(String status,
-                                           Object config) {}
+                                           Object config){}
 
-    record EvaluationTriggeredResponse(String status) {}
+    record EvaluationTriggeredResponse(String status){}
 
     // ===== Rolling Update Routes =====
-    record RollingUpdatesResponse(List<RollingUpdateInfo> updates) {}
+    record RollingUpdatesResponse(List<RollingUpdateInfo> updates){}
 
     record RollingUpdateInfo(String updateId,
                              String artifactBase,
@@ -283,23 +283,23 @@ public sealed interface ManagementApiResponses {
                              String routing,
                              int newInstances,
                              long createdAt,
-                             long updatedAt) {}
+                             long updatedAt){}
 
     record RollingUpdateHealthResponse(String updateId,
                                        VersionHealth oldVersion,
                                        VersionHealth newVersion,
-                                       long collectedAt) {}
+                                       long collectedAt){}
 
     record VersionHealth(String version,
                          long requestCount,
                          double errorRate,
-                         double avgLatencyMs) {}
+                         double avgLatencyMs){}
 
     record RollingUpdateErrorResponse(String error,
-                                      String updateId) {}
+                                      String updateId){}
 
     // ===== Canary Routes =====
-    record CanaryListResponse(List<CanaryInfo> canaries) {}
+    record CanaryListResponse(List<CanaryInfo> canaries){}
 
     record CanaryInfo(String canaryId,
                       String artifactBase,
@@ -311,21 +311,21 @@ public sealed interface ManagementApiResponses {
                       int totalStages,
                       int newInstances,
                       long createdAt,
-                      long updatedAt) {}
+                      long updatedAt){}
 
     record CanaryHealthResponse(String canaryId,
                                 String verdict,
                                 CanaryVersionHealth baseline,
                                 CanaryVersionHealth canary,
-                                long collectedAt) {}
+                                long collectedAt){}
 
     record CanaryVersionHealth(String version,
                                long requestCount,
                                double errorRate,
-                               long p99LatencyMs) {}
+                               long p99LatencyMs){}
 
     // ===== Blue-Green Routes =====
-    record BlueGreenListResponse(List<BlueGreenInfo> deployments) {}
+    record BlueGreenListResponse(List<BlueGreenInfo> deployments){}
 
     record BlueGreenInfo(String deploymentId,
                          String artifactBase,
@@ -337,10 +337,10 @@ public sealed interface ManagementApiResponses {
                          int blueInstances,
                          int greenInstances,
                          long createdAt,
-                         long updatedAt) {}
+                         long updatedAt){}
 
     // ===== A/B Test Routes =====
-    record AbTestListResponse(List<AbTestInfo> tests) {}
+    record AbTestListResponse(List<AbTestInfo> tests){}
 
     record AbTestInfo(String testId,
                       String artifactBase,
@@ -348,39 +348,39 @@ public sealed interface ManagementApiResponses {
                       String state,
                       int variantCount,
                       long createdAt,
-                      long updatedAt) {}
+                      long updatedAt){}
 
     record AbTestMetricsResponse(String testId,
                                  Map<String, AbTestVariantMetrics> variants,
-                                 long collectedAt) {}
+                                 long collectedAt){}
 
     record AbTestVariantMetrics(String variant,
                                 String version,
                                 long requestCount,
                                 double errorRate,
-                                long avgLatencyMs) {}
+                                long avgLatencyMs){}
 
     // ===== Config Routes =====
     record ConfigSetResponse(String status,
                              String key,
-                             String value) {}
+                             String value){}
 
     record ConfigRemovedResponse(String status,
-                                 String key) {}
+                                 String key){}
 
     // ===== Topology Routes =====
     record TopologyResponse(List<TopologyNodeInfo> nodes,
-                            List<TopologyEdgeInfo> edges) {}
+                            List<TopologyEdgeInfo> edges){}
 
     record TopologyNodeInfo(String id,
                             String type,
                             String label,
-                            String sliceArtifact) {}
+                            String sliceArtifact){}
 
     record TopologyEdgeInfo(String from,
                             String to,
                             String style,
-                            String topicConfig) {}
+                            String topicConfig){}
 
     // ===== Cluster Topology Growth Routes =====
     record ClusterTopologyStatusResponse(int coreCount,
@@ -388,15 +388,15 @@ public sealed interface ManagementApiResponses {
                                          int coreMin,
                                          int workerCount,
                                          int clusterSize,
-                                         List<String> coreNodes) {}
+                                         List<String> coreNodes){}
 
     // ===== Governor Routes =====
-    record GovernorsResponse(List<GovernorInfo> governors) {}
+    record GovernorsResponse(List<GovernorInfo> governors){}
 
     record GovernorInfo(String governorId,
                         String community,
                         int memberCount,
-                        List<String> members) {}
+                        List<String> members){}
 
     // ===== Cluster Config Routes =====
     record ClusterConfigResponse(String tomlContent,
@@ -407,7 +407,7 @@ public sealed interface ManagementApiResponses {
                                  int coreMax,
                                  String deploymentType,
                                  long configVersion,
-                                 long updatedAt) {}
+                                 long updatedAt){}
 
     record ClusterStatusResponse(String clusterName,
                                  String desiredVersion,
@@ -421,42 +421,42 @@ public sealed interface ManagementApiResponses {
                                  String certificateExpiresAt,
                                  long certificateDaysRemaining,
                                  long configVersion,
-                                 long uptimeSeconds) {}
+                                 long uptimeSeconds){}
 
     record ClusterStatusNodeInfo(String nodeId,
                                  String role,
                                  String lifecycleState,
                                  String version,
-                                 boolean isLeader) {}
+                                 boolean isLeader){}
 
     // ===== Cluster Config Apply Routes =====
-    record ApplyConfigRequest(String tomlContent, long expectedVersion) {}
+    record ApplyConfigRequest(String tomlContent, long expectedVersion){}
 
     record ApplyConfigResponse(long configVersion,
                                String clusterName,
                                int coreCount,
-                               long updatedAt) {}
+                               long updatedAt){}
 
     record DryRunResponse(String clusterName,
                           long fromVersion,
                           long toVersion,
                           List<String> plannedChanges,
                           int changeCount,
-                          int rejectedCount) {}
+                          int rejectedCount){}
 
-    record ScaleRequest(int coreCount, long expectedVersion) {}
+    record ScaleRequest(int coreCount, long expectedVersion){}
 
     record ScaleClusterResponse(boolean success,
                                 int previousCount,
                                 int newCount,
-                                long configVersion) {}
+                                long configVersion){}
 
     // ===== Cluster Upgrade Routes =====
-    record UpgradeRequest(String targetVersion) {}
+    record UpgradeRequest(String targetVersion){}
 
     record UpgradeResponse(String status,
                            String from,
-                           String to) {}
+                           String to){}
 
     // ===== Repository Routes =====
     record ArtifactInfoResponse(String artifact,
@@ -465,5 +465,5 @@ public sealed interface ManagementApiResponses {
                                 String md5,
                                 String sha1,
                                 long deployedAt,
-                                boolean isDeployed) {}
+                                boolean isDeployed){}
 }

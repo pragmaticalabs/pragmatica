@@ -26,13 +26,13 @@ import org.pragmatica.lang.utils.Causes;
 /// @param sliceCooldownMs time after slice reaches ACTIVE during which scaling is blocked (must be non-negative)
 /// @param scalingConfig configuration for the Lizard Brain relative change scaling algorithm
 @SuppressWarnings("JBCT-VO-02") // Record copy methods (with*) and DEFAULT constant use new internally — validated by factory
-public record ControllerConfig(double cpuScaleUpThreshold,
-                               double cpuScaleDownThreshold,
-                               double callRateScaleUpThreshold,
-                               long evaluationIntervalMs,
-                               long warmUpPeriodMs,
-                               long sliceCooldownMs,
-                               ScalingConfig scalingConfig) {
+public record ControllerConfig( double cpuScaleUpThreshold,
+                                double cpuScaleDownThreshold,
+                                double callRateScaleUpThreshold,
+                                long evaluationIntervalMs,
+                                long warmUpPeriodMs,
+                                long sliceCooldownMs,
+                                ScalingConfig scalingConfig) {
     private static final Fn1<Cause, String> INVALID_THRESHOLD = Causes.forOneValue("Invalid threshold: %s (must be between 0.0 and 1.0)");
     private static final Fn1<Cause, String> INVALID_POSITIVE = Causes.forOneValue("Invalid value: %s (must be positive)");
     private static final Fn1<Cause, String> INVALID_NON_NEGATIVE = Causes.forOneValue("Invalid value: %s (must be non-negative)");
@@ -110,29 +110,25 @@ public record ControllerConfig(double cpuScaleUpThreshold,
     private static Result<Double> validateThreshold(double value, String name) {
         return value >= 0.0 && value <= 1.0
                ? Result.success(value)
-               : INVALID_THRESHOLD.apply(name + "=" + value)
-                                  .result();
+               : INVALID_THRESHOLD.apply(name + "=" + value).result();
     }
 
     private static Result<Double> validatePositive(double value, String name) {
         return value > 0
                ? Result.success(value)
-               : INVALID_POSITIVE.apply(name + "=" + value)
-                                 .result();
+               : INVALID_POSITIVE.apply(name + "=" + value).result();
     }
 
     private static Result<Long> validatePositive(long value, String name) {
         return value > 0
                ? Result.success(value)
-               : INVALID_POSITIVE.apply(name + "=" + value)
-                                 .result();
+               : INVALID_POSITIVE.apply(name + "=" + value).result();
     }
 
     private static Result<Long> validateNonNegative(long value, String name) {
         return value >= 0
                ? Result.success(value)
-               : INVALID_NON_NEGATIVE.apply(name + "=" + value)
-                                     .result();
+               : INVALID_NON_NEGATIVE.apply(name + "=" + value).result();
     }
 
     private static Result<Double> validateThresholdOrder(double up, double down) {
@@ -231,31 +227,21 @@ public record ControllerConfig(double cpuScaleUpThreshold,
 
     /// Converts to JSON.
     public String toJson() {
-        return "{\"cpuScaleUpThreshold\":" + cpuScaleUpThreshold + ",\"cpuScaleDownThreshold\":" + cpuScaleDownThreshold
-               + ",\"callRateScaleUpThreshold\":" + callRateScaleUpThreshold + ",\"evaluationIntervalMs\":" + evaluationIntervalMs
-               + ",\"warmUpPeriodMs\":" + warmUpPeriodMs + ",\"sliceCooldownMs\":" + sliceCooldownMs
-               + ",\"scalingConfig\":" + scalingConfigToJson() + "}";
+        return "{\"cpuScaleUpThreshold\":" + cpuScaleUpThreshold + ",\"cpuScaleDownThreshold\":" + cpuScaleDownThreshold + ",\"callRateScaleUpThreshold\":" + callRateScaleUpThreshold + ",\"evaluationIntervalMs\":" + evaluationIntervalMs + ",\"warmUpPeriodMs\":" + warmUpPeriodMs + ",\"sliceCooldownMs\":" + sliceCooldownMs + ",\"scalingConfig\":" + scalingConfigToJson() + "}";
     }
 
     private String scalingConfigToJson() {
         var weightsJson = new StringBuilder("{");
         var first = true;
-        for (var entry : scalingConfig.weights()
-                                      .entrySet()) {
-            if (!first) {
-                weightsJson.append(",");
-            }
-            weightsJson.append("\"")
-                       .append(entry.getKey()
-                                    .name())
-                       .append("\":")
-                       .append(entry.getValue());
+        for ( var entry : scalingConfig.weights().entrySet()) {
+            if ( !first) {
+            weightsJson.append(",");}
+            weightsJson.append("\"").append(entry.getKey().name())
+                              .append("\":")
+                              .append(entry.getValue());
             first = false;
         }
         weightsJson.append("}");
-        return "{\"windowSize\":" + scalingConfig.windowSize() + ",\"evaluationIntervalMs\":" + scalingConfig.evaluationIntervalMs()
-               + ",\"scaleUpThreshold\":" + scalingConfig.scaleUpThreshold() + ",\"scaleDownThreshold\":" + scalingConfig.scaleDownThreshold()
-               + ",\"errorRateBlockThreshold\":" + scalingConfig.errorRateBlockThreshold() + ",\"weights\":" + weightsJson
-               + "}";
+        return "{\"windowSize\":" + scalingConfig.windowSize() + ",\"evaluationIntervalMs\":" + scalingConfig.evaluationIntervalMs() + ",\"scaleUpThreshold\":" + scalingConfig.scaleUpThreshold() + ",\"scaleDownThreshold\":" + scalingConfig.scaleDownThreshold() + ",\"errorRateBlockThreshold\":" + scalingConfig.errorRateBlockThreshold() + ",\"weights\":" + weightsJson + "}";
     }
 }

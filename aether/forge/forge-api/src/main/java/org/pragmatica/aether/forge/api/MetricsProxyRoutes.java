@@ -20,7 +20,7 @@ import static org.pragmatica.http.routing.Route.in;
 public sealed interface MetricsProxyRoutes {
     Duration HTTP_TIMEOUT = Duration.ofSeconds(10);
 
-    record HistoryResponse(String body) {}
+    record HistoryResponse(String body){}
 
     static RouteSource metricsProxyRoutes(EmberCluster cluster) {
         var http = JdkHttpOperations.jdkHttpOperations();
@@ -29,7 +29,7 @@ public sealed interface MetricsProxyRoutes {
 
     private static Route<HistoryResponse> historyRoute(EmberCluster cluster,
                                                        JdkHttpOperations http) {
-        return Route.<HistoryResponse> get("/history")
+        return Route.<HistoryResponse>get("/history")
                     .withQuery(aString("range"))
                     .to(range -> proxyHistory(cluster, http, range))
                     .asJson();
@@ -39,30 +39,27 @@ public sealed interface MetricsProxyRoutes {
                                                          JdkHttpOperations http,
                                                          Option<String> range) {
         var rangeParam = range.or("1h");
-        return cluster.getLeaderManagementPort()
-                      .async(LeaderNotAvailable.INSTANCE)
-                      .flatMap(port -> sendGet(http, port, "/api/metrics/history?range=" + rangeParam))
-                      .map(HistoryResponse::new);
+        return cluster.getLeaderManagementPort().async(LeaderNotAvailable.INSTANCE)
+                                              .flatMap(port -> sendGet(http,
+                                                                       port,
+                                                                       "/api/metrics/history?range=" + rangeParam))
+                                              .map(HistoryResponse::new);
     }
 
     private static Promise<String> sendGet(JdkHttpOperations http, int port, String path) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .GET()
-                                 .timeout(HTTP_TIMEOUT)
-                                 .build();
-        return http.sendString(request)
-                   .flatMap(result -> result.toResult()
-                                            .async());
+        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path))
+                                            .GET()
+                                            .timeout(HTTP_TIMEOUT)
+                                            .build();
+        return http.sendString(request).flatMap(result -> result.toResult().async());
     }
 
     enum LeaderNotAvailable implements Cause {
         INSTANCE;
-        @Override
-        public String message() {
+        @Override public String message() {
             return "No leader node available for metrics proxy";
         }
     }
 
-    record unused() implements MetricsProxyRoutes {}
+    record unused() implements MetricsProxyRoutes{}
 }

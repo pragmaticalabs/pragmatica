@@ -18,13 +18,13 @@ import static org.pragmatica.lang.Option.option;
 /// @param responseBytes Size of the serialized response (0 if fire-and-forget)
 /// @param success       Whether the invocation succeeded
 /// @param errorType     Error type if failed (class name of the Cause)
-public record SlowInvocation(MethodName methodName,
-                             long timestampNs,
-                             long durationNs,
-                             int requestBytes,
-                             int responseBytes,
-                             boolean success,
-                             Option<String> errorType) {
+public record SlowInvocation( MethodName methodName,
+                              long timestampNs,
+                              long durationNs,
+                              int requestBytes,
+                              int responseBytes,
+                              boolean success,
+                              Option<String> errorType) {
     /// Create a successful slow invocation record.
     public static SlowInvocation slowInvocation(MethodName method,
                                                 long timestampNs,

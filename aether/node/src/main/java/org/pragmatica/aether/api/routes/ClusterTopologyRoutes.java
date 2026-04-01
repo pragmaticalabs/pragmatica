@@ -28,11 +28,10 @@ public final class ClusterTopologyRoutes implements RouteSource {
         return new ClusterTopologyRoutes(nodeSupplier);
     }
 
-    @Override
-    public Stream<Route<?>> routes() {
-        return Stream.of(Route.<ClusterTopologyStatusResponse> get("/api/cluster/topology")
+    @Override public Stream<Route<?>> routes() {
+        return Stream.of(Route.<ClusterTopologyStatusResponse>get("/api/cluster/topology")
                               .toJson(this::buildTopologyStatus),
-                         Route.<GovernorsResponse> get("/api/cluster/governors")
+                         Route.<GovernorsResponse>get("/api/cluster/governors")
                               .toJson(this::buildGovernorsResponse));
     }
 
@@ -40,19 +39,17 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var node = nodeSupplier.get();
         var governors = new ArrayList<GovernorInfo>();
         node.kvStore()
-            .forEach(GovernorAnnouncementKey.class,
-                     GovernorAnnouncementValue.class,
-                     (key, value) -> governors.add(toGovernorInfo(key, value)));
+        .forEach(GovernorAnnouncementKey.class,
+                 GovernorAnnouncementValue.class,
+                 (key, value) -> governors.add(toGovernorInfo(key, value)));
         return new GovernorsResponse(List.copyOf(governors));
     }
 
     private static GovernorInfo toGovernorInfo(GovernorAnnouncementKey key, GovernorAnnouncementValue value) {
-        var memberIds = value.members()
-                             .stream()
-                             .map(NodeId::id)
-                             .toList();
-        return new GovernorInfo(value.governorId()
-                                     .id(),
+        var memberIds = value.members().stream()
+                                     .map(NodeId::id)
+                                     .toList();
+        return new GovernorInfo(value.governorId().id(),
                                 key.communityId(),
                                 value.memberCount(),
                                 memberIds);
@@ -61,10 +58,9 @@ public final class ClusterTopologyRoutes implements RouteSource {
     private ClusterTopologyStatusResponse buildTopologyStatus() {
         var node = nodeSupplier.get();
         var topologyConfig = node.topologyConfig();
-        var coreNodeIds = node.initialTopology()
-                              .stream()
-                              .map(NodeId::id)
-                              .toList();
+        var coreNodeIds = node.initialTopology().stream()
+                                              .map(NodeId::id)
+                                              .toList();
         var connectedCount = node.connectedNodeCount();
         var coreCount = coreNodeIds.size();
         var workerCount = Math.max(0, connectedCount - coreCount);

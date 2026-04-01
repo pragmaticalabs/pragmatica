@@ -52,58 +52,47 @@ public interface DecisionRelay {
 
     /// Factory method with custom buffer size.
     static DecisionRelay decisionRelay(NodeId selfId, DelegateRouter delegateRouter, int bufferSize) {
-        record decisionRelay(NodeId selfId,
-                             DelegateRouter delegateRouter,
-                             int bufferSize,
-                             ConcurrentLinkedDeque<Decision<?>> decisionBuffer,
-                             AtomicLong lastSequenceHolder) implements DecisionRelay {
-            @Override
-            public void onDecisionFromCore(Decision<?> decision, List<NodeId> followers) {
+        record decisionRelay( NodeId selfId,
+                              DelegateRouter delegateRouter,
+                              int bufferSize,
+                              ConcurrentLinkedDeque<Decision<?>> decisionBuffer,
+                              AtomicLong lastSequenceHolder) implements DecisionRelay {
+            @Override public void onDecisionFromCore(Decision<?> decision, List<NodeId> followers) {
                 bufferDecision(decision);
                 followers.forEach(followerId -> delegateRouter.route(new NetworkServiceMessage.Send(followerId, decision)));
                 LOG.trace("Relayed decision seq={} to {} followers",
-                          decision.phase()
-                                  .value(),
+                          decision.phase().value(),
                           followers.size());
             }
 
-            @Override
-            public void onDecisionFromGovernor(Decision<?> decision) {
+            @Override public void onDecisionFromGovernor(Decision<?> decision) {
                 bufferDecision(decision);
                 LOG.trace("Received relayed decision seq={}",
-                          decision.phase()
-                                  .value());
+                          decision.phase().value());
             }
 
-            @Override
-            public long lastSequence() {
+            @Override public long lastSequence() {
                 return lastSequenceHolder.get();
             }
 
-            @Override
-            public List<Decision<?>> bufferedDecisions() {
+            @Override public List<Decision<?>> bufferedDecisions() {
                 return List.copyOf(decisionBuffer);
             }
 
-            @Override
-            public Option<Decision<?>> decisionAt(long sequence) {
-                return Option.from(decisionBuffer.stream()
-                                                 .filter(d -> d.phase()
-                                                               .value() == sequence)
-                                                 .findFirst());
+            @Override public Option<Decision<?>> decisionAt(long sequence) {
+                return Option.from(decisionBuffer.stream().filter(d -> d.phase().value() == sequence)
+                                                        .findFirst());
             }
 
             private void bufferDecision(Decision<?> decision) {
                 decisionBuffer.addLast(decision);
-                lastSequenceHolder.set(decision.phase()
-                                               .value());
+                lastSequenceHolder.set(decision.phase().value());
                 trimBuffer();
             }
 
             private void trimBuffer() {
-                while (decisionBuffer.size() > bufferSize) {
-                    decisionBuffer.pollFirst();
-                }
+                while ( decisionBuffer.size() > bufferSize) {
+                decisionBuffer.pollFirst();}
             }
         }
         return new decisionRelay(selfId, delegateRouter, bufferSize, new ConcurrentLinkedDeque<>(), new AtomicLong(- 1));

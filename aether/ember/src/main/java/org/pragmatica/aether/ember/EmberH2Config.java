@@ -13,11 +13,11 @@ import org.pragmatica.lang.Option;
 /// persistent = false
 /// init_script = "init.sql"
 /// ```
-public record EmberH2Config(boolean enabled,
-                            int port,
-                            String name,
-                            boolean persistent,
-                            Option<String> initScript) {
+public record EmberH2Config( boolean enabled,
+                             int port,
+                             String name,
+                             boolean persistent,
+                             Option<String> initScript) {
     public static final int DEFAULT_PORT = 9092;
     public static final String DEFAULT_NAME = "forge";
     public static final boolean DEFAULT_PERSISTENT = false;

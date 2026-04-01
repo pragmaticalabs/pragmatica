@@ -1,12 +1,7 @@
 package org.pragmatica.aether.config.cluster;
-/// Auto-healing configuration.
-///
-/// @param enabled whether auto-healing is enabled
-/// @param retryInterval interval between heal attempts
-/// @param startupCooldown cooldown before first heal check
-public record AutoHealSpec(boolean enabled,
-                           String retryInterval,
-                           String startupCooldown) {
+public record AutoHealSpec( boolean enabled,
+                            String retryInterval,
+                            String startupCooldown) {
     /// Factory method.
     public static AutoHealSpec autoHealSpec(boolean enabled, String retryInterval, String startupCooldown) {
         return new AutoHealSpec(enabled, retryInterval, startupCooldown);

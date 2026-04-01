@@ -53,8 +53,13 @@ public final class StreamPublisherImpl<T> implements StreamPublisher<T> {
                                                              String streamName,
                                                              int partitionCount,
                                                              Option<Function<T, Object>> partitionKeyExtractor) {
-        return new StreamPublisherImpl<>(partitionManager, serializer, streamName, partitionCount,
-                                        partitionKeyExtractor, ConsistencyMode.EVENTUAL, Option.none());
+        return new StreamPublisherImpl<>(partitionManager,
+                                         serializer,
+                                         streamName,
+                                         partitionCount,
+                                         partitionKeyExtractor,
+                                         ConsistencyMode.EVENTUAL,
+                                         Option.none());
     }
 
     /// Create a StreamPublisher with explicit consistency mode and optional consensus path.
@@ -65,38 +70,40 @@ public final class StreamPublisherImpl<T> implements StreamPublisher<T> {
                                                              Option<Function<T, Object>> partitionKeyExtractor,
                                                              ConsistencyMode consistencyMode,
                                                              Option<ConsensusPublishPath> consensusPath) {
-        return new StreamPublisherImpl<>(partitionManager, serializer, streamName, partitionCount,
-                                        partitionKeyExtractor, consistencyMode, consensusPath);
+        return new StreamPublisherImpl<>(partitionManager,
+                                         serializer,
+                                         streamName,
+                                         partitionCount,
+                                         partitionKeyExtractor,
+                                         consistencyMode,
+                                         consensusPath);
     }
 
-    @Override
-    public Promise<Unit> publish(T event) {
+    @Override public Promise<Unit> publish(T event) {
         var bytes = serializer.encode(event);
         var partition = resolvePartition(event);
         var timestamp = System.currentTimeMillis();
-
-        return switch (consistencyMode) {
-            case EVENTUAL -> publishEventual(partition, bytes, timestamp);
-            case STRONG -> publishStrong(partition, bytes, timestamp);
-        };
+        return switch (consistencyMode) {case EVENTUAL -> publishEventual(partition, bytes, timestamp);case STRONG -> publishStrong(partition,
+                                                                                                                                    bytes,
+                                                                                                                                    timestamp);};
     }
 
     private Promise<Unit> publishEventual(int partition, byte[] bytes, long timestamp) {
-        return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
-                               .mapToUnit()
-                               .async();
+        return partitionManager.publishLocal(streamName, partition, bytes, timestamp).mapToUnit()
+                                            .async();
     }
 
     private Promise<Unit> publishStrong(int partition, byte[] bytes, long timestamp) {
-        return consensusPath.async(StreamError.General.CONSENSUS_PATH_UNAVAILABLE)
-                            .flatMap(path -> path.publish(streamName, partition, bytes, timestamp))
-                            .mapToUnit();
+        return consensusPath.async(StreamError.General.CONSENSUS_PATH_UNAVAILABLE).flatMap(path -> path.publish(streamName,
+                                                                                                                partition,
+                                                                                                                bytes,
+                                                                                                                timestamp))
+                                  .mapToUnit();
     }
 
     private int resolvePartition(T event) {
-        return partitionKeyExtractor.map(extractor -> Math.floorMod(extractor.apply(event)
-                                                                             .hashCode(),
+        return partitionKeyExtractor.map(extractor -> Math.floorMod(extractor.apply(event).hashCode(),
                                                                     partitionCount))
-                                    .or(() -> (int) (roundRobinCounter.getAndIncrement() % partitionCount));
+        .or(() -> (int)(roundRobinCounter.getAndIncrement() % partitionCount));
     }
 }

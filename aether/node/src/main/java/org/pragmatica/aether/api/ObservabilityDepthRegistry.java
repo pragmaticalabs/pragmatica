@@ -83,7 +83,7 @@ public class ObservabilityDepthRegistry {
         var key = ObservabilityDepthKey.observabilityDepthKey(artifactBase, methodName);
         var value = ObservabilityDepthValue.observabilityDepthValue(artifactBase, methodName, depthThreshold);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
-        return clusterNode.<Unit> apply(List.of(command))
+        return clusterNode.<Unit>apply(List.of(command))
                           .map(_ -> applyConfig(artifactBase, methodName, depthThreshold))
                           .onFailure(cause -> log.error("Failed to persist observability depth for {}/{}: {}",
                                                         artifactBase,
@@ -98,7 +98,7 @@ public class ObservabilityDepthRegistry {
     public Promise<Unit> removeConfig(String artifactBase, String methodName) {
         var key = ObservabilityDepthKey.observabilityDepthKey(artifactBase, methodName);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
-        return clusterNode.<Unit> apply(List.of(command))
+        return clusterNode.<Unit>apply(List.of(command))
                           .map(_ -> removeFromRegistry(artifactBase, methodName))
                           .onFailure(cause -> log.error("Failed to persist observability depth removal for {}/{}: {}",
                                                         artifactBase,
@@ -121,10 +121,8 @@ public class ObservabilityDepthRegistry {
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01")
     public void onDepthPut(ValuePut<ObservabilityDepthKey, ObservabilityDepthValue> valuePut) {
-        var depthKey = valuePut.cause()
-                               .key();
-        var depthValue = valuePut.cause()
-                                 .value();
+        var depthKey = valuePut.cause().key();
+        var depthValue = valuePut.cause().value();
         var registryKey = depthKey.artifactBase() + "/" + depthKey.methodName();
         var config = ObservabilityConfig.observabilityConfig(depthValue.depthThreshold(),
                                                              ObservabilityConfig.DEFAULT.targetTracesPerSec());
@@ -138,8 +136,7 @@ public class ObservabilityDepthRegistry {
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01")
     public void onDepthRemove(ValueRemove<ObservabilityDepthKey, ObservabilityDepthValue> valueRemove) {
-        var depthKey = valueRemove.cause()
-                                  .key();
+        var depthKey = valueRemove.cause().key();
         var registryKey = depthKey.artifactBase() + "/" + depthKey.methodName();
         registry.remove(registryKey);
         log.debug("Observability depth removed from cluster: {}", registryKey);

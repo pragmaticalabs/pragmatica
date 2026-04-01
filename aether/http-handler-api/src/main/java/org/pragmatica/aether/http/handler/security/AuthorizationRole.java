@@ -8,8 +8,7 @@ import org.pragmatica.serialization.Codec;
 /// Used by {@link RoutePermission} to enforce minimum access levels
 /// on management API endpoints. Distinct from {@link Role} which is
 /// a string-based identity role for authentication context.
-@Codec
-public enum AuthorizationRole {
+@Codec public enum AuthorizationRole {
     /// Full access - deploy, drain, shutdown, config, RBAC management.
     ADMIN,
     /// Operational access - status, scaling, drain, schema retry, backup.

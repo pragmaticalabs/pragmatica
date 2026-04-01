@@ -6,9 +6,7 @@ import org.pragmatica.lang.Unit;
 import static org.pragmatica.lang.Unit.unit;
 
 /// Destination for sealed segments. Implementations store segments in AHSE, disk, etc.
-@FunctionalInterface
-public interface SegmentSink {
-
+@FunctionalInterface public interface SegmentSink {
     /// Persist the sealed segment to durable storage.
     Promise<Unit> seal(SealedSegment segment);
 

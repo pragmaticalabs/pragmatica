@@ -33,13 +33,11 @@ import static org.pragmatica.lang.Result.success;
 public final class DockerGenerator implements Generator {
     private static final Logger log = LoggerFactory.getLogger(DockerGenerator.class);
 
-    @Override
-    public boolean supports(AetherConfig config) {
+    @Override public boolean supports(AetherConfig config) {
         return config.environment() == Environment.DOCKER;
     }
 
-    @Override
-    public Result<GeneratorOutput> generate(AetherConfig config, Path outputDir) {
+    @Override public Result<GeneratorOutput> generate(AetherConfig config, Path outputDir) {
         return Result.lift(DockerGenerator::toIoError, () -> generateArtifacts(config, outputDir));
     }
 
@@ -72,14 +70,11 @@ public final class DockerGenerator implements Generator {
     }
 
     private String formatInstructions(AetherConfig config, Path outputDir) {
-        var nodes = config.cluster()
-                          .nodes();
-        var mgmtPort = config.cluster()
-                             .ports()
-                             .management();
-        var clusterPort = config.cluster()
-                                .ports()
-                                .cluster();
+        var nodes = config.cluster().nodes();
+        var mgmtPort = config.cluster().ports()
+                                     .management();
+        var clusterPort = config.cluster().ports()
+                                        .cluster();
         return formatInstructionsText(outputDir, nodes, mgmtPort, clusterPort);
     }
 
@@ -110,22 +105,17 @@ public final class DockerGenerator implements Generator {
     }
 
     private DockerConfig dockerConfig(AetherConfig config) {
-        return config.docker()
-                     .expect("Docker config expected");
+        return config.docker().expect("Docker config expected");
     }
 
     private String generateDockerCompose(AetherConfig config) {
         var dockerConf = dockerConfig(config);
-        var nodes = config.cluster()
-                          .nodes();
-        var mgmtPort = config.cluster()
-                             .ports()
-                             .management();
-        var clusterPort = config.cluster()
-                                .ports()
-                                .cluster();
-        var heap = config.node()
-                         .heap();
+        var nodes = config.cluster().nodes();
+        var mgmtPort = config.cluster().ports()
+                                     .management();
+        var clusterPort = config.cluster().ports()
+                                        .cluster();
+        var heap = config.node().heap();
         var gc = gcFlag(config);
         var nodeNames = buildNodeNames(nodes);
         var peerList = buildPeerList(nodeNames, clusterPort);
@@ -134,15 +124,13 @@ public final class DockerGenerator implements Generator {
     }
 
     private List<String> buildNodeNames(int nodes) {
-        return IntStream.range(0, nodes)
-                        .mapToObj(i -> "aether-node-" + i)
-                        .toList();
+        return IntStream.range(0, nodes).mapToObj(i -> "aether-node-" + i)
+                              .toList();
     }
 
     private String buildPeerList(List<String> nodeNames, int clusterPort) {
-        return nodeNames.stream()
-                        .map(name -> name + ":" + clusterPort)
-                        .collect(Collectors.joining(","));
+        return nodeNames.stream().map(name -> name + ":" + clusterPort)
+                               .collect(Collectors.joining(","));
     }
 
     private String buildServices(int nodes,
@@ -153,16 +141,15 @@ public final class DockerGenerator implements Generator {
                                  String peerList,
                                  String heap,
                                  String gc) {
-        return IntStream.range(0, nodes)
-                        .mapToObj(i -> serviceYaml(i,
-                                                   nodeNames.get(i),
-                                                   dockerConf,
-                                                   mgmtPort,
-                                                   clusterPort,
-                                                   peerList,
-                                                   heap,
-                                                   gc))
-                        .collect(Collectors.joining("\n"));
+        return IntStream.range(0, nodes).mapToObj(i -> serviceYaml(i,
+                                                                   nodeNames.get(i),
+                                                                   dockerConf,
+                                                                   mgmtPort,
+                                                                   clusterPort,
+                                                                   peerList,
+                                                                   heap,
+                                                                   gc))
+                              .collect(Collectors.joining("\n"));
     }
 
     private String formatComposeFile(String services, String network) {
@@ -257,32 +244,26 @@ public final class DockerGenerator implements Generator {
     }
 
     private String gcFlag(AetherConfig config) {
-        return config.node()
-                     .gc()
-                     .toUpperCase()
-                     .equals("ZGC")
+        return config.node().gc()
+                          .toUpperCase()
+                          .equals("ZGC")
                ? "ZGC"
                : "G1GC";
     }
 
     private String generateEnvFile(AetherConfig config) {
         var dockerConf = dockerConfig(config);
-        var nodes = config.cluster()
-                          .nodes();
-        var mgmtPort = config.cluster()
-                             .ports()
-                             .management();
-        var clusterPort = config.cluster()
-                                .ports()
-                                .cluster();
+        var nodes = config.cluster().nodes();
+        var mgmtPort = config.cluster().ports()
+                                     .management();
+        var clusterPort = config.cluster().ports()
+                                        .cluster();
         return formatEnvFile(nodes,
                              mgmtPort,
                              clusterPort,
                              dockerConf,
-                             config.node()
-                                   .heap(),
-                             config.node()
-                                   .gc());
+                             config.node().heap(),
+                             config.node().gc());
     }
 
     private String formatEnvFile(int nodes,
@@ -357,12 +338,22 @@ public final class DockerGenerator implements Generator {
 
     @SuppressWarnings("JBCT-SEQ-01")
     private void makeExecutable(Path path) {
-        try{
+        try {
             Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rwxr-xr-x"));
-        } catch (UnsupportedOperationException e) {
+        }
+
+
+
+
+        catch (UnsupportedOperationException e) {
             // POSIX permissions not supported on this filesystem (e.g., Windows)
             log.debug("Cannot set POSIX permissions on {}: {}", path, e.getMessage());
-        } catch (Exception e) {
+        }
+
+
+
+
+        catch (Exception e) {
             log.debug("Failed to set permissions on {}: {}", path, e.getMessage());
         }
     }

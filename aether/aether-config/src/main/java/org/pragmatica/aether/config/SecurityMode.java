@@ -17,17 +17,11 @@ public enum SecurityMode {
     /// @param value the string value (e.g. "none", "api-key", "jwt")
     /// @return Option containing the parsed SecurityMode, or empty for unrecognized values
     public static Option<SecurityMode> securityMode(String value) {
-        return Option.option(value)
-                     .map(String::trim)
-                     .map(String::toLowerCase)
-                     .flatMap(SecurityMode::fromNormalized);
+        return Option.option(value).map(String::trim)
+                            .map(String::toLowerCase)
+                            .flatMap(SecurityMode::fromNormalized);
     }
     private static Option<SecurityMode> fromNormalized(String normalized) {
-        return switch (normalized) {
-            case "none" -> Option.some(NONE);
-            case "api-key", "api_key", "apikey" -> Option.some(API_KEY);
-            case "jwt" -> Option.some(JWT);
-            default -> Option.empty();
-        };
+        return switch (normalized) {case "none" -> Option.some(NONE);case "api-key", "api_key", "apikey" -> Option.some(API_KEY);case "jwt" -> Option.some(JWT);default -> Option.empty();};
     }
 }

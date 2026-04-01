@@ -12,7 +12,6 @@ import java.util.regex.Pattern;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
-
 import tools.jackson.databind.JsonNode;
 
 /// Initiates a cluster upgrade to a target version via the management API.
@@ -23,41 +22,35 @@ import tools.jackson.databind.JsonNode;
 /// 3. Initiates upgrade via `POST /api/cluster/upgrade`
 /// 4. Displays upgrade initiation result
 @Command(name = "upgrade", description = "Upgrade cluster to a target version")
-@SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"})
-class ClusterUpgradeCommand implements Callable<Integer> {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterUpgradeCommand implements Callable<Integer> {
     private static final Pattern VERSION_PATTERN = Pattern.compile("^\\d+\\.\\d+\\.\\d+$");
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
     @Option(names = "--version", required = true, description = "Target version (e.g., 0.26.0)")
     private String targetVersion;
 
-    @CommandLine.ParentCommand
-    private ClusterCommand parent;
+    @CommandLine.ParentCommand private ClusterCommand parent;
 
-    @Override
-    public Integer call() {
+    @Override public Integer call() {
         return validateVersion().flatMap(this::fetchCurrentConfig)
-                                .flatMap(this::initiateUpgrade)
-                                .fold(ClusterUpgradeCommand::onFailure, this::onSuccess);
+                              .flatMap(this::initiateUpgrade)
+                              .fold(ClusterUpgradeCommand::onFailure, this::onSuccess);
     }
 
     private Result<String> validateVersion() {
-        if (!VERSION_PATTERN.matcher(targetVersion).matches()) {
-            return new UpgradeError.InvalidVersion(targetVersion).result();
-        }
+        if ( !VERSION_PATTERN.matcher(targetVersion).matches()) {
+        return new UpgradeError.InvalidVersion(targetVersion).result();}
         return Result.success(targetVersion);
     }
 
     private Result<JsonNode> fetchCurrentConfig(String version) {
-        return ClusterHttpClient.fetchFromCluster("/api/cluster/config")
-                                .flatMap(MAPPER::readTree);
+        return ClusterHttpClient.fetchFromCluster("/api/cluster/config").flatMap(MAPPER::readTree);
     }
 
     private Result<String> initiateUpgrade(JsonNode config) {
         var currentVersion = config.path("version").asText("unknown");
-        if (targetVersion.equals(currentVersion)) {
-            return new UpgradeError.AlreadyAtVersion(targetVersion).result();
-        }
+        if ( targetVersion.equals(currentVersion)) {
+        return new UpgradeError.AlreadyAtVersion(targetVersion).result();}
         var jsonBody = "{\"targetVersion\":\"" + targetVersion + "\"}";
         return ClusterHttpClient.postToCluster("/api/cluster/upgrade", jsonBody);
     }
@@ -67,7 +60,7 @@ class ClusterUpgradeCommand implements Callable<Integer> {
     }
 
     private static int onFailure(Cause cause) {
-        if (cause instanceof UpgradeError.AlreadyAtVersion alreadyAt) {
+        if ( cause instanceof UpgradeError.AlreadyAtVersion alreadyAt) {
             System.out.printf("Already at version %s. No upgrade needed.%n", alreadyAt.version());
             return ExitCode.SUCCESS;
         }
@@ -77,15 +70,13 @@ class ClusterUpgradeCommand implements Callable<Integer> {
 
     sealed interface UpgradeError extends Cause {
         record InvalidVersion(String version) implements UpgradeError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Invalid version format: " + version + " (expected X.Y.Z)";
             }
         }
 
         record AlreadyAtVersion(String version) implements UpgradeError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Already at version " + version;
             }
         }

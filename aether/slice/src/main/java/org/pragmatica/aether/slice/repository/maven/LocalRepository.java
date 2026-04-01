@@ -38,15 +38,13 @@ public interface LocalRepository extends Repository {
 
     /// Create a LocalRepository at a specific path with custom timeout.
     static LocalRepository localRepository(Path localRepo, TimeSpan locateTimeout) {
-        record repository(Path localRepo, TimeSpan locateTimeout) implements LocalRepository {
-            @Override
-            public Promise<Location> locate(Artifact artifact) {
+        record repository( Path localRepo, TimeSpan locateTimeout) implements LocalRepository {
+            @Override public Promise<Location> locate(Artifact artifact) {
                 return resolveLocation(artifact, "").async()
                                       .timeout(locateTimeout);
             }
 
-            @Override
-            public Promise<Location> locate(Artifact artifact, String classifier) {
+            @Override public Promise<Location> locate(Artifact artifact, String classifier) {
                 var suffix = classifier.isEmpty()
                              ? ""
                              : "-" + classifier;
@@ -56,26 +54,20 @@ public interface LocalRepository extends Repository {
 
             private Result<Location> resolveLocation(Artifact artifact, String classifier) {
                 var jarPath = resolvePath(artifact, classifier);
-                if (!Files.exists(jarPath)) {
-                    return ARTIFACT_NOT_FOUND.apply(artifact.asString() + " at " + jarPath)
-                                             .result();
-                }
+                if ( !Files.exists(jarPath)) {
+                return ARTIFACT_NOT_FOUND.apply(artifact.asString() + " at " + jarPath).result();}
                 return Result.lift(Causes::fromThrowable,
-                                   () -> jarPath.toUri()
-                                                .toURL())
-                             .flatMap(url -> location(artifact, url));
+                                   () -> jarPath.toUri().toURL())
+                .flatMap(url -> location(artifact, url));
             }
 
             private Path resolvePath(Artifact artifact, String classifier) {
                 var version = artifact.version();
-                var artifactId = artifact.artifactId()
-                                         .id();
-                return localRepo.resolve(artifact.groupId()
-                                                 .id()
-                                                 .replace('.', '/'))
-                                .resolve(artifactId)
-                                .resolve(version.withQualifier())
-                                .resolve(artifactId + "-" + version.withQualifier() + classifier + ".jar");
+                var artifactId = artifact.artifactId().id();
+                return localRepo.resolve(artifact.groupId().id()
+                                                         .replace('.', '/')).resolve(artifactId)
+                                        .resolve(version.withQualifier())
+                                        .resolve(artifactId + "-" + version.withQualifier() + classifier + ".jar");
             }
 
             private static final Fn1<Cause, String> ARTIFACT_NOT_FOUND = Causes.forOneValue("Artifact not found in local repository: %s");

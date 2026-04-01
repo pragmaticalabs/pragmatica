@@ -1,5 +1,7 @@
 package org.pragmatica.aether.metrics.network;
 
+import org.pragmatica.lang.Contract;
+
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
@@ -16,8 +18,7 @@ import io.netty.channel.ChannelPromise;
 ///
 /// Add to pipeline after codec handlers to track application-level messages,
 /// or before codec handlers to track raw bytes.
-@Sharable
-public final class NetworkMetricsHandler extends ChannelDuplexHandler {
+@Sharable public final class NetworkMetricsHandler extends ChannelDuplexHandler {
     private final LongAdder bytesRead = new LongAdder();
     private final LongAdder bytesWritten = new LongAdder();
     private final LongAdder messagesRead = new LongAdder();
@@ -33,44 +34,46 @@ public final class NetworkMetricsHandler extends ChannelDuplexHandler {
     }
 
     @Override
-    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+    @Contract
+    @SuppressWarnings("JBCT-EX-01")
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
         activeConnections.incrementAndGet();
         super.channelActive(ctx);
     }
 
     @Override
-    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+    @Contract
+    @SuppressWarnings("JBCT-EX-01")
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
         activeConnections.decrementAndGet();
         super.channelInactive(ctx);
     }
 
     @Override
-    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+    @Contract
+    @SuppressWarnings("JBCT-EX-01")
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         messagesRead.increment();
-        if (msg instanceof ByteBuf buf) {
-            bytesRead.add(buf.readableBytes());
-        }
+        if ( msg instanceof ByteBuf buf) {
+        bytesRead.add(buf.readableBytes());}
         super.channelRead(ctx, msg);
     }
 
     @Override
-    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+    @Contract
+    @SuppressWarnings("JBCT-EX-01")
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
         messagesWritten.increment();
-        if (msg instanceof ByteBuf buf) {
-            bytesWritten.add(buf.readableBytes());
-        }
+        if ( msg instanceof ByteBuf buf) {
+        bytesWritten.add(buf.readableBytes());}
         super.write(ctx, msg, promise);
     }
 
     @Override
-    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+    @Contract
+    @SuppressWarnings("JBCT-EX-01")
     public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
-        if (!ctx.channel()
-                .isWritable()) {
+        if ( !ctx.channel().isWritable()) {
             backpressureEvents.incrementAndGet();
             lastBackpressureTimestamp.set(System.currentTimeMillis());
         }

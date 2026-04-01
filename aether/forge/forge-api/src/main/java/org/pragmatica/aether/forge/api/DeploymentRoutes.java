@@ -41,22 +41,19 @@ public sealed interface DeploymentRoutes {
             content = content.clone();
         }
 
-        @Override
-        public byte[] content() {
+        @Override public byte[] content() {
             return content.clone();
         }
 
-        @Override
-        public boolean equals(Object o) {
-            return o instanceof RepositoryPutRequest other
-                   && groupId.equals(other.groupId)
-                   && artifactId.equals(other.artifactId)
-                   && version.equals(other.version)
-                   && Arrays.equals(content, other.content);
+        @Override public boolean equals(Object o) {
+            return o instanceof RepositoryPutRequest other &&
+            groupId.equals(other.groupId) &&
+            artifactId.equals(other.artifactId) &&
+            version.equals(other.version) &&
+            Arrays.equals(content, other.content);
         }
 
-        @Override
-        public int hashCode() {
+        @Override public int hashCode() {
             int result = groupId.hashCode();
             result = 31 * result + artifactId.hashCode();
             result = 31 * result + version.hashCode();
@@ -68,14 +65,14 @@ public sealed interface DeploymentRoutes {
     // ========== Response Records ==========
     /// Generic proxy response wrapper.
     /// The actual response body comes from the leader's ManagementServer.
-    record ProxyResponse(boolean success, String body) {}
+    record ProxyResponse(boolean success, String body){}
 
     /// Slices status response.
     /// Contains slice data directly from EmberCluster's KV store query.
-    record SlicesStatusResponse(java.util.List<EmberCluster.SliceStatus> slices) {}
+    record SlicesStatusResponse(java.util.List<EmberCluster.SliceStatus> slices){}
 
     /// Cluster metrics response from leader.
-    record ClusterMetricsResponse(String body) {}
+    record ClusterMetricsResponse(String body){}
 
     // ========== Route Factory ==========
     /// Create route source for all deployment-related endpoints.
@@ -96,27 +93,27 @@ public sealed interface DeploymentRoutes {
     private static Route<ProxyResponse> blueprintRoute(EmberCluster cluster,
                                                        JdkHttpOperations http,
                                                        Consumer<EventLogEntry> eventLogger) {
-        return Route.<ProxyResponse> post("/api/blueprint")
+        return Route.<ProxyResponse>post("/api/blueprint")
                     .withBody(TypeToken.typeToken(String.class))
                     .toJson(body -> proxyBlueprint(cluster, http, eventLogger, body));
     }
 
     private static Route<SlicesStatusResponse> slicesStatusRoute(EmberCluster cluster,
                                                                  JdkHttpOperations http) {
-        return Route.<SlicesStatusResponse> get("/api/slices/status")
+        return Route.<SlicesStatusResponse>get("/api/slices/status")
                     .toJson(() -> getSlicesStatus(cluster));
     }
 
     private static Route<ClusterMetricsResponse> clusterMetricsRoute(EmberCluster cluster,
                                                                      JdkHttpOperations http) {
-        return Route.<ClusterMetricsResponse> get("/api/cluster/metrics")
+        return Route.<ClusterMetricsResponse>get("/api/cluster/metrics")
                     .to(_ -> proxyClusterMetrics(cluster, http))
                     .asJson();
     }
 
     private static Route<RepositoryPutResponse> repositoryPutRoute(EmberCluster cluster,
                                                                    Consumer<EventLogEntry> eventLogger) {
-        return Route.<RepositoryPutResponse> put("/api/repository")
+        return Route.<RepositoryPutResponse>put("/api/repository")
                     .withBody(RepositoryPutRequest.class)
                     .toJson(req -> storeArtifact(cluster, eventLogger, req));
     }
@@ -159,10 +156,9 @@ public sealed interface DeploymentRoutes {
                                                                       Consumer<EventLogEntry> eventLogger,
                                                                       RepositoryPutRequest request) {
         var path = buildRepositoryPath(request.groupId(), request.artifactId(), request.version());
-        return node.mavenProtocolHandler()
-                   .handlePut(path,
-                              request.content())
-                   .map(_ -> createRepositoryResponse(eventLogger, request, path));
+        return node.mavenProtocolHandler().handlePut(path,
+                                                     request.content())
+                                        .map(_ -> createRepositoryResponse(eventLogger, request, path));
     }
 
     private static RepositoryPutResponse createRepositoryResponse(Consumer<EventLogEntry> eventLogger,
@@ -187,39 +183,31 @@ public sealed interface DeploymentRoutes {
     }
 
     private static String buildRepositoryPath(String groupId, String artifactId, String version) {
-        return "/repository/" + groupId.replace('.', '/') + "/" + artifactId + "/" + version + "/" + artifactId + "-" + version
-               + ".jar";
+        return "/repository/" + groupId.replace('.', '/') + "/" + artifactId + "/" + version + "/" + artifactId + "-" + version + ".jar";
     }
 
     private static Promise<String> proxyPost(JdkHttpOperations http, int port, String path, String body) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .header("Content-Type", "application/json")
-                                 .POST(HttpRequest.BodyPublishers.ofString(body))
-                                 .timeout(HTTP_TIMEOUT)
-                                 .build();
-        return http.sendString(request)
-                   .flatMap(result -> result.toResult()
-                                            .async());
+        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path))
+                                            .header("Content-Type", "application/json")
+                                            .POST(HttpRequest.BodyPublishers.ofString(body))
+                                            .timeout(HTTP_TIMEOUT)
+                                            .build();
+        return http.sendString(request).flatMap(result -> result.toResult().async());
     }
 
     private static Promise<String> proxyGet(JdkHttpOperations http, int port, String path) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .GET()
-                                 .timeout(HTTP_TIMEOUT)
-                                 .build();
-        return http.sendString(request)
-                   .flatMap(result -> result.toResult()
-                                            .async());
+        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path))
+                                            .GET()
+                                            .timeout(HTTP_TIMEOUT)
+                                            .build();
+        return http.sendString(request).flatMap(result -> result.toResult().async());
     }
 
     // ========== Error Types ==========
     /// Error when no leader node is available.
     enum LeaderNotAvailable implements org.pragmatica.lang.Cause {
         INSTANCE;
-        @Override
-        public String message() {
+        @Override public String message() {
             return "No leader node available";
         }
     }
@@ -227,21 +215,18 @@ public sealed interface DeploymentRoutes {
     /// Error when no nodes are available in the cluster.
     enum NoNodesAvailable implements org.pragmatica.lang.Cause {
         INSTANCE;
-        @Override
-        public String message() {
+        @Override public String message() {
             return "No nodes available in cluster";
         }
     }
 
     private static String escapeJson(String s) {
-        return Option.option(s)
-                     .map(str -> str.replace("\\", "\\\\")
-                                    .replace("\"", "\\\"")
-                                    .replace("\n", "\\n")
-                                    .replace("\r", "\\r")
-                                    .replace("\t", "\\t"))
-                     .or("");
+        return Option.option(s).map(str -> str.replace("\\", "\\\\").replace("\"", "\\\"")
+                                                      .replace("\n", "\\n")
+                                                      .replace("\r", "\\r")
+                                                      .replace("\t", "\\t"))
+                            .or("");
     }
 
-    record unused() implements DeploymentRoutes {}
+    record unused() implements DeploymentRoutes{}
 }

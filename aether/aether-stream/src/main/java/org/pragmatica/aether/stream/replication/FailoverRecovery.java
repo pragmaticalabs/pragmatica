@@ -10,13 +10,11 @@ import org.pragmatica.lang.Promise;
 /// 4. Request catch-up from that replica (CatchupRequest)
 /// 5. Apply catch-up events to local ring buffer
 public interface FailoverRecovery {
-
     /// Recover all partitions for a stream.
     Promise<RecoveryResult> recover(String streamName, int partitionCount);
 
     /// Summary of a completed recovery operation.
     record RecoveryResult(int partitionsRecovered, long eventsReplayed, long recoveryMs) {
-
         public static RecoveryResult recoveryResult(int partitionsRecovered, long eventsReplayed, long recoveryMs) {
             return new RecoveryResult(partitionsRecovered, eventsReplayed, recoveryMs);
         }
@@ -29,8 +27,8 @@ public interface FailoverRecovery {
 
     /// Create a failover recovery instance with the given dependencies.
     static FailoverRecovery failoverRecovery(ReplicaRegistry registry,
-                                              StreamPartitionRecovery partitionRecovery,
-                                              CatchupTransport transport) {
+                                             StreamPartitionRecovery partitionRecovery,
+                                             CatchupTransport transport) {
         return new DefaultFailoverRecovery(registry, partitionRecovery, transport);
     }
 }

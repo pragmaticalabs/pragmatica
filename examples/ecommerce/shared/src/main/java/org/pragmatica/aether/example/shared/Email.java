@@ -7,12 +7,13 @@ import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
 import java.util.regex.Pattern;
-public record Email(String value){
+
+public record Email( String value) {
     private static final Pattern EMAIL_PATTERN = Pattern.compile("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
 
     private static final Fn1<Cause, String> INVALID_EMAIL = Causes.forOneValue("Invalid email: %s");
 
-    public static Result<Email> email(String raw){
+    public static Result<Email> email(String raw) {
         return Verify.ensure(raw, Verify.Is::notBlank, INVALID_EMAIL).map(String::trim)
                             .map(String::toLowerCase)
                             .filter(INVALID_EMAIL,
@@ -20,7 +21,7 @@ public record Email(String value){
                             .map(Email::new);
     }
 
-    public String domain(){
+    public String domain() {
         return value.substring(value.indexOf('@') + 1);
     }
 }

@@ -17,8 +17,7 @@ import static org.pragmatica.lang.Result.success;
 /// Discovered via ServiceLoader. Use `EnvironmentIntegration.SPI` for the
 /// ServiceLoader-discovered instance, or factory methods for programmatic construction.
 public interface EnvironmentIntegration {
-    Option<EnvironmentIntegration> SPI = Option.from(ServiceLoader.load(EnvironmentIntegration.class)
-                                                                  .findFirst());
+    Option<EnvironmentIntegration> SPI = Option.from(ServiceLoader.load(EnvironmentIntegration.class).findFirst());
 
     Option<ComputeProvider> compute();
 
@@ -48,8 +47,7 @@ public interface EnvironmentIntegration {
                                                          Option<SecretsProvider> secrets,
                                                          Option<LoadBalancerProvider> loadBalancer,
                                                          Option<DiscoveryProvider> discovery) {
-        return FacetedEnvironment.facetedEnvironment(compute, secrets, loadBalancer, discovery)
-                                 .unwrap();
+        return FacetedEnvironment.facetedEnvironment(compute, secrets, loadBalancer, discovery).unwrap();
     }
 
     record FacetedEnvironment(Option<ComputeProvider> compute,

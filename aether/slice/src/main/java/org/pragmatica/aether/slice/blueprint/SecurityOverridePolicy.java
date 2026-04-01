@@ -7,19 +7,12 @@ import org.pragmatica.serialization.Codec;
 /// - STRENGTHEN_ONLY: override applied only if new security level >= original level
 /// - FULL: any override is applied regardless of direction
 /// - NONE: all overrides are rejected (logged as warnings)
-@Codec
-public enum SecurityOverridePolicy {
+@Codec public enum SecurityOverridePolicy {
     STRENGTHEN_ONLY,
     FULL,
     NONE;
     /// Parse policy from blueprint TOML string.
     public static SecurityOverridePolicy fromString(String raw) {
-        return switch (raw.toLowerCase()
-                          .strip()) {
-            case "strengthen_only" -> STRENGTHEN_ONLY;
-            case "full" -> FULL;
-            case "none" -> NONE;
-            default -> STRENGTHEN_ONLY;
-        };
+        return switch (raw.toLowerCase().strip()) {case "strengthen_only" -> STRENGTHEN_ONLY;case "full" -> FULL;case "none" -> NONE;default -> STRENGTHEN_ONLY;};
     }
 }

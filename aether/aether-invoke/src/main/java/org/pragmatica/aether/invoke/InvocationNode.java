@@ -6,17 +6,17 @@ import java.time.Instant;
 
 /// Single trace node representing one invocation in the call tree.
 /// Captures timing, topology, and outcome for distributed tracing.
-public record InvocationNode(String requestId,
-                             int depth,
-                             Instant timestamp,
-                             String nodeId,
-                             String caller,
-                             String callee,
-                             long durationNs,
-                             Outcome outcome,
-                             Option<String> errorMessage,
-                             boolean local,
-                             int hops) {
+public record InvocationNode( String requestId,
+                              int depth,
+                              Instant timestamp,
+                              String nodeId,
+                              String caller,
+                              String callee,
+                              long durationNs,
+                              Outcome outcome,
+                              Option<String> errorMessage,
+                              boolean local,
+                              int hops) {
     public enum Outcome {
         SUCCESS,
         FAILURE

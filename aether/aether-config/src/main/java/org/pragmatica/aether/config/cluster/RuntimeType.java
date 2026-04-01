@@ -20,10 +20,9 @@ public enum RuntimeType {
     }
     /// Parse a runtime type from its string representation.
     public static Result<RuntimeType> runtimeType(String raw) {
-        return Arrays.stream(values())
-                     .filter(rt -> rt.value.equals(raw))
-                     .findFirst()
-                     .map(Result::success)
-                     .orElseGet(INVALID_TYPE::result);
+        return Arrays.stream(values()).filter(rt -> rt.value.equals(raw))
+                            .findFirst()
+                            .map(Result::success)
+                            .orElseGet(INVALID_TYPE::result);
     }
 }

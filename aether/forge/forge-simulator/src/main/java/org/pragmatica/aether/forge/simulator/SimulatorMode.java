@@ -54,22 +54,17 @@ public enum SimulatorMode {
     }
     /// Get the default backend simulation for this mode.
     public BackendSimulation defaultBackendSimulation() {
-        if (!realisticLatency) {
-            return BackendSimulation.NoOp.noOp()
-                                    .unwrap();
-        }
-        return BackendSimulation.LatencySimulation.latencySimulation(10, 5, 0.01, 100)
-                                .map(sim -> (BackendSimulation) sim)
-                                .unwrap();
+        if ( !realisticLatency) {
+        return BackendSimulation.NoOp.noOp().unwrap();}
+        return BackendSimulation.LatencySimulation.latencySimulation(10, 5, 0.01, 100).map(sim -> (BackendSimulation) sim)
+                                                                    .unwrap();
     }
     /// Create a SimulatorConfig for this mode based on a template config.
     public SimulatorConfig applyTo(SimulatorConfig template) {
-        return template.withLoadGeneratorEnabled(loadGeneratorEnabled)
-                       .withGlobalMultiplier(rateMultiplier);
+        return template.withLoadGeneratorEnabled(loadGeneratorEnabled).withGlobalMultiplier(rateMultiplier);
     }
     public String toJson() {
-        return String.format("{\"mode\":\"%s\",\"displayName\":\"%s\",\"loadGeneratorEnabled\":%b,"
-                             + "\"realisticLatency\":%b,\"chaosEnabled\":%b,\"rateMultiplier\":%.2f}",
+        return String.format("{\"mode\":\"%s\",\"displayName\":\"%s\",\"loadGeneratorEnabled\":%b," + "\"realisticLatency\":%b,\"chaosEnabled\":%b,\"rateMultiplier\":%.2f}",
                              name(),
                              displayName,
                              loadGeneratorEnabled,
@@ -85,18 +80,22 @@ public enum SimulatorMode {
     }
     private static Result<String> ensureNotBlank(String value) {
         return Verify.ensure(value, Verify.Is::notNull, ModeError.Empty.INSTANCE)
-                     .filter(ModeError.Empty.INSTANCE,
-                             v -> !v.isBlank());
+        .filter(ModeError.Empty.INSTANCE, v -> !v.isBlank());
     }
     private static String normalizeModeName(String value) {
-        return value.toUpperCase()
-                    .replace("-", "_")
-                    .replace(" ", "_");
+        return value.toUpperCase().replace("-", "_")
+                                .replace(" ", "_");
     }
     private static Result<SimulatorMode> normalizedMode(String normalized) {
-        try{
+        try {
             return success(valueOf(normalized));
-        } catch (IllegalArgumentException e) {
+        }
+
+
+
+
+
+        catch (IllegalArgumentException e) {
             return new ModeError.Unknown(normalized).result();
         }
     }
@@ -104,10 +103,9 @@ public enum SimulatorMode {
     public static String allModesJson() {
         var sb = new StringBuilder("[");
         var first = true;
-        for (var mode : values()) {
-            if (!first) {
-                sb.append(",");
-            }
+        for ( var mode : values()) {
+            if ( !first) {
+            sb.append(",");}
             first = false;
             sb.append(mode.toJson());
         }
@@ -123,8 +121,7 @@ public enum SimulatorMode {
                 return success(new Empty());
             }
 
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Mode name cannot be empty";
             }
         }
@@ -134,15 +131,13 @@ public enum SimulatorMode {
                 return success(new Unknown(value));
             }
 
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Unknown simulator mode: " + value;
             }
         }
 
         record unused() implements ModeError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "";
             }
         }

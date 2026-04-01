@@ -36,17 +36,14 @@ public interface RouteMetadataExtractor {
 }
 
 class RouteMetadataExtractorImpl implements RouteMetadataExtractor {
-    @Override
-    public List<HttpRouteDefinition> extract(RouteSource routes, String artifactCoord) {
-        return routes.routes()
-                     .map(route -> toDefinition(route, artifactCoord))
-                     .toList();
+    @Override public List<HttpRouteDefinition> extract(RouteSource routes, String artifactCoord) {
+        return routes.routes().map(route -> toDefinition(route, artifactCoord))
+                            .toList();
     }
 
     private HttpRouteDefinition toDefinition(Route<?> route, String artifactCoord) {
         var security = resolveSecurityPolicy(route);
-        return httpRouteDefinition(route.method()
-                                        .name(),
+        return httpRouteDefinition(route.method().name(),
                                    extractPathPrefix(route.path()),
                                    artifactCoord,
                                    deriveSliceMethod(route),

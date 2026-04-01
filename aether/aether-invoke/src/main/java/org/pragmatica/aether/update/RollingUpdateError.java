@@ -13,8 +13,7 @@ public sealed interface RollingUpdateError extends Cause {
             return new UpdateNotFound(updateId);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Rolling update not found: " + updateId;
         }
     }
@@ -26,8 +25,7 @@ public sealed interface RollingUpdateError extends Cause {
             return new UpdateAlreadyExists(artifactBase);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Rolling update already in progress for " + artifactBase;
         }
     }
@@ -39,8 +37,7 @@ public sealed interface RollingUpdateError extends Cause {
             return new InvalidStateTransition(from, to);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Invalid state transition from " + from + " to " + to;
         }
     }
@@ -52,8 +49,7 @@ public sealed interface RollingUpdateError extends Cause {
             return new VersionNotFound(artifactBase, version);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Version " + version + " not found for " + artifactBase;
         }
     }
@@ -64,8 +60,7 @@ public sealed interface RollingUpdateError extends Cause {
             return new InitialDeployment(artifactBase);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Initial deployment for " + artifactBase + " (no previous version)";
         }
     }
@@ -81,10 +76,8 @@ public sealed interface RollingUpdateError extends Cause {
             return new InsufficientInstances(routing, newInstances, oldInstances);
         }
 
-        @Override
-        public String message() {
-            return "Cannot satisfy routing " + routing + " with " + newInstances + " new and " + oldInstances
-                   + " old instances";
+        @Override public String message() {
+            return "Cannot satisfy routing " + routing + " with " + newInstances + " new and " + oldInstances + " old instances";
         }
     }
 
@@ -99,10 +92,8 @@ public sealed interface RollingUpdateError extends Cause {
             return new HealthCheckFailed(errorRate, latencyMs, thresholds);
         }
 
-        @Override
-        public String message() {
-            return "Health check failed: error rate " + errorRate + " (max " + thresholds.maxErrorRate() + "), latency " + latencyMs
-                   + "ms (max " + thresholds.maxLatencyMs() + "ms)";
+        @Override public String message() {
+            return "Health check failed: error rate " + errorRate + " (max " + thresholds.maxErrorRate() + "), latency " + latencyMs + "ms (max " + thresholds.maxLatencyMs() + "ms)";
         }
     }
 
@@ -113,8 +104,7 @@ public sealed interface RollingUpdateError extends Cause {
             return new ManualApprovalRequired(updateId);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Manual approval required for update: " + updateId;
         }
     }
@@ -126,8 +116,7 @@ public sealed interface RollingUpdateError extends Cause {
             return new DeploymentFailed(updateId, cause);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Deployment failed for update " + updateId + ": " + cause.message();
         }
     }
@@ -139,8 +128,7 @@ public sealed interface RollingUpdateError extends Cause {
             return new RollbackFailed(updateId, cause);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Rollback failed for update " + updateId + ": " + cause.message();
         }
     }
@@ -148,8 +136,7 @@ public sealed interface RollingUpdateError extends Cause {
     /// Not the leader node.
     enum NotLeader implements RollingUpdateError {
         INSTANCE;
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Rolling update operations can only be performed by the leader node";
         }
     }

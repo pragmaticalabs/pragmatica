@@ -32,14 +32,12 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     DeadLetterHandler deadLetterHandler();
 
     /// Callback interface for event delivery.
-    @FunctionalInterface
-    interface ConsumerCallback {
+    @FunctionalInterface interface ConsumerCallback {
         Result<Unit> onEvent(long offset, byte[] payload, long timestamp);
     }
 
     /// Batch callback for batch delivery.
-    @FunctionalInterface
-    interface BatchConsumerCallback {
+    @FunctionalInterface interface BatchConsumerCallback {
         Result<Unit> onBatch(List<OffHeapRingBuffer.RawEvent> events);
     }
 

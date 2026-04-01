@@ -27,14 +27,12 @@ public interface DependencyCycleDetector {
         var visited = new HashSet<String>();
         var visiting = new HashSet<String>();
         var path = new ArrayList<String>();
-        for (var node : dependencies.keySet()) {
-            if (!visited.contains(node)) {
-                var cycleResult = dfs(node, dependencies, visited, visiting, path);
-                if (cycleResult.isFailure()) {
-                    return cycleResult;
-                }
-            }
-        }
+        for ( var node : dependencies.keySet()) {
+        if ( !visited.contains(node)) {
+            var cycleResult = dfs(node, dependencies, visited, visiting, path);
+            if ( cycleResult.isFailure()) {
+            return cycleResult;}
+        }}
         return Result.unitResult();
     }
 
@@ -46,17 +44,16 @@ public interface DependencyCycleDetector {
         visiting.add(node);
         path.add(node);
         var nodeDeps = dependencies.getOrDefault(node, List.of());
-        for (var dep : nodeDeps) {
-            if (visiting.contains(dep)) {
+        for ( var dep : nodeDeps) {
+            if ( visiting.contains(dep)) {
                 // Found a cycle
                 var cyclePath = buildCyclePath(path, dep);
                 return cause("Circular dependency detected: " + cyclePath).result();
             }
-            if (!visited.contains(dep)) {
+            if ( !visited.contains(dep)) {
                 var result = dfs(dep, dependencies, visited, visiting, path);
-                if (result.isFailure()) {
-                    return result;
-                }
+                if ( result.isFailure()) {
+                return result;}
             }
         }
         visiting.remove(node);

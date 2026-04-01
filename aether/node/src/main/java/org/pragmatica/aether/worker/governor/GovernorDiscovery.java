@@ -10,12 +10,10 @@ import java.util.Map;
 /// for community governor announcements.
 public interface GovernorDiscovery {
     /// Register a discovered governor.
-    @SuppressWarnings("JBCT-RET-01") // Mutating event callback
-    void onGovernorAnnounced(String communityId, NodeId governorId);
+    @SuppressWarnings("JBCT-RET-01") void onGovernorAnnounced(String communityId, NodeId governorId);
 
     /// Handle governor departure.
-    @SuppressWarnings("JBCT-RET-01") // Mutating event callback
-    void onGovernorDeparted(String communityId);
+    @SuppressWarnings("JBCT-RET-01") void onGovernorDeparted(String communityId);
 
     /// Get current governor for a community.
     Option<NodeId> currentGovernor(String communityId);

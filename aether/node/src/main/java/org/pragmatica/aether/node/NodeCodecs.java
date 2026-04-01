@@ -27,10 +27,9 @@ import static org.pragmatica.serialization.SliceCodec.writeString;
 /// Registry of all node-level types for serialization.
 /// Collects generated codec registries from all modules and adds manual entries
 /// for types that can't use the annotation processor (e.g. shared-package conflicts).
-@CodecFor({InetSocketAddress.class, MethodName.class, TimeSpan.class, URI.class, UUID.class, OffsetDateTime.class,
- Email.class, Url.class, NonBlankString.class, Uuid.class, IsoDateTime.class})
+@CodecFor({InetSocketAddress.class, MethodName.class, TimeSpan.class, URI.class, UUID.class, OffsetDateTime.class, Email.class, Url.class, NonBlankString.class, Uuid.class, IsoDateTime.class})
 public sealed interface NodeCodecs {
-    record unused() implements NodeCodecs {}
+    record unused() implements NodeCodecs{}
 
     static SliceCodec nodeCodecs(SliceCodec parent) {
         var all = new ArrayList<TypeCodec<?>>();
@@ -96,8 +95,7 @@ public sealed interface NodeCodecs {
         return new TypeCodec<>(TimeSpan.class,
                                deterministicTag("org.pragmatica.lang.io.TimeSpan"),
                                (codec, buf, val) -> buf.writeLong(val.nanos()),
-                               (codec, buf) -> TimeSpan.timeSpan(buf.readLong())
-                                                       .nanos());
+                               (codec, buf) -> TimeSpan.timeSpan(buf.readLong()).nanos());
     }
 
     /// Email codec — serializes as localPart (string) + domain (string).
@@ -116,8 +114,7 @@ public sealed interface NodeCodecs {
         return new TypeCodec<>(Url.class,
                                deterministicTag("org.pragmatica.lang.vo.Url"),
                                (codec, buf, val) -> writeString(buf,
-                                                                val.uri()
-                                                                   .toString()),
+                                                                val.uri().toString()),
                                (codec, buf) -> new Url(URI.create(readString(buf))));
     }
 
@@ -134,8 +131,7 @@ public sealed interface NodeCodecs {
         return new TypeCodec<>(Uuid.class,
                                deterministicTag("org.pragmatica.lang.vo.Uuid"),
                                (codec, buf, val) -> writeString(buf,
-                                                                val.value()
-                                                                   .toString()),
+                                                                val.value().toString()),
                                (codec, buf) -> new Uuid(java.util.UUID.fromString(readString(buf))));
     }
 

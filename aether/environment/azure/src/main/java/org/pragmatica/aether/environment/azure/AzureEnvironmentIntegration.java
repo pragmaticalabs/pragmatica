@@ -22,10 +22,10 @@ import static org.pragmatica.lang.Result.success;
 /// Provides compute capabilities backed by the Azure Cloud API.
 /// Optionally provides load balancer management and tag-based discovery when configured.
 /// Provides Azure Key Vault secrets resolution.
-public record AzureEnvironmentIntegration(AzureComputeProvider computeProvider,
-                                          Option<LoadBalancerProvider> loadBalancerProvider,
-                                          Option<DiscoveryProvider> discoveryProvider,
-                                          Option<SecretsProvider> secretsProvider) implements EnvironmentIntegration {
+public record AzureEnvironmentIntegration( AzureComputeProvider computeProvider,
+                                           Option<LoadBalancerProvider> loadBalancerProvider,
+                                           Option<DiscoveryProvider> discoveryProvider,
+                                           Option<SecretsProvider> secretsProvider) implements EnvironmentIntegration {
     /// Factory method for creating an AzureEnvironmentIntegration from configuration.
     public static Result<AzureEnvironmentIntegration> azureEnvironmentIntegration(AzureEnvironmentConfig config) {
         var client = AzureClient.azureClient(config.azureConfig());
@@ -40,15 +40,13 @@ public record AzureEnvironmentIntegration(AzureComputeProvider computeProvider,
         var discovery = resolveDiscoveryProvider(client, config);
         var secrets = resolveSecretsProvider(client);
         return Result.all(compute, lbProvider)
-                     .map((cp, lb) -> new AzureEnvironmentIntegration(cp, lb, discovery, secrets));
+        .map((cp, lb) -> new AzureEnvironmentIntegration(cp, lb, discovery, secrets));
     }
 
     // --- Leaf: resolve optional load balancer provider ---
     private static Result<Option<LoadBalancerProvider>> resolveLbProvider(AzureClient client,
                                                                           AzureEnvironmentConfig config) {
-        return config.loadBalancer()
-                     .fold(() -> success(Option.empty()),
-                           lbConfig -> toLbOption(client, lbConfig));
+        return config.loadBalancer().fold(() -> success(Option.empty()), lbConfig -> toLbOption(client, lbConfig));
     }
 
     // --- Leaf: create optional LB provider from config ---
@@ -69,8 +67,7 @@ public record AzureEnvironmentIntegration(AzureComputeProvider computeProvider,
     // --- Leaf: resolve optional discovery provider based on clusterName ---
     private static Option<DiscoveryProvider> resolveDiscoveryProvider(AzureClient client,
                                                                       AzureEnvironmentConfig config) {
-        return config.clusterName()
-                     .map(name -> azureDiscoveryProvider(client, config));
+        return config.clusterName().map(name -> azureDiscoveryProvider(client, config));
     }
 
     // --- Leaf: resolve secrets provider (always available via Key Vault) ---
@@ -82,27 +79,22 @@ public record AzureEnvironmentIntegration(AzureComputeProvider computeProvider,
     // --- Leaf: wrap a SecretsProvider with caching in Option.some ---
     private static Option<SecretsProvider> wrapSecretInSome(AzureSecretsProvider provider) {
         return some(CachingSecretsProvider.cachingSecretsProvider(provider,
-                                                                  TimeSpan.timeSpan(5)
-                                                                          .minutes()));
+                                                                  TimeSpan.timeSpan(5).minutes()));
     }
 
-    @Override
-    public Option<ComputeProvider> compute() {
+    @Override public Option<ComputeProvider> compute() {
         return some(computeProvider);
     }
 
-    @Override
-    public Option<SecretsProvider> secrets() {
+    @Override public Option<SecretsProvider> secrets() {
         return secretsProvider;
     }
 
-    @Override
-    public Option<LoadBalancerProvider> loadBalancer() {
+    @Override public Option<LoadBalancerProvider> loadBalancer() {
         return loadBalancerProvider;
     }
 
-    @Override
-    public Option<DiscoveryProvider> discovery() {
+    @Override public Option<DiscoveryProvider> discovery() {
         return discoveryProvider;
     }
 }

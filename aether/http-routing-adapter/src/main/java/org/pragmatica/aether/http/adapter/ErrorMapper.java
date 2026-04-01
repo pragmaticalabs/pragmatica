@@ -17,8 +17,7 @@ import org.pragmatica.lang.Cause;
 ///     default -> HttpError.httpError(HttpStatus.INTERNAL_SERVER_ERROR, cause);
 /// };
 /// }```
-@FunctionalInterface
-public interface ErrorMapper {
+@FunctionalInterface public interface ErrorMapper {
     /// Map a cause to an HTTP error.
     ///
     /// @param cause the error cause
@@ -30,8 +29,8 @@ public interface ErrorMapper {
     /// @return default error mapper
     static ErrorMapper defaultMapper() {
         return cause -> cause instanceof HttpError he
-                        ? he
-                        : HttpError.httpError(HttpStatus.INTERNAL_SERVER_ERROR, cause);
+                       ? he
+                       : HttpError.httpError(HttpStatus.INTERNAL_SERVER_ERROR, cause);
     }
 
     /// Combine this mapper with another, trying this one first.
@@ -43,9 +42,8 @@ public interface ErrorMapper {
     default ErrorMapper orElse(ErrorMapper other) {
         return cause -> {
             var result = this.map(cause);
-            if (result.status() == HttpStatus.INTERNAL_SERVER_ERROR && !(cause instanceof HttpError)) {
-                return other.map(cause);
-            }
+            if ( result.status() == HttpStatus.INTERNAL_SERVER_ERROR && !(cause instanceof HttpError)) {
+            return other.map(cause);}
             return result;
         };
     }

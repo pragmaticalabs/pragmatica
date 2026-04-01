@@ -11,10 +11,9 @@ import org.pragmatica.serialization.Codec;
 /// @param nodeId              follower identity
 /// @param lastDecisionSequence confirms follower is applying Decisions
 /// @param timestampMs         for staleness calculation
-@Codec
-public record FollowerHeartbeat(NodeId nodeId,
-                                long lastDecisionSequence,
-                                long timestampMs) implements Message.Wired {
+@Codec public record FollowerHeartbeat( NodeId nodeId,
+                                        long lastDecisionSequence,
+                                        long timestampMs) implements Message.Wired {
     /// Creates a heartbeat with explicit timestamp.
     public static FollowerHeartbeat followerHeartbeat(NodeId nodeId,
                                                       long lastDecisionSequence,

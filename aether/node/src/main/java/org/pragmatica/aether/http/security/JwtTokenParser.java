@@ -26,12 +26,12 @@ final class JwtTokenParser {
     private JwtTokenParser() {}
 
     /// Parsed JWT with decoded header, payload, and raw signature bytes.
-    record JwtHeader(String alg, String kid) {}
+    record JwtHeader(String alg, String kid){}
 
     record ParsedJwt(JwtHeader header,
                      Map<String, Object> payload,
                      byte[] signature,
-                     String signedContent) {}
+                     String signedContent){}
 
     /// Parse a raw JWT string into its three components.
     static Result<ParsedJwt> parseToken(String token) {
@@ -57,12 +57,10 @@ final class JwtTokenParser {
     }
 
     private static Result<JwtHeader> extractHeader(Map<String, Object> headerMap) {
-        var alg = Option.option(headerMap.get("alg"))
-                        .map(Object::toString)
-                        .or("RS256");
-        var kid = Option.option(headerMap.get("kid"))
-                        .map(Object::toString)
-                        .or("");
+        var alg = Option.option(headerMap.get("alg")).map(Object::toString)
+                               .or("RS256");
+        var kid = Option.option(headerMap.get("kid")).map(Object::toString)
+                               .or("");
         return success(new JwtHeader(alg, kid));
     }
 

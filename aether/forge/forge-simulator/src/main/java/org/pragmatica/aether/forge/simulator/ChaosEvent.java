@@ -32,13 +32,11 @@ public sealed interface ChaosEvent {
 
     /// Kill a specific node (simulates crash).
     record NodeKill(String nodeId, Option<Duration> duration) implements ChaosEvent {
-        @Override
-        public String type() {
+        @Override public String type() {
             return "NODE_KILL";
         }
 
-        @Override
-        public String description() {
+        @Override public String description() {
             return "Kill node " + nodeId;
         }
 
@@ -70,13 +68,11 @@ public sealed interface ChaosEvent {
             this.duration = duration;
         }
 
-        @Override
-        public String type() {
+        @Override public String type() {
             return "NETWORK_PARTITION";
         }
 
-        @Override
-        public String description() {
+        @Override public String description() {
             return "Network partition between " + group1 + " and " + group2;
         }
 
@@ -88,9 +84,7 @@ public sealed interface ChaosEvent {
         }
 
         private static Result<Set<String>> ensureNonEmptyGroup(Set<String> group, Cause cause) {
-            return Verify.ensure(group, Verify.Is::notNull, cause)
-                         .filter(cause,
-                                 g -> !g.isEmpty());
+            return Verify.ensure(group, Verify.Is::notNull, cause).filter(cause, g -> !g.isEmpty());
         }
     }
 
@@ -98,13 +92,11 @@ public sealed interface ChaosEvent {
     record LatencySpike(String nodeId, long latencyMs, Option<Duration> duration) implements ChaosEvent {
         private static final Cause LATENCY_NEGATIVE = Causes.cause("latencyMs must be >= 0");
 
-        @Override
-        public String type() {
+        @Override public String type() {
             return "LATENCY_SPIKE";
         }
 
-        @Override
-        public String description() {
+        @Override public String description() {
             return "Add " + latencyMs + "ms latency to node " + nodeId;
         }
 
@@ -120,15 +112,12 @@ public sealed interface ChaosEvent {
     record SliceCrash(String sliceArtifact, Option<String> nodeId, Option<Duration> duration) implements ChaosEvent {
         private static final Cause ARTIFACT_REQUIRED = Causes.cause("sliceArtifact cannot be null or blank");
 
-        @Override
-        public String type() {
+        @Override public String type() {
             return "SLICE_CRASH";
         }
 
-        @Override
-        public String description() {
-            var target = nodeId.map(n -> " on node " + n)
-                               .or(" on all nodes");
+        @Override public String description() {
+            var target = nodeId.map(n -> " on node " + n).or(" on all nodes");
             return "Crash slice " + sliceArtifact + target;
         }
 
@@ -143,13 +132,11 @@ public sealed interface ChaosEvent {
 
     /// Simulate memory pressure on a node.
     record MemoryPressure(String nodeId, double level, Option<Duration> duration) implements ChaosEvent {
-        @Override
-        public String type() {
+        @Override public String type() {
             return "MEMORY_PRESSURE";
         }
 
-        @Override
-        public String description() {
+        @Override public String description() {
             return formatPercentageMessage("memory pressure", level, nodeId);
         }
 
@@ -165,13 +152,11 @@ public sealed interface ChaosEvent {
 
     /// Simulate CPU spike on a node.
     record CpuSpike(String nodeId, double level, Option<Duration> duration) implements ChaosEvent {
-        @Override
-        public String type() {
+        @Override public String type() {
             return "CPU_SPIKE";
         }
 
-        @Override
-        public String description() {
+        @Override public String description() {
             return formatPercentageMessage("CPU usage", level, nodeId);
         }
 
@@ -187,13 +172,11 @@ public sealed interface ChaosEvent {
 
     /// Inject random failures into slice invocations.
     record InvocationFailure(Option<String> sliceArtifact, double failureRate, Option<Duration> duration) implements ChaosEvent {
-        @Override
-        public String type() {
+        @Override public String type() {
             return "INVOCATION_FAILURE";
         }
 
-        @Override
-        public String description() {
+        @Override public String description() {
             var target = sliceArtifact.or("all slices");
             return String.format("Inject %.0f%% failure rate for %s", failureRate * 100, target);
         }
@@ -202,7 +185,7 @@ public sealed interface ChaosEvent {
                                                                   double rate,
                                                                   Option<Duration> duration) {
             return Verify.ensure(rate, Verify.Is::between, 0.0, 1.0, FAILURE_RATE_OUT_OF_RANGE)
-                         .map(_ -> new InvocationFailure(artifact, rate, duration));
+            .map(_ -> new InvocationFailure(artifact, rate, duration));
         }
 
         public static Result<InvocationFailure> invocationFailure(double rate, Option<Duration> duration) {
@@ -215,13 +198,11 @@ public sealed interface ChaosEvent {
         private static final Cause NAME_REQUIRED = Causes.cause("name cannot be null or blank");
         private static final Cause ACTION_REQUIRED = Causes.cause("action cannot be null");
 
-        @Override
-        public String type() {
+        @Override public String type() {
             return "CUSTOM";
         }
 
-        @Override
-        public String description() {
+        @Override public String description() {
             return descriptionText.or(name);
         }
 
@@ -238,9 +219,7 @@ public sealed interface ChaosEvent {
 
     /// Validate that a string field is non-null and non-blank.
     private static Result<String> ensureNotBlank(String value, Cause cause) {
-        return Verify.ensure(value, Verify.Is::notNull, cause)
-                     .filter(cause,
-                             v -> !v.isBlank());
+        return Verify.ensure(value, Verify.Is::notNull, cause).filter(cause, v -> !v.isBlank());
     }
 
     /// Format a percentage-based simulation description.
@@ -249,18 +228,15 @@ public sealed interface ChaosEvent {
     }
 
     record unused() implements ChaosEvent {
-        @Override
-        public String type() {
+        @Override public String type() {
             return "";
         }
 
-        @Override
-        public String description() {
+        @Override public String description() {
             return "";
         }
 
-        @Override
-        public Option<Duration> duration() {
+        @Override public Option<Duration> duration() {
             return none();
         }
     }

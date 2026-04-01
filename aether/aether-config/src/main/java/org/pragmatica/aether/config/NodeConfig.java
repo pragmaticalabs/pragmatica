@@ -16,11 +16,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param metricsInterval   Metrics collection interval
 /// @param reconciliation    Cluster reconciliation interval
 /// @param resources         Kubernetes resource limits (optional)
-public record NodeConfig(String heap,
-                         String gc,
-                         TimeSpan metricsInterval,
-                         TimeSpan reconciliation,
-                         Option<ResourcesConfig> resources) {
+public record NodeConfig( String heap,
+                          String gc,
+                          TimeSpan metricsInterval,
+                          TimeSpan reconciliation,
+                          Option<ResourcesConfig> resources) {
     public static final String DEFAULT_GC = "zgc";
     public static final TimeSpan DEFAULT_METRICS_INTERVAL = timeSpan(1).seconds();
     public static final TimeSpan DEFAULT_RECONCILIATION = timeSpan(5).seconds();
@@ -60,11 +60,7 @@ public record NodeConfig(String heap,
 
     /// Build JAVA_OPTS string for this configuration.
     public String javaOpts() {
-        var gcOpt = switch (gc.toLowerCase()) {
-            case "zgc" -> "-XX:+UseZGC";
-            case "g1" -> "-XX:+UseG1GC";
-            default -> "-XX:+UseZGC";
-        };
+        var gcOpt = switch (gc.toLowerCase()) {case "zgc" -> "-XX:+UseZGC"; case "g1" -> "-XX:+UseG1GC"; default -> "-XX:+UseZGC";};
         return "-Xmx" + heap + " " + gcOpt;
     }
 

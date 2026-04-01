@@ -33,7 +33,7 @@ import org.pragmatica.lang.utils.Causes;
 /// @param count          Number of values recorded (capped at windowSize)
 /// @param sum            Running sum of values in the window
 /// @param recordCount    Total records since creation (for periodic sum recalculation)
-public record MetricWindow(double[] valuesInternal, int head, int count, double sum, long recordCount) {
+public record MetricWindow( double[] valuesInternal, int head, int count, double sum, long recordCount) {
     /// Recalculate sum from scratch every N records to prevent floating-point drift.
     private static final int SUM_RECALCULATION_INTERVAL = 100;
 
@@ -44,8 +44,7 @@ public record MetricWindow(double[] valuesInternal, int head, int count, double 
     public static Result<MetricWindow> metricWindow(int windowSize) {
         return windowSize > 0
                ? Result.success(new MetricWindow(new double[windowSize], 0, 0, 0.0, 0))
-               : Causes.cause("windowSize must be positive, got: " + windowSize)
-                       .result();
+               : Causes.cause("windowSize must be positive, got: " + windowSize).result();
     }
 
     /// Returns a defensive copy of the internal values array.
@@ -77,9 +76,8 @@ public record MetricWindow(double[] valuesInternal, int head, int count, double 
     ///
     /// @return The last recorded value, or 0.0 if empty
     public double lastValue() {
-        if (count == 0) {
-            return 0.0;
-        }
+        if ( count == 0) {
+        return 0.0;}
         // head points to next write position, so last value is at (head - 1)
         var lastIndex = (head - 1 + valuesInternal.length) % valuesInternal.length;
         return valuesInternal[lastIndex];
@@ -116,15 +114,45 @@ public record MetricWindow(double[] valuesInternal, int head, int count, double 
     /// @param value New value to record
     /// @return New MetricWindow with the value recorded
     @SuppressWarnings("JBCT-VO-02") // Immutable record — record() creates new instance with updated circular buffer state
-    public MetricWindow record(double value) {
+    public// Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    // Immutable record — record() creates new instance with updated circular buffer state
+    MetricWindow record(double value) {
         var newValues = valuesInternal.clone();
         var windowSize = newValues.length;
         var newRecordCount = recordCount + 1;
         // Calculate new sum: add new value, subtract evicted value if full
         var newSum = sum + value;
-        if (count >= windowSize) {
-            newSum -= newValues[head];
-        }
+        if ( count >= windowSize) {
+        newSum -= newValues[head];}
         // Write new value at head position
         newValues[head] = value;
         // Advance head (circular)
@@ -132,18 +160,16 @@ public record MetricWindow(double[] valuesInternal, int head, int count, double 
         // Update count (capped at window size)
         var newCount = Math.min(count + 1, windowSize);
         // Periodically recalculate sum from scratch to prevent floating-point drift
-        if (newRecordCount % SUM_RECALCULATION_INTERVAL == 0) {
-            newSum = recalculateSum(newValues, newCount);
-        }
+        if ( newRecordCount % SUM_RECALCULATION_INTERVAL == 0) {
+        newSum = recalculateSum(newValues, newCount);}
         return new MetricWindow(newValues, newHead, newCount, newSum, newRecordCount);
     }
 
     /// Recalculate sum from array values to correct floating-point drift.
     private static double recalculateSum(double[] values, int count) {
         var sum = 0.0;
-        for (int i = 0; i < count; i++) {
-            sum += values[i];
-        }
+        for ( int i = 0; i < count; i++) {
+        sum += values[i];}
         return sum;
     }
 

@@ -13,9 +13,9 @@ import java.util.Map;
 /// @param testId the A/B test identifier
 /// @param variantMetrics per-variant metrics keyed by variant name
 /// @param collectedAt timestamp when metrics were collected
-public record AbTestMetrics(String testId,
-                            Map<String, VariantMetrics> variantMetrics,
-                            long collectedAt) {
+public record AbTestMetrics( String testId,
+                             Map<String, VariantMetrics> variantMetrics,
+                             long collectedAt) {
     /// Performance metrics for a single variant in an A/B test.
     ///
     /// @param variant the variant name

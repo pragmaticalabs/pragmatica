@@ -34,16 +34,17 @@ public enum CanaryState {
     FAILED;
     /// Returns valid transitions from this state.
     public Set<CanaryState> validTransitions() {
-        return switch (this) {
-            case PENDING -> Set.of(DEPLOYING, FAILED);
-            case DEPLOYING -> Set.of(CANARY_ACTIVE, ROLLING_BACK, FAILED);
-            case CANARY_ACTIVE -> Set.of(CANARY_ACTIVE, PROMOTING, AUTO_ROLLBACK, ROLLING_BACK, FAILED);
-            case PROMOTING -> Set.of(PROMOTED, ROLLING_BACK, FAILED);
-            case AUTO_ROLLBACK -> Set.of(ROLLED_BACK, FAILED);
-            case PROMOTED, ROLLED_BACK, FAILED -> Set.of();
-            // Terminal states
-            case ROLLING_BACK -> Set.of(ROLLED_BACK, FAILED);
-        };
+        return switch (this) {case PENDING -> Set.of(DEPLOYING, FAILED);case DEPLOYING -> Set.of(CANARY_ACTIVE,
+                                                                                                 ROLLING_BACK,
+                                                                                                 FAILED);case CANARY_ACTIVE -> Set.of(CANARY_ACTIVE,
+                                                                                                                                      PROMOTING,
+                                                                                                                                      AUTO_ROLLBACK,
+                                                                                                                                      ROLLING_BACK,
+                                                                                                                                      FAILED);case PROMOTING -> Set.of(PROMOTED,
+                                                                                                                                                                       ROLLING_BACK,
+                                                                                                                                                                       FAILED);case AUTO_ROLLBACK -> Set.of(ROLLED_BACK,
+                                                                                                                                                                                                            FAILED);case PROMOTED, ROLLED_BACK, FAILED -> Set.of();case ROLLING_BACK -> Set.of(ROLLED_BACK,
+                                                                                                                                                                                                                                                                                               FAILED);};
     }
     /// Checks if this state is a terminal state.
     public boolean isTerminal() {

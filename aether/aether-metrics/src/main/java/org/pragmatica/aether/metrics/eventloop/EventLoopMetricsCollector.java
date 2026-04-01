@@ -60,78 +60,73 @@ public final class EventLoopMetricsCollector {
     ///
     /// @param group the event loop group, must not be null
     public Result<Unit> register(EventLoopGroup group) {
-        if (eventLoopGroups.addIfAbsent(group)) {
-            log.debug("Registered EventLoopGroup for monitoring: {}",
-                      group.getClass()
-                           .getSimpleName());
-        }
+        if ( eventLoopGroups.addIfAbsent(group)) {
+        log.debug("Registered EventLoopGroup for monitoring: {}",
+                  group.getClass().getSimpleName());}
         return unitResult();
     }
 
     /// Start collecting metrics using SharedScheduler.
     public Result<Unit> start() {
-        if (started) {
-            return unitResult();
-        }
+        if ( started) {
+        return unitResult();}
         started = true;
         probeFuture.set(some(SharedScheduler.scheduleAtFixedRate(this::probe,
-                                                                 TimeSpan.timeSpan(probeIntervalMs)
-                                                                         .millis())));
+                                                                 TimeSpan.timeSpan(probeIntervalMs).millis())));
         log.info("Event loop metrics collection started");
         return unitResult();
     }
 
     /// Stop collecting metrics.
     public Result<Unit> stop() {
-        if (!started) {
-            return unitResult();
-        }
+        if ( !started) {
+        return unitResult();}
         started = false;
-        probeFuture.getAndSet(none())
-                   .onPresent(future -> future.cancel(false));
+        probeFuture.getAndSet(none()).onPresent(future -> future.cancel(false));
         log.info("Event loop metrics collection stopped");
         return unitResult();
     }
 
     @SuppressWarnings("JBCT-EX-01")
     private void probe() {
-        if (eventLoopGroups.isEmpty()) {
-            return;
-        }
+        if ( eventLoopGroups.isEmpty()) {
+        return;}
         int totalPending = 0;
         int totalChannels = 0;
-        for (EventLoopGroup group : eventLoopGroups) {
-            for (EventExecutor executor : group) {
-                if (executor instanceof EventLoop eventLoop) {
-                    submitLagProbe(eventLoop);
-                    if (eventLoop instanceof SingleThreadEventLoop stEventLoop) {
-                        totalPending += stEventLoop.pendingTasks();
-                        totalChannels += stEventLoop.registeredChannels();
-                    }
-                }
+        for ( EventLoopGroup group : eventLoopGroups) {
+        for ( EventExecutor executor : group) {
+        if ( executor instanceof EventLoop eventLoop) {
+            submitLagProbe(eventLoop);
+            if ( eventLoop instanceof SingleThreadEventLoop stEventLoop) {
+                totalPending += stEventLoop.pendingTasks();
+                totalChannels += stEventLoop.registeredChannels();
             }
-        }
+        }}}
         totalPendingTasks.set(totalPending);
         totalActiveChannels.set(totalChannels);
     }
 
     private void submitLagProbe(EventLoop eventLoop) {
         long submitTime = System.nanoTime();
-        try{
+        try {
             eventLoop.execute(() -> updateMaxLag(System.nanoTime() - submitTime));
-        } catch (Exception e) {
+        }
+
+
+
+
+        catch (Exception e) {
             log.trace("Failed to probe event loop: {}", e.getMessage());
         }
     }
 
     private void updateMaxLag(long lag) {
         long current;
-        do{
+        do {
             current = maxLagNanos.get();
-            if (lag <= current) {
-                return;
-            }
-        } while (!maxLagNanos.compareAndSet(current, lag));
+            if ( lag <= current) {
+            return;}
+        } while ( !maxLagNanos.compareAndSet(current, lag));
     }
 
     /// Take a snapshot of current metrics.

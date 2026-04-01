@@ -31,37 +31,30 @@ final class InMemoryCache implements CacheBackend {
         return new InMemoryCache(ttlSeconds * 1_000_000_000L, maxEntries);
     }
 
-    @Override
-    public Promise<Option<Object>> get(Object key) {
+    @Override public Promise<Option<Object>> get(Object key) {
         var entry = storage.get(key);
-        if (entry == null) {
-            return Promise.success(Option.none());
-        }
-        if (entry.isExpired()) {
+        if ( entry == null) {
+        return Promise.success(Option.none());}
+        if ( entry.isExpired()) {
             storage.remove(key, entry);
             return Promise.success(Option.none());
         }
         return Promise.success(Option.some(entry.value()));
     }
 
-    @Override
-    public Promise<Unit> put(Object key, Object value) {
-        if (storage.size() >= maxEntries) {
-            evictExpired();
-        }
+    @Override public Promise<Unit> put(Object key, Object value) {
+        if ( storage.size() >= maxEntries) {
+        evictExpired();}
         storage.put(key, new CacheEntry(value, System.nanoTime() + ttlNanos));
         return Promise.success(Unit.unit());
     }
 
-    @Override
-    public Promise<Unit> remove(Object key) {
+    @Override public Promise<Unit> remove(Object key) {
         storage.remove(key);
         return Promise.success(Unit.unit());
     }
 
     private void evictExpired() {
-        storage.entrySet()
-               .removeIf(entry -> entry.getValue()
-                                       .isExpired());
+        storage.entrySet().removeIf(entry -> entry.getValue().isExpired());
     }
 }

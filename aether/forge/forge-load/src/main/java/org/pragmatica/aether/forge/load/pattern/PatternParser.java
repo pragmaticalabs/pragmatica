@@ -27,29 +27,22 @@ public sealed interface PatternParser {
     /// @return Result containing the generator or an error
     static Result<PatternGenerator> parse(String pattern) {
         var matcher = PATTERN_REGEX.matcher(pattern.trim());
-        if (!matcher.matches()) {
-            return INVALID_PATTERN.apply(pattern)
-                                  .result();
-        }
+        if ( !matcher.matches()) {
+        return INVALID_PATTERN.apply(pattern).result();}
         var type = matcher.group(1);
         var args = matcher.group(2);
         return dispatchByType(type, args, pattern);
     }
 
     private static Result<PatternGenerator> dispatchByType(String type, String args, String pattern) {
-        return switch (type) {
-            case UuidGenerator.TYPE -> toUuidGenerator();
-            case RandomGenerator.TYPE -> toRandomGenerator(args, pattern);
-            case RangeGenerator.TYPE -> toRangeGenerator(args, pattern);
-            case ChoiceGenerator.TYPE -> toChoiceGenerator(args, pattern);
-            case SequenceGenerator.TYPE -> toSequenceGenerator(args);
-            default -> unknownType(type);
-        };
+        return switch (type) {case UuidGenerator.TYPE -> toUuidGenerator();case RandomGenerator.TYPE -> toRandomGenerator(args,
+                                                                                                                          pattern);case RangeGenerator.TYPE -> toRangeGenerator(args,
+                                                                                                                                                                                pattern);case ChoiceGenerator.TYPE -> toChoiceGenerator(args,
+                                                                                                                                                                                                                                        pattern);case SequenceGenerator.TYPE -> toSequenceGenerator(args);default -> unknownType(type);};
     }
 
     private static Result<PatternGenerator> toUuidGenerator() {
-        return UuidGenerator.uuidGenerator()
-                            .map(gen -> gen);
+        return UuidGenerator.uuidGenerator().map(gen -> gen);
     }
 
     private static Result<PatternGenerator> toSequenceGenerator(String args) {
@@ -57,8 +50,7 @@ public sealed interface PatternParser {
     }
 
     private static Result<PatternGenerator> unknownType(String type) {
-        return UNKNOWN_TYPE.apply(type)
-                           .result();
+        return UNKNOWN_TYPE.apply(type).result();
     }
 
     private static Result<PatternGenerator> toRandomGenerator(String args, String pattern) {
@@ -68,8 +60,7 @@ public sealed interface PatternParser {
     }
 
     private static Result<PatternGenerator> widenRandomGenerator(String template) {
-        return RandomGenerator.randomGenerator(template)
-                              .map(gen -> gen);
+        return RandomGenerator.randomGenerator(template).map(gen -> gen);
     }
 
     private static Result<PatternGenerator> toRangeGenerator(String args, String pattern) {
@@ -98,5 +89,5 @@ public sealed interface PatternParser {
                : none();
     }
 
-    record unused() implements PatternParser {}
+    record unused() implements PatternParser{}
 }

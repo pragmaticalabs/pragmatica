@@ -34,18 +34,15 @@ public final class GroupMembershipTracker {
 
     /// Update membership when a member joins or changes state.
     public void updateMember(SwimMember member) {
-        membershipSnapshot.removeIf(m -> m.nodeId()
-                                          .equals(member.nodeId()));
-        if (member.state() != MemberState.FAULTY) {
-            membershipSnapshot.add(member);
-        }
+        membershipSnapshot.removeIf(m -> m.nodeId().equals(member.nodeId()));
+        if ( member.state() != MemberState.FAULTY) {
+        membershipSnapshot.add(member);}
         recomputeGroups();
     }
 
     /// Remove a member that left.
     public void removeMember(NodeId leftNodeId) {
-        membershipSnapshot.removeIf(m -> m.nodeId()
-                                          .equals(leftNodeId));
+        membershipSnapshot.removeIf(m -> m.nodeId().equals(leftNodeId));
         recomputeGroups();
     }
 
@@ -66,10 +63,9 @@ public final class GroupMembershipTracker {
 
     /// All alive member NodeIds (regardless of group).
     public List<NodeId> allAliveMembers() {
-        return membershipSnapshot.stream()
-                                 .filter(GroupMembershipTracker::isAlive)
-                                 .map(SwimMember::nodeId)
-                                 .toList();
+        return membershipSnapshot.stream().filter(GroupMembershipTracker::isAlive)
+                                        .map(SwimMember::nodeId)
+                                        .toList();
     }
 
     /// Full membership snapshot.
@@ -80,13 +76,11 @@ public final class GroupMembershipTracker {
     private void recomputeGroups() {
         var aliveIds = allAliveMembers();
         currentGroups = GroupAssignment.computeGroups(aliveIds, groupName, maxGroupSize);
-        myGroup = currentGroups.entrySet()
-                               .stream()
-                               .filter(e -> e.getValue()
-                                             .contains(self))
-                               .map(Map.Entry::getKey)
-                               .findFirst()
-                               .orElse(WorkerGroupId.workerGroupId(groupName, "local"));
+        myGroup = currentGroups.entrySet().stream()
+                                        .filter(e -> e.getValue().contains(self))
+                                        .map(Map.Entry::getKey)
+                                        .findFirst()
+                                        .orElse(WorkerGroupId.workerGroupId(groupName, "local"));
     }
 
     private static boolean isAlive(SwimMember member) {

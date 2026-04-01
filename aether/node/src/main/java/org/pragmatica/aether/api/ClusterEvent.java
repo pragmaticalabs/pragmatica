@@ -13,11 +13,11 @@ import java.util.Map;
 /// @param severity the severity level
 /// @param summary human-readable description
 /// @param details context-specific key-value pairs
-public record ClusterEvent(Instant timestamp,
-                           EventType type,
-                           Severity severity,
-                           String summary,
-                           Map<String, String> details) {
+public record ClusterEvent( Instant timestamp,
+                            EventType type,
+                            Severity severity,
+                            String summary,
+                            Map<String, String> details) {
     public enum EventType {
         NODE_JOINED,
         NODE_LEFT,

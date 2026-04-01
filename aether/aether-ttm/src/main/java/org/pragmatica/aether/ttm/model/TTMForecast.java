@@ -1,14 +1,8 @@
 package org.pragmatica.aether.ttm.model;
-/// Result of TTM forecast containing predicted metrics and confidence.
-///
-/// @param timestamp      Timestamp when forecast was generated
-/// @param predictions    Predicted values for each feature (same order as MinuteAggregate.featureNames())
-/// @param confidence     Overall confidence score (0.0-1.0)
-/// @param recommendation Derived scaling recommendation
-public record TTMForecast(long timestamp,
-                          float[] predictions,
-                          double confidence,
-                          ScalingRecommendation recommendation) {
+public record TTMForecast( long timestamp,
+                           float[] predictions,
+                           double confidence,
+                           ScalingRecommendation recommendation) {
     /// Get predicted CPU usage.
     public float predictedCpuUsage() {
         return predictions[FeatureIndex.CPU_USAGE];
@@ -51,6 +45,6 @@ public record TTMForecast(long timestamp,
 
     /// Check if the recommendation requires action.
     public boolean requiresAction() {
-        return ! ( recommendation instanceof ScalingRecommendation.NoAction);
+        return ! (recommendation instanceof ScalingRecommendation.NoAction);
     }
 }

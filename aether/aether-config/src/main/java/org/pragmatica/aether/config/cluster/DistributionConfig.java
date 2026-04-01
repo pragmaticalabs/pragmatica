@@ -6,8 +6,8 @@ import java.util.List;
 ///
 /// @param strategy distribution strategy (balanced or manual)
 /// @param zones logical zone names for balanced distribution
-public record DistributionConfig(DistributionStrategy strategy,
-                                 List<String> zones) {
+public record DistributionConfig( DistributionStrategy strategy,
+                                  List<String> zones) {
     /// Factory method.
     public static DistributionConfig distributionConfig(DistributionStrategy strategy, List<String> zones) {
         return new DistributionConfig(strategy, List.copyOf(zones));

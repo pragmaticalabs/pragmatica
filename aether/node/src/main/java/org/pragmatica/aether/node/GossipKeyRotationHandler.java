@@ -34,8 +34,7 @@ public final class GossipKeyRotationHandler {
     /// Handle a gossip key rotation KV-Store put notification.
     @SuppressWarnings("JBCT-RET-01") // Event callback - void inherent
     public void onGossipKeyRotationPut(ValuePut<GossipKeyRotationKey, GossipKeyRotationValue> put) {
-        var value = put.cause()
-                       .value();
+        var value = put.cause().value();
         log.info("Gossip key rotation received: currentKeyId={}, previousKeyId={}",
                  value.currentKeyId(),
                  value.previousKeyId());
@@ -44,17 +43,13 @@ public final class GossipKeyRotationHandler {
 
     @SuppressWarnings("JBCT-RET-01") // Side-effect: swap encryptor + log outcome
     private void applyRotation(GossipKeyRotationValue value) {
-        var currentKey = Base64.getDecoder()
-                               .decode(value.currentKey());
-        var hasPrevious = value.previousKeyId() != 0 && !value.previousKey()
-                                                              .isEmpty();
+        var currentKey = Base64.getDecoder().decode(value.currentKey());
+        var hasPrevious = value.previousKeyId() != 0 && !value.previousKey().isEmpty();
         var result = hasPrevious
                      ? buildDualKeyEncryptor(currentKey, value.currentKeyId(), value)
                      : AesGcmGossipEncryptor.aesGcmGossipEncryptor(currentKey, value.currentKeyId());
-        result.onSuccess(newEncryptor -> rotateAndLog(newEncryptor,
-                                                      value.currentKeyId()))
-              .onFailure(cause -> log.error("Failed to apply gossip key rotation: {}",
-                                            cause.message()));
+        result.onSuccess(newEncryptor -> rotateAndLog(newEncryptor, value.currentKeyId()))
+        .onFailure(cause -> log.error("Failed to apply gossip key rotation: {}", cause.message()));
     }
 
     private void rotateAndLog(org.pragmatica.swim.GossipEncryptor newEncryptor, int keyId) {
@@ -65,8 +60,7 @@ public final class GossipKeyRotationHandler {
     private static org.pragmatica.lang.Result<org.pragmatica.swim.GossipEncryptor> buildDualKeyEncryptor(byte[] currentKey,
                                                                                                          int currentKeyId,
                                                                                                          GossipKeyRotationValue value) {
-        var previousKey = Base64.getDecoder()
-                                .decode(value.previousKey());
+        var previousKey = Base64.getDecoder().decode(value.previousKey());
         return AesGcmGossipEncryptor.aesGcmGossipEncryptor(currentKey, currentKeyId, previousKey, value.previousKeyId());
     }
 }

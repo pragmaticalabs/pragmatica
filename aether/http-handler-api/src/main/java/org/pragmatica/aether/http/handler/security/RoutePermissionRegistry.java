@@ -63,36 +63,30 @@ public sealed interface RoutePermissionRegistry {
                                                      "/repository/");
 
         static RoutePermission resolveMutationPermission(String path) {
-            if (matchesAny(path, ADMIN)) {
-                return resolveAdminOverrides(path);
-            }
-            if (matchesAny(path, OPERATOR)) {
-                return OPERATOR_AND_ABOVE;
-            }
+            if ( matchesAny(path, ADMIN)) {
+            return resolveAdminOverrides(path);}
+            if ( matchesAny(path, OPERATOR)) {
+            return OPERATOR_AND_ABOVE;}
             return ADMIN_ONLY;
         }
 
         /// Some admin-prefix paths have operator-level sub-paths.
         /// Blueprint deploy from artifact is operator-level; raw blueprint POST is admin-only.
         static RoutePermission resolveAdminOverrides(String path) {
-            if (path.startsWith("/api/blueprint/deploy")) {
-                return OPERATOR_AND_ABOVE;
-            }
-            if (path.startsWith("/api/blueprint/validate")) {
-                return ALL_AUTHENTICATED;
-            }
+            if ( path.startsWith("/api/blueprint/deploy")) {
+            return OPERATOR_AND_ABOVE;}
+            if ( path.startsWith("/api/blueprint/validate")) {
+            return ALL_AUTHENTICATED;}
             return ADMIN_ONLY;
         }
 
         static boolean matchesAny(String path, List<String> prefixes) {
-            for (var prefix : prefixes) {
-                if (path.startsWith(prefix)) {
-                    return true;
-                }
-            }
+            for ( var prefix : prefixes) {
+            if ( path.startsWith(prefix)) {
+            return true;}}
             return false;
         }
     }
 
-    record unused() implements RoutePermissionRegistry {}
+    record unused() implements RoutePermissionRegistry{}
 }

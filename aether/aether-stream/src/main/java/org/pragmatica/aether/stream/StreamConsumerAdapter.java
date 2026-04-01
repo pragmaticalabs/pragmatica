@@ -19,8 +19,7 @@ import java.util.function.Function;
 /// with a timeout to bridge to the synchronous `Result<Unit>` ConsumerCallback contract.
 @SuppressWarnings("JBCT-UTIL-02")
 public interface StreamConsumerAdapter {
-    TimeSpan HANDLER_TIMEOUT = TimeSpan.timeSpan(30)
-                                      .seconds();
+    TimeSpan HANDLER_TIMEOUT = TimeSpan.timeSpan(30).seconds();
 
     /// Create an adapter for a single-event consumer method.
     ///
@@ -44,19 +43,16 @@ public interface StreamConsumerAdapter {
                                                   Function<T, Promise<Unit>> handler,
                                                   byte[] payload) {
         T event = deserializer.decode(payload);
-        return handler.apply(event)
-                      .timeout(HANDLER_TIMEOUT)
-                      .await();
+        return handler.apply(event).timeout(HANDLER_TIMEOUT)
+                            .await();
     }
 
     private static <T> Result<Unit> invokeBatchHandler(Deserializer deserializer,
                                                        Function<java.util.List<T>, Promise<Unit>> handler,
                                                        java.util.List<OffHeapRingBuffer.RawEvent> events) {
-        var decoded = events.stream()
-                            .map(raw -> (T) deserializer.<T>decode(raw.data()))
-                            .toList();
-        return handler.apply(decoded)
-                      .timeout(HANDLER_TIMEOUT)
-                      .await();
+        var decoded = events.stream().map(raw -> (T) deserializer.<T>decode(raw.data()))
+                                   .toList();
+        return handler.apply(decoded).timeout(HANDLER_TIMEOUT)
+                            .await();
     }
 }

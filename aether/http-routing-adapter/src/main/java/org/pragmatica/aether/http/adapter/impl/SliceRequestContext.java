@@ -48,9 +48,8 @@ public final class SliceRequestContext implements RequestContext {
         this.route = route;
         this.jsonMapper = jsonMapper;
         this.bodyBuf = Unpooled.wrappedBuffer(httpContext.body());
-        this.responseHeaders = DefaultHttpHeadersFactory.headersFactory()
-                                                        .withCombiningHeaders(true)
-                                                        .newHeaders();
+        this.responseHeaders = DefaultHttpHeadersFactory.headersFactory().withCombiningHeaders(true)
+                                                                       .newHeaders();
     }
 
     public static SliceRequestContext sliceRequestContext(HttpRequestContext httpContext,
@@ -69,63 +68,51 @@ public final class SliceRequestContext implements RequestContext {
         return httpContext.security();
     }
 
-    @Override
-    public Route<?> route() {
+    @Override public Route<?> route() {
         return route;
     }
 
-    @Override
-    public String requestPath() {
+    @Override public String requestPath() {
         return httpContext.path();
     }
 
-    @Override
-    public String requestId() {
+    @Override public String requestId() {
         return httpContext.requestId();
     }
 
-    @Override
-    public ByteBuf body() {
+    @Override public ByteBuf body() {
         return bodyBuf;
     }
 
-    @Override
-    public String bodyAsString() {
+    @Override public String bodyAsString() {
         return new String(httpContext.body(), StandardCharsets.UTF_8);
     }
 
-    @Override
-    public <T> Result<T> fromJson(TypeToken<T> literal) {
+    @Override public <T> Result<T> fromJson(TypeToken<T> literal) {
         return jsonMapper.readBytes(httpContext.body(), literal);
     }
 
-    @Override
-    public List<String> pathParams() {
+    @Override public List<String> pathParams() {
         return pathParamsSupplier.get();
     }
 
-    @Override
-    public Map<String, List<String>> queryParams() {
+    @Override public Map<String, List<String>> queryParams() {
         return httpContext.queryParams();
     }
 
-    @Override
-    public Map<String, String> requestHeaders() {
+    @Override public Map<String, String> requestHeaders() {
         return headersSupplier.get();
     }
 
-    @Override
-    public HttpHeaders responseHeaders() {
+    @Override public HttpHeaders responseHeaders() {
         return responseHeaders;
     }
 
-    @Override
-    public Result<MultipartRequest> multipartRequest() {
+    @Override public Result<MultipartRequest> multipartRequest() {
         return multipartSupplier.get();
     }
 
-    @Override
-    public boolean isMultipart() {
+    @Override public boolean isMultipart() {
         return MultipartParser.isMultipart(requestHeaders().get("content-type"));
     }
 
@@ -136,31 +123,25 @@ public final class SliceRequestContext implements RequestContext {
     private List<String> initPathParams() {
         var normalizedPath = PathUtils.normalize(httpContext.path());
         var routePath = route.path();
-        if (normalizedPath.length() <= routePath.length()) {
-            return List.of();
-        }
+        if ( normalizedPath.length() <= routePath.length()) {
+        return List.of();}
         var remainder = normalizedPath.substring(routePath.length());
         var elements = remainder.split("/", PATH_PARAM_LIMIT);
-        if (elements.length == 0) {
-            return List.of();
-        }
+        if ( elements.length == 0) {
+        return List.of();}
         // Remove trailing empty element if path ends with /
-        if (elements[elements.length - 1].isEmpty()) {
-            return List.of(elements)
-                       .subList(0, elements.length - 1);
-        }
+        if ( elements[elements.length - 1].isEmpty()) {
+        return List.of(elements).subList(0, elements.length - 1);}
         return List.of(elements);
     }
 
     private Map<String, String> initRequestHeaders() {
         var headers = new java.util.HashMap<String, String>();
         httpContext.headers()
-                   .forEach((key, values) -> {
-                       if (!values.isEmpty()) {
-                           headers.put(key,
-                                       values.getFirst());
-                       }
-                   });
+        .forEach((key, values) -> {
+            if ( !values.isEmpty()) {
+            headers.put(key, values.getFirst());}
+        });
         return Map.copyOf(headers);
     }
 }

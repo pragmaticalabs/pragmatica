@@ -15,18 +15,15 @@ import org.pragmatica.lang.Unit;
 /// the async action runs, ensuring distributed tracing correlation across
 /// all async operations in the system.
 public final class AetherContextPropagation implements ContextPropagation {
-    @Override
-    public Object capture() {
+    @Override public Object capture() {
         return InvocationContext.captureContext();
     }
 
-    @Override
-    public Unit runWith(Object snapshot, Runnable action) {
-        if (snapshot instanceof InvocationContext.ContextSnapshot contextSnapshot) {
-            contextSnapshot.runWithCaptured(action);
-        } else {
-            action.run();
-        }
+    @Override public Unit runWith(Object snapshot, Runnable action) {
+        if ( snapshot instanceof InvocationContext.ContextSnapshot contextSnapshot) {
+        contextSnapshot.runWithCaptured(action);} else
+        {
+        action.run();}
         return Unit.unit();
     }
 }

@@ -116,8 +116,7 @@ public final class InvocationContext {
     ///
     /// @return the result of the supplier
     public static <T> T runWithVariant(String variant, Supplier<T> supplier) {
-        return ScopedValue.where(AB_VARIANT, variant)
-                          .call(supplier::get);
+        return ScopedValue.where(AB_VARIANT, variant).call(supplier::get);
     }
 
     /// Run a supplier within a request ID scope.
@@ -129,10 +128,9 @@ public final class InvocationContext {
     /// @return the result of the supplier
     public static <T> T runWithRequestId(String requestId, Supplier<T> supplier) {
         MDC.put(MDC_KEY, requestId);
-        try{
-            return ScopedValue.where(REQUEST_ID, requestId)
-                              .call(supplier::get);
-        } finally{
+        try {
+            return ScopedValue.where(REQUEST_ID, requestId).call(supplier::get);
+        } finally {
             MDC.remove(MDC_KEY);
         }
     }
@@ -144,10 +142,9 @@ public final class InvocationContext {
     @SuppressWarnings("JBCT-RET-01") // ScopedValue.run() requires Runnable — void is inherent
     public static void runWithRequestId(String requestId, Runnable runnable) {
         MDC.put(MDC_KEY, requestId);
-        try{
-            ScopedValue.where(REQUEST_ID, requestId)
-                       .run(runnable);
-        } finally{
+        try {
+            ScopedValue.where(REQUEST_ID, requestId).run(runnable);
+        } finally {
             MDC.remove(MDC_KEY);
         }
     }
@@ -172,18 +169,15 @@ public final class InvocationContext {
         MDC.put(MDC_KEY, requestId);
         putIfNotNull(MDC_PRINCIPAL, principal);
         putIfNotNull(MDC_ORIGIN_NODE, originNode);
-        try{
-            var carrier = ScopedValue.where(REQUEST_ID, requestId)
-                                     .where(DEPTH, depth)
-                                     .where(SAMPLED, sampled);
-            if (principal != null) {
-                carrier = carrier.where(PRINCIPAL, principal);
-            }
-            if (originNode != null) {
-                carrier = carrier.where(ORIGIN_NODE, originNode);
-            }
+        try {
+            var carrier = ScopedValue.where(REQUEST_ID, requestId).where(DEPTH, depth)
+                                           .where(SAMPLED, sampled);
+            if ( principal != null) {
+            carrier = carrier.where(PRINCIPAL, principal);}
+            if ( originNode != null) {
+            carrier = carrier.where(ORIGIN_NODE, originNode);}
             return carrier.call(supplier::get);
-        } finally{
+        } finally {
             MDC.remove(MDC_KEY);
             MDC.remove(MDC_PRINCIPAL);
             MDC.remove(MDC_ORIGIN_NODE);
@@ -208,18 +202,15 @@ public final class InvocationContext {
         MDC.put(MDC_KEY, requestId);
         putIfNotNull(MDC_PRINCIPAL, principal);
         putIfNotNull(MDC_ORIGIN_NODE, originNode);
-        try{
-            var carrier = ScopedValue.where(REQUEST_ID, requestId)
-                                     .where(DEPTH, depth)
-                                     .where(SAMPLED, sampled);
-            if (principal != null) {
-                carrier = carrier.where(PRINCIPAL, principal);
-            }
-            if (originNode != null) {
-                carrier = carrier.where(ORIGIN_NODE, originNode);
-            }
+        try {
+            var carrier = ScopedValue.where(REQUEST_ID, requestId).where(DEPTH, depth)
+                                           .where(SAMPLED, sampled);
+            if ( principal != null) {
+            carrier = carrier.where(PRINCIPAL, principal);}
+            if ( originNode != null) {
+            carrier = carrier.where(ORIGIN_NODE, originNode);}
             carrier.run(runnable);
-        } finally{
+        } finally {
             MDC.remove(MDC_KEY);
             MDC.remove(MDC_PRINCIPAL);
             MDC.remove(MDC_ORIGIN_NODE);
@@ -228,9 +219,8 @@ public final class InvocationContext {
 
     @SuppressWarnings("JBCT-RET-01") // Utility method for MDC population
     private static void putIfNotNull(String key, String value) {
-        if (value != null) {
-            MDC.put(key, value);
-        }
+        if ( value != null) {
+        MDC.put(key, value);}
     }
 
     /// Capture the current context for propagation across async boundaries.
@@ -250,8 +240,7 @@ public final class InvocationContext {
     ///
     /// @return new KSUID-based request ID
     public static String generateRequestId() {
-        return KSUID.ksuid()
-                    .toString();
+        return KSUID.ksuid().toString();
     }
 
     /// A snapshot of the invocation context that can be captured and restored
@@ -276,9 +265,8 @@ public final class InvocationContext {
         ///
         /// @return the result of the supplier
         public <T> T runWithCaptured(Supplier<T> supplier) {
-            if (requestId == null) {
-                return runWithVariantIfPresent(supplier);
-            }
+            if ( requestId == null) {
+            return runWithVariantIfPresent(supplier);}
             return runWithContext(requestId,
                                   principal,
                                   originNode,
@@ -291,8 +279,13 @@ public final class InvocationContext {
         ///
         /// @param runnable the runnable to execute
         @SuppressWarnings("JBCT-RET-01") // Delegates to Runnable-based API
-        public void runWithCaptured(Runnable runnable) {
-            if (requestId == null) {
+        public// Delegates to Runnable-based API
+        // Delegates to Runnable-based API
+        // Delegates to Runnable-based API
+        // Delegates to Runnable-based API
+        // Delegates to Runnable-based API
+        void runWithCaptured(Runnable runnable) {
+            if ( requestId == null) {
                 runWithVariantIfPresent(runnable);
                 return;
             }
@@ -300,20 +293,28 @@ public final class InvocationContext {
         }
 
         @SuppressWarnings("JBCT-RET-03") // Delegates to supplier — null safety is caller's responsibility
-        private <T> T runWithVariantIfPresent(Supplier<T> supplier) {
+        private// Delegates to supplier — null safety is caller's responsibility
+        // Delegates to supplier — null safety is caller's responsibility
+        // Delegates to supplier — null safety is caller's responsibility
+        // Delegates to supplier — null safety is caller's responsibility
+        // Delegates to supplier — null safety is caller's responsibility
+        <T> T runWithVariantIfPresent(Supplier<T> supplier) {
             return variant != null
                    ? runWithVariant(variant, supplier)
                    : supplier.get();
         }
 
         @SuppressWarnings("JBCT-RET-01") // Void wrapper for variant scoping
-        private void runWithVariantIfPresent(Runnable runnable) {
-            if (variant != null) {
-                ScopedValue.where(AB_VARIANT, variant)
-                           .run(runnable);
-            } else {
-                runnable.run();
-            }
+        private// Void wrapper for variant scoping
+        // Void wrapper for variant scoping
+        // Void wrapper for variant scoping
+        // Void wrapper for variant scoping
+        // Void wrapper for variant scoping
+        void runWithVariantIfPresent(Runnable runnable) {
+            if ( variant != null) {
+            ScopedValue.where(AB_VARIANT, variant).run(runnable);} else
+            {
+            runnable.run();}
         }
     }
 }

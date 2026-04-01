@@ -80,11 +80,9 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
             PRIMARY KEY (version, type)
         )""";
 
-    private static final String QUERY_APPLIED_SQL = "SELECT version, type, description, script, checksum, applied_by, applied_at, execution_ms "
-                                                   + "FROM aether_schema_history ORDER BY version";
+    private static final String QUERY_APPLIED_SQL = "SELECT version, type, description, script, checksum, applied_by, applied_at, execution_ms " + "FROM aether_schema_history ORDER BY version";
 
-    private static final String INSERT_SQL = "INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms) "
-                                            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+    private static final String INSERT_SQL = "INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms) " + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
 
     private static final String DELETE_SQL = "DELETE FROM aether_schema_history WHERE version = ? AND type = ?";
 
@@ -92,7 +90,7 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
 
     private static final RowMapper<SchemaHistoryRepository.AppliedMigration> APPLIED_MIGRATION_MAPPER = row -> all(row.getInt("version"),
                                                                                                                    row.getString("type")
-                                                                                                                      .map(MigrationType::valueOf),
+    .map(MigrationType::valueOf),
                                                                                                                    row.getString("description"),
                                                                                                                    row.getString("script"),
                                                                                                                    row.getLong("checksum"),
@@ -102,42 +100,33 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
 
     private static final RowMapper<Long> CHECKSUM_MAPPER = row -> row.getLong("checksum");
 
-    @Override
-    public Promise<Unit> bootstrap(SqlConnector connector) {
-        return connector.update(BOOTSTRAP_SQL)
-                        .mapToUnit();
+    @Override public Promise<Unit> bootstrap(SqlConnector connector) {
+        return connector.update(BOOTSTRAP_SQL).mapToUnit();
     }
 
-    @Override
-    public Promise<List<SchemaHistoryRepository.AppliedMigration>> queryApplied(SqlConnector connector) {
+    @Override public Promise<List<SchemaHistoryRepository.AppliedMigration>> queryApplied(SqlConnector connector) {
         return connector.queryList(QUERY_APPLIED_SQL, APPLIED_MIGRATION_MAPPER);
     }
 
-    @Override
-    public Promise<Unit> recordMigration(SqlConnector connector, SchemaHistoryRepository.AppliedMigration migration) {
+    @Override public Promise<Unit> recordMigration(SqlConnector connector,
+                                                   SchemaHistoryRepository.AppliedMigration migration) {
         return connector.update(INSERT_SQL,
                                 migration.version(),
-                                migration.type()
-                                         .name(),
+                                migration.type().name(),
                                 migration.description(),
                                 migration.script(),
                                 migration.checksum(),
                                 migration.appliedBy(),
                                 migration.appliedAt(),
                                 migration.executionMs())
-                        .mapToUnit();
+        .mapToUnit();
     }
 
-    @Override
-    public Promise<Unit> removeMigration(SqlConnector connector, int version, MigrationType type) {
-        return connector.update(DELETE_SQL,
-                                version,
-                                type.name())
-                        .mapToUnit();
+    @Override public Promise<Unit> removeMigration(SqlConnector connector, int version, MigrationType type) {
+        return connector.update(DELETE_SQL, version, type.name()).mapToUnit();
     }
 
-    @Override
-    public Promise<Option<Long>> queryRepeatableChecksum(SqlConnector connector, String description) {
+    @Override public Promise<Option<Long>> queryRepeatableChecksum(SqlConnector connector, String description) {
         return connector.queryOptional(QUERY_REPEATABLE_SQL, CHECKSUM_MAPPER, description);
     }
 }

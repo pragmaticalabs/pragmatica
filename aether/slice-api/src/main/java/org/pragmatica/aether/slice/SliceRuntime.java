@@ -74,7 +74,7 @@ public sealed interface SliceRuntime {
 
 /// Internal mutable state holder for SliceRuntime.
 sealed interface SliceRuntimeHolder {
-    record unused() implements SliceRuntimeHolder {}
+    record unused() implements SliceRuntimeHolder{}
 
     java.util.concurrent.atomic.AtomicReference<SliceInvokerFacade> INVOKER_REF = new java.util.concurrent.atomic.AtomicReference<>();
 }

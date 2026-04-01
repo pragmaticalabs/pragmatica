@@ -11,13 +11,12 @@ import java.util.List;
 /// here with metadata for later inspection or reprocessing.
 public interface DeadLetterHandler {
     /// Record a dead-letter event.
-    @Contract
-    void record(String streamName,
-                int partition,
-                long offset,
-                byte[] payload,
-                String errorMessage,
-                int attemptCount);
+    @Contract void record(String streamName,
+                          int partition,
+                          long offset,
+                          byte[] payload,
+                          String errorMessage,
+                          int attemptCount);
 
     /// Read dead-letter events for a stream, up to maxCount.
     List<DeadLetterEntry> read(String streamName, int maxCount);
@@ -34,25 +33,18 @@ public interface DeadLetterHandler {
             payload = payload.clone();
         }
 
-        @Override
-        public byte[] payload() {
+        @Override public byte[] payload() {
             return payload.clone();
         }
 
-        @Override
-        public boolean equals(Object o) {
-            return o instanceof DeadLetterEntry other
-                   && partition == other.partition
-                   && offset == other.offset
-                   && attemptCount == other.attemptCount
-                   && timestamp == other.timestamp
-                   && streamName.equals(other.streamName)
-                   && Arrays.equals(payload, other.payload)
-                   && errorMessage.equals(other.errorMessage);
+        @Override public boolean equals(Object o) {
+            return o instanceof DeadLetterEntry other &&
+            partition == other.partition && offset == other.offset && attemptCount == other.attemptCount && timestamp == other.timestamp && streamName.equals(other.streamName) &&
+            Arrays.equals(payload, other.payload) &&
+            errorMessage.equals(other.errorMessage);
         }
 
-        @Override
-        public int hashCode() {
+        @Override public int hashCode() {
             int result = streamName.hashCode();
             result = 31 * result + partition;
             result = 31 * result + Long.hashCode(offset);

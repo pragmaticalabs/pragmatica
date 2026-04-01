@@ -76,51 +76,51 @@ public sealed interface SimulatorRoutes {
 
     // ========== Route Definitions ==========
     private static Route<InventoryModeResponse> getInventoryModeRoute(InventoryState state) {
-        return Route.<InventoryModeResponse> get("/inventory/mode")
+        return Route.<InventoryModeResponse>get("/inventory/mode")
                     .toJson(() -> getInventoryMode(state));
     }
 
     private static Route<InventoryModeSetResponse> setInventoryModeRoute(InventoryState state,
                                                                          Consumer<EventLogEntry> eventLogger) {
-        return Route.<InventoryModeSetResponse> post("/inventory/mode")
+        return Route.<InventoryModeSetResponse>post("/inventory/mode")
                     .withPath(aString())
                     .to(mode -> setInventoryMode(state, eventLogger, mode))
                     .asJson();
     }
 
     private static Route<InventoryMetricsResponse> inventoryMetricsRoute(InventoryState state) {
-        return Route.<InventoryMetricsResponse> get("/inventory/metrics")
+        return Route.<InventoryMetricsResponse>get("/inventory/metrics")
                     .toJson(() -> getInventoryMetrics(state));
     }
 
     private static Route<PlaceOrderResponse> placeOrderRoute(Supplier<SimulatorConfig> configSupplier) {
-        return Route.<PlaceOrderResponse> post("/orders/place")
+        return Route.<PlaceOrderResponse>post("/orders/place")
                     .toJson(_ -> placeOrder(configSupplier));
     }
 
     private static Route<OrderStatusResponse> getOrderRoute(Supplier<SimulatorConfig> configSupplier) {
-        return Route.<OrderStatusResponse> get("/orders")
+        return Route.<OrderStatusResponse>get("/orders")
                     .withPath(aString())
                     .to(orderId -> getOrderStatus(configSupplier, orderId))
                     .asJson();
     }
 
     private static Route<CancelOrderResponse> cancelOrderRoute(Supplier<SimulatorConfig> configSupplier) {
-        return Route.<CancelOrderResponse> post("/orders/cancel")
+        return Route.<CancelOrderResponse>post("/orders/cancel")
                     .withPath(aString())
                     .to(orderId -> cancelOrder(configSupplier, orderId))
                     .asJson();
     }
 
     private static Route<CheckStockResponse> checkStockRoute(Supplier<SimulatorConfig> configSupplier) {
-        return Route.<CheckStockResponse> get("/inventory")
+        return Route.<CheckStockResponse>get("/inventory")
                     .withPath(aString())
                     .to(productId -> checkStock(configSupplier, productId))
                     .asJson();
     }
 
     private static Route<GetPriceResponse> getPriceRoute(Supplier<SimulatorConfig> configSupplier) {
-        return Route.<GetPriceResponse> get("/pricing")
+        return Route.<GetPriceResponse>get("/pricing")
                     .withPath(aString())
                     .to(productId -> getPrice(configSupplier, productId))
                     .asJson();
@@ -146,12 +146,9 @@ public sealed interface SimulatorRoutes {
     }
 
     private static InventoryMetricsResponse getInventoryMetrics(InventoryState state) {
-        return new InventoryMetricsResponse(state.reservations()
-                                                 .get(),
-                                            state.releases()
-                                                 .get(),
-                                            state.stockOuts()
-                                                 .get(),
+        return new InventoryMetricsResponse(state.reservations().get(),
+                                            state.releases().get(),
+                                            state.stockOuts().get(),
                                             state.isInfiniteMode(),
                                             100);
     }
@@ -214,9 +211,8 @@ public sealed interface SimulatorRoutes {
                                                  String sliceName) {
         var config = configSupplier.get();
         var sliceConfig = config.sliceConfig(sliceName);
-        return sliceConfig.buildSimulation()
-                          .apply();
+        return sliceConfig.buildSimulation().apply();
     }
 
-    record unused() implements SimulatorRoutes {}
+    record unused() implements SimulatorRoutes{}
 }

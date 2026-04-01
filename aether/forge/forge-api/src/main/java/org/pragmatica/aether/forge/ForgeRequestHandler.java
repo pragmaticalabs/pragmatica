@@ -34,34 +34,38 @@ public final class ForgeRequestHandler {
     public void handle(RequestContext request, ResponseWriter response) {
         var path = request.path();
         log.debug("Request: {} {}", request.method(), path);
-        try{
+        try {
             // Handle CORS preflight
-            if (request.method() == org.pragmatica.http.HttpMethod.OPTIONS) {
+            if ( request.method() == org.pragmatica.http.HttpMethod.OPTIONS) {
                 handleCors(response);
                 return;
             }
             // Route to appropriate handler
-            if (path.startsWith("/api/")) {
-                apiHandler.handle(request, withCors(response));
-            } else {
-                staticHandler.handle(request, response);
-            }
-        } catch (Exception e) {
+            if ( path.startsWith("/api/")) {
+            apiHandler.handle(request, withCors(response));} else
+            {
+            staticHandler.handle(request, response);}
+        }
+
+
+
+
+        catch (Exception e) {
             log.error("Error handling request: {}", e.getMessage(), e);
             response.error(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
         }
     }
 
     private void handleCors(ResponseWriter response) {
-        response.header(ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .header(ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, PUT, DELETE, OPTIONS")
-                .header(ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type")
-                .write(HttpStatus.OK, new byte[0], CommonContentType.TEXT_PLAIN);
+        response.header(ACCESS_CONTROL_ALLOW_ORIGIN, "*").header(ACCESS_CONTROL_ALLOW_METHODS,
+                                                                 "GET, POST, PUT, DELETE, OPTIONS")
+                       .header(ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type")
+                       .write(HttpStatus.OK, new byte[0], CommonContentType.TEXT_PLAIN);
     }
 
     private ResponseWriter withCors(ResponseWriter response) {
-        return response.header(ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                       .header(ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, PUT, DELETE, OPTIONS")
-                       .header(ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type");
+        return response.header(ACCESS_CONTROL_ALLOW_ORIGIN, "*").header(ACCESS_CONTROL_ALLOW_METHODS,
+                                                                        "GET, POST, PUT, DELETE, OPTIONS")
+                              .header(ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type");
     }
 }

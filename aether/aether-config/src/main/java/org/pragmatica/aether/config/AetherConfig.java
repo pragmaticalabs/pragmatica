@@ -51,20 +51,20 @@ import static org.pragmatica.lang.Result.success;
 /// @param timeouts       Centralized timeout configuration
 /// @param storage        Named hierarchical storage instance configurations from [storage.*] sections
 /// @param endpoints      Infrastructure endpoint configurations from [endpoints.*] sections
-public record AetherConfig(ClusterConfig cluster,
-                           NodeConfig node,
-                           Option<TlsConfig> tls,
-                           Option<DockerConfig> docker,
-                           Option<KubernetesConfig> kubernetes,
-                           TtmConfig ttm,
-                           SliceConfig slice,
-                           AppHttpConfig appHttp,
-                           BackupConfig backup,
-                           DhtReplicationConfig dhtReplication,
-                           TimeoutsConfig timeouts,
-                           Map<String, StorageConfig> storage,
-                           Option<CloudConfig> cloud,
-                           Map<String, EndpointConfig> endpoints) {
+public record AetherConfig( ClusterConfig cluster,
+                            NodeConfig node,
+                            Option<TlsConfig> tls,
+                            Option<DockerConfig> docker,
+                            Option<KubernetesConfig> kubernetes,
+                            TtmConfig ttm,
+                            SliceConfig slice,
+                            AppHttpConfig appHttp,
+                            BackupConfig backup,
+                            DhtReplicationConfig dhtReplication,
+                            TimeoutsConfig timeouts,
+                            Map<String, StorageConfig> storage,
+                            Option<CloudConfig> cloud,
+                            Map<String, EndpointConfig> endpoints) {
     /// Factory method following JBCT naming convention.
     public static Result<AetherConfig> aetherConfig(ClusterConfig cluster,
                                                     NodeConfig node,
@@ -342,7 +342,7 @@ public record AetherConfig(ClusterConfig cluster,
                                                    finalBackup,
                                                    finalDhtReplication,
                                                    finalTimeouts)
-                                     .unwrap();
+            .unwrap();
             var finalStorage = storageFor();
             var withStorage = finalStorage.isEmpty()
                               ? config

@@ -51,9 +51,8 @@ public final class MethodMetrics {
 
     public MethodMetrics(MethodName methodName) {
         this.methodName = methodName;
-        this.histogram = IntStream.range(0, HISTOGRAM_SIZE)
-                                  .mapToObj(_ -> new AtomicInteger())
-                                  .toArray(AtomicInteger[]::new);
+        this.histogram = IntStream.range(0, HISTOGRAM_SIZE).mapToObj(_ -> new AtomicInteger())
+                                        .toArray(AtomicInteger[]::new);
     }
 
     /// Record an invocation result.
@@ -157,24 +156,21 @@ public final class MethodMetrics {
     }
 
     private void recordOutcome(boolean success) {
-        if (success) {
-            successCount.incrementAndGet();
-        } else {
-            failureCount.incrementAndGet();
-        }
+        if ( success) {
+        successCount.incrementAndGet();} else
+        {
+        failureCount.incrementAndGet();}
     }
 
     private int[] captureHistogram() {
         var snapshotHistogram = new int[HISTOGRAM_SIZE];
-        IntStream.range(0, HISTOGRAM_SIZE)
-                 .forEach(i -> snapshotHistogram[i] = histogram[i].get());
+        IntStream.range(0, HISTOGRAM_SIZE).forEach(i -> snapshotHistogram[i] = histogram[i].get());
         return snapshotHistogram;
     }
 
     private int[] resetHistogram() {
         var snapshotHistogram = new int[HISTOGRAM_SIZE];
-        IntStream.range(0, HISTOGRAM_SIZE)
-                 .forEach(i -> snapshotHistogram[i] = histogram[i].getAndSet(0));
+        IntStream.range(0, HISTOGRAM_SIZE).forEach(i -> snapshotHistogram[i] = histogram[i].getAndSet(0));
         return snapshotHistogram;
     }
 
@@ -193,10 +189,10 @@ public final class MethodMetrics {
     }
 
     private static int bucketFor(long durationNs) {
-        if (durationNs < BUCKET_1MS) return 0;
-        if (durationNs < BUCKET_10MS) return 1;
-        if (durationNs < BUCKET_100MS) return 2;
-        if (durationNs < BUCKET_1S) return 3;
+        if ( durationNs < BUCKET_1MS) return 0;
+        if ( durationNs < BUCKET_10MS) return 1;
+        if ( durationNs < BUCKET_100MS) return 2;
+        if ( durationNs < BUCKET_1S) return 3;
         return 4;
     }
 
@@ -254,9 +250,8 @@ public final class MethodMetrics {
         /// @param p Percentile as fraction (0.0 to 1.0), e.g. 0.95 for p95
         /// @return Latency in nanoseconds at the given percentile, or 0 if no samples
         public long percentile(double p) {
-            if (latencySamples.length == 0) {
-                return 0;
-            }
+            if ( latencySamples.length == 0) {
+            return 0;}
             var sorted = latencySamples.clone();
             Arrays.sort(sorted);
             int index = Math.min((int)(p * sorted.length), sorted.length - 1);
@@ -284,26 +279,19 @@ public final class MethodMetrics {
         /// @param percentile Value between 0 and 100 (e.g., 95 for p95)
         /// @return Estimated latency in nanoseconds
         public long estimatePercentileNs(int percentile) {
-            if (count == 0) return 0;
+            if ( count == 0) return 0;
             long target = (count * percentile) / 100;
             long cumulative = 0;
-            for (int i = 0; i < histogram.length; i++) {
+            for ( int i = 0; i < histogram.length; i++) {
                 cumulative += histogram[i];
-                if (cumulative >= target) {
-                    return bucketUpperBound(i);
-                }
+                if ( cumulative >= target) {
+                return bucketUpperBound(i);}
             }
             return BUCKET_1S;
         }
 
         private static long bucketUpperBound(int bucket) {
-            return switch (bucket) {
-                case 0 -> BUCKET_1MS;
-                case 1 -> BUCKET_10MS;
-                case 2 -> BUCKET_100MS;
-                case 3 -> BUCKET_1S;
-                default -> BUCKET_1S * 10;
-            };
+            return switch (bucket) {case 0 -> BUCKET_1MS;case 1 -> BUCKET_10MS;case 2 -> BUCKET_100MS;case 3 -> BUCKET_1S;default -> BUCKET_1S * 10;};
         }
     }
 }

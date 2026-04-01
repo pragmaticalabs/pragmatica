@@ -3,6 +3,7 @@ package org.pragmatica.aether.cli.cluster;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -22,14 +23,14 @@ import static org.pragmatica.lang.Result.success;
 /// Stores registered cluster endpoints and tracks the active context.
 /// The registry file uses TOML format with `[current]` section for active context
 /// and `[clusters.<name>]` sections for each registered cluster.
-public record ClusterRegistry(Path registryPath, Option<String> currentContext, List<ClusterEntry> entries) {
+public record ClusterRegistry( Path registryPath, Option<String> currentContext, List<ClusterEntry> entries) {
     private static final String CLUSTERS_PREFIX = "clusters.";
     private static final Path DEFAULT_REGISTRY_PATH = Path.of(System.getProperty("user.home"),
                                                               ".aether",
                                                               "clusters.toml");
 
     /// A single registered cluster entry.
-    public record ClusterEntry(String name, String endpoint, Option<String> apiKeyEnv) {}
+    public record ClusterEntry(String name, String endpoint, Option<String> apiKeyEnv){}
 
     /// Error types for registry operations.
     public sealed interface RegistryError extends Cause {
@@ -40,22 +41,19 @@ public record ClusterRegistry(Path registryPath, Option<String> currentContext, 
             General(String message) {
                 this.message = message;
             }
-            @Override
-            public String message() {
+            @Override public String message() {
                 return message;
             }
         }
 
         record WriteError(String detail) implements RegistryError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Failed to write registry: " + detail;
             }
         }
 
         record ReadError(String detail) implements RegistryError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Failed to read registry: " + detail;
             }
         }
@@ -114,19 +112,15 @@ public record ClusterRegistry(Path registryPath, Option<String> currentContext, 
     }
 
     private Option<ClusterEntry> findEntry(String name) {
-        return entries.stream()
-                      .filter(e -> e.name()
-                                    .equals(name))
-                      .findFirst()
-                      .map(Option::some)
-                      .orElse(none());
+        return entries.stream().filter(e -> e.name().equals(name))
+                             .findFirst()
+                             .map(Option::some)
+                             .orElse(none());
     }
 
     private List<ClusterEntry> removeByName(String name) {
-        return entries.stream()
-                      .filter(e -> !e.name()
-                                     .equals(name))
-                      .toList();
+        return entries.stream().filter(e -> !e.name().equals(name))
+                             .toList();
     }
 
     private ClusterRegistry buildRegistryAfterRemoval(String name) {
@@ -136,9 +130,8 @@ public record ClusterRegistry(Path registryPath, Option<String> currentContext, 
     }
 
     private static Result<ClusterRegistry> loadExisting(Path path) {
-        return TomlParser.parseFile(path)
-                         .mapError(c -> new RegistryError.ReadError(c.message()))
-                         .map(doc -> fromDocument(path, doc));
+        return TomlParser.parseFile(path).mapError(c -> new RegistryError.ReadError(c.message()))
+                                   .map(doc -> fromDocument(path, doc));
     }
 
     private static ClusterRegistry fromDocument(Path path, TomlDocument doc) {
@@ -150,20 +143,18 @@ public record ClusterRegistry(Path registryPath, Option<String> currentContext, 
     @SuppressWarnings("JBCT-PAT-01")
     private static List<ClusterEntry> extractEntries(TomlDocument doc) {
         var result = new ArrayList<ClusterEntry>();
-        for (var section : doc.sectionNames()) {
-            if (section.startsWith(CLUSTERS_PREFIX)) {
-                var name = section.substring(CLUSTERS_PREFIX.length());
-                var endpoint = doc.getString(section, "endpoint")
-                                  .or("");
-                var apiKeyEnv = doc.getString(section, "api_key_env");
-                result.add(new ClusterEntry(name, endpoint, apiKeyEnv));
-            }
-        }
+        for ( var section : doc.sectionNames()) {
+        if ( section.startsWith(CLUSTERS_PREFIX)) {
+            var name = section.substring(CLUSTERS_PREFIX.length());
+            var endpoint = doc.getString(section, "endpoint").or("");
+            var apiKeyEnv = doc.getString(section, "api_key_env");
+            result.add(new ClusterEntry(name, endpoint, apiKeyEnv));
+        }}
         return List.copyOf(result);
     }
 
     @SuppressWarnings({"JBCT-SEQ-01", "JBCT-EX-01"})
-    private void writeToFile() throws IOException {
+    @Contract private void writeToFile() throws IOException {
         var content = buildFileContent();
         Files.createDirectories(registryPath.getParent());
         Files.writeString(registryPath, content);
@@ -176,25 +167,21 @@ public record ClusterRegistry(Path registryPath, Option<String> currentContext, 
         return sb.toString();
     }
 
-    private void appendCurrentSection(StringBuilder sb) {
-        currentContext.onPresent(ctx -> sb.append("[current]\ncontext = \"")
-                                          .append(ctx)
-                                          .append("\"\n\n"));
+    @Contract private void appendCurrentSection(StringBuilder sb) {
+        currentContext.onPresent(ctx -> sb.append("[current]\ncontext = \"").append(ctx)
+                                                 .append("\"\n\n"));
     }
 
+    @Contract
     @SuppressWarnings("JBCT-PAT-01")
     private void appendClusterSections(StringBuilder sb) {
-        for (var entry : entries) {
-            sb.append("[clusters.")
-              .append(entry.name())
-              .append("]\n");
-            sb.append("endpoint = \"")
-              .append(entry.endpoint())
-              .append("\"\n");
-            entry.apiKeyEnv()
-                 .onPresent(key -> sb.append("api_key_env = \"")
-                                     .append(key)
-                                     .append("\"\n"));
+        for ( var entry : entries) {
+            sb.append("[clusters.").append(entry.name())
+                     .append("]\n");
+            sb.append("endpoint = \"").append(entry.endpoint())
+                     .append("\"\n");
+            entry.apiKeyEnv().onPresent(key -> sb.append("api_key_env = \"").append(key)
+                                                        .append("\"\n"));
             sb.append('\n');
         }
     }

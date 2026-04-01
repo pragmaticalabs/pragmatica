@@ -23,8 +23,7 @@ import org.pragmatica.lang.Promise;
 ///     }
 /// };
 /// }```
-@FunctionalInterface
-public interface MethodInterceptor {
+@FunctionalInterface public interface MethodInterceptor {
     /// Intercept a method invocation, wrapping it with additional behavior.
     ///
     /// @param method The original method to intercept

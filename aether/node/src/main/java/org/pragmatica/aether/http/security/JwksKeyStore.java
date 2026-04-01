@@ -33,8 +33,7 @@ import static org.pragmatica.lang.Result.success;
 ///
 /// Keys are cached with a configurable TTL. On cache miss for an unknown kid,
 /// the store refreshes from the remote JWKS endpoint (supporting key rotation).
-@SuppressWarnings({"JBCT-RET-03", "JBCT-EX-01", "JBCT-PAT-01"})
-class JwksKeyStore implements AutoCloseable {
+@SuppressWarnings({"JBCT-RET-03", "JBCT-EX-01", "JBCT-PAT-01"}) class JwksKeyStore implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(JwksKeyStore.class);
     private static final JsonMapper JSON = JsonMapper.defaultJsonMapper();
 
@@ -63,8 +62,7 @@ class JwksKeyStore implements AutoCloseable {
     }
 
     @Override
-    @Contract
-    public void close() {
+    @Contract public void close() {
         httpClient.close();
     }
 
@@ -72,23 +70,21 @@ class JwksKeyStore implements AutoCloseable {
     /// If kid not found in cache, attempts a refresh from the JWKS endpoint.
     Result<PublicKey> findKey(String kid, String alg) {
         refreshIfExpired();
-        return Option.option(keyCache.get(kid))
-                     .toResult(new SecurityError.KeyNotFound("Key not found for kid: " + kid))
-                     .orElse(() -> refreshAndRetry(kid));
+        return Option.option(keyCache.get(kid)).toResult(new SecurityError.KeyNotFound("Key not found for kid: " + kid))
+                            .orElse(() -> refreshAndRetry(kid));
     }
 
     private void refreshIfExpired() {
         var now = System.currentTimeMillis();
         var lastFetch = lastFetchTime.get();
-        if (now - lastFetch > cacheTtlMs && lastFetchTime.compareAndSet(lastFetch, now)) {
-            fetchAndCacheKeys();
-        }
+        if ( now - lastFetch > cacheTtlMs && lastFetchTime.compareAndSet(lastFetch, now)) {
+        fetchAndCacheKeys();}
     }
 
     private Result<PublicKey> refreshAndRetry(String kid) {
         fetchAndCacheKeys();
         return Option.option(keyCache.get(kid))
-                     .toResult(new SecurityError.KeyNotFound("Key not found for kid: " + kid + " after JWKS refresh"));
+        .toResult(new SecurityError.KeyNotFound("Key not found for kid: " + kid + " after JWKS refresh"));
     }
 
     private void fetchAndCacheKeys() {
@@ -100,8 +96,7 @@ class JwksKeyStore implements AutoCloseable {
 
     @SuppressWarnings("unchecked")
     private void applyJwksResponse(Map<String, Object> jwksMap) {
-        Option.option((List<Map<String, Object>>) jwksMap.get("keys"))
-              .onPresent(this::refreshKeyCache);
+        Option.option((List<Map<String, Object>>) jwksMap.get("keys")).onPresent(this::refreshKeyCache);
     }
 
     private void refreshKeyCache(List<Map<String, Object>> keys) {
@@ -117,27 +112,21 @@ class JwksKeyStore implements AutoCloseable {
     private void cacheKeyInto(ConcurrentHashMap<String, PublicKey> targetCache, Map<String, Object> keyData) {
         var kid = stringValue(keyData, "kid");
         var kty = stringValue(keyData, "kty");
-        if (kid.isEmpty()) {
-            return;
-        }
+        if ( kid.isEmpty()) {
+        return;}
         buildPublicKey(kty, keyData).onSuccess(key -> targetCache.put(kid, key));
     }
 
     private void cacheKey(Map<String, Object> keyData) {
         var kid = stringValue(keyData, "kid");
         var kty = stringValue(keyData, "kty");
-        if (kid.isEmpty()) {
-            return;
-        }
+        if ( kid.isEmpty()) {
+        return;}
         buildPublicKey(kty, keyData).onSuccess(key -> keyCache.put(kid, key));
     }
 
     private static Result<PublicKey> buildPublicKey(String kty, Map<String, Object> keyData) {
-        return switch (kty) {
-            case "RSA" -> buildRsaPublicKey(keyData);
-            case "EC" -> buildEcPublicKey(keyData);
-            default -> new SecurityError.JwksFetchFailed("Unsupported key type: " + kty).result();
-        };
+        return switch (kty) {case "RSA" -> buildRsaPublicKey(keyData);case "EC" -> buildEcPublicKey(keyData);default -> new SecurityError.JwksFetchFailed("Unsupported key type: " + kty).result();};
     }
 
     private static Result<PublicKey> buildRsaPublicKey(Map<String, Object> keyData) {
@@ -148,8 +137,7 @@ class JwksKeyStore implements AutoCloseable {
         var n = decodeBigInteger(stringValue(keyData, "n"));
         var e = decodeBigInteger(stringValue(keyData, "e"));
         var spec = new RSAPublicKeySpec(n, e);
-        return KeyFactory.getInstance("RSA")
-                         .generatePublic(spec);
+        return KeyFactory.getInstance("RSA").generatePublic(spec);
     }
 
     private static Result<PublicKey> buildEcPublicKey(Map<String, Object> keyData) {
@@ -163,17 +151,11 @@ class JwksKeyStore implements AutoCloseable {
         var ecParams = resolveEcParams(crv);
         var point = new ECPoint(x, y);
         var spec = new ECPublicKeySpec(point, ecParams);
-        return KeyFactory.getInstance("EC")
-                         .generatePublic(spec);
+        return KeyFactory.getInstance("EC").generatePublic(spec);
     }
 
     private static ECParameterSpec resolveEcParams(String crv) throws Exception {
-        var curveName = switch (crv) {
-            case "P-256" -> "secp256r1";
-            case "P-384" -> "secp384r1";
-            case "P-521" -> "secp521r1";
-            default -> throw new IllegalArgumentException("Unsupported curve: " + crv);
-        };
+        var curveName = switch (crv) {case "P-256" -> "secp256r1"; case "P-384" -> "secp384r1"; case "P-521" -> "secp521r1"; default -> throw new IllegalArgumentException("Unsupported curve: " + crv);};
         var params = java.security.AlgorithmParameters.getInstance("EC");
         params.init(new java.security.spec.ECGenParameterSpec(curveName));
         return params.getParameterSpec(ECParameterSpec.class);
@@ -184,18 +166,14 @@ class JwksKeyStore implements AutoCloseable {
     }
 
     private Map<String, Object> doFetchJwks() throws Exception {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create(jwksUrl))
-                                 .header("Accept", "application/json")
-                                 .GET()
-                                 .build();
+        var request = HttpRequest.newBuilder().uri(URI.create(jwksUrl))
+                                            .header("Accept", "application/json")
+                                            .GET()
+                                            .build();
         var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-        if (response.statusCode() != 200) {
-            throw new RuntimeException("JWKS fetch returned HTTP " + response.statusCode());
-        }
-        return JSON.readString(response.body(),
-                               MAP_TYPE)
-                   .unwrap();
+        if ( response.statusCode() != 200) {
+        throw new RuntimeException("JWKS fetch returned HTTP " + response.statusCode());}
+        return JSON.readString(response.body(), MAP_TYPE).unwrap();
     }
 
     private static SecurityError fetchFailed(Throwable t) {
@@ -212,8 +190,7 @@ class JwksKeyStore implements AutoCloseable {
     }
 
     private static String stringValue(Map<String, Object> map, String key) {
-        return Option.option(map.get(key))
-                     .map(Object::toString)
-                     .or("");
+        return Option.option(map.get(key)).map(Object::toString)
+                            .or("");
     }
 }

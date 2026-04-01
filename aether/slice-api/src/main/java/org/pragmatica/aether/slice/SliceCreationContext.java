@@ -63,10 +63,7 @@ public interface SliceCreationContext {
     /// @return New SliceCreationContext
     static SliceCreationContext sliceCreationContext(SliceInvokerFacade invoker,
                                                      ResourceProviderFacade resources) {
-        return DefaultSliceCreationContext.defaultSliceCreationContext(invoker,
-                                                                       resources,
-                                                                       none())
-                                          .unwrap();
+        return DefaultSliceCreationContext.defaultSliceCreationContext(invoker, resources, none()).unwrap();
     }
 
     /// Create a SliceCreationContext with the given components and slice ID.
@@ -78,17 +75,14 @@ public interface SliceCreationContext {
     static SliceCreationContext sliceCreationContext(SliceInvokerFacade invoker,
                                                      ResourceProviderFacade resources,
                                                      String sliceId) {
-        return DefaultSliceCreationContext.defaultSliceCreationContext(invoker,
-                                                                       resources,
-                                                                       some(sliceId))
-                                          .unwrap();
+        return DefaultSliceCreationContext.defaultSliceCreationContext(invoker, resources, some(sliceId)).unwrap();
     }
 }
 
 /// Default implementation of SliceCreationContext.
-record DefaultSliceCreationContext(SliceInvokerFacade invoker,
-                                   ResourceProviderFacade resources,
-                                   Option<String> sliceId) implements SliceCreationContext {
+record DefaultSliceCreationContext( SliceInvokerFacade invoker,
+                                    ResourceProviderFacade resources,
+                                    Option<String> sliceId) implements SliceCreationContext {
     static Result<DefaultSliceCreationContext> defaultSliceCreationContext(SliceInvokerFacade invoker,
                                                                            ResourceProviderFacade resources,
                                                                            Option<String> sliceId) {

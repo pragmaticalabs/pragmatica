@@ -40,7 +40,7 @@ public final class StreamRoutes implements RouteSource {
     }
 
     // --- Response records ---
-    record StreamListResponse(List<StreamSummary> streams) {}
+    record StreamListResponse(List<StreamSummary> streams){}
 
     record StreamSummary(String name, int partitions, long totalEvents, long totalBytes) {
         static StreamSummary fromStreamInfo(StreamInfo info) {
@@ -52,7 +52,7 @@ public final class StreamRoutes implements RouteSource {
                               int partitions,
                               long totalEvents,
                               long totalBytes,
-                              List<PartitionDetail> partitionDetails) {}
+                              List<PartitionDetail> partitionDetails){}
 
     record PartitionDetail(int partition, long headOffset, long tailOffset, long eventCount) {
         static PartitionDetail fromPartitionInfo(PartitionInfo info) {
@@ -60,50 +60,48 @@ public final class StreamRoutes implements RouteSource {
         }
     }
 
-    record PublishRequest(String data) {}
+    record PublishRequest(String data){}
 
-    record PublishResponse(long offset) {}
+    record PublishResponse(long offset){}
 
-    record StreamCreateRequest(String name, Integer partitions) {}
+    record StreamCreateRequest(String name, Integer partitions){}
 
-    record StreamCreateResponse(String name, int partitions, String status) {}
+    record StreamCreateResponse(String name, int partitions, String status){}
 
     record EventRecord(long offset, String data, long timestamp) {
         static EventRecord fromRawEvent(OffHeapRingBuffer.RawEvent event) {
             return new EventRecord(event.offset(),
-                                   Base64.getEncoder()
-                                         .encodeToString(event.data()),
+                                   Base64.getEncoder().encodeToString(event.data()),
                                    event.timestamp());
         }
     }
 
-    record ReadEventsResponse(List<EventRecord> events) {}
+    record ReadEventsResponse(List<EventRecord> events){}
 
     // --- Route definitions ---
-    @Override
-    public Stream<Route<?>> routes() {
-        return Stream.of(Route.<StreamCreateResponse> post("/api/streams")
+    @Override public Stream<Route<?>> routes() {
+        return Stream.of(Route.<StreamCreateResponse>post("/api/streams")
                               .withBody(StreamCreateRequest.class)
                               .toResult(this::createStream)
                               .asJson(),
-                         Route.<StreamListResponse> get("/api/streams")
+                         Route.<StreamListResponse>get("/api/streams")
                               .toJson(this::listStreams),
-                         Route.<StreamInfoResponse> get("/api/streams")
+                         Route.<StreamInfoResponse>get("/api/streams")
                               .withPath(PathParameter.aString())
                               .toResult(this::streamInfo)
                               .asJson(),
-                         Route.<PartitionDetail> get("/api/streams")
+                         Route.<PartitionDetail>get("/api/streams")
                               .withPath(PathParameter.aString(),
                                         PathParameter.aInteger())
                               .toResult(this::partitionDetails)
                               .asJson(),
-                         Route.<PublishResponse> post("/api/streams")
+                         Route.<PublishResponse>post("/api/streams")
                               .withPath(PathParameter.aString(),
                                         PathParameter.spacer("publish"))
                               .withBody(PublishRequest.class)
                               .toResult(this::publishEvent)
                               .asJson(),
-                         Route.<ReadEventsResponse> get("/api/streams")
+                         Route.<ReadEventsResponse>get("/api/streams")
                               .withPath(PathParameter.aString(),
                                         PathParameter.aInteger(),
                                         PathParameter.spacer("read"))
@@ -130,9 +128,8 @@ public final class StreamRoutes implements RouteSource {
 
     private Result<StreamInfoResponse> buildStreamInfoResponse(String name, StreamInfo info) {
         return streamManager().allPartitionInfo(name)
-                            .map(partitions -> partitions.stream()
-                                                         .map(PartitionDetail::fromPartitionInfo)
-                                                         .toList())
+                            .map(partitions -> partitions.stream().map(PartitionDetail::fromPartitionInfo)
+                                                                .toList())
                             .map(details -> new StreamInfoResponse(info.name(),
                                                                    info.partitions(),
                                                                    info.totalEvents(),
@@ -148,28 +145,33 @@ public final class StreamRoutes implements RouteSource {
     private Result<PublishResponse> publishEvent(String name, String spacer, PublishRequest request) {
         var payload = request.data().getBytes(StandardCharsets.UTF_8);
         ensureStreamExists(name);
-        return streamManager().publishLocal(name, 0, payload, System.currentTimeMillis())
-                              .map(PublishResponse::new);
+        return streamManager().publishLocal(name,
+                                            0,
+                                            payload,
+                                            System.currentTimeMillis())
+                            .map(PublishResponse::new);
     }
 
     private Result<StreamCreateResponse> createStream(StreamCreateRequest request) {
-        return Option.option(request.name())
-                     .toResult(MISSING_STREAM_NAME)
-                     .flatMap(name -> createStreamWithConfig(name, request));
+        return Option.option(request.name()).toResult(MISSING_STREAM_NAME)
+                            .flatMap(name -> createStreamWithConfig(name, request));
     }
 
     private Result<StreamCreateResponse> createStreamWithConfig(String name, StreamCreateRequest request) {
         var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
         var config = StreamConfig.streamConfig(name, partitions, MANAGEMENT_API_RETENTION, "latest");
         return streamManager().createStream(config)
-                              .map(_ -> new StreamCreateResponse(name, partitions, "created"));
+                            .map(_ -> new StreamCreateResponse(name, partitions, "created"));
     }
 
     private static final RetentionPolicy MANAGEMENT_API_RETENTION =
-        RetentionPolicy.retentionPolicy(10_000, 4 * 1024 * 1024L, 60 * 60 * 1000L);
+    RetentionPolicy.retentionPolicy(10_000, 4 * 1024 * 1024L, 60 * 60 * 1000L);
 
     private void ensureStreamExists(String name) {
-        streamManager().createStream(StreamConfig.streamConfig(name, DEFAULT_PARTITIONS, MANAGEMENT_API_RETENTION, "latest"));
+        streamManager().createStream(StreamConfig.streamConfig(name,
+                                                               DEFAULT_PARTITIONS,
+                                                               MANAGEMENT_API_RETENTION,
+                                                               "latest"));
     }
 
     private ReadEventsResponse readEvents(String name,
@@ -180,15 +182,13 @@ public final class StreamRoutes implements RouteSource {
         var fromOffset = fromOpt.or(0L);
         var maxEvents = maxOpt.or(DEFAULT_MAX_EVENTS);
         var events = streamManager().readLocal(name, partition, fromOffset, maxEvents)
-                                  .map(list -> list.stream()
-                                                   .map(EventRecord::fromRawEvent)
-                                                   .toList())
+                                  .map(list -> list.stream().map(EventRecord::fromRawEvent)
+                                                          .toList())
                                   .or(List.of());
         return new ReadEventsResponse(events);
     }
 
     private StreamPartitionManager streamManager() {
-        return nodeSupplier.get()
-                           .streamPartitionManager();
+        return nodeSupplier.get().streamPartitionManager();
     }
 }

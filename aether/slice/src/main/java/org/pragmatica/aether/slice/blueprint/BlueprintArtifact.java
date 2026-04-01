@@ -15,9 +15,9 @@ import java.util.Map;
 /// @param schemaMigrations schema migration scripts keyed by datasource name
 @Codec
 @CodecFor(Blueprint.class)
-public record BlueprintArtifact(Blueprint blueprint,
-                                Option<String> resourcesConfig,
-                                Map<String, List<MigrationEntry>> schemaMigrations) {
+public record BlueprintArtifact( Blueprint blueprint,
+                                 Option<String> resourcesConfig,
+                                 Map<String, List<MigrationEntry>> schemaMigrations) {
     public BlueprintArtifact {
         schemaMigrations = schemaMigrations == null
                            ? Map.of()

@@ -14,25 +14,23 @@ import picocli.CommandLine.Parameters;
 ///
 /// The named cluster must already exist in the registry.
 @Command(name = "use", description = "Switch active cluster context")
-@SuppressWarnings("JBCT-RET-01")
-class ClusterUseCommand implements Callable<Integer> {
+@SuppressWarnings("JBCT-RET-01") class ClusterUseCommand implements Callable<Integer> {
     @Parameters(index = "0", description = "Cluster name to activate")
     private String name;
 
-    @CommandLine.ParentCommand
-    private ClusterCommand parent;
+    @CommandLine.ParentCommand private ClusterCommand parent;
 
-    @Override
-    public Integer call() {
-        return ClusterRegistry.load()
-                              .flatMap(registry -> registry.use(name))
-                              .flatMap(ClusterRegistry::save)
-                              .fold(ClusterUseCommand::onFailure, _ -> onSuccess());
+    @Override public Integer call() {
+        return ClusterRegistry.load().flatMap(registry -> registry.use(name))
+                                   .flatMap(ClusterRegistry::save)
+                                   .fold(ClusterUseCommand::onFailure,
+                                         _ -> onSuccess());
     }
 
     private int onSuccess() {
-        return OutputFormatter.printAction("{\"context\":\"" + name + "\"}", parent.outputOptions(),
-                                          "Switched to cluster context: " + name);
+        return OutputFormatter.printAction("{\"context\":\"" + name + "\"}",
+                                           parent.outputOptions(),
+                                           "Switched to cluster context: " + name);
     }
 
     private static int onFailure(Cause cause) {

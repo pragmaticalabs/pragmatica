@@ -3,6 +3,7 @@ package org.pragmatica.aether.stream.segment;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.StorageInstance;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,12 +25,11 @@ public final class StorageSegmentSink implements SegmentSink {
         return new StorageSegmentSink(storage, index);
     }
 
-    @Override
-    public Promise<Unit> seal(SealedSegment segment) {
-        return storage.put(segment.serializedEvents())
-                      .flatMap(blockId -> storage.createRef(refName(segment), blockId))
-                      .onSuccess(_ -> updateIndex(segment))
-                      .onSuccess(_ -> logSealed(segment));
+    @Override public Promise<Unit> seal(SealedSegment segment) {
+        return storage.put(segment.serializedEvents()).flatMap(blockId -> storage.createRef(refName(segment),
+                                                                                            blockId))
+                          .onSuccess(_ -> updateIndex(segment))
+                          .onSuccess(_ -> logSealed(segment));
     }
 
     private void updateIndex(SealedSegment segment) {
@@ -38,12 +38,14 @@ public final class StorageSegmentSink implements SegmentSink {
 
     private void logSealed(SealedSegment segment) {
         log.debug("Sealed segment {} partition={} offsets=[{}-{}] events={}",
-                  segment.streamName(), segment.partition(),
-                  segment.startOffset(), segment.endOffset(), segment.eventCount());
+                  segment.streamName(),
+                  segment.partition(),
+                  segment.startOffset(),
+                  segment.endOffset(),
+                  segment.eventCount());
     }
 
     static String refName(SealedSegment segment) {
-        return "streams/" + segment.streamName() + "/" + segment.partition()
-               + "/" + segment.startOffset() + "-" + segment.endOffset();
+        return "streams/" + segment.streamName() + "/" + segment.partition() + "/" + segment.startOffset() + "-" + segment.endOffset();
     }
 }

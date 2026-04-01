@@ -59,63 +59,50 @@ public interface GovernorCleanup {
     Promise<Unit> rebuildIndex(DHTNode dhtNode);
 
     static GovernorCleanup governorCleanup(MutationForwarder mutationForwarder) {
-        record governorCleanup(MutationForwarder mutationForwarder,
-                               Map<NodeId, Set<NodeArtifactKey>> nodeArtifactIndex,
-                               Map<NodeId, Set<NodeRoutesKey>> nodeRoutesIndex,
-                               AtomicLong correlationCounter) implements GovernorCleanup {
-            @Override
-            public void trackNodeArtifact(NodeId nodeId, NodeArtifactKey key) {
-                nodeArtifactIndex.computeIfAbsent(nodeId,
-                                                  _ -> ConcurrentHashMap.newKeySet())
-                                 .add(key);
+        record governorCleanup( MutationForwarder mutationForwarder,
+                                Map<NodeId, Set<NodeArtifactKey>> nodeArtifactIndex,
+                                Map<NodeId, Set<NodeRoutesKey>> nodeRoutesIndex,
+                                AtomicLong correlationCounter) implements GovernorCleanup {
+            @Override public void trackNodeArtifact(NodeId nodeId, NodeArtifactKey key) {
+                nodeArtifactIndex.computeIfAbsent(nodeId, _ -> ConcurrentHashMap.newKeySet()).add(key);
             }
 
-            @Override
-            public void trackNodeRoutes(NodeId nodeId, NodeRoutesKey key) {
-                nodeRoutesIndex.computeIfAbsent(nodeId,
-                                                _ -> ConcurrentHashMap.newKeySet())
-                               .add(key);
+            @Override public void trackNodeRoutes(NodeId nodeId, NodeRoutesKey key) {
+                nodeRoutesIndex.computeIfAbsent(nodeId, _ -> ConcurrentHashMap.newKeySet()).add(key);
             }
 
-            @Override
-            public void untrackNodeArtifact(NodeId nodeId, NodeArtifactKey key) {
+            @Override public void untrackNodeArtifact(NodeId nodeId, NodeArtifactKey key) {
                 var keys = nodeArtifactIndex.get(nodeId);
-                if (keys != null) {
-                    keys.remove(key);
-                }
+                if ( keys != null) {
+                keys.remove(key);}
             }
 
-            @Override
-            public void untrackNodeRoutes(NodeId nodeId, NodeRoutesKey key) {
+            @Override public void untrackNodeRoutes(NodeId nodeId, NodeRoutesKey key) {
                 var keys = nodeRoutesIndex.get(nodeId);
-                if (keys != null) {
-                    keys.remove(key);
-                }
+                if ( keys != null) {
+                keys.remove(key);}
             }
 
-            @Override
-            public Promise<Unit> cleanupDeadNodes(Set<NodeId> aliveNodes) {
+            @Override public Promise<Unit> cleanupDeadNodes(Set<NodeId> aliveNodes) {
                 var deadNodes = new HashSet<NodeId>();
                 deadNodes.addAll(nodeArtifactIndex.keySet());
                 deadNodes.addAll(nodeRoutesIndex.keySet());
                 deadNodes.removeAll(aliveNodes);
-                if (deadNodes.isEmpty()) {
+                if ( deadNodes.isEmpty()) {
                     log.info("No dead nodes found during reconciliation");
                     return Promise.unitPromise();
                 }
                 log.info("Reconciliation found {} dead nodes: {}", deadNodes.size(), deadNodes);
                 var result = Promise.unitPromise();
-                for (var deadNode : deadNodes) {
-                    result = result.flatMap(_ -> cleanupDeadNode(deadNode));
-                }
+                for ( var deadNode : deadNodes) {
+                result = result.flatMap(_ -> cleanupDeadNode(deadNode));}
                 return result;
             }
 
-            @Override
-            public Promise<Unit> cleanupDeadNode(NodeId deadNode) {
+            @Override public Promise<Unit> cleanupDeadNode(NodeId deadNode) {
                 var nodeArtifactKeys = List.copyOf(nodeArtifactIndex.getOrDefault(deadNode, Set.of()));
                 var nodeRoutesKeys = List.copyOf(nodeRoutesIndex.getOrDefault(deadNode, Set.of()));
-                if (nodeArtifactKeys.isEmpty() && nodeRoutesKeys.isEmpty()) {
+                if ( nodeArtifactKeys.isEmpty() && nodeRoutesKeys.isEmpty()) {
                     log.debug("No KV entries to clean up for dead node {}", deadNode);
                     return Promise.unitPromise();
                 }
@@ -129,13 +116,11 @@ public interface GovernorCleanup {
                 return Promise.unitPromise();
             }
 
-            @Override
-            public Promise<Unit> rebuildIndex(DHTNode dhtNode) {
+            @Override public Promise<Unit> rebuildIndex(DHTNode dhtNode) {
                 clearAllIndices();
-                return dhtNode.storage()
-                              .entries()
-                              .map(this::processEntries)
-                              .mapToUnit();
+                return dhtNode.storage().entries()
+                                      .map(this::processEntries)
+                                      .mapToUnit();
             }
 
             private void clearAllIndices() {
@@ -145,22 +130,19 @@ public interface GovernorCleanup {
 
             private int processEntries(List<DHTMessage.KeyValue> entries) {
                 var count = 0;
-                for (var entry : entries) {
+                for ( var entry : entries) {
                     var keyStr = new String(entry.key(), StandardCharsets.UTF_8);
-                    if (tryProcessNodeArtifact(keyStr) || tryProcessNodeRoutes(keyStr)) {
-                        count++;
-                    }
+                    if ( tryProcessNodeArtifact(keyStr) || tryProcessNodeRoutes(keyStr)) {
+                    count++;}
                 }
                 log.info("Rebuilt cleanup index from DHT: {} tracked entries", count);
                 return count;
             }
 
             private boolean tryProcessNodeArtifact(String keyStr) {
-                if (!keyStr.startsWith(NODE_ARTIFACT_PREFIX)) {
-                    return false;
-                }
-                return NodeArtifactKey.nodeArtifactKey(keyStr)
-                                      .fold(_ -> false, this::trackAndReturnNodeArtifact);
+                if ( !keyStr.startsWith(NODE_ARTIFACT_PREFIX)) {
+                return false;}
+                return NodeArtifactKey.nodeArtifactKey(keyStr).fold(_ -> false, this::trackAndReturnNodeArtifact);
             }
 
             private boolean trackAndReturnNodeArtifact(NodeArtifactKey nak) {
@@ -169,11 +151,9 @@ public interface GovernorCleanup {
             }
 
             private boolean tryProcessNodeRoutes(String keyStr) {
-                if (!keyStr.startsWith(NODE_ROUTES_PREFIX)) {
-                    return false;
-                }
-                return NodeRoutesKey.nodeRoutesKey(keyStr)
-                                    .fold(_ -> false, this::trackAndReturnNodeRoutes);
+                if ( !keyStr.startsWith(NODE_ROUTES_PREFIX)) {
+                return false;}
+                return NodeRoutesKey.nodeRoutesKey(keyStr).fold(_ -> false, this::trackAndReturnNodeRoutes);
             }
 
             private boolean trackAndReturnNodeRoutes(NodeRoutesKey nrk) {
@@ -188,8 +168,8 @@ public interface GovernorCleanup {
             }
 
             @SuppressWarnings("unchecked")
-            private <K extends AetherKey> void forwardRemoveAll(List<K> keys, NodeId deadNode, String type) {
-                for (var key : keys) {
+            private<K extends AetherKey> void forwardRemoveAll(List<K> keys, NodeId deadNode, String type) {
+                for ( var key : keys) {
                     var correlationId = "cleanup-" + deadNode.id() + "-" + type + "-" + correlationCounter.incrementAndGet();
                     KVCommand<AetherKey> command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
                     mutationForwarder.forward(WorkerMutation.workerMutation(deadNode, correlationId, command));

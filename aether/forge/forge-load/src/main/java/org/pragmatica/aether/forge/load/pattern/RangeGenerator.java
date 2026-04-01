@@ -17,7 +17,7 @@ import static org.pragmatica.lang.Result.success;
 /// Pattern: `${range:MIN-MAX`} where MIN and MAX are integers.
 ///
 /// Example: `${range:1-100`} generates a random number between 1 and 100 (inclusive)
-public record RangeGenerator(int min, int max) implements PatternGenerator {
+public record RangeGenerator( int min, int max) implements PatternGenerator {
     public static final String TYPE = "range";
 
     public static Result<RangeGenerator> rangeGenerator(int min, int max) {
@@ -33,30 +33,24 @@ public record RangeGenerator(int min, int max) implements PatternGenerator {
     /// Parses a range specification like "1-100" or "-50-50".
     public static Result<PatternGenerator> rangeGenerator(String rangeSpec) {
         var matcher = RANGE_PATTERN.matcher(rangeSpec.trim());
-        if (!matcher.matches()) {
-            return INVALID_RANGE.apply(rangeSpec)
-                                .result();
-        }
+        if ( !matcher.matches()) {
+        return INVALID_RANGE.apply(rangeSpec).result();}
         var parsedValues = all(Number.parseInt(matcher.group(1)),
                                Number.parseInt(matcher.group(2)));
         return parsedValues.flatMap(RangeGenerator::ensureMinNotGreaterThanMax);
     }
 
     private static Result<PatternGenerator> ensureMinNotGreaterThanMax(int min, int max) {
-        if (min > max) {
-            return MIN_GREATER_THAN_MAX.result();
-        }
+        if ( min > max) {
+        return MIN_GREATER_THAN_MAX.result();}
         return rangeGenerator(min, max).map(gen -> gen);
     }
 
-    @Override
-    public String generate() {
-        return String.valueOf(ThreadLocalRandom.current()
-                                               .nextInt(min, max + 1));
+    @Override public String generate() {
+        return String.valueOf(ThreadLocalRandom.current().nextInt(min, max + 1));
     }
 
-    @Override
-    public String pattern() {
+    @Override public String pattern() {
         return "${range:" + min + "-" + max + "}";
     }
 }

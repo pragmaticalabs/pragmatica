@@ -44,7 +44,7 @@ public final class ForgeApiResponses {
                                      List<NodeMetricsResponse> nodeMetrics,
                                      List<SliceStatusInfo> slices,
                                      List<LoadRunnerTargetInfo> loadTargets,
-                                     List<InvocationInfo> invocations) {}
+                                     List<InvocationInfo> invocations){}
 
     /// Per-method invocation metrics from Aether gossip data.
     public record InvocationInfo(String artifact,
@@ -53,34 +53,34 @@ public final class ForgeApiResponses {
                                  long successCount,
                                  long failureCount,
                                  double avgDurationMs,
-                                 double errorRate) {}
+                                 double errorRate){}
 
     /// Cluster information including all nodes.
     public record ClusterInfo(List<NodeInfo> nodes,
                               String leaderId,
-                              int nodeCount) {}
+                              int nodeCount){}
 
     /// Individual node information.
     public record NodeInfo(String id,
                            int port,
                            String state,
-                           boolean isLeader) {}
+                           boolean isLeader){}
 
     /// Slice status information for the full status response.
     public record SliceStatusInfo(String artifact,
                                   String state,
-                                  List<SliceInstanceInfo> instances) {}
+                                  List<SliceInstanceInfo> instances){}
 
     /// Individual slice instance on a node.
     public record SliceInstanceInfo(String nodeId,
-                                    String state) {}
+                                    String state){}
 
     /// Aggregated metrics information.
     public record MetricsInfo(double requestsPerSecond,
                               double successRate,
                               double avgLatencyMs,
                               long totalSuccess,
-                              long totalFailures) {}
+                              long totalFailures){}
 
     /// Real Aether invocation aggregates (EMA-smoothed).
     public record AetherAggregates(double rps,
@@ -88,75 +88,75 @@ public final class ForgeApiResponses {
                                    double avgLatencyMs,
                                    long totalInvocations,
                                    long totalSuccess,
-                                   long totalFailures) {}
+                                   long totalFailures){}
 
     /// Load status information derived from ConfigurableLoadRunner.
     public record LoadInfo(String state,
                            int totalTargetRate,
-                           int targetCount) {}
+                           int targetCount){}
 
     /// Per-node metrics response from /api/node-metrics endpoint.
     public record NodeMetricsResponse(String nodeId,
                                       boolean isLeader,
                                       double cpuUsage,
                                       long heapUsedMb,
-                                      long heapMaxMb) {}
+                                      long heapMaxMb){}
 
     /// Health check response from /health endpoint.
-    public record HealthResponse(String status, String timestamp) {}
+    public record HealthResponse(String status, String timestamp){}
 
     // ========== Chaos Responses ==========
     /// Chaos controller status from /api/chaos/status endpoint.
     public record ChaosStatusResponse(boolean enabled,
                                       int activeEventCount,
-                                      List<ActiveChaosEventInfo> activeEvents) {}
+                                      List<ActiveChaosEventInfo> activeEvents){}
 
     /// Active chaos event information.
     public record ActiveChaosEventInfo(String eventId,
                                        String type,
                                        String description,
                                        String startedAt,
-                                       String duration) {}
+                                       String duration){}
 
     /// Response from /api/chaos/inject endpoint.
     public record ChaosInjectResponse(boolean success,
                                       String eventId,
-                                      String type) {}
+                                      String type){}
 
     /// Response from /api/chaos/enable endpoint.
-    public record ChaosEnabledResponse(boolean success, boolean enabled) {}
+    public record ChaosEnabledResponse(boolean success, boolean enabled){}
 
     /// Response from /api/chaos/stop/{eventId} endpoint.
-    public record ChaosStoppedResponse(boolean success, String eventId) {}
+    public record ChaosStoppedResponse(boolean success, String eventId){}
 
     // ========== Node Action Responses ==========
     /// Response from node kill/crash operations.
-    public record NodeActionResponse(boolean success, String newLeader) {}
+    public record NodeActionResponse(boolean success, String newLeader){}
 
     /// Response from add node operation.
-    public record NodeAddedResponse(boolean success, String nodeId, String state) {}
+    public record NodeAddedResponse(boolean success, String nodeId, String state){}
 
     // ========== Load Responses ==========
     /// Load configuration from /api/load/config GET endpoint.
     public record LoadConfigResponse(int targetCount,
                                      int totalRps,
-                                     List<LoadTargetInfo> targets) {}
+                                     List<LoadTargetInfo> targets){}
 
     /// Individual load target information.
     public record LoadTargetInfo(String name,
                                  String target,
                                  String rate,
-                                 String duration) {}
+                                 String duration){}
 
     /// Response from /api/load/config POST endpoint.
     public record LoadConfigUploadResponse(boolean success,
                                            int targetCount,
-                                           int totalRps) {}
+                                           int totalRps){}
 
     /// Load runner status from /api/load/status endpoint.
     public record LoadRunnerStatusResponse(String state,
                                            int targetCount,
-                                           List<LoadRunnerTargetInfo> targets) {}
+                                           List<LoadRunnerTargetInfo> targets){}
 
     /// Per-target metrics for load runner.
     public record LoadRunnerTargetInfo(String name,
@@ -176,103 +176,103 @@ public final class ForgeApiResponses {
     }
 
     /// Response from load control operations (start/stop/pause/resume).
-    public record LoadControlResponse(boolean success, String state) {}
+    public record LoadControlResponse(boolean success, String state){}
 
     /// Response from /api/load/set/{rate} endpoint.
-    public record RateSetResponse(boolean success, int newRate) {}
+    public record RateSetResponse(boolean success, int newRate){}
 
     // ========== Simulator Responses ===========
     /// Inventory mode response.
-    public record InventoryModeResponse(String mode) {}
+    public record InventoryModeResponse(String mode){}
 
     /// Inventory mode set response.
-    public record InventoryModeSetResponse(boolean success, String mode) {}
+    public record InventoryModeSetResponse(boolean success, String mode){}
 
     /// Inventory metrics response.
     public record InventoryMetricsResponse(long totalReservations,
                                            long totalReleases,
                                            long stockOuts,
                                            boolean infiniteMode,
-                                           int refillRate) {}
+                                           int refillRate){}
 
     // ========== Mode Responses ==========
     /// Simulator mode information.
     public record SimulatorModeInfo(String name,
                                     String displayName,
                                     String description,
-                                    boolean chaosEnabled) {}
+                                    boolean chaosEnabled){}
 
     /// Response from mode change operation.
     public record ModeChangeResponse(boolean success,
                                      String previousMode,
-                                     String currentMode) {}
+                                     String currentMode){}
 
     // ========== Order Simulation Responses ==========
     /// Place order response.
     public record PlaceOrderResponse(boolean success,
                                      String orderId,
                                      String status,
-                                     String total) {}
+                                     String total){}
 
     /// Order status response.
     public record OrderStatusResponse(boolean success,
                                       String orderId,
                                       String status,
                                       String total,
-                                      int itemCount) {}
+                                      int itemCount){}
 
     /// Cancel order response.
     public record CancelOrderResponse(boolean success,
                                       String orderId,
                                       String status,
-                                      String reason) {}
+                                      String reason){}
 
     /// Check stock response.
     public record CheckStockResponse(boolean success,
                                      String productId,
                                      int available,
-                                     boolean sufficient) {}
+                                     boolean sufficient){}
 
     /// Get price response.
     public record GetPriceResponse(boolean success,
                                    String productId,
-                                   String price) {}
+                                   String price){}
 
     // ========== Repository Responses ==========
     /// Repository PUT success response.
     public record RepositoryPutResponse(boolean success,
                                         String path,
-                                        int size) {}
+                                        int size){}
 
     // ========== Event Response ==========
     /// Forge event for event log.
     public record ForgeEvent(String timestamp,
                              String type,
                              String severity,
-                             String message) {}
+                             String message){}
 
     // ========== Multiplier/Config Responses ==========
     /// Response from multiplier set operation.
-    public record MultiplierSetResponse(boolean success, double multiplier) {}
+    public record MultiplierSetResponse(boolean success, double multiplier){}
 
     // ========== Topology Responses ==========
     /// Topology response containing graph nodes and edges.
     public record TopologyResponse(List<TopologyNodeInfo> nodes,
-                                   List<TopologyEdgeInfo> edges) {}
+                                   List<TopologyEdgeInfo> edges){}
 
     /// A node in the topology graph.
     public record TopologyNodeInfo(String id,
                                    String type,
                                    String label,
-                                   String sliceArtifact) {}
+                                   String sliceArtifact){}
 
     /// An edge in the topology graph.
     public record TopologyEdgeInfo(String from,
                                    String to,
                                    String style,
-                                   String topicConfig) {}
+                                   String topicConfig){}
 
     // ========== Forge Detection ==========
     /// Response from /api/forge/status endpoint indicating this is a Forge instance.
-    public record ForgeStatusResponse(boolean forge) {}
+    public record ForgeStatusResponse(boolean forge){}
 }

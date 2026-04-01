@@ -9,14 +9,12 @@ import static org.pragmatica.lang.Verify.ensure;
 
 /// Registered manually in NodeCodecs to avoid registry name conflict
 /// (shared package with SliceState in aether/slice module).
-public record MethodName(String name) {
+public record MethodName( String name) {
     public static Result<MethodName> methodName(String name) {
-        return Result.all(ensure(name, Verify.Is::matches, METHOD_NAME_PATTERN))
-                     .map(MethodName::new);
+        return Result.all(ensure(name, Verify.Is::matches, METHOD_NAME_PATTERN)).map(MethodName::new);
     }
 
-    @Override
-    public String toString() {
+    @Override public String toString() {
         return name;
     }
 

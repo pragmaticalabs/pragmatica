@@ -39,7 +39,7 @@ public sealed interface AlertEvent {
                           String metric,
                           NodeId nodeId,
                           double value,
-                          double threshold) implements AlertEvent {}
+                          double threshold) implements AlertEvent{}
 
     /// Alert raised when all instances of a slice fail.
     ///

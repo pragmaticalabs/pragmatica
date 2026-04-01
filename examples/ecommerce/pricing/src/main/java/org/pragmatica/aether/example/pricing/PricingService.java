@@ -17,27 +17,28 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
-@Slice public interface PricingService{
-    record CalculatePriceRequest(CustomerId customerId, List<LineItem> items){
-        public static CalculatePriceRequest calculatePriceRequest(CustomerId customerId, List<LineItem> items){
+
+@Slice public interface PricingService {
+    record CalculatePriceRequest(CustomerId customerId, List<LineItem> items) {
+        public static CalculatePriceRequest calculatePriceRequest(CustomerId customerId, List<LineItem> items) {
             return new CalculatePriceRequest(customerId, List.copyOf(items));
         }
     }
 
-    record ApplyDiscountRequest(CustomerId customerId, Money subtotal, Option<String> discountCode){
-        public static ApplyDiscountRequest applyDiscountRequest(CustomerId customerId, Money subtotal, String code){
+    record ApplyDiscountRequest(CustomerId customerId, Money subtotal, Option<String> discountCode) {
+        public static ApplyDiscountRequest applyDiscountRequest(CustomerId customerId, Money subtotal, String code) {
             return new ApplyDiscountRequest(customerId,
                                             subtotal,
                                             Option.option(code).filter(s -> !s.isBlank()));
         }
 
-        public static ApplyDiscountRequest withoutCode(CustomerId customerId, Money subtotal){
+        public static ApplyDiscountRequest withoutCode(CustomerId customerId, Money subtotal) {
             return new ApplyDiscountRequest(customerId, subtotal, Option.empty());
         }
     }
 
-    record CalculateTaxRequest(Money subtotal, Address shippingAddress){
-        public static CalculateTaxRequest calculateTaxRequest(Money subtotal, Address address){
+    record CalculateTaxRequest(Money subtotal, Address shippingAddress) {
+        public static CalculateTaxRequest calculateTaxRequest(Money subtotal, Address address) {
             return new CalculateTaxRequest(subtotal, address);
         }
     }
@@ -47,9 +48,9 @@ import java.util.stream.Collectors;
                           Money discountAmount,
                           Money taxAmount,
                           Money shippingCost,
-                          Money total){
-        public record LinePrice(ProductId productId, Money unitPrice, int quantity, Money lineTotal){
-            public static Result<LinePrice> linePrice(ProductId productId, Money unitPrice, int quantity){
+                          Money total) {
+        public record LinePrice(ProductId productId, Money unitPrice, int quantity, Money lineTotal) {
+            public static Result<LinePrice> linePrice(ProductId productId, Money unitPrice, int quantity) {
                 return unitPrice.multiply(BigDecimal.valueOf(quantity)).map(lineTotal -> new LinePrice(productId,
                                                                                                        unitPrice,
                                                                                                        quantity,
@@ -62,7 +63,7 @@ import java.util.stream.Collectors;
                                                             Money discountAmount,
                                                             Money taxAmount,
                                                             Money shippingCost,
-                                                            Money total){
+                                                            Money total) {
             return Result.success(total).map(t -> new PriceBreakdown(linePrices,
                                                                      subtotal,
                                                                      discountAmount,
@@ -71,11 +72,11 @@ import java.util.stream.Collectors;
                                                                      t));
         }
 
-        public static Builder builder(){
+        public static Builder builder() {
             return new Builder();
         }
 
-        public List<String> summary(){
+        public List<String> summary() {
             return List.of("Subtotal: " + subtotal,
                            "Discount: -" + discountAmount,
                            "Tax: " + taxAmount,
@@ -83,39 +84,39 @@ import java.util.stream.Collectors;
                            "Total: " + total);
         }
 
-        public static class Builder{
+        public static class Builder {
             private Map<ProductId, LinePrice> linePrices = Map.of();
             private Money subtotal = Money.ZERO_USD;
             private Money discountAmount = Money.ZERO_USD;
             private Money taxAmount = Money.ZERO_USD;
             private Money shippingCost = Money.ZERO_USD;
 
-            public Builder linePrices(Map<ProductId, LinePrice> linePrices){
+            public Builder linePrices(Map<ProductId, LinePrice> linePrices) {
                 this.linePrices = Map.copyOf(linePrices);
                 return this;
             }
 
-            public Builder subtotal(Money subtotal){
+            public Builder subtotal(Money subtotal) {
                 this.subtotal = subtotal;
                 return this;
             }
 
-            public Builder discountAmount(Money discountAmount){
+            public Builder discountAmount(Money discountAmount) {
                 this.discountAmount = discountAmount;
                 return this;
             }
 
-            public Builder taxAmount(Money taxAmount){
+            public Builder taxAmount(Money taxAmount) {
                 this.taxAmount = taxAmount;
                 return this;
             }
 
-            public Builder shippingCost(Money shippingCost){
+            public Builder shippingCost(Money shippingCost) {
                 this.shippingCost = shippingCost;
                 return this;
             }
 
-            public Result<PriceBreakdown> build(){
+            public Result<PriceBreakdown> build() {
                 return subtotal.subtract(discountAmount).flatMap(afterDiscount -> afterDiscount.add(taxAmount))
                                         .flatMap(afterTax -> afterTax.add(shippingCost))
                                         .flatMap(total -> priceBreakdown(linePrices,
@@ -128,34 +129,34 @@ import java.util.stream.Collectors;
         }
     }
 
-    record DiscountResult(Money discountAmount, Option<String> appliedCode, String description){
-        public static DiscountResult noDiscount(){
+    record DiscountResult(Money discountAmount, Option<String> appliedCode, String description) {
+        public static DiscountResult noDiscount() {
             return new DiscountResult(Money.ZERO_USD, Option.empty(), "No discount applied");
         }
 
-        public static DiscountResult percentOff(int percent, Money amount, String code){
+        public static DiscountResult percentOff(int percent, Money amount, String code) {
             return new DiscountResult(amount, Option.some(code), percent + "% off with code " + code);
         }
 
-        public static DiscountResult loyaltyDiscount(Money amount){
+        public static DiscountResult loyaltyDiscount(Money amount) {
             return new DiscountResult(amount, Option.empty(), "Loyalty discount");
         }
 
-        public static DiscountResult bulkDiscount(Money amount){
+        public static DiscountResult bulkDiscount(Money amount) {
             return new DiscountResult(amount, Option.empty(), "Bulk order discount");
         }
 
-        public boolean hasDiscount(){
+        public boolean hasDiscount() {
             return! discountAmount.isZero();
         }
     }
 
-    record TaxResult(Money taxAmount, BigDecimal taxRate, String jurisdiction){
-        public static TaxResult taxResult(Money amount, BigDecimal rate, String jurisdiction){
+    record TaxResult(Money taxAmount, BigDecimal taxRate, String jurisdiction) {
+        public static TaxResult taxResult(Money amount, BigDecimal rate, String jurisdiction) {
             return new TaxResult(amount, rate, jurisdiction);
         }
 
-        public String description(){
+        public String description() {
             return String.format("%s tax (%.1f%%): %s",
                                  jurisdiction,
                                  taxRate.multiply(BigDecimal.valueOf(100)),
@@ -163,21 +164,21 @@ import java.util.stream.Collectors;
         }
     }
 
-    sealed interface PricingError extends Cause{
-        record InvalidDiscountCode(String code) implements PricingError{
-            @Override public String message(){
+    sealed interface PricingError extends Cause {
+        record InvalidDiscountCode(String code) implements PricingError {
+            @Override public String message() {
                 return "Invalid discount code: " + code;
             }
         }
 
-        record MinimumPurchaseNotMet(BigDecimal minimum) implements PricingError{
-            @Override public String message(){
+        record MinimumPurchaseNotMet(BigDecimal minimum) implements PricingError {
+            @Override public String message() {
                 return "Minimum purchase of $" + minimum.toPlainString() + " required for this discount";
             }
         }
 
-        record ProductNotFound(String productId) implements PricingError{
-            @Override public String message(){
+        record ProductNotFound(String productId) implements PricingError {
+            @Override public String message() {
                 return "Price not found for product: " + productId;
             }
         }
@@ -189,25 +190,25 @@ import java.util.stream.Collectors;
 
     record DiscountCode(String code, int percentOff, BigDecimal minimumPurchase){}
 
-    static PricingService pricingService(){
-        record pricingService(Map<ProductId, Money> productPrices,
-                              Map<String, DiscountCode> discountCodes,
-                              Map<String, BigDecimal> taxRates,
-                              Set<String> loyalCustomers) implements PricingService{
-            @Override public Promise<PriceBreakdown> calculatePrice(CalculatePriceRequest request){
+    static PricingService pricingService() {
+        record pricingService( Map<ProductId, Money> productPrices,
+                               Map<String, DiscountCode> discountCodes,
+                               Map<String, BigDecimal> taxRates,
+                               Set<String> loyalCustomers) implements PricingService {
+            @Override public Promise<PriceBreakdown> calculatePrice(CalculatePriceRequest request) {
                 return calculateLinePrices(request.items()).flatMap(linePrices -> calculateSubtotal(linePrices).map(subtotal -> PriceBreakdown.builder().linePrices(linePrices)
                                                                                                                                                       .subtotal(subtotal)))
                                           .flatMap(PriceBreakdown.Builder::build)
                                           .async();
             }
 
-            @Override public Promise<DiscountResult> applyDiscount(ApplyDiscountRequest request){
+            @Override public Promise<DiscountResult> applyDiscount(ApplyDiscountRequest request) {
                 return request.discountCode().map(code -> applyCodeDiscount(code,
                                                                             request.subtotal()))
                                            .or(() -> applyAutomaticDiscount(request));
             }
 
-            @Override public Promise<TaxResult> calculateTax(CalculateTaxRequest request){
+            @Override public Promise<TaxResult> calculateTax(CalculateTaxRequest request) {
                 var state = request.shippingAddress().state()
                                                    .toUpperCase();
                 var rate = taxRates.getOrDefault(state, BigDecimal.valueOf(0.08));
@@ -216,42 +217,42 @@ import java.util.stream.Collectors;
                                        .async();
             }
 
-            private Result<Map<ProductId, PriceBreakdown.LinePrice>> calculateLinePrices(List<LineItem> items){
+            private Result<Map<ProductId, PriceBreakdown.LinePrice>> calculateLinePrices(List<LineItem> items) {
                 var results = items.stream().map(this::calculateLinePrice)
                                           .toList();
                 return Result.allOf(results).map(linePrices -> linePrices.stream().collect(Collectors.toMap(PriceBreakdown.LinePrice::productId,
                                                                                                             lp -> lp)));
             }
 
-            private Result<PriceBreakdown.LinePrice> calculateLinePrice(LineItem item){
+            private Result<PriceBreakdown.LinePrice> calculateLinePrice(LineItem item) {
                 var unitPrice = productPrices.getOrDefault(item.productId(), Money.ZERO_USD);
                 return PriceBreakdown.LinePrice.linePrice(item.productId(),
                                                           unitPrice,
                                                           item.quantity().value());
             }
 
-            private Result<Money> calculateSubtotal(Map<ProductId, PriceBreakdown.LinePrice> linePrices){
+            private Result<Money> calculateSubtotal(Map<ProductId, PriceBreakdown.LinePrice> linePrices) {
                 var totals = linePrices.values().stream()
                                               .map(PriceBreakdown.LinePrice::lineTotal)
                                               .toList();
                 return sumMoney(totals);
             }
 
-            private static Result<Money> sumMoney(List<Money> amounts){
+            private static Result<Money> sumMoney(List<Money> amounts) {
                 return amounts.stream().reduce(Result.success(Money.ZERO_USD),
                                                pricingService::addToAccumulator,
                                                pricingService::combineMoneyResults);
             }
 
-            private static Result<Money> addToAccumulator(Result<Money> acc, Money money){
+            private static Result<Money> addToAccumulator(Result<Money> acc, Money money) {
                 return acc.flatMap(m -> m.add(money));
             }
 
-            private static Result<Money> combineMoneyResults(Result<Money> a, Result<Money> b){
+            private static Result<Money> combineMoneyResults(Result<Money> a, Result<Money> b) {
                 return Result.all(a, b).flatMap(Money::add);
             }
 
-            private Promise<DiscountResult> applyCodeDiscount(String code, Money subtotal){
+            private Promise<DiscountResult> applyCodeDiscount(String code, Money subtotal) {
                 return Option.option(discountCodes.get(code.toUpperCase())).toResult(new PricingError.InvalidDiscountCode(code))
                                     .flatMap(discount -> validateMinimumPurchase(discount, subtotal))
                                     .flatMap(discount -> subtotal.percentage(discount.percentOff()).map(amount -> DiscountResult.percentOff(discount.percentOff(),
@@ -260,20 +261,20 @@ import java.util.stream.Collectors;
                                     .async();
             }
 
-            private Result<DiscountCode> validateMinimumPurchase(DiscountCode discount, Money subtotal){
+            private Result<DiscountCode> validateMinimumPurchase(DiscountCode discount, Money subtotal) {
                 return subtotal.amount().compareTo(discount.minimumPurchase()) >= 0
-                      ? Result.success(discount)
-                      : new PricingError.MinimumPurchaseNotMet(discount.minimumPurchase()).result();
+                       ? Result.success(discount)
+                       : new PricingError.MinimumPurchaseNotMet(discount.minimumPurchase()).result();
             }
 
-            private Promise<DiscountResult> applyAutomaticDiscount(ApplyDiscountRequest request){
-                if (request.subtotal().amount()
-                                    .compareTo(BigDecimal.valueOf(500)) >= 0){return request.subtotal().percentage(10)
-                                                                                                     .map(DiscountResult::bulkDiscount)
-                                                                                                     .async();}
-                if (loyalCustomers.contains(request.customerId().value())){return request.subtotal().percentage(5)
-                                                                                                  .map(DiscountResult::loyaltyDiscount)
-                                                                                                  .async();}
+            private Promise<DiscountResult> applyAutomaticDiscount(ApplyDiscountRequest request) {
+                if ( request.subtotal().amount()
+                                     .compareTo(BigDecimal.valueOf(500)) >= 0) {return request.subtotal().percentage(10)
+                                                                                                       .map(DiscountResult::bulkDiscount)
+                                                                                                       .async();}
+                if ( loyalCustomers.contains(request.customerId().value())) {return request.subtotal().percentage(5)
+                                                                                                    .map(DiscountResult::loyaltyDiscount)
+                                                                                                    .async();}
                 return Promise.success(DiscountResult.noDiscount());
             }
         }
@@ -287,7 +288,7 @@ import java.util.stream.Collectors;
         return new pricingService(productPrices, discountCodes, taxRates, loyalCustomers);
     }
 
-    private static void initializePrices(Map<ProductId, Money> productPrices){
+    private static void initializePrices(Map<ProductId, Money> productPrices) {
         addPrice(productPrices, "LAPTOP-PRO", "999.99");
         addPrice(productPrices, "MOUSE-WIRELESS", "49.99");
         addPrice(productPrices, "KEYBOARD-MECH", "149.99");
@@ -298,20 +299,20 @@ import java.util.stream.Collectors;
         addPrice(productPrices, "CHARGER-65W", "39.99");
     }
 
-    private static void addPrice(Map<ProductId, Money> productPrices, String productId, String price){
+    private static void addPrice(Map<ProductId, Money> productPrices, String productId, String price) {
         ProductId.productId(productId).flatMap(id -> Money.usd(price).map(p -> Map.entry(id, p)))
                            .onSuccess(entry -> productPrices.put(entry.getKey(),
                                                                  entry.getValue()));
     }
 
-    private static void initializeDiscountCodes(Map<String, DiscountCode> discountCodes){
+    private static void initializeDiscountCodes(Map<String, DiscountCode> discountCodes) {
         discountCodes.put("SAVE10", new DiscountCode("SAVE10", 10, BigDecimal.valueOf(50)));
         discountCodes.put("SAVE20", new DiscountCode("SAVE20", 20, BigDecimal.valueOf(100)));
         discountCodes.put("BLACKFRIDAY", new DiscountCode("BLACKFRIDAY", 30, BigDecimal.valueOf(200)));
         discountCodes.put("WELCOME", new DiscountCode("WELCOME", 15, BigDecimal.ZERO));
     }
 
-    private static void initializeTaxRates(Map<String, BigDecimal> taxRates){
+    private static void initializeTaxRates(Map<String, BigDecimal> taxRates) {
         taxRates.put("CA", BigDecimal.valueOf(0.0725));
         taxRates.put("NY", BigDecimal.valueOf(0.08));
         taxRates.put("TX", BigDecimal.valueOf(0.0625));

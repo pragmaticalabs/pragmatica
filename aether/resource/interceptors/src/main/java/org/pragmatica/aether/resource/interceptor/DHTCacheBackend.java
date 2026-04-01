@@ -38,23 +38,18 @@ final class DHTCacheBackend implements CacheBackend {
         return new DHTCacheBackend(dhtClient, serializer, deserializer, namespace);
     }
 
-    @Override
-    public Promise<Option<Object>> get(Object key) {
-        return dhtClient.get(namespacedKey(key))
-                        .map(opt -> opt.map(bytes -> (Object) deserializer.decode(bytes)));
+    @Override public Promise<Option<Object>> get(Object key) {
+        return dhtClient.get(namespacedKey(key)).map(opt -> opt.map(bytes -> (Object) deserializer.decode(bytes)));
     }
 
-    @Override
-    public Promise<Unit> put(Object key, Object value) {
+    @Override public Promise<Unit> put(Object key, Object value) {
         var keyBytes = namespacedKey(key);
         var valueBytes = serializer.encode(value);
         return dhtClient.put(keyBytes, valueBytes);
     }
 
-    @Override
-    public Promise<Unit> remove(Object key) {
-        return dhtClient.remove(namespacedKey(key))
-                        .map(_ -> unit());
+    @Override public Promise<Unit> remove(Object key) {
+        return dhtClient.remove(namespacedKey(key)).map(_ -> unit());
     }
 
     private byte[] namespacedKey(Object key) {

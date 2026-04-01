@@ -16,31 +16,27 @@ public sealed interface WorkerError extends Cause {
         General(String message) {
             this.message = message;
         }
-        @Override
-        public String message() {
+        @Override public String message() {
             return message;
         }
     }
 
     /// Network-level failure wrapping an underlying exception.
     record NetworkFailure(Throwable cause) implements WorkerError {
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Worker network failure: " + Causes.fromThrowable(cause);
         }
     }
 
     /// Configuration error.
     record ConfigurationError(String detail) implements WorkerError {
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Worker configuration error: " + detail;
         }
     }
 
     record unused() implements WorkerError {
-        @Override
-        public String message() {
+        @Override public String message() {
             return "unused";
         }
     }

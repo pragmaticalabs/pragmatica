@@ -49,32 +49,31 @@ public final class AbTestRoutes implements RouteSource {
     record AbTestCreateRequest(String artifactBase,
                                Map<String, String> variants,
                                String splitType,
-                               String splitHeader) {}
+                               String splitHeader){}
 
-    record AbTestConcludeRequest(String winner) {}
+    record AbTestConcludeRequest(String winner){}
 
-    @Override
-    public Stream<Route<?>> routes() {
+    @Override public Stream<Route<?>> routes() {
         return Stream.of(// GET /api/ab-tests - List all tests
-        Route.<AbTestListResponse> get("/api/ab-tests")
+        Route.<AbTestListResponse>get("/api/ab-tests")
              .toJson(this::buildAbTestListResponse),
         // GET /api/ab-test/{testId}/metrics - Test metrics
-        Route.<AbTestMetricsResponse> get("/api/ab-test")
+        Route.<AbTestMetricsResponse>get("/api/ab-test")
              .withPath(aString(),
                        spacer("metrics"))
              .to((testId, _) -> buildAbTestMetricsResponse(testId))
              .asJson(),
         // GET /api/ab-test/{testId} - Single test by ID
-        Route.<AbTestInfo> get("/api/ab-test")
+        Route.<AbTestInfo>get("/api/ab-test")
              .withPath(aString())
              .to(this::buildAbTestResponse)
              .asJson(),
         // POST /api/ab-test/create - Create test
-        Route.<AbTestInfo> post("/api/ab-test/create")
+        Route.<AbTestInfo>post("/api/ab-test/create")
              .withBody(AbTestCreateRequest.class)
              .toJson(this::handleAbTestCreate),
         // POST /api/ab-test/{testId}/conclude - Conclude test with winner
-        Route.<AbTestInfo> post("/api/ab-test")
+        Route.<AbTestInfo>post("/api/ab-test")
              .withPath(aString(),
                        spacer("conclude"))
              .withBody(AbTestConcludeRequest.class)
@@ -84,11 +83,10 @@ public final class AbTestRoutes implements RouteSource {
 
     private Promise<AbTestInfo> handleAbTestCreate(AbTestCreateRequest request) {
         return requireLeader().flatMap(_ -> parseCreateRequest(request))
-                            .flatMap(parsed -> nodeSupplier.get()
-                                                           .abTestManager()
-                                                           .createTest(parsed.artifactBase(),
-                                                                       parsed.variantVersions(),
-                                                                       parsed.splitRule()))
+                            .flatMap(parsed -> nodeSupplier.get().abTestManager()
+                                                               .createTest(parsed.artifactBase(),
+                                                                           parsed.variantVersions(),
+                                                                           parsed.splitRule()))
                             .map(this::toAbTestInfo)
                             .onSuccess(info -> AuditLog.deploymentStart("ab-test",
                                                                         info.testId(),
@@ -98,10 +96,9 @@ public final class AbTestRoutes implements RouteSource {
     }
 
     private Promise<AbTestInfo> handleAbTestConclude(String testId, AbTestConcludeRequest request) {
-        return requireLeader().flatMap(_ -> nodeSupplier.get()
-                                                        .abTestManager()
-                                                        .concludeTest(testId,
-                                                                      request.winner()))
+        return requireLeader().flatMap(_ -> nodeSupplier.get().abTestManager()
+                                                            .concludeTest(testId,
+                                                                          request.winner()))
                             .map(this::toAbTestInfo)
                             .onSuccess(info -> AuditLog.deploymentComplete("ab-test",
                                                                            info.testId(),
@@ -110,44 +107,36 @@ public final class AbTestRoutes implements RouteSource {
 
     private Promise<org.pragmatica.lang.Unit> requireLeader() {
         var node = nodeSupplier.get();
-        if (!node.isLeader()) {
-            var leaderInfo = node.leader()
-                                 .map(id -> " Current leader: " + id.id())
-                                 .or("");
-            return Causes.cause(NOT_LEADER.message() + leaderInfo)
-                         .promise();
+        if ( !node.isLeader()) {
+            var leaderInfo = node.leader().map(id -> " Current leader: " + id.id())
+                                        .or("");
+            return Causes.cause(NOT_LEADER.message() + leaderInfo).promise();
         }
         return Promise.unitPromise();
     }
 
     private record ParsedAbTestRequest(ArtifactBase artifactBase,
                                        Map<String, Version> variantVersions,
-                                       SplitRule splitRule) {}
+                                       SplitRule splitRule){}
 
     private Promise<ParsedAbTestRequest> parseCreateRequest(AbTestCreateRequest request) {
-        if (request.artifactBase() == null) {
-            return MISSING_ARTIFACT_BASE.promise();
-        }
-        if (request.variants() == null || request.variants()
-                                                 .isEmpty()) {
-            return MISSING_VARIANTS.promise();
-        }
-        return ArtifactBase.artifactBase(request.artifactBase())
-                           .async()
-                           .flatMap(artifactBase -> parseVariants(request.variants()).async()
-                                                                 .map(variants -> new ParsedAbTestRequest(artifactBase,
-                                                                                                          variants,
-                                                                                                          parseSplitRule(request))));
+        if ( request.artifactBase() == null) {
+        return MISSING_ARTIFACT_BASE.promise();}
+        if ( request.variants() == null || request.variants().isEmpty()) {
+        return MISSING_VARIANTS.promise();}
+        return ArtifactBase.artifactBase(request.artifactBase()).async()
+                                        .flatMap(artifactBase -> parseVariants(request.variants()).async()
+                                                                              .map(variants -> new ParsedAbTestRequest(artifactBase,
+                                                                                                                       variants,
+                                                                                                                       parseSplitRule(request))));
     }
 
     private static Result<Map<String, Version>> parseVariants(Map<String, String> rawVariants) {
         var parsed = new HashMap<String, Version>();
-        for (var entry : rawVariants.entrySet()) {
+        for ( var entry : rawVariants.entrySet()) {
             var result = Version.version(entry.getValue());
-            if (result.isFailure()) {
-                return Causes.cause("Invalid version for variant " + entry.getKey() + ": " + entry.getValue())
-                             .result();
-            }
+            if ( result.isFailure()) {
+            return Causes.cause("Invalid version for variant " + entry.getKey() + ": " + entry.getValue()).result();}
             result.onSuccess(v -> parsed.put(entry.getKey(), v));
         }
         return Result.success(Map.copyOf(parsed));
@@ -164,57 +153,48 @@ public final class AbTestRoutes implements RouteSource {
     }
 
     private AbTestListResponse buildAbTestListResponse() {
-        var tests = nodeSupplier.get()
-                                .abTestManager()
-                                .allTests()
-                                .stream()
-                                .map(this::toAbTestInfo)
-                                .toList();
+        var tests = nodeSupplier.get().abTestManager()
+                                    .allTests()
+                                    .stream()
+                                    .map(this::toAbTestInfo)
+                                    .toList();
         return new AbTestListResponse(tests);
     }
 
     private Promise<AbTestInfo> buildAbTestResponse(String testId) {
-        return nodeSupplier.get()
-                           .abTestManager()
-                           .getTest(testId)
-                           .map(this::toAbTestInfo)
-                           .async(TEST_NOT_FOUND);
+        return nodeSupplier.get().abTestManager()
+                               .getTest(testId)
+                               .map(this::toAbTestInfo)
+                               .async(TEST_NOT_FOUND);
     }
 
     private Promise<AbTestMetricsResponse> buildAbTestMetricsResponse(String testId) {
-        var metrics = nodeSupplier.get()
-                                  .abTestManager()
-                                  .getMetrics(testId);
+        var metrics = nodeSupplier.get().abTestManager()
+                                      .getMetrics(testId);
         return Promise.success(toAbTestMetricsResponse(metrics));
     }
 
     private AbTestInfo toAbTestInfo(AbTestDeployment test) {
         return new AbTestInfo(test.testId(),
-                              test.artifactBase()
-                                  .asString(),
-                              test.baselineVersion()
-                                  .toString(),
-                              test.state()
-                                  .name(),
-                              test.variantVersions()
-                                  .size(),
+                              test.artifactBase().asString(),
+                              test.baselineVersion().toString(),
+                              test.state().name(),
+                              test.variantVersions().size(),
                               test.createdAt(),
                               test.updatedAt());
     }
 
     private AbTestMetricsResponse toAbTestMetricsResponse(AbTestMetrics metrics) {
-        var variants = metrics.variantMetrics()
-                              .entrySet()
-                              .stream()
-                              .collect(Collectors.toMap(Map.Entry::getKey,
-                                                        entry -> toVariantMetrics(entry.getValue())));
+        var variants = metrics.variantMetrics().entrySet()
+                                             .stream()
+                                             .collect(Collectors.toMap(Map.Entry::getKey,
+                                                                       entry -> toVariantMetrics(entry.getValue())));
         return new AbTestMetricsResponse(metrics.testId(), variants, metrics.collectedAt());
     }
 
     private AbTestVariantMetrics toVariantMetrics(AbTestMetrics.VariantMetrics vm) {
         return new AbTestVariantMetrics(vm.variant(),
-                                        vm.version()
-                                          .toString(),
+                                        vm.version().toString(),
                                         vm.requestCount(),
                                         vm.errorRate(),
                                         vm.avgLatencyMs());

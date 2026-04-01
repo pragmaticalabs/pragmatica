@@ -1,6 +1,7 @@
 package org.pragmatica.aether.stream.replication;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
 
 import java.util.List;
 
@@ -19,37 +20,41 @@ final class DefaultReplicationManager implements ReplicationManager {
         this.transport = transport;
     }
 
-    @Override
-    public void replicateEvent(String streamName, int partition, long offset, byte[] payload, long timestamp) {
+    @Contract @Override public void replicateEvent(String streamName,
+                                                   int partition,
+                                                   long offset,
+                                                   byte[] payload,
+                                                   long timestamp) {
         var replicas = registry.replicasFor(streamName, partition);
-
-        if (replicas.isEmpty()) {
-            return;
-        }
-
+        if ( replicas.isEmpty()) {
+        return;}
         sendToAllReplicas(replicas, streamName, partition, offset, payload, timestamp);
     }
 
-    @Override
-    public void handleAck(ReplicationMessage.ReplicateAck ack) {
+    @Contract @Override public void handleAck(ReplicationMessage.ReplicateAck ack) {
         registry.updateWatermark(ack.streamName(), ack.partition(), ack.replicaId(), ack.confirmedOffset());
     }
 
-    @Override
-    public ReplicaRegistry registry() {
+    @Override public ReplicaRegistry registry() {
         return registry;
     }
 
-    private void sendToAllReplicas(List<ReplicaDescriptor> replicas, String streamName, int partition,
-                                   long offset, byte[] payload, long timestamp) {
+    private void sendToAllReplicas(List<ReplicaDescriptor> replicas,
+                                   String streamName,
+                                   int partition,
+                                   long offset,
+                                   byte[] payload,
+                                   long timestamp) {
         var message = buildReplicateMessage(governorId, streamName, partition, offset, payload, timestamp);
-
         replicas.forEach(replica -> transport.send(replica.nodeId(), message));
     }
 
-    private static ReplicationMessage.ReplicateEvents buildReplicateMessage(NodeId governorId, String streamName,
-                                                                             int partition, long offset,
-                                                                             byte[] payload, long timestamp) {
+    private static ReplicationMessage.ReplicateEvents buildReplicateMessage(NodeId governorId,
+                                                                            String streamName,
+                                                                            int partition,
+                                                                            long offset,
+                                                                            byte[] payload,
+                                                                            long timestamp) {
         return replicateEvents(governorId, streamName, partition, offset, List.of(payload), List.of(timestamp));
     }
 }

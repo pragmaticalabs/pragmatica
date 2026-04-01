@@ -9,8 +9,7 @@ import org.pragmatica.lang.Result;
 ///
 /// Discovered via ServiceLoader when `aether-ttm-onnx` is on the classpath.
 public final class OnnxTTMPredictorFactory implements TTMPredictorFactory {
-    @Override
-    public Result<TTMPredictor> ttmPredictor(TtmConfig config) {
+    @Override public Result<TTMPredictor> ttmPredictor(TtmConfig config) {
         return OnnxTTMPredictor.onnxTTMPredictor(config);
     }
 }

@@ -29,13 +29,11 @@ import static org.pragmatica.lang.Result.success;
 public final class LocalGenerator implements Generator {
     private static final Logger log = LoggerFactory.getLogger(LocalGenerator.class);
 
-    @Override
-    public boolean supports(AetherConfig config) {
+    @Override public boolean supports(AetherConfig config) {
         return config.environment() == Environment.LOCAL;
     }
 
-    @Override
-    public Result<GeneratorOutput> generate(AetherConfig config, Path outputDir) {
+    @Override public Result<GeneratorOutput> generate(AetherConfig config, Path outputDir) {
         return Result.lift(LocalGenerator::toIoError, () -> generateScripts(config, outputDir));
     }
 
@@ -62,14 +60,11 @@ public final class LocalGenerator implements Generator {
     }
 
     private String formatInstructions(AetherConfig config, Path outputDir) {
-        var nodes = config.cluster()
-                          .nodes();
-        var mgmtPort = config.cluster()
-                             .ports()
-                             .management();
-        var clusterPort = config.cluster()
-                                .ports()
-                                .cluster();
+        var nodes = config.cluster().nodes();
+        var mgmtPort = config.cluster().ports()
+                                     .management();
+        var clusterPort = config.cluster().ports()
+                                        .cluster();
         return formatInstructionsText(outputDir, nodes, mgmtPort, clusterPort);
     }
 
@@ -107,11 +102,9 @@ public final class LocalGenerator implements Generator {
     }
 
     private String generateStartScript(AetherConfig config) {
-        var nodes = config.cluster()
-                          .nodes();
-        var clusterPort = config.cluster()
-                                .ports()
-                                .cluster();
+        var nodes = config.cluster().nodes();
+        var clusterPort = config.cluster().ports()
+                                        .cluster();
         var peerList = buildPeerList(nodes, clusterPort);
         var nodeStarts = buildNodeStarts(nodes, config, peerList);
         return String.format("""
@@ -142,28 +135,23 @@ public final class LocalGenerator implements Generator {
     }
 
     private String buildPeerList(int nodes, int clusterPort) {
-        return IntStream.range(0, nodes)
-                        .mapToObj(i -> "localhost:" + (clusterPort + i))
-                        .reduce((a, b) -> a + "," + b)
-                        .orElse("");
+        return IntStream.range(0, nodes).mapToObj(i -> "localhost:" + (clusterPort + i))
+                              .reduce((a, b) -> a + "," + b)
+                              .orElse("");
     }
 
     private String buildNodeStarts(int nodes, AetherConfig config, String peerList) {
-        return IntStream.range(0, nodes)
-                        .mapToObj(i -> nodeStartScript(i, config, peerList))
-                        .reduce((a, b) -> a + "\n" + b)
-                        .orElse("");
+        return IntStream.range(0, nodes).mapToObj(i -> nodeStartScript(i, config, peerList))
+                              .reduce((a, b) -> a + "\n" + b)
+                              .orElse("");
     }
 
     private String nodeStartScript(int index, AetherConfig config, String peerList) {
-        var mgmtPort = config.cluster()
-                             .ports()
-                             .management() + index;
-        var clusterPort = config.cluster()
-                                .ports()
-                                .cluster() + index;
-        var heap = config.node()
-                         .heap();
+        var mgmtPort = config.cluster().ports()
+                                     .management() + index;
+        var clusterPort = config.cluster().ports()
+                                        .cluster() + index;
+        var heap = config.node().heap();
         var gc = gcFlag(config);
         return formatNodeStart(index, mgmtPort, clusterPort, heap, gc, peerList);
     }
@@ -194,17 +182,15 @@ public final class LocalGenerator implements Generator {
     }
 
     private String gcFlag(AetherConfig config) {
-        return config.node()
-                     .gc()
-                     .toUpperCase()
-                     .equals("ZGC")
+        return config.node().gc()
+                          .toUpperCase()
+                          .equals("ZGC")
                ? "ZGC"
                : "G1GC";
     }
 
     private String generateStopScript(AetherConfig config) {
-        var lastNode = config.cluster()
-                             .nodes() - 1;
+        var lastNode = config.cluster().nodes() - 1;
         return String.format("""
             #!/bin/bash
 
@@ -230,11 +216,9 @@ public final class LocalGenerator implements Generator {
     }
 
     private String generateStatusScript(AetherConfig config) {
-        var mgmtPort = config.cluster()
-                             .ports()
-                             .management();
-        var lastNode = config.cluster()
-                             .nodes() - 1;
+        var mgmtPort = config.cluster().ports()
+                                     .management();
+        var lastNode = config.cluster().nodes() - 1;
         return String.format("""
             #!/bin/bash
 
@@ -268,12 +252,22 @@ public final class LocalGenerator implements Generator {
 
     @SuppressWarnings("JBCT-SEQ-01")
     private void makeExecutable(Path path) {
-        try{
+        try {
             Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rwxr-xr-x"));
-        } catch (UnsupportedOperationException e) {
+        }
+
+
+
+
+        catch (UnsupportedOperationException e) {
             // POSIX permissions not supported on this filesystem (e.g., Windows)
             log.debug("Cannot set POSIX permissions on {}: {}", path, e.getMessage());
-        } catch (Exception e) {
+        }
+
+
+
+
+        catch (Exception e) {
             log.debug("Failed to set permissions on {}: {}", path, e.getMessage());
         }
     }

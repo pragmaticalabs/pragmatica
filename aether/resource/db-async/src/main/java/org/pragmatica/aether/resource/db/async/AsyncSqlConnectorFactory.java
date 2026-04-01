@@ -11,29 +11,23 @@ import org.pragmatica.postgres.net.netty.NettyConnectibleBuilder;
 ///
 /// Priority 20 -- preferred over both JDBC and R2DBC when asyncUrl is configured.
 public final class AsyncSqlConnectorFactory implements ResourceFactory<SqlConnector, DatabaseConnectorConfig> {
-    @Override
-    public Class<SqlConnector> resourceType() {
+    @Override public Class<SqlConnector> resourceType() {
         return SqlConnector.class;
     }
 
-    @Override
-    public Class<DatabaseConnectorConfig> configType() {
+    @Override public Class<DatabaseConnectorConfig> configType() {
         return DatabaseConnectorConfig.class;
     }
 
-    @Override
-    public int priority() {
+    @Override public int priority() {
         return 20;
     }
 
-    @Override
-    public boolean supports(DatabaseConnectorConfig config) {
-        return config.asyncUrl()
-                     .isPresent();
+    @Override public boolean supports(DatabaseConnectorConfig config) {
+        return config.asyncUrl().isPresent();
     }
 
-    @Override
-    public Promise<SqlConnector> provision(DatabaseConnectorConfig config) {
+    @Override public Promise<SqlConnector> provision(DatabaseConnectorConfig config) {
         return Promise.lift(DatabaseConnectorError::databaseFailure, () -> connector(config));
     }
 
@@ -48,19 +42,14 @@ public final class AsyncSqlConnectorFactory implements ResourceFactory<SqlConnec
         builder.hostname(config.effectiveHost());
         builder.port(config.effectivePort());
         builder.database(config.effectiveDatabase());
-        config.effectiveUsername()
-              .onPresent(builder::username);
-        config.effectivePassword()
-              .onPresent(builder::password);
+        config.effectiveUsername().onPresent(builder::username);
+        config.effectivePassword().onPresent(builder::password);
     }
 
     private static void configurePool(NettyConnectibleBuilder builder, DatabaseConnectorConfig config) {
-        builder.maxConnections(config.poolConfig()
-                                     .maxConnections());
-        builder.ioThreads(config.poolConfig()
-                                .effectiveIoThreads());
-        config.poolConfig()
-              .validationQuery()
-              .onPresent(builder::validationQuery);
+        builder.maxConnections(config.poolConfig().maxConnections());
+        builder.ioThreads(config.poolConfig().effectiveIoThreads());
+        config.poolConfig().validationQuery()
+                         .onPresent(builder::validationQuery);
     }
 }

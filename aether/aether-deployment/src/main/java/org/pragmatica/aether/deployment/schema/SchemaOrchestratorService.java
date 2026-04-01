@@ -106,8 +106,7 @@ public interface SchemaOrchestratorService {
     }
 }
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
-class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private static final Logger log = LoggerFactory.getLogger(SchemaOrchestratorServiceInstance.class);
 
     private final ClusterNode<KVCommand<AetherKey>> cluster;
@@ -148,25 +147,21 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         this.router = router;
     }
 
-    @Override
-    public Promise<Unit> migrateIfNeeded(String datasourceName) {
+    @Override public Promise<Unit> migrateIfNeeded(String datasourceName) {
         var versionKey = SchemaVersionKey.schemaVersionKey(datasourceName);
-        return kvStore.get(versionKey)
-                      .filter(SchemaOrchestratorServiceInstance::isSchemaVersionValue)
-                      .map(SchemaVersionValue.class::cast)
-                      .filter(v -> v.status() == SchemaStatus.PENDING)
-                      .map(value -> executeMigrationFlow(datasourceName, value))
-                      .or(Promise.success(unit()));
+        return kvStore.get(versionKey).filter(SchemaOrchestratorServiceInstance::isSchemaVersionValue)
+                          .map(SchemaVersionValue.class::cast)
+                          .filter(v -> v.status() == SchemaStatus.PENDING)
+                          .map(value -> executeMigrationFlow(datasourceName, value))
+                          .or(Promise.success(unit()));
     }
 
-    @Override
-    public Promise<Unit> undoTo(String datasourceName, int targetVersion) {
+    @Override public Promise<Unit> undoTo(String datasourceName, int targetVersion) {
         log.info("Undo to version {} requested for datasource: {} (not yet implemented)", targetVersion, datasourceName);
         return Promise.success(unit());
     }
 
-    @Override
-    public Promise<Unit> baseline(String datasourceName, int version) {
+    @Override public Promise<Unit> baseline(String datasourceName, int version) {
         log.info("Baseline version {} requested for datasource: {} (not yet implemented)", version, datasourceName);
         return Promise.success(unit());
     }
@@ -192,8 +187,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     private void emitMigrationStarted(String datasourceName, SchemaVersionValue value) {
-        var artifactCoords = Option.option(value.artifactCoords())
-                                   .or("");
+        var artifactCoords = Option.option(value.artifactCoords()).or("");
         AuditLog.schemaMigrationStarted(datasourceName, artifactCoords, self.id());
         router.onPresent(r -> r.route(MigrationStarted.migrationStarted(datasourceName, artifactCoords, self)));
     }
@@ -203,8 +197,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                         int appliedCount,
                                         int currentVersion,
                                         long durationMs) {
-        var artifactCoords = Option.option(value.artifactCoords())
-                                   .or("");
+        var artifactCoords = Option.option(value.artifactCoords()).or("");
         AuditLog.schemaMigrationCompleted(datasourceName, artifactCoords, appliedCount, currentVersion, durationMs);
         router.onPresent(r -> r.route(MigrationCompleted.migrationCompleted(datasourceName,
                                                                             artifactCoords,
@@ -217,13 +210,11 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private void handleMigrationFailure(String datasourceName, SchemaVersionValue value, Cause cause) {
         var classification = classifyFailure(cause);
         var attemptNumber = value.attemptCount() + 1;
-        var artifactCoords = Option.option(value.artifactCoords())
-                                   .or("");
-        if (classification == FailureClassification.TRANSIENT && attemptNumber < MAX_RETRIES) {
-            scheduleRetry(datasourceName, value, cause, classification, attemptNumber, artifactCoords);
-        } else {
-            emitPermanentFailure(datasourceName, value, cause, classification, attemptNumber, artifactCoords);
-        }
+        var artifactCoords = Option.option(value.artifactCoords()).or("");
+        if ( classification == FailureClassification.TRANSIENT && attemptNumber < MAX_RETRIES) {
+        scheduleRetry(datasourceName, value, cause, classification, attemptNumber, artifactCoords);} else
+        {
+        emitPermanentFailure(datasourceName, value, cause, classification, attemptNumber, artifactCoords);}
     }
 
     private void scheduleRetry(String datasourceName,
@@ -291,26 +282,21 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     static FailureClassification classifyFailure(Cause cause) {
-        if (cause instanceof SchemaError.DatasourceUnreachable) {
-            return FailureClassification.TRANSIENT;
-        }
-        if (cause instanceof SchemaError.LockAcquisitionFailed) {
-            return FailureClassification.TRANSIENT;
-        }
-        if (cause instanceof SchemaError.MigrationFailed) {
-            return FailureClassification.PERMANENT;
-        }
-        if (cause instanceof SchemaError.ChecksumMismatch) {
-            return FailureClassification.PERMANENT;
-        }
+        if ( cause instanceof SchemaError.DatasourceUnreachable) {
+        return FailureClassification.TRANSIENT;}
+        if ( cause instanceof SchemaError.LockAcquisitionFailed) {
+        return FailureClassification.TRANSIENT;}
+        if ( cause instanceof SchemaError.MigrationFailed) {
+        return FailureClassification.PERMANENT;}
+        if ( cause instanceof SchemaError.ChecksumMismatch) {
+        return FailureClassification.PERMANENT;}
         return FailureClassification.UNKNOWN;
     }
 
     static long calculateBackoff(int attemptNumber) {
         var multiplier = 1L;
-        for (var i = 0; i < attemptNumber; i++) {
-            multiplier *= 3;
-        }
+        for ( var i = 0; i < attemptNumber; i++) {
+        multiplier *= 3;}
         return BACKOFF_BASE_MS * multiplier;
     }
 
@@ -324,34 +310,30 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
     private Promise<Unit> acquireLock(String datasourceName) {
         // Local deduplication — prevent concurrent migration for the same datasource on this node
-        if (!inFlightMigrations.add(datasourceName)) {
-            return LOCK_HELD.promise();
-        }
+        if ( !inFlightMigrations.add(datasourceName)) {
+        return LOCK_HELD.promise();}
         // Distributed lock — prevent concurrent migration across nodes
         var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(datasourceName);
-        if (isLockHeld(lockKey)) {
+        if ( isLockHeld(lockKey)) {
             inFlightMigrations.remove(datasourceName);
             return LOCK_HELD.promise();
         }
         var lockValue = SchemaMigrationLockValue.schemaMigrationLockValue(datasourceName, self, LOCK_TTL_MS);
         KVCommand<AetherKey> command = new Put<>(lockKey, lockValue);
-        return cluster.apply(List.of(command))
-                      .mapToUnit();
+        return cluster.apply(List.of(command)).mapToUnit();
     }
 
     private boolean isLockHeld(SchemaMigrationLockKey lockKey) {
-        return kvStore.get(lockKey)
-                      .filter(SchemaMigrationLockValue.class::isInstance)
-                      .map(SchemaMigrationLockValue.class::cast)
-                      .filter(lock -> !lock.isExpired())
-                      .isPresent();
+        return kvStore.get(lockKey).filter(SchemaMigrationLockValue.class::isInstance)
+                          .map(SchemaMigrationLockValue.class::cast)
+                          .filter(lock -> !lock.isExpired())
+                          .isPresent();
     }
 
     private Promise<Unit> releaseLock(String datasourceName) {
         var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(datasourceName);
         KVCommand<AetherKey> command = new Remove<>(lockKey);
-        return cluster.apply(List.of(command))
-                      .mapToUnit();
+        return cluster.apply(List.of(command)).mapToUnit();
     }
 
     private Promise<Unit> updateStatus(String datasourceName, SchemaVersionValue current, SchemaStatus newStatus) {
@@ -363,8 +345,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                             current.artifactCoords(),
                                                             current.attemptCount());
         KVCommand<AetherKey> command = new Put<>(key, updated);
-        return cluster.apply(List.of(command))
-                      .mapToUnit();
+        return cluster.apply(List.of(command)).mapToUnit();
     }
 
     private Promise<Unit> updateStatusWithAttempt(String datasourceName,
@@ -379,33 +360,28 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                             current.artifactCoords(),
                                                             attemptCount);
         KVCommand<AetherKey> command = new Put<>(key, updated);
-        return cluster.apply(List.of(command))
-                      .mapToUnit();
+        return cluster.apply(List.of(command)).mapToUnit();
     }
 
     private Promise<Unit> resolveAndParseMigrations(String datasourceName, SchemaVersionValue value) {
-        return Option.option(value.artifactCoords())
-                     .filter(s -> !s.isEmpty())
-                     .map(coords -> resolveArtifactAndLog(datasourceName, coords))
-                     .or(logNoArtifactCoords(datasourceName));
+        return Option.option(value.artifactCoords()).filter(s -> !s.isEmpty())
+                            .map(coords -> resolveArtifactAndLog(datasourceName, coords))
+                            .or(logNoArtifactCoords(datasourceName));
     }
 
     private Promise<Unit> resolveArtifactAndLog(String datasourceName, String artifactCoords) {
-        return Artifact.artifact(artifactCoords)
-                       .async()
-                       .flatMap(this::resolveArtifactBytes)
-                       .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes)
-                                                                   .async())
-                       .flatMap(artifact -> executeMigrationsFromArtifact(datasourceName, artifact));
+        return Artifact.artifact(artifactCoords).async()
+                                .flatMap(this::resolveArtifactBytes)
+                                .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes).async())
+                                .flatMap(artifact -> executeMigrationsFromArtifact(datasourceName, artifact));
     }
 
     private Promise<byte[]> resolveArtifactBytes(Artifact artifact) {
         // Try blueprint classifier first (migration scripts are packaged in the blueprint JAR)
-        return repository.locate(artifact, "blueprint")
-                         .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes)
-                         .orElse(() -> repository.locate(artifact)
-                                                 .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes))
-                         .orElse(() -> artifactStore.resolve(artifact));
+        return repository.locate(artifact, "blueprint").flatMap(SchemaOrchestratorServiceInstance::readLocationBytes)
+                                .orElse(() -> repository.locate(artifact)
+        .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes))
+                                .orElse(() -> artifactStore.resolve(artifact));
     }
 
     @SuppressWarnings("JBCT-EX-01") // Infrastructure I/O: URL stream reading
@@ -415,8 +391,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
     @SuppressWarnings("JBCT-EX-01") // Adapter boundary: called within Promise.lift
     private static byte[] readStreamBytes(Location location) throws Exception {
-        try (var stream = location.url()
-                                  .openStream()) {
+        try (var stream = location.url().openStream()) {
             return stream.readAllBytes();
         }
     }
@@ -427,11 +402,9 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     private Promise<Unit> executeMigrationsFromArtifact(String datasourceName, BlueprintArtifact artifact) {
-        return Option.option(artifact.schemaMigrations()
-                                     .get(datasourceName))
-                     .filter(list -> !list.isEmpty())
-                     .map(scripts -> provisionAndMigrate(datasourceName, scripts))
-                     .or(logNoMigrationsInArtifact(datasourceName));
+        return Option.option(artifact.schemaMigrations().get(datasourceName)).filter(list -> !list.isEmpty())
+                            .map(scripts -> provisionAndMigrate(datasourceName, scripts))
+                            .or(logNoMigrationsInArtifact(datasourceName));
     }
 
     private Promise<Unit> provisionAndMigrate(String datasourceName, List<MigrationEntry> scripts) {
@@ -440,10 +413,10 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         .flatMap(connector -> schemaManager.migrate(datasourceName,
                                                     scripts,
                                                     connector,
-                                                    self.id())
-                                           .onSuccess(result -> logMigrationSuccess(datasourceName, result))
-                                           .mapToUnit()
-                                           .onResultRun(() -> releaseConnectorSilently(datasourceName)));
+                                                    self.id()).onSuccess(result -> logMigrationSuccess(datasourceName,
+                                                                                                       result))
+                                                   .mapToUnit()
+                                                   .onResultRun(() -> releaseConnectorSilently(datasourceName)));
     }
 
     /// Provision connector, or skip gracefully if no config exists.
@@ -451,9 +424,9 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     /// Config present but connection fails = real error, propagate.
     private Promise<SqlConnector> provisionConnector(String datasourceName) {
         return connectionProvider.connector(datasourceName)
-                                 .onFailure(cause -> log.info("No database config for '{}': {} — skipping migration",
-                                                              datasourceName,
-                                                              cause.message()));
+        .onFailure(cause -> log.info("No database config for '{}': {} — skipping migration",
+                                     datasourceName,
+                                     cause.message()));
     }
 
     private static void logMigrationSuccess(String datasourceName, AetherSchemaManager.SchemaResult result) {
@@ -465,9 +438,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
     private void releaseConnectorSilently(String datasourceName) {
         connectionProvider.release(datasourceName)
-                          .onFailure(c -> log.warn("Failed to release connector for '{}': {}",
-                                                   datasourceName,
-                                                   c.message()));
+        .onFailure(c -> log.warn("Failed to release connector for '{}': {}", datasourceName, c.message()));
     }
 
     private static Promise<Unit> logNoMigrationsInArtifact(String datasourceName) {

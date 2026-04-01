@@ -45,22 +45,22 @@ import java.util.List;
 /// @param artifacts list of artifacts involved in this deployment
 /// @param createdAt timestamp when deployment was created
 /// @param updatedAt timestamp of last state change
-public record BlueGreenDeployment(String deploymentId,
-                                  ArtifactBase artifactBase,
-                                  Version blueVersion,
-                                  Version greenVersion,
-                                  BlueGreenState state,
-                                  ActiveEnvironment activeEnvironment,
-                                  int blueInstances,
-                                  int greenInstances,
-                                  long drainTimeoutMs,
-                                  HealthThresholds healthThresholds,
-                                  CleanupPolicy cleanupPolicy,
-                                  VersionRouting routing,
-                                  Option<String> blueprintId,
-                                  List<ArtifactBase> artifacts,
-                                  long createdAt,
-                                  long updatedAt) implements DeploymentStrategy {
+public record BlueGreenDeployment( String deploymentId,
+                                   ArtifactBase artifactBase,
+                                   Version blueVersion,
+                                   Version greenVersion,
+                                   BlueGreenState state,
+                                   ActiveEnvironment activeEnvironment,
+                                   int blueInstances,
+                                   int greenInstances,
+                                   long drainTimeoutMs,
+                                   HealthThresholds healthThresholds,
+                                   CleanupPolicy cleanupPolicy,
+                                   VersionRouting routing,
+                                   Option<String> blueprintId,
+                                   List<ArtifactBase> artifacts,
+                                   long createdAt,
+                                   long updatedAt) implements DeploymentStrategy {
     private static final Fn1<Cause, String> INVALID_TRANSITION = Causes.forOneValue("Invalid state transition: %s");
 
     /// Which environment is currently receiving traffic.
@@ -82,15 +82,46 @@ public record BlueGreenDeployment(String deploymentId,
     /// @param cleanupPolicy cleanup policy for blue environment
     /// @return new blue-green deployment
     @SuppressWarnings("JBCT-VO-02") // Factory method - validated construction
-    public static BlueGreenDeployment blueGreenDeployment(String deploymentId,
-                                                          ArtifactBase artifactBase,
-                                                          Version blueVersion,
-                                                          Version greenVersion,
-                                                          int blueInstances,
-                                                          int greenInstances,
-                                                          long drainTimeoutMs,
-                                                          HealthThresholds healthThresholds,
-                                                          CleanupPolicy cleanupPolicy) {
+    public static// Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    BlueGreenDeployment blueGreenDeployment(String deploymentId,
+                                            ArtifactBase artifactBase,
+                                            Version blueVersion,
+                                            Version greenVersion,
+                                            int blueInstances,
+                                            int greenInstances,
+                                            long drainTimeoutMs,
+                                            HealthThresholds healthThresholds,
+                                            CleanupPolicy cleanupPolicy) {
         var now = System.currentTimeMillis();
         return new BlueGreenDeployment(deploymentId,
                                        artifactBase,
@@ -115,12 +146,40 @@ public record BlueGreenDeployment(String deploymentId,
     /// @param newState the new state
     /// @return updated blue-green deployment, or failure if transition is invalid
     @SuppressWarnings("JBCT-VO-02") // Record copy method with validated state transition
-    public Result<BlueGreenDeployment> transitionTo(BlueGreenState newState) {
-        if (!state.validTransitions()
-                  .contains(newState)) {
-            return INVALID_TRANSITION.apply(state + " -> " + newState)
-                                     .result();
-        }
+    public// Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    Result<BlueGreenDeployment> transitionTo(BlueGreenState newState) {
+        if ( !state.validTransitions().contains(newState)) {
+        return INVALID_TRANSITION.apply(state + " -> " + newState).result();}
         return Result.success(new BlueGreenDeployment(deploymentId,
                                                       artifactBase,
                                                       blueVersion,
@@ -144,7 +203,38 @@ public record BlueGreenDeployment(String deploymentId,
     /// @param newRouting the new routing configuration
     /// @return updated blue-green deployment
     @SuppressWarnings("JBCT-VO-02") // Record copy method with known-valid fields
-    public BlueGreenDeployment withRouting(VersionRouting newRouting) {
+    public// Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    BlueGreenDeployment withRouting(VersionRouting newRouting) {
         return new BlueGreenDeployment(deploymentId,
                                        artifactBase,
                                        blueVersion,
@@ -167,7 +257,38 @@ public record BlueGreenDeployment(String deploymentId,
     ///
     /// @return updated deployment with green active and all traffic routed to new version
     @SuppressWarnings("JBCT-VO-02") // Record copy method with known-valid fields
-    public BlueGreenDeployment switchToGreen() {
+    public// Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    BlueGreenDeployment switchToGreen() {
         return new BlueGreenDeployment(deploymentId,
                                        artifactBase,
                                        blueVersion,
@@ -190,7 +311,38 @@ public record BlueGreenDeployment(String deploymentId,
     ///
     /// @return updated deployment with blue active and all traffic routed to old version
     @SuppressWarnings("JBCT-VO-02") // Record copy method with known-valid fields
-    public BlueGreenDeployment switchBack() {
+    public// Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    BlueGreenDeployment switchBack() {
         return new BlueGreenDeployment(deploymentId,
                                        artifactBase,
                                        blueVersion,
@@ -209,32 +361,27 @@ public record BlueGreenDeployment(String deploymentId,
                                        System.currentTimeMillis());
     }
 
-    @Override
-    public String strategyId() {
+    @Override public String strategyId() {
         return deploymentId;
     }
 
     /// Returns the blue (old) version.
-    @Override
-    public Version oldVersion() {
+    @Override public Version oldVersion() {
         return blueVersion;
     }
 
     /// Returns the green (new) version.
-    @Override
-    public Version newVersion() {
+    @Override public Version newVersion() {
         return greenVersion;
     }
 
     /// Checks if this deployment is in a terminal state.
-    @Override
-    public boolean isTerminal() {
+    @Override public boolean isTerminal() {
         return state.isTerminal();
     }
 
     /// Checks if this deployment is active (not terminal).
-    @Override
-    public boolean isActive() {
+    @Override public boolean isActive() {
         return ! isTerminal();
     }
 
@@ -254,7 +401,38 @@ public record BlueGreenDeployment(String deploymentId,
     /// @param newArtifacts the artifacts involved in this deployment
     /// @return updated blue-green deployment with blueprint context
     @SuppressWarnings("JBCT-VO-02") // Record copy method with known-valid fields
-    public BlueGreenDeployment withBlueprintContext(String newBlueprintId, List<ArtifactBase> newArtifacts) {
+    public// Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    BlueGreenDeployment withBlueprintContext(String newBlueprintId, List<ArtifactBase> newArtifacts) {
         return new BlueGreenDeployment(deploymentId,
                                        artifactBase,
                                        blueVersion,

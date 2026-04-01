@@ -7,10 +7,8 @@ import org.pragmatica.serialization.Codec;
 /// Notifications for DHT map mutations, broadcast to passive peers.
 /// Allows passive nodes (load balancers) to maintain local caches of DHT data
 /// without participating in the DHT hash ring.
-@Codec
-public sealed interface DHTNotification extends ProtocolMessage {
-    @Override
-    default boolean deliverToPassive() {
+@Codec public sealed interface DHTNotification extends ProtocolMessage {
+    @Override default boolean deliverToPassive() {
         return true;
     }
 

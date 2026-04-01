@@ -73,25 +73,20 @@ public interface NodeDeploymentManager {
         }
     }
 
-    @MessageReceiver
-    void onQuorumStateChange(QuorumStateNotification quorumStateNotification);
+    @MessageReceiver void onQuorumStateChange(QuorumStateNotification quorumStateNotification);
 
-    @MessageReceiver
-    void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
+    @MessageReceiver void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
 
     /// Handle NodeArtifactKey put — converts to SliceNodeKey-based handling.
-    @MessageReceiver
-    void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
+    @MessageReceiver void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
 
     /// Handle NodeArtifactKey remove — converts to SliceNodeKey-based handling.
-    @MessageReceiver
-    void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
+    @MessageReceiver void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
 
     /// Handle unexpected removal of local node's lifecycle key by re-registering ON_DUTY.
     /// Defense-in-depth: guards against race where a pending consensus batch removes the key
     /// after activation has already written it.
-    @MessageReceiver
-    void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove);
+    @MessageReceiver void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove);
 
     /// Set a shutdown callback to be invoked when SHUTTING_DOWN lifecycle state is received.
     void setShutdownCallback(Runnable callback);
@@ -135,8 +130,7 @@ public interface NodeDeploymentManager {
                                          TimeSpan transitionRetryDelay) implements NodeDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(ActiveNodeDeploymentState.class);
 
-            private static final TimeSpan CONSENSUS_OPERATION_TIMEOUT = TimeSpan.timeSpan(30)
-                                                                               .seconds();
+            private static final TimeSpan CONSENSUS_OPERATION_TIMEOUT = TimeSpan.timeSpan(30).seconds();
             private static final int CONSENSUS_MAX_RETRIES = 2;
 
             private static final Fn1<Cause, SliceNodeKey> CLEANUP_FAILED = Causes.forOneValue("Failed to cleanup slice %s during abrupt removal");
@@ -146,20 +140,15 @@ public interface NodeDeploymentManager {
             private static final Fn1<Cause, SliceNodeKey> UNLOAD_FAILED = Causes.forOneValue("Failed to unload slice %s");
 
             private Option<SliceStore.LoadedSlice> findLoadedSlice(Artifact artifact) {
-                return Option.from(sliceStore.loaded()
-                                             .stream()
-                                             .filter(ls -> ls.artifact()
-                                                             .equals(artifact))
-                                             .findFirst());
+                return Option.from(sliceStore.loaded().stream()
+                                                    .filter(ls -> ls.artifact().equals(artifact))
+                                                    .findFirst());
             }
 
-            @Override
-            public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
-                var key = valuePut.cause()
-                                  .key();
-                if (key.isForNode(self)) {
-                    var value = valuePut.cause()
-                                        .value();
+            @Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+                var key = valuePut.cause().key();
+                if ( key.isForNode(self)) {
+                    var value = valuePut.cause().value();
                     var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId());
                     var sliceNodeValue = SliceNodeValue.sliceNodeValue(value.state());
                     log.debug("NodeArtifactKey put received for key: {}, state: {}", key, value.state());
@@ -168,11 +157,9 @@ public interface NodeDeploymentManager {
                 }
             }
 
-            @Override
-            public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
-                var key = valueRemove.cause()
-                                     .key();
-                if (key.isForNode(self)) {
+            @Override public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+                var key = valueRemove.cause().key();
+                if ( key.isForNode(self)) {
                     var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId());
                     handleSliceValueRemove(sliceKey);
                 }
@@ -184,9 +171,8 @@ public interface NodeDeploymentManager {
                 // In this case slice might be active and we should immediately stop it,
                 // unload and remove, ignoring errors.
                 var deployment = Option.option(deployments.remove(sliceKey));
-                if (shouldForceCleanup(deployment)) {
-                    forceCleanupSlice(sliceKey);
-                }
+                if ( shouldForceCleanup(deployment)) {
+                forceCleanupSlice(sliceKey);}
             }
 
             private void recordDeployment(SliceNodeKey sliceKey, SliceNodeValue sliceNodeValue) {
@@ -206,9 +192,8 @@ public interface NodeDeploymentManager {
                                                              timestamp));
                 // Emit deployment failed event if transitioning to FAILED
                 // We do this here because we have access to previousState
-                if (state == SliceState.FAILED) {
-                    var errorMessage = sliceNodeValue.failureReason()
-                                                     .or("Unknown failure");
+                if ( state == SliceState.FAILED) {
+                    var errorMessage = sliceNodeValue.failureReason().or("Unknown failure");
                     previousState.onPresent(prevState -> router.route(DeploymentFailed.deploymentFailed(sliceKey.artifact(),
                                                                                                         self,
                                                                                                         prevState,
@@ -218,8 +203,7 @@ public interface NodeDeploymentManager {
             }
 
             private boolean shouldForceCleanup(Option<SliceDeployment> deployment) {
-                return deployment.map(d -> d.state() == SliceState.ACTIVE)
-                                 .or(false);
+                return deployment.map(d -> d.state() == SliceState.ACTIVE).or(false);
             }
 
             private void forceCleanupSlice(SliceNodeKey sliceKey) {
@@ -238,7 +222,7 @@ public interface NodeDeploymentManager {
             }
 
             private void processStateTransition(SliceNodeKey sliceKey, SliceState state) {
-                switch (state) {
+                switch ( state) {
                     case LOAD -> handleLoading(sliceKey);
                     case LOADING -> {}
                     // Transitional state, no action
@@ -264,11 +248,10 @@ public interface NodeDeploymentManager {
             }
 
             private Promise<SliceNodeKey> loadSliceWithTimeout(SliceNodeKey sliceKey) {
-                return configuration.timeoutFor(SliceState.LOADING)
-                                    .async()
-                                    .flatMap(timeout -> sliceStore.loadSlice(sliceKey.artifact())
-                                                                  .timeout(timeout))
-                                    .map(_ -> sliceKey);
+                return configuration.timeoutFor(SliceState.LOADING).async()
+                                               .flatMap(timeout -> sliceStore.loadSlice(sliceKey.artifact())
+                .timeout(timeout))
+                                               .map(_ -> sliceKey);
             }
 
             private void handleLoadingFailure(SliceNodeKey sliceKey, Cause cause) {
@@ -292,8 +275,7 @@ public interface NodeDeploymentManager {
             private static final int MAX_TRANSITION_RETRIES = 5;
 
             private void handleSliceNotFoundForActivation(SliceNodeKey sliceKey) {
-                var cause = SLICE_NOT_FOUND_FOR_ACTIVATION.apply(sliceKey.artifact()
-                                                                         .asString());
+                var cause = SLICE_NOT_FOUND_FOR_ACTIVATION.apply(sliceKey.artifact().asString());
                 log.error("Slice {} state is ACTIVATE but not found in SliceStore", sliceKey.artifact());
                 transitionToFailed(sliceKey, cause);
             }
@@ -315,17 +297,14 @@ public interface NodeDeploymentManager {
             }
 
             private Promise<SliceNodeKey> activateSliceWithTimeout(SliceNodeKey sliceKey) {
-                return configuration.timeoutFor(SliceState.ACTIVATING)
-                                    .async()
-                                    .flatMap(timeout -> sliceStore.activateSlice(sliceKey.artifact())
-                                                                  .timeout(timeout))
-                                    .map(_ -> sliceKey);
+                return configuration.timeoutFor(SliceState.ACTIVATING).async()
+                                               .flatMap(timeout -> sliceStore.activateSlice(sliceKey.artifact())
+                .timeout(timeout))
+                                               .map(_ -> sliceKey);
             }
 
             private Promise<SliceNodeKey> publishEndpointsAndRoutes(SliceNodeKey sliceKey) {
-                return Promise.all(publishEndpoints(sliceKey),
-                                   publishHttpRoutes(sliceKey))
-                              .map((_, _) -> sliceKey);
+                return Promise.all(publishEndpoints(sliceKey), publishHttpRoutes(sliceKey)).map((_, _) -> sliceKey);
             }
 
             private void handleActivationFailure(SliceNodeKey sliceKey, Cause cause) {
@@ -356,27 +335,20 @@ public interface NodeDeploymentManager {
                           sliceInvokerFacade.isPresent());
                 return httpRoutePublisher.flatMap(publisher -> sliceInvokerFacade.flatMap(facade -> findLoadedSlice(artifact)
                 .map(ls -> doPublishHttpRoutes(artifact, publisher, facade, ls))))
-                                         .or(Promise.unitPromise());
+                .or(Promise.unitPromise());
             }
 
             private Promise<Unit> doPublishHttpRoutes(Artifact artifact,
                                                       HttpRoutePublisher publisher,
                                                       SliceInvokerFacade facade,
                                                       SliceStore.LoadedSlice ls) {
-                var classLoader = ls.slice()
-                                    .getClass()
-                                    .getClassLoader();
+                var classLoader = ls.slice().getClass()
+                                          .getClassLoader();
                 log.debug("Publishing HTTP routes for {} using classLoader={}",
                           artifact,
-                          classLoader.getClass()
-                                     .getName());
-                return publisher.publishRoutes(artifact,
-                                               classLoader,
-                                               ls.slice(),
-                                               facade)
-                                .onFailure(cause -> log.warn("Failed to publish HTTP routes for {}: {}",
-                                                             artifact,
-                                                             cause.message()));
+                          classLoader.getClass().getName());
+                return publisher.publishRoutes(artifact, classLoader, ls.slice(), facade)
+                .onFailure(cause -> log.warn("Failed to publish HTTP routes for {}: {}", artifact, cause.message()));
             }
 
             private Promise<SliceNodeKey> registerSliceForInvocation(SliceNodeKey sliceKey) {
@@ -413,15 +385,11 @@ public interface NodeDeploymentManager {
 
             private Promise<Unit> publishEndpointsForSlice(Artifact artifact, Slice slice) {
                 var methods = slice.methods();
-                if (methods.isEmpty()) {
-                    return Promise.unitPromise();
-                }
-                int instanceNumber = Math.abs(self.id()
-                                                  .hashCode());
-                var methodNames = methods.stream()
-                                         .map(m -> m.name()
-                                                    .name())
-                                         .toList();
+                if ( methods.isEmpty()) {
+                return Promise.unitPromise();}
+                int instanceNumber = Math.abs(self.id().hashCode());
+                var methodNames = methods.stream().map(m -> m.name().name())
+                                                .toList();
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, artifact);
                 var nodeArtifactValue = NodeArtifactValue.activeNodeArtifactValue(instanceNumber, methodNames);
                 KVCommand<AetherKey> command = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
@@ -459,11 +427,10 @@ public interface NodeDeploymentManager {
             }
 
             private Promise<SliceNodeKey> deactivateSliceWithTimeout(SliceNodeKey sliceKey) {
-                return configuration.timeoutFor(SliceState.DEACTIVATING)
-                                    .async()
-                                    .flatMap(timeout -> sliceStore.deactivateSlice(sliceKey.artifact())
-                                                                  .timeout(timeout))
-                                    .map(_ -> sliceKey);
+                return configuration.timeoutFor(SliceState.DEACTIVATING).async()
+                                               .flatMap(timeout -> sliceStore.deactivateSlice(sliceKey.artifact())
+                .timeout(timeout))
+                                               .map(_ -> sliceKey);
             }
 
             private void handleDeactivationFailure(SliceNodeKey sliceKey, Cause cause) {
@@ -472,9 +439,8 @@ public interface NodeDeploymentManager {
             }
 
             private Promise<SliceNodeKey> unpublishHttpRoutes(SliceNodeKey sliceKey) {
-                return httpRoutePublisher.map(publisher -> publisher.unpublishRoutes(sliceKey.artifact()))
-                                         .or(Promise.unitPromise())
-                                         .map(_ -> sliceKey);
+                return httpRoutePublisher.map(publisher -> publisher.unpublishRoutes(sliceKey.artifact())).or(Promise.unitPromise())
+                                             .map(_ -> sliceKey);
             }
 
             private Promise<SliceNodeKey> unpublishEndpoints(SliceNodeKey sliceKey) {
@@ -487,9 +453,8 @@ public interface NodeDeploymentManager {
 
             private Promise<Unit> unpublishEndpointsForSlice(Artifact artifact, Slice slice) {
                 var methods = slice.methods();
-                if (methods.isEmpty()) {
-                    return Promise.unitPromise();
-                }
+                if ( methods.isEmpty()) {
+                return Promise.unitPromise();}
                 // Write NodeArtifactKey with empty methods to clear endpoint info
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, artifact);
                 var nodeArtifactValue = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
@@ -514,13 +479,11 @@ public interface NodeDeploymentManager {
 
             private Promise<Unit> doPublishTopicSubscriptions(Artifact artifact, Slice slice) {
                 var entries = readSubscriptionsFromManifest(slice);
-                if (entries.isEmpty()) {
-                    return Promise.unitPromise();
-                }
-                var commands = entries.stream()
-                                      .<KVCommand<AetherKey>> map(entry -> buildTopicSubscriptionPutCommand(artifact,
-                                                                                                            entry))
-                                      .toList();
+                if ( entries.isEmpty()) {
+                return Promise.unitPromise();}
+                var commands = entries.stream().<KVCommand<AetherKey>>map(entry -> buildTopicSubscriptionPutCommand(artifact,
+                                                                                                                    entry))
+                                             .toList();
                 return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Published {} topic subscriptions for {}",
                                                                             entries.size(),
                                                                             artifact))
@@ -546,13 +509,11 @@ public interface NodeDeploymentManager {
 
             private Promise<Unit> doUnpublishTopicSubscriptions(Artifact artifact, Slice slice) {
                 var entries = readSubscriptionsFromManifest(slice);
-                if (entries.isEmpty()) {
-                    return Promise.unitPromise();
-                }
-                var commands = entries.stream()
-                                      .<KVCommand<AetherKey>> map(entry -> buildTopicSubscriptionRemoveCommand(artifact,
-                                                                                                               entry))
-                                      .toList();
+                if ( entries.isEmpty()) {
+                return Promise.unitPromise();}
+                var commands = entries.stream().<KVCommand<AetherKey>>map(entry -> buildTopicSubscriptionRemoveCommand(artifact,
+                                                                                                                       entry))
+                                             .toList();
                 return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Unpublished {} topic subscriptions for {}",
                                                                             entries.size(),
                                                                             artifact))
@@ -567,20 +528,17 @@ public interface NodeDeploymentManager {
                 return new KVCommand.Remove<>(key);
             }
 
-            private record SubscriptionManifestEntry(String topicName, MethodName methodName) {}
+            private record SubscriptionManifestEntry(String topicName, MethodName methodName){}
 
-            private record ScheduledTaskManifestEntry(String configSection, MethodName methodName) {}
+            private record ScheduledTaskManifestEntry(String configSection, MethodName methodName){}
 
             @SuppressWarnings("JBCT-EX-01")
             private List<SubscriptionManifestEntry> readSubscriptionsFromManifest(Slice slice) {
                 var result = new ArrayList<SubscriptionManifestEntry>();
-                var classLoader = slice.getClass()
-                                       .getClassLoader();
-                for (var iface : slice.getClass()
-                                      .getInterfaces()) {
-                    if (iface == Slice.class) {
-                        continue;
-                    }
+                var classLoader = slice.getClass().getClassLoader();
+                for ( var iface : slice.getClass().getInterfaces()) {
+                    if ( iface == Slice.class) {
+                    continue;}
                     var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
                     readSubscriptionEntriesFromManifest(classLoader, manifestPath, result);
                 }
@@ -592,16 +550,19 @@ public interface NodeDeploymentManager {
                                                              String manifestPath,
                                                              List<SubscriptionManifestEntry> result) {
                 try (var is = classLoader.getResourceAsStream(manifestPath)) {
-                    if (is == null) {
-                        return;
-                    }
+                    if ( is == null) {
+                    return;}
                     var props = new Properties();
                     props.load(is);
                     var count = Integer.parseInt(props.getProperty("topic.subscriptions.count", "0"));
-                    for (int i = 0; i < count; i++) {
-                        readSubscriptionEntry(props, i).onPresent(result::add);
-                    }
-                } catch (Exception e) {
+                    for ( int i = 0; i < count; i++) {
+                    readSubscriptionEntry(props, i).onPresent(result::add);}
+                }
+
+
+
+
+                catch (Exception e) {
                     log.debug("Could not read subscription manifest {}: {}", manifestPath, e.getMessage());
                 }
             }
@@ -609,20 +570,17 @@ public interface NodeDeploymentManager {
             private Option<SubscriptionManifestEntry> readSubscriptionEntry(Properties props, int index) {
                 var configSection = props.getProperty("topic.subscription." + index + ".config");
                 var methodNameStr = props.getProperty("topic.subscription." + index + ".method");
-                if (configSection == null || methodNameStr == null) {
-                    return Option.none();
-                }
+                if ( configSection == null || methodNameStr == null) {
+                return Option.none();}
                 return resolveTopicName(configSection).flatMap(topicName -> MethodName.methodName(methodNameStr)
-                                                                                      .map(method -> new SubscriptionManifestEntry(topicName,
-                                                                                                                                   method)))
+                .map(method -> new SubscriptionManifestEntry(topicName, method)))
                                        .option();
             }
 
             private Result<String> resolveTopicName(String configSection) {
-                return ConfigService.instance()
-                                    .toResult(Causes.cause("ConfigService not available for topic resolution"))
-                                    .flatMap(svc -> svc.config(configSection, TopicConfig.class))
-                                    .map(TopicConfig::topicName);
+                return ConfigService.instance().toResult(Causes.cause("ConfigService not available for topic resolution"))
+                                             .flatMap(svc -> svc.config(configSection, TopicConfig.class))
+                                             .map(TopicConfig::topicName);
             }
 
             // --- Scheduled task publish/unpublish ---
@@ -636,17 +594,14 @@ public interface NodeDeploymentManager {
 
             private Promise<Unit> doPublishScheduledTasks(Artifact artifact, Slice slice) {
                 var entries = readScheduledTasksFromManifest(slice);
-                if (entries.isEmpty()) {
-                    return Promise.unitPromise();
-                }
+                if ( entries.isEmpty()) {
+                return Promise.unitPromise();}
                 var commands = new ArrayList<KVCommand<AetherKey>>();
-                for (var entry : entries) {
-                    resolveScheduleConfig(entry.configSection())
-                    .onPresent(config -> commands.add(buildScheduledTaskPutCommand(artifact, entry, config)));
-                }
-                if (commands.isEmpty()) {
-                    return Promise.unitPromise();
-                }
+                for ( var entry : entries) {
+                resolveScheduleConfig(entry.configSection())
+                .onPresent(config -> commands.add(buildScheduledTaskPutCommand(artifact, entry, config)));}
+                if ( commands.isEmpty()) {
+                return Promise.unitPromise();}
                 return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Published {} scheduled tasks for {}",
                                                                             commands.size(),
                                                                             artifact))
@@ -659,8 +614,7 @@ public interface NodeDeploymentManager {
                                                                       ScheduledTaskManifestEntry entry,
                                                                       ScheduleConfig config) {
                 var key = ScheduledTaskKey.scheduledTaskKey(entry.configSection(), artifact, entry.methodName());
-                var value = config.interval()
-                                  .isEmpty()
+                var value = config.interval().isEmpty()
                             ? ScheduledTaskValue.cronTask(self, config.cron(), config.executionMode())
                             : ScheduledTaskValue.intervalTask(self, config.interval(), config.executionMode());
                 return new KVCommand.Put<>(key, value);
@@ -676,13 +630,11 @@ public interface NodeDeploymentManager {
 
             private Promise<Unit> doUnpublishScheduledTasks(Artifact artifact, Slice slice) {
                 var entries = readScheduledTasksFromManifest(slice);
-                if (entries.isEmpty()) {
-                    return Promise.unitPromise();
-                }
-                var commands = entries.stream()
-                                      .<KVCommand<AetherKey>> map(entry -> buildScheduledTaskRemoveCommand(artifact,
-                                                                                                           entry))
-                                      .toList();
+                if ( entries.isEmpty()) {
+                return Promise.unitPromise();}
+                var commands = entries.stream().<KVCommand<AetherKey>>map(entry -> buildScheduledTaskRemoveCommand(artifact,
+                                                                                                                   entry))
+                                             .toList();
                 return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Unpublished {} scheduled tasks for {}",
                                                                             entries.size(),
                                                                             artifact))
@@ -700,13 +652,10 @@ public interface NodeDeploymentManager {
             @SuppressWarnings("JBCT-EX-01")
             private List<ScheduledTaskManifestEntry> readScheduledTasksFromManifest(Slice slice) {
                 var result = new ArrayList<ScheduledTaskManifestEntry>();
-                var classLoader = slice.getClass()
-                                       .getClassLoader();
-                for (var iface : slice.getClass()
-                                      .getInterfaces()) {
-                    if (iface == Slice.class) {
-                        continue;
-                    }
+                var classLoader = slice.getClass().getClassLoader();
+                for ( var iface : slice.getClass().getInterfaces()) {
+                    if ( iface == Slice.class) {
+                    continue;}
                     var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
                     readScheduledTaskEntriesFromManifest(classLoader, manifestPath, result);
                 }
@@ -718,16 +667,19 @@ public interface NodeDeploymentManager {
                                                               String manifestPath,
                                                               List<ScheduledTaskManifestEntry> result) {
                 try (var is = classLoader.getResourceAsStream(manifestPath)) {
-                    if (is == null) {
-                        return;
-                    }
+                    if ( is == null) {
+                    return;}
                     var props = new Properties();
                     props.load(is);
                     var count = Integer.parseInt(props.getProperty("scheduled.tasks.count", "0"));
-                    for (int i = 0; i < count; i++) {
-                        readScheduledTaskEntry(props, i).onPresent(result::add);
-                    }
-                } catch (Exception e) {
+                    for ( int i = 0; i < count; i++) {
+                    readScheduledTaskEntry(props, i).onPresent(result::add);}
+                }
+
+
+
+
+                catch (Exception e) {
                     log.debug("Could not read scheduled task manifest {}: {}", manifestPath, e.getMessage());
                 }
             }
@@ -735,18 +687,16 @@ public interface NodeDeploymentManager {
             private Option<ScheduledTaskManifestEntry> readScheduledTaskEntry(Properties props, int index) {
                 var configSection = props.getProperty("scheduled.task." + index + ".config");
                 var methodNameStr = props.getProperty("scheduled.task." + index + ".method");
-                if (configSection == null || methodNameStr == null) {
-                    return Option.none();
-                }
-                return MethodName.methodName(methodNameStr)
-                                 .map(method -> new ScheduledTaskManifestEntry(configSection, method))
-                                 .option();
+                if ( configSection == null || methodNameStr == null) {
+                return Option.none();}
+                return MethodName.methodName(methodNameStr).map(method -> new ScheduledTaskManifestEntry(configSection,
+                                                                                                         method))
+                                            .option();
             }
 
             private Option<ScheduleConfig> resolveScheduleConfig(String configSection) {
                 return ConfigService.instance()
-                                    .flatMap(svc -> svc.config(configSection, ScheduleConfig.class)
-                                                       .option());
+                .flatMap(svc -> svc.config(configSection, ScheduleConfig.class).option());
             }
 
             // --- Stream subscription publish/unpublish ---
@@ -760,13 +710,11 @@ public interface NodeDeploymentManager {
 
             private Promise<Unit> doPublishStreamSubscriptions(Artifact artifact, Slice slice) {
                 var entries = readStreamSubscriptionsFromManifest(slice);
-                if (entries.isEmpty()) {
-                    return Promise.unitPromise();
-                }
-                var commands = entries.stream()
-                                      .<KVCommand<AetherKey>> map(entry -> buildStreamSubscriptionPutCommand(artifact,
-                                                                                                             entry))
-                                      .toList();
+                if ( entries.isEmpty()) {
+                return Promise.unitPromise();}
+                var commands = entries.stream().<KVCommand<AetherKey>>map(entry -> buildStreamSubscriptionPutCommand(artifact,
+                                                                                                                     entry))
+                                             .toList();
                 return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Published {} stream subscriptions for {}",
                                                                             entries.size(),
                                                                             artifact))
@@ -782,9 +730,7 @@ public interface NodeDeploymentManager {
                                                                       entry.configSection(),
                                                                       artifact,
                                                                       entry.methodName());
-                var consumerGroup = artifact.base()
-                                            .asString() + "-" + entry.methodName()
-                                                                    .name();
+                var consumerGroup = artifact.base().asString() + "-" + entry.methodName().name();
                 var value = StreamRegistrationValue.streamRegistrationValue(self,
                                                                             consumerGroup,
                                                                             entry.batchMode(),
@@ -802,13 +748,11 @@ public interface NodeDeploymentManager {
 
             private Promise<Unit> doUnpublishStreamSubscriptions(Artifact artifact, Slice slice) {
                 var entries = readStreamSubscriptionsFromManifest(slice);
-                if (entries.isEmpty()) {
-                    return Promise.unitPromise();
-                }
-                var commands = entries.stream()
-                                      .<KVCommand<AetherKey>> map(entry -> buildStreamSubscriptionRemoveCommand(artifact,
-                                                                                                                entry))
-                                      .toList();
+                if ( entries.isEmpty()) {
+                return Promise.unitPromise();}
+                var commands = entries.stream().<KVCommand<AetherKey>>map(entry -> buildStreamSubscriptionRemoveCommand(artifact,
+                                                                                                                        entry))
+                                             .toList();
                 return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Unpublished {} stream subscriptions for {}",
                                                                             entries.size(),
                                                                             artifact))
@@ -831,18 +775,15 @@ public interface NodeDeploymentManager {
                                                            String configSection,
                                                            MethodName methodName,
                                                            boolean batchMode,
-                                                           String eventType) {}
+                                                           String eventType){}
 
             @SuppressWarnings("JBCT-EX-01")
             private List<StreamSubscriptionManifestEntry> readStreamSubscriptionsFromManifest(Slice slice) {
                 var result = new ArrayList<StreamSubscriptionManifestEntry>();
-                var classLoader = slice.getClass()
-                                       .getClassLoader();
-                for (var iface : slice.getClass()
-                                      .getInterfaces()) {
-                    if (iface == Slice.class) {
-                        continue;
-                    }
+                var classLoader = slice.getClass().getClassLoader();
+                for ( var iface : slice.getClass().getInterfaces()) {
+                    if ( iface == Slice.class) {
+                    continue;}
                     var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
                     readStreamSubscriptionEntriesFromManifest(classLoader, manifestPath, result);
                 }
@@ -854,16 +795,19 @@ public interface NodeDeploymentManager {
                                                                    String manifestPath,
                                                                    List<StreamSubscriptionManifestEntry> result) {
                 try (var is = classLoader.getResourceAsStream(manifestPath)) {
-                    if (is == null) {
-                        return;
-                    }
+                    if ( is == null) {
+                    return;}
                     var props = new Properties();
                     props.load(is);
                     var count = Integer.parseInt(props.getProperty("stream.subscriptions.count", "0"));
-                    for (int i = 0; i < count; i++) {
-                        readStreamSubscriptionEntry(props, i).onPresent(result::add);
-                    }
-                } catch (Exception e) {
+                    for ( int i = 0; i < count; i++) {
+                    readStreamSubscriptionEntry(props, i).onPresent(result::add);}
+                }
+
+
+
+
+                catch (Exception e) {
                     log.debug("Could not read stream subscription manifest {}: {}", manifestPath, e.getMessage());
                 }
             }
@@ -871,26 +815,24 @@ public interface NodeDeploymentManager {
             private Option<StreamSubscriptionManifestEntry> readStreamSubscriptionEntry(Properties props, int index) {
                 var configSection = props.getProperty("stream.subscription." + index + ".config");
                 var methodNameStr = props.getProperty("stream.subscription." + index + ".method");
-                if (configSection == null || methodNameStr == null) {
-                    return Option.none();
-                }
+                if ( configSection == null || methodNameStr == null) {
+                return Option.none();}
                 var batchMode = Boolean.parseBoolean(props.getProperty("stream.subscription." + index + ".batch",
                                                                        "false"));
                 var eventType = props.getProperty("stream.subscription." + index + ".eventType", "");
                 return resolveStreamName(configSection).flatMap(streamName -> MethodName.methodName(methodNameStr)
-                                                                                        .map(method -> new StreamSubscriptionManifestEntry(streamName,
-                                                                                                                                           configSection,
-                                                                                                                                           method,
-                                                                                                                                           batchMode,
-                                                                                                                                           eventType)))
+                .map(method -> new StreamSubscriptionManifestEntry(streamName,
+                                                                   configSection,
+                                                                   method,
+                                                                   batchMode,
+                                                                   eventType)))
                                         .option();
             }
 
             private Result<String> resolveStreamName(String configSection) {
-                return ConfigService.instance()
-                                    .toResult(Causes.cause("ConfigService not available for stream name resolution"))
-                                    .flatMap(svc -> svc.config(configSection, StreamNameConfig.class))
-                                    .map(StreamNameConfig::streamName);
+                return ConfigService.instance().toResult(Causes.cause("ConfigService not available for stream name resolution"))
+                                             .flatMap(svc -> svc.config(configSection, StreamNameConfig.class))
+                                             .map(StreamNameConfig::streamName);
             }
 
             private void handleFailed(SliceNodeKey sliceKey) {
@@ -915,11 +857,10 @@ public interface NodeDeploymentManager {
             }
 
             private Promise<SliceNodeKey> unloadSliceWithTimeout(SliceNodeKey sliceKey) {
-                return configuration.timeoutFor(SliceState.UNLOADING)
-                                    .async()
-                                    .flatMap(timeout -> sliceStore.unloadSlice(sliceKey.artifact())
-                                                                  .timeout(timeout))
-                                    .map(_ -> sliceKey);
+                return configuration.timeoutFor(SliceState.UNLOADING).async()
+                                               .flatMap(timeout -> sliceStore.unloadSlice(sliceKey.artifact())
+                .timeout(timeout))
+                                               .map(_ -> sliceKey);
             }
 
             private void handleUnloadFailure(SliceNodeKey sliceKey, Cause cause) {
@@ -951,11 +892,10 @@ public interface NodeDeploymentManager {
                           successState,
                           failureState,
                           operation.isResolved());
-                configuration.timeoutFor(currentState)
-                             .async()
-                             .flatMap(timeout -> applyTimeout(sliceKey, operation, timeout))
-                             .onSuccess(_ -> handleTransitionSuccess(sliceKey, successState))
-                             .onFailure(cause -> handleTransitionFailure(sliceKey, failureState, cause));
+                configuration.timeoutFor(currentState).async()
+                                        .flatMap(timeout -> applyTimeout(sliceKey, operation, timeout))
+                                        .onSuccess(_ -> handleTransitionSuccess(sliceKey, successState))
+                                        .onFailure(cause -> handleTransitionFailure(sliceKey, failureState, cause));
             }
 
             private Promise<?> applyTimeout(SliceNodeKey sliceKey,
@@ -997,7 +937,7 @@ public interface NodeDeploymentManager {
                                                      Cause originalCause,
                                                      Cause writeCause,
                                                      int attempt) {
-                if (attempt < MAX_TRANSITION_RETRIES) {
+                if ( attempt < MAX_TRANSITION_RETRIES) {
                     log.warn("Failed to write FAILED state for {} (attempt {}/{}), retrying in {}ms: {}",
                              sliceKey.artifact(),
                              attempt + 1,
@@ -1006,11 +946,15 @@ public interface NodeDeploymentManager {
                              writeCause.message());
                     SharedScheduler.schedule(() -> transitionToFailedWithRetry(sliceKey, originalCause, attempt + 1),
                                              transitionRetryDelay);
-                } else {
-                    log.error("CRITICAL: Failed to write FAILED state for {} after {} attempts. Slice stuck in transitional state.",
-                              sliceKey.artifact(),
-                              MAX_TRANSITION_RETRIES);
-                }
+                } else
+
+
+
+
+                {
+                log.error("CRITICAL: Failed to write FAILED state for {} after {} attempts. Slice stuck in transitional state.",
+                          sliceKey.artifact(),
+                          MAX_TRANSITION_RETRIES);}
             }
 
             private void removeFromDeployments(SliceNodeKey sliceKey) {
@@ -1037,25 +981,24 @@ public interface NodeDeploymentManager {
                                                                 List.of())
                                         : NodeArtifactValue.nodeArtifactValue(value.state());
                 KVCommand<AetherKey> putArtifact = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
-                return cluster.apply(List.of(putArtifact))
-                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
-                              .map(_ -> sliceKey)
-                              .onSuccess(_ -> log.debug("State update succeeded: {} -> {}",
-                                                        sliceKey.artifact(),
-                                                        value.state()))
-                              .orElse(() -> retryConsensusOperation(sliceKey, value, attempt));
+                return cluster.apply(List.of(putArtifact)).timeout(CONSENSUS_OPERATION_TIMEOUT)
+                                    .map(_ -> sliceKey)
+                                    .onSuccess(_ -> log.debug("State update succeeded: {} -> {}",
+                                                              sliceKey.artifact(),
+                                                              value.state()))
+                                    .orElse(() -> retryConsensusOperation(sliceKey, value, attempt));
             }
 
             private Promise<SliceNodeKey> retryConsensusOperation(SliceNodeKey sliceKey,
                                                                   SliceNodeValue value,
                                                                   int attempt) {
-                if (attempt >= CONSENSUS_MAX_RETRIES) {
+                if ( attempt >= CONSENSUS_MAX_RETRIES) {
                     log.warn("Consensus operation failed after {} retries for {} -> {}",
                              CONSENSUS_MAX_RETRIES,
                              sliceKey.artifact(),
                              value.state());
                     return Causes.cause("Consensus operation timed out after " + CONSENSUS_MAX_RETRIES + " retries")
-                                 .promise();
+                    .promise();
                 }
                 log.debug("Retrying consensus operation for {} -> {} (attempt {})",
                           sliceKey.artifact(),
@@ -1065,19 +1008,18 @@ public interface NodeDeploymentManager {
             }
 
             private Promise<Unit> applyWithRetry(List<KVCommand<AetherKey>> commands, int attempt) {
-                return cluster.apply(commands)
-                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
-                              .mapToUnit()
-                              .orElse(() -> retryApply(commands, attempt));
+                return cluster.apply(commands).timeout(CONSENSUS_OPERATION_TIMEOUT)
+                                    .mapToUnit()
+                                    .orElse(() -> retryApply(commands, attempt));
             }
 
             private Promise<Unit> retryApply(List<KVCommand<AetherKey>> commands, int attempt) {
-                if (attempt >= CONSENSUS_MAX_RETRIES) {
+                if ( attempt >= CONSENSUS_MAX_RETRIES) {
                     log.warn("Consensus batch failed after {} retries ({} commands)",
                              CONSENSUS_MAX_RETRIES,
                              commands.size());
                     return Causes.cause("Consensus batch timed out after " + CONSENSUS_MAX_RETRIES + " retries")
-                                 .promise();
+                    .promise();
                 }
                 log.debug("Retrying consensus batch ({} commands, attempt {}/{})",
                           commands.size(),
@@ -1091,8 +1033,7 @@ public interface NodeDeploymentManager {
             }
 
             private void logError(Fn1<Cause, SliceNodeKey> errorTemplate, SliceNodeKey sliceKey, Cause cause) {
-                log.error(errorTemplate.apply(sliceKey)
-                                       .message() + ": {}",
+                log.error(errorTemplate.apply(sliceKey).message() + ": {}",
                           cause.message());
             }
 
@@ -1113,17 +1054,21 @@ public interface NodeDeploymentManager {
             List<SuspendedSlice> suspendSlices() {
                 log.warn("Suspending {} slices due to quorum loss (keeping loaded in memory)", deployments.size());
                 var suspended = new java.util.ArrayList<SuspendedSlice>();
-                for (var entry : deployments.entrySet()) {
+                for ( var entry : deployments.entrySet()) {
                     var sliceKey = entry.getKey();
                     var deployment = entry.getValue();
-                    if (deployment.state() == SliceState.ACTIVE) {
+                    if ( deployment.state() == SliceState.ACTIVE) {
                         log.debug("Suspending active slice {}", sliceKey.artifact());
                         // Unpublish routes and endpoints (local state only - KV won't commit without quorum)
                         suspendSlice(sliceKey);
                         suspended.add(SuspendedSlice.suspendedSlice(sliceKey, deployment));
-                    } else {
-                        log.debug("Slice {} in state {} - not suspending", sliceKey.artifact(), deployment.state());
-                    }
+                    } else
+
+
+
+
+                    {
+                    log.debug("Slice {} in state {} - not suspending", sliceKey.artifact(), deployment.state());}
                 }
                 log.debug("Suspended {} active slices, ready for reactivation", suspended.size());
                 return suspended;
@@ -1156,19 +1101,19 @@ public interface NodeDeploymentManager {
             ///
             /// @param suspended List of suspended slices to reactivate
             void reactivateSuspendedSlices(List<SuspendedSlice> suspended) {
-                if (suspended.isEmpty()) {
+                if ( suspended.isEmpty()) {
                     log.debug("No suspended slices to reactivate");
                     return;
                 }
                 log.info("Reactivating {} suspended slices after quorum restored", suspended.size());
-                for (var suspendedSlice : suspended) {
+                for ( var suspendedSlice : suspended) {
                     var sliceKey = suspendedSlice.key();
                     var deployment = suspendedSlice.deployment();
                     // Restore deployment record
                     deployments.put(sliceKey, deployment);
                     // Check if slice is still in SliceStore
                     var loadedSlice = findLoadedSlice(sliceKey.artifact());
-                    if (loadedSlice.isEmpty()) {
+                    if ( loadedSlice.isEmpty()) {
                         log.warn("Suspended slice {} no longer in SliceStore, skipping reactivation",
                                  sliceKey.artifact());
                         deployments.remove(sliceKey);
@@ -1201,12 +1146,11 @@ public interface NodeDeploymentManager {
             ///             This method is kept for actual slice removal (ValueRemove).
             void deactivateAllSlices() {
                 log.warn("Deactivating all {} slices due to quorum loss", deployments.size());
-                for (var entry : deployments.entrySet()) {
+                for ( var entry : deployments.entrySet()) {
                     var sliceKey = entry.getKey();
                     var deployment = entry.getValue();
-                    if (deployment.state() == SliceState.ACTIVE) {
-                        forceCleanupSlice(sliceKey);
-                    }
+                    if ( deployment.state() == SliceState.ACTIVE) {
+                    forceCleanupSlice(sliceKey);}
                 }
                 deployments.clear();
             }
@@ -1214,12 +1158,10 @@ public interface NodeDeploymentManager {
     }
 
     /// Default activation chain timeout (2 minutes).
-    TimeSpan DEFAULT_ACTIVATION_CHAIN_TIMEOUT = TimeSpan.timeSpan(120_000)
-                                                       .millis();
+    TimeSpan DEFAULT_ACTIVATION_CHAIN_TIMEOUT = TimeSpan.timeSpan(120_000).millis();
 
     /// Default transition retry delay (2 seconds).
-    TimeSpan DEFAULT_TRANSITION_RETRY_DELAY = TimeSpan.timeSpan(2000)
-                                                     .millis();
+    TimeSpan DEFAULT_TRANSITION_RETRY_DELAY = TimeSpan.timeSpan(2000).millis();
 
     static NodeDeploymentManager nodeDeploymentManager(NodeId self,
                                                        MessageRouter router,
@@ -1281,53 +1223,47 @@ public interface NodeDeploymentManager {
                                                        Option<SliceInvokerFacade> sliceInvokerFacade,
                                                        TimeSpan activationChainTimeout,
                                                        TimeSpan transitionRetryDelay) {
-        record deploymentManager(NodeId self,
-                                 NodeAddress selfAddress,
-                                 SliceStore sliceStore,
-                                 ClusterNode<KVCommand<AetherKey>> cluster,
-                                 KVStore<AetherKey, AetherValue> kvStore,
-                                 InvocationHandler invocationHandler,
-                                 SliceActionConfig configuration,
-                                 SliceCodec nodeCodec,
-                                 MessageRouter router,
-                                 AtomicReference<NodeDeploymentState> state,
-                                 AtomicLong quorumSequence,
-                                 Option<HttpRoutePublisher> httpRoutePublisher,
-                                 Option<SliceInvokerFacade> sliceInvokerFacade,
-                                 TimeSpan activationChainTimeout,
-                                 TimeSpan transitionRetryDelay,
-                                 AtomicReference<Runnable> shutdownCallback) implements NodeDeploymentManager {
+        record deploymentManager( NodeId self,
+                                  NodeAddress selfAddress,
+                                  SliceStore sliceStore,
+                                  ClusterNode<KVCommand<AetherKey>> cluster,
+                                  KVStore<AetherKey, AetherValue> kvStore,
+                                  InvocationHandler invocationHandler,
+                                  SliceActionConfig configuration,
+                                  SliceCodec nodeCodec,
+                                  MessageRouter router,
+                                  AtomicReference<NodeDeploymentState> state,
+                                  AtomicLong quorumSequence,
+                                  Option<HttpRoutePublisher> httpRoutePublisher,
+                                  Option<SliceInvokerFacade> sliceInvokerFacade,
+                                  TimeSpan activationChainTimeout,
+                                  TimeSpan transitionRetryDelay,
+                                  AtomicReference<Runnable> shutdownCallback) implements NodeDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(NodeDeploymentManager.class);
 
-            @Override
-            public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
-                state.get()
-                     .onNodeArtifactPut(valuePut);
+            @Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+                state.get().onNodeArtifactPut(valuePut);
             }
 
-            @Override
-            public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
-                state.get()
-                     .onNodeArtifactRemove(valueRemove);
+            @Override public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+                state.get().onNodeArtifactRemove(valueRemove);
             }
 
-            @Override
-            public void onQuorumStateChange(QuorumStateNotification quorumStateNotification) {
-                if (!quorumStateNotification.advanceSequence(quorumSequence)) {
+            @Override public void onQuorumStateChange(QuorumStateNotification quorumStateNotification) {
+                if ( !quorumStateNotification.advanceSequence(quorumSequence)) {
                     log.info("Node {} ignoring stale QuorumStateNotification: {}", self().id(), quorumStateNotification);
                     return;
                 }
                 log.info("Node {} received QuorumStateNotification: {}", self().id(), quorumStateNotification);
-                switch (quorumStateNotification.state()) {
+                switch ( quorumStateNotification.state()) {
                     case ESTABLISHED -> handleQuorumEstablished();
                     case DISAPPEARED -> handleQuorumDisappeared(quorumStateNotification);
                 }
             }
 
             private void handleQuorumEstablished() {
-                if (! (state().get() instanceof NodeDeploymentState.DormantNodeDeploymentState dormant)) {
-                    return;
-                }
+                if ( ! (state().get() instanceof NodeDeploymentState.DormantNodeDeploymentState dormant)) {
+                return;}
                 var suspended = dormant.suspendedSlices();
                 var activeState = new NodeDeploymentState.ActiveNodeDeploymentState(self(),
                                                                                     sliceStore(),
@@ -1346,7 +1282,7 @@ public interface NodeDeploymentManager {
                 log.info("Node {} NodeDeploymentManager activated", self().id());
                 registerLifecycleOnDuty();
                 processPendingLoadCommands(activeState);
-                if (!suspended.isEmpty()) {
+                if ( !suspended.isEmpty()) {
                     log.info("Node {} has {} suspended slices to reactivate", self().id(), suspended.size());
                     activeState.reactivateSuspendedSlices(suspended);
                 }
@@ -1354,18 +1290,20 @@ public interface NodeDeploymentManager {
 
             private void handleQuorumDisappeared(QuorumStateNotification notification) {
                 var suspended = List.<SuspendedSlice>of();
-                if (state().get() instanceof NodeDeploymentState.ActiveNodeDeploymentState activeState) {
-                    suspended = activeState.suspendSlices();
-                }
-                if (quorumSequence.get() == notification.sequence()) {
+                if ( state().get() instanceof NodeDeploymentState.ActiveNodeDeploymentState activeState) {
+                suspended = activeState.suspendSlices();}
+                if ( quorumSequence.get() == notification.sequence()) {
                     state().set(new NodeDeploymentState.DormantNodeDeploymentState(suspended));
                     log.info("Node {} NodeDeploymentManager deactivated with {} suspended slices",
                              self().id(),
                              suspended.size());
-                } else {
-                    log.info("Node {} ignoring stale DISAPPEARED (newer notification arrived during cleanup)",
-                             self().id());
-                }
+                } else
+
+
+
+
+                {
+                log.info("Node {} ignoring stale DISAPPEARED (newer notification arrived during cleanup)", self().id());}
             }
 
             private void processPendingLoadCommands(NodeDeploymentState.ActiveNodeDeploymentState activeState) {
@@ -1377,9 +1315,8 @@ public interface NodeDeploymentManager {
             private void processPendingLoadEntry(NodeDeploymentState.ActiveNodeDeploymentState activeState,
                                                  NodeArtifactKey key,
                                                  NodeArtifactValue value) {
-                if (!key.isForNode(self()) || value.state() != SliceState.LOAD) {
-                    return;
-                }
+                if ( !key.isForNode(self()) || value.state() != SliceState.LOAD) {
+                return;}
                 log.info("Node {} found pending LOAD command for {}, processing", self().id(), key.artifact());
                 var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId());
                 activeState.recordDeployment(sliceKey,
@@ -1396,8 +1333,8 @@ public interface NodeDeploymentManager {
                 // ON_DUTY entry that a pending removal batch will delete after activation.
                 kvStore().get(lifecycleKey)
                        .flatMap(v -> v instanceof NodeLifecycleValue lv
-                                     ? Option.some(lv)
-                                     : Option.empty())
+                                    ? Option.some(lv)
+                                    : Option.empty())
                        .filter(v -> v.state() == NodeLifecycleState.DECOMMISSIONED)
                        .onEmpty(() -> writeLifecycleOnDuty(lifecycleKey, 1));
             }
@@ -1413,14 +1350,14 @@ public interface NodeDeploymentManager {
             }
 
             private void retryLifecycleOnDuty(AetherKey.NodeLifecycleKey lifecycleKey, int attempt, Cause cause) {
-                if (attempt >= MAX_LIFECYCLE_RETRIES) {
+                if ( attempt >= MAX_LIFECYCLE_RETRIES) {
                     log.error("Node {} failed to register lifecycle ON_DUTY after {} attempts: {}",
                               self().id(),
                               attempt,
                               cause.message());
                     return;
                 }
-                if (!isActive()) {
+                if ( !isActive()) {
                     log.debug("Node {} skipping ON_DUTY retry — no longer active", self().id());
                     return;
                 }
@@ -1432,39 +1369,29 @@ public interface NodeDeploymentManager {
                 SharedScheduler.schedule(() -> writeLifecycleOnDuty(lifecycleKey, attempt + 1), timeSpan(2).seconds());
             }
 
-            @Override
-            public boolean isActive() {
+            @Override public boolean isActive() {
                 return state().get() instanceof NodeDeploymentState.ActiveNodeDeploymentState;
             }
 
-            @Override
-            public void onNodeLifecyclePut(ValuePut<AetherKey.NodeLifecycleKey, AetherValue.NodeLifecycleValue> valuePut) {
-                var key = valuePut.cause()
-                                  .key();
-                var value = valuePut.cause()
-                                    .value();
+            @Override public void onNodeLifecyclePut(ValuePut<AetherKey.NodeLifecycleKey, AetherValue.NodeLifecycleValue> valuePut) {
+                var key = valuePut.cause().key();
+                var value = valuePut.cause().value();
                 // Only watch our own lifecycle key
-                if (key.nodeId()
-                       .equals(self()) && value.state() == AetherValue.NodeLifecycleState.SHUTTING_DOWN) {
+                if ( key.nodeId().equals(self()) && value.state() == AetherValue.NodeLifecycleState.SHUTTING_DOWN) {
                     log.warn("Node {} received SHUTTING_DOWN lifecycle state — initiating shutdown", self().id());
-                    Option.option(shutdownCallback().get())
-                          .onPresent(Runnable::run);
+                    Option.option(shutdownCallback().get()).onPresent(Runnable::run);
                 }
             }
 
-            @Override
-            public void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove) {
-                var key = valueRemove.cause()
-                                     .key();
-                if (key.nodeId()
-                       .equals(self()) && isActive()) {
+            @Override public void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove) {
+                var key = valueRemove.cause().key();
+                if ( key.nodeId().equals(self()) && isActive()) {
                     log.warn("Node {} lifecycle key removed unexpectedly — re-registering ON_DUTY", self().id());
                     registerLifecycleOnDuty();
                 }
             }
 
-            @Override
-            public void setShutdownCallback(Runnable callback) {
+            @Override public void setShutdownCallback(Runnable callback) {
                 shutdownCallback().set(callback);
             }
         }

@@ -35,7 +35,7 @@ import static org.pragmatica.lang.Result.success;
 /// using the Hetzner REST API via HttpOperations.
 @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01", "JBCT-RET-01", "JBCT-EX-01"})
 sealed interface BootstrapOrchestrator {
-    record unused() implements BootstrapOrchestrator {}
+    record unused() implements BootstrapOrchestrator{}
 
     int HEALTH_TIMEOUT_SECONDS = 300;
     int QUORUM_TIMEOUT_SECONDS = 600;
@@ -53,14 +53,8 @@ sealed interface BootstrapOrchestrator {
     }
 
     private static Result<BootstrapResult> dispatchByType(ClusterManagementConfig config) {
-        return switch (config.deployment()
-                             .type()) {
-            case HETZNER -> bootstrapHetzner(config);
-            case ON_PREMISES -> bootstrapOnPremises(config);
-            default -> new BootstrapError.UnsupportedProvider(config.deployment()
-                                                                    .type()
-                                                                    .value()).result();
-        };
+        return switch (config.deployment().type()) {case HETZNER -> bootstrapHetzner(config);case ON_PREMISES -> bootstrapOnPremises(config);default -> new BootstrapError.UnsupportedProvider(config.deployment().type()
+                                                                                                                                                                                                                .value()).result();};
     }
 
     private static Result<BootstrapResult> bootstrapHetzner(ClusterManagementConfig config) {
@@ -74,28 +68,24 @@ sealed interface BootstrapOrchestrator {
         System.out.println("Step 5/12: Generated API key.");
         System.out.println("Step 6/12: Provisioning on-premises nodes via SSH...");
         return SshBootstrapOrchestrator.bootstrap(config, clusterSecret)
-                                       .flatMap(nodes -> waitAndFinalizeOnPremises(config, nodes, apiKey));
+        .flatMap(nodes -> waitAndFinalizeOnPremises(config, nodes, apiKey));
     }
 
     private static Result<BootstrapResult> waitAndFinalizeOnPremises(ClusterManagementConfig config,
                                                                      List<ProvisionedNode> nodes,
                                                                      String apiKey) {
         System.out.println("Step 7/12: Waiting for nodes to become healthy...");
-        var managementPort = config.deployment()
-                                   .ports()
-                                   .management();
+        var managementPort = config.deployment().ports()
+                                              .management();
         var healthyCount = waitForHealth(nodes, managementPort);
-        var requiredQuorum = quorumSize(config.cluster()
-                                              .core()
-                                              .count());
-        if (healthyCount < requiredQuorum) {
-            return new ClusterConfigError.QuorumTimeout(healthyCount, requiredQuorum, HEALTH_TIMEOUT_SECONDS).result();
-        }
+        var requiredQuorum = quorumSize(config.cluster().core()
+                                                      .count());
+        if ( healthyCount < requiredQuorum) {
+        return new ClusterConfigError.QuorumTimeout(healthyCount, requiredQuorum, HEALTH_TIMEOUT_SECONDS).result();}
         System.out.println("Step 8/12: Waiting for quorum...");
         var firstEndpoint = nodeEndpoint(nodes.getFirst(), managementPort);
-        if (!waitForQuorum(firstEndpoint)) {
-            return new ClusterConfigError.QuorumTimeout(healthyCount, requiredQuorum, QUORUM_TIMEOUT_SECONDS).result();
-        }
+        if ( !waitForQuorum(firstEndpoint)) {
+        return new ClusterConfigError.QuorumTimeout(healthyCount, requiredQuorum, QUORUM_TIMEOUT_SECONDS).result();}
         return finalizeBootstrap(new BootstrapContext(config, "", ""), nodes, apiKey, firstEndpoint);
     }
 
@@ -113,33 +103,27 @@ sealed interface BootstrapOrchestrator {
     }
 
     private static Result<String> resolveApiToken(ClusterManagementConfig config) {
-        if (config.deployment()
-                  .type() != DeploymentType.HETZNER) {
-            return new BootstrapError.UnsupportedProvider(config.deployment()
-                                                                .type()
-                                                                .value()).result();
-        }
+        if ( config.deployment().type() != DeploymentType.HETZNER) {
+        return new BootstrapError.UnsupportedProvider(config.deployment().type()
+                                                                       .value()).result();}
         return option(System.getenv("HETZNER_API_TOKEN"))
         .toResult(new ClusterConfigError.CloudCredentialsMissing("Hetzner", "HETZNER_API_TOKEN"));
     }
 
     private static String resolveClusterSecret(ClusterManagementConfig config) {
-        return config.deployment()
-                     .tls()
-                     .flatMap(tls -> tls.clusterSecret())
-                     .or(generateRandomSecret());
+        return config.deployment().tls()
+                                .flatMap(tls -> tls.clusterSecret())
+                                .or(generateRandomSecret());
     }
 
     // --- Step 4: Check for existing cluster ---
     private static Result<BootstrapContext> checkNoExistingCluster(BootstrapContext ctx) {
         System.out.println("Step 4/12: Checking for existing cluster...");
-        var clusterName = ctx.config()
-                             .cluster()
-                             .name();
+        var clusterName = ctx.config().cluster()
+                                    .name();
         var existingInstances = listTaggedInstances(ctx.apiToken(), clusterName);
-        if (!existingInstances.isEmpty()) {
-            return resumeOrAbort(ctx, existingInstances);
-        }
+        if ( !existingInstances.isEmpty()) {
+        return resumeOrAbort(ctx, existingInstances);}
         return success(ctx);
     }
 
@@ -147,9 +131,8 @@ sealed interface BootstrapOrchestrator {
                                                           List<ProvisionedNode> existing) {
         System.out.printf("  Found %d existing instances tagged for cluster '%s'.%n",
                           existing.size(),
-                          ctx.config()
-                             .cluster()
-                             .name());
+                          ctx.config().cluster()
+                                    .name());
         System.out.println("  Resuming bootstrap with existing instances.");
         return success(ctx.withExistingNodes(existing));
     }
@@ -165,23 +148,19 @@ sealed interface BootstrapOrchestrator {
                                                            List<ProvisionedNode> nodes,
                                                            String apiKey) {
         System.out.println("Step 7/12: Waiting for nodes to become healthy...");
-        var managementPort = ctx.config()
-                                .deployment()
-                                .ports()
-                                .management();
+        var managementPort = ctx.config().deployment()
+                                       .ports()
+                                       .management();
         var healthyCount = waitForHealth(nodes, managementPort);
-        var requiredQuorum = quorumSize(ctx.config()
-                                           .cluster()
-                                           .core()
-                                           .count());
-        if (healthyCount < requiredQuorum) {
-            return new ClusterConfigError.QuorumTimeout(healthyCount, requiredQuorum, HEALTH_TIMEOUT_SECONDS).result();
-        }
+        var requiredQuorum = quorumSize(ctx.config().cluster()
+                                                  .core()
+                                                  .count());
+        if ( healthyCount < requiredQuorum) {
+        return new ClusterConfigError.QuorumTimeout(healthyCount, requiredQuorum, HEALTH_TIMEOUT_SECONDS).result();}
         System.out.println("Step 8/12: Waiting for quorum...");
         var firstEndpoint = nodeEndpoint(nodes.getFirst(), managementPort);
-        if (!waitForQuorum(firstEndpoint)) {
-            return new ClusterConfigError.QuorumTimeout(healthyCount, requiredQuorum, QUORUM_TIMEOUT_SECONDS).result();
-        }
+        if ( !waitForQuorum(firstEndpoint)) {
+        return new ClusterConfigError.QuorumTimeout(healthyCount, requiredQuorum, QUORUM_TIMEOUT_SECONDS).result();}
         return finalizeBootstrap(ctx, nodes, apiKey, firstEndpoint);
     }
 
@@ -194,11 +173,9 @@ sealed interface BootstrapOrchestrator {
         System.out.println("Step 10/12: Storing API key...");
         storeApiKey(firstEndpoint, apiKey);
         System.out.println("Step 11/12: Registering in local registry...");
-        var clusterName = ctx.config()
-                             .cluster()
-                             .name();
-        var apiKeyEnvName = "AETHER_" + clusterName.toUpperCase()
-                                                  .replace('-', '_') + "_API_KEY";
+        var clusterName = ctx.config().cluster()
+                                    .name();
+        var apiKeyEnvName = "AETHER_" + clusterName.toUpperCase().replace('-', '_') + "_API_KEY";
         registerLocally(clusterName, firstEndpoint, apiKeyEnvName);
         System.out.println("Step 12/12: Bootstrap complete.");
         printConnectionInfo(clusterName, firstEndpoint, apiKey, nodes);
@@ -209,34 +186,28 @@ sealed interface BootstrapOrchestrator {
     private static Result<List<ProvisionedNode>> provisionInstances(BootstrapContext ctx) {
         System.out.println("Step 6/12: Provisioning instances...");
         var config = ctx.config();
-        var coreCount = config.cluster()
-                              .core()
-                              .count();
+        var coreCount = config.cluster().core()
+                                      .count();
         var existingNodes = ctx.existingNodes();
         var alreadyProvisioned = existingNodes.size();
         var allNodes = new ArrayList<>(existingNodes);
-        if (alreadyProvisioned > 0) {
-            System.out.printf("  Skipping %d already-provisioned nodes.%n", alreadyProvisioned);
-        }
-        for (int i = alreadyProvisioned; i < coreCount; i++) {
-            var nodeId = generateNodeId(config.cluster()
-                                              .name(),
+        if ( alreadyProvisioned > 0) {
+        System.out.printf("  Skipping %d already-provisioned nodes.%n", alreadyProvisioned);}
+        for ( int i = alreadyProvisioned; i < coreCount; i++) {
+            var nodeId = generateNodeId(config.cluster().name(),
                                         i);
             var userData = UserDataTemplate.render(config,
                                                    nodeId,
                                                    i,
                                                    ctx.clusterSecret(),
-                                                   config.cluster()
-                                                         .name());
+                                                   config.cluster().name());
             System.out.printf("  Provisioning node %d/%d (%s)...%n", i + 1, coreCount, nodeId);
             var result = provisionSingleNode(ctx.apiToken(), config, nodeId, userData);
-            if (result.isFailure()) {
-                return new ClusterConfigError.BootstrapFailed("provision",
-                                                              allNodes.size(),
-                                                              coreCount,
-                                                              result.fold(Cause::message, _ -> ""))
-                .result();
-            }
+            if ( result.isFailure()) {
+            return new ClusterConfigError.BootstrapFailed("provision",
+                                                          allNodes.size(),
+                                                          coreCount,
+                                                          result.fold(Cause::message, _ -> "")).result();}
             result.onSuccess(allNodes::add);
         }
         return success(List.copyOf(allNodes));
@@ -246,15 +217,12 @@ sealed interface BootstrapOrchestrator {
                                                                ClusterManagementConfig config,
                                                                String nodeId,
                                                                String userData) {
-        var clusterName = config.cluster()
-                                .name();
-        var instanceType = config.deployment()
-                                 .instances()
-                                 .getOrDefault("core", "cx21");
+        var clusterName = config.cluster().name();
+        var instanceType = config.deployment().instances()
+                                            .getOrDefault("core", "cx21");
         var location = firstZoneLocation(config);
-        var image = config.deployment()
-                          .runtime()
-                          .type() == org.pragmatica.aether.config.cluster.RuntimeType.CONTAINER
+        var image = config.deployment().runtime()
+                                     .type() == org.pragmatica.aether.config.cluster.RuntimeType.CONTAINER
                     ? "ubuntu-24.04"
                     : "ubuntu-24.04";
         var jsonBody = buildCreateServerJson(nodeId, instanceType, image, location, userData, clusterName);
@@ -262,15 +230,12 @@ sealed interface BootstrapOrchestrator {
     }
 
     private static String firstZoneLocation(ClusterManagementConfig config) {
-        var zones = config.deployment()
-                          .zones();
-        if (zones.isEmpty()) {
-            return "fsn1";
-        }
-        return zones.values()
-                    .iterator()
-                    .next()
-                    .split("-") [0];
+        var zones = config.deployment().zones();
+        if ( zones.isEmpty()) {
+        return "fsn1";}
+        return zones.values().iterator()
+                           .next()
+                           .split("-") [0];
     }
 
     @SuppressWarnings("JBCT-UTIL-01")
@@ -281,16 +246,13 @@ sealed interface BootstrapOrchestrator {
                                                 String userData,
                                                 String clusterName) {
         var escapedUserData = escapeJsonString(userData);
-        return "{\"name\":\"" + name + "\"" + ",\"server_type\":\"" + serverType + "\"" + ",\"image\":\"" + image + "\""
-               + ",\"location\":\"" + location + "\"" + ",\"user_data\":\"" + escapedUserData + "\""
-               + ",\"start_after_create\":true" + ",\"labels\":{\"aether-cluster\":\"" + clusterName + "\""
-               + ",\"aether-node-id\":\"" + name + "\"" + ",\"aether-role\":\"core\"}}";
+        return "{\"name\":\"" + name + "\"" + ",\"server_type\":\"" + serverType + "\"" + ",\"image\":\"" + image + "\"" + ",\"location\":\"" + location + "\"" + ",\"user_data\":\"" + escapedUserData + "\"" + ",\"start_after_create\":true" + ",\"labels\":{\"aether-cluster\":\"" + clusterName + "\"" + ",\"aether-node-id\":\"" + name + "\"" + ",\"aether-role\":\"core\"}}";
     }
 
     private static ProvisionedNode parseProvisionedNode(String responseJson, String nodeId) {
-        return MAPPER.readTree(responseJson)
-                     .map(root -> extractProvisionedNode(root.path("server"), nodeId))
-                     .or(new ProvisionedNode(nodeId, "0", ""));
+        return MAPPER.readTree(responseJson).map(root -> extractProvisionedNode(root.path("server"),
+                                                                                nodeId))
+                              .or(new ProvisionedNode(nodeId, "0", ""));
     }
 
     private static ProvisionedNode extractProvisionedNode(JsonNode server, String nodeId) {
@@ -300,33 +262,38 @@ sealed interface BootstrapOrchestrator {
     }
 
     private static String extractPublicIp(JsonNode server) {
-        return server.path("public_net").path("ipv4").path("ip").asText("");
+        return server.path("public_net").path("ipv4")
+                          .path("ip")
+                          .asText("");
     }
 
     // --- Step 7: Wait for health ---
     private static int waitForHealth(List<ProvisionedNode> nodes, int managementPort) {
         var healthyCount = 0;
-        for (var node : nodes) {
+        for ( var node : nodes) {
             System.out.printf("  Waiting for node %s (%s)...%n", node.nodeId(), node.publicIp());
-            if (pollHealth(nodeEndpoint(node, managementPort))) {
+            if ( pollHealth(nodeEndpoint(node, managementPort))) {
                 healthyCount++;
                 System.out.printf("  Node %s is healthy.%n", node.nodeId());
-            } else {
-                System.err.printf("  Node %s did not become healthy within %d seconds.%n",
-                                  node.nodeId(),
-                                  HEALTH_TIMEOUT_SECONDS);
-            }
+            } else
+
+
+
+
+            {
+            System.err.printf("  Node %s did not become healthy within %d seconds.%n",
+                              node.nodeId(),
+                              HEALTH_TIMEOUT_SECONDS);}
         }
         return healthyCount;
     }
 
     private static boolean pollHealth(String endpoint) {
         var deadline = System.currentTimeMillis() + (long) HEALTH_TIMEOUT_SECONDS * 1000;
-        while (System.currentTimeMillis() < deadline) {
+        while ( System.currentTimeMillis() < deadline) {
             var result = httpGet(endpoint + "/health/live");
-            if (result.isSuccess()) {
-                return true;
-            }
+            if ( result.isSuccess()) {
+            return true;}
             sleepQuietly(HEALTH_POLL_INTERVAL_MS);
         }
         return false;
@@ -335,11 +302,10 @@ sealed interface BootstrapOrchestrator {
     // --- Step 8: Wait for quorum ---
     private static boolean waitForQuorum(String endpoint) {
         var deadline = System.currentTimeMillis() + (long) QUORUM_TIMEOUT_SECONDS * 1000;
-        while (System.currentTimeMillis() < deadline) {
+        while ( System.currentTimeMillis() < deadline) {
             var result = httpGet(endpoint + "/health/ready");
-            if (result.isSuccess()) {
-                return true;
-            }
+            if ( result.isSuccess()) {
+            return true;}
             sleepQuietly(HEALTH_POLL_INTERVAL_MS);
         }
         return false;
@@ -349,19 +315,13 @@ sealed interface BootstrapOrchestrator {
     private static void storeClusterConfig(String endpoint,
                                            ClusterManagementConfig config,
                                            String apiKey) {
-        var clusterName = config.cluster()
-                                .name();
-        var version = config.cluster()
-                            .version();
-        var coreCount = config.cluster()
-                              .core()
-                              .count();
-        var deploymentType = config.deployment()
-                                   .type()
-                                   .value();
-        var jsonBody = "{\"clusterName\":\"" + clusterName + "\"" + ",\"version\":\"" + version + "\""
-                       + ",\"coreCount\":" + coreCount + ",\"deploymentType\":\"" + deploymentType + "\""
-                       + ",\"configVersion\":1}";
+        var clusterName = config.cluster().name();
+        var version = config.cluster().version();
+        var coreCount = config.cluster().core()
+                                      .count();
+        var deploymentType = config.deployment().type()
+                                              .value();
+        var jsonBody = "{\"clusterName\":\"" + clusterName + "\"" + ",\"version\":\"" + version + "\"" + ",\"coreCount\":" + coreCount + ",\"deploymentType\":\"" + deploymentType + "\"" + ",\"configVersion\":1}";
         httpPost(endpoint + "/api/cluster/config", jsonBody, apiKey);
     }
 
@@ -375,11 +335,10 @@ sealed interface BootstrapOrchestrator {
 
     // --- Step 11: Register locally ---
     private static void registerLocally(String clusterName, String endpoint, String apiKeyEnvName) {
-        var registryResult = ClusterRegistry.load()
-                                            .map(registry -> registry.add(clusterName,
-                                                                          endpoint,
-                                                                          Option.some(apiKeyEnvName)))
-                                            .flatMap(ClusterRegistry::save);
+        var registryResult = ClusterRegistry.load().map(registry -> registry.add(clusterName,
+                                                                                 endpoint,
+                                                                                 Option.some(apiKeyEnvName)))
+                                                 .flatMap(ClusterRegistry::save);
         registryResult.onFailure(cause -> System.err.println("Warning: failed to register cluster locally: " + cause.message()));
     }
 
@@ -395,27 +354,23 @@ sealed interface BootstrapOrchestrator {
         System.out.printf("API Key: %s (save this -- it will not be shown again)%n", apiKey);
         System.out.println();
         System.out.println("Node list:");
-        for (var node : nodes) {
-            System.out.printf("  %s  %s  %s%n", node.nodeId(), node.serverId(), node.publicIp());
-        }
+        for ( var node : nodes) {
+        System.out.printf("  %s  %s  %s%n", node.nodeId(), node.serverId(), node.publicIp());}
         System.out.println();
-        var envName = "AETHER_" + clusterName.toUpperCase()
-                                            .replace('-', '_') + "_API_KEY";
+        var envName = "AETHER_" + clusterName.toUpperCase().replace('-', '_') + "_API_KEY";
         System.out.printf("Set %s=%s in your environment.%n", envName, apiKey);
     }
 
     // --- Hetzner API helpers ---
     private static Result<String> hetznerPost(String apiToken, String path, String jsonBody) {
         var uri = URI.create(HETZNER_API_BASE + path);
-        var request = HttpRequest.newBuilder()
-                                 .uri(uri)
-                                 .header("Authorization", "Bearer " + apiToken)
-                                 .header("Content-Type", "application/json")
-                                 .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
-                                 .build();
-        return HTTP.sendString(request)
-                   .await()
-                   .flatMap(BootstrapOrchestrator::extractHetznerBody);
+        var request = HttpRequest.newBuilder().uri(uri)
+                                            .header("Authorization", "Bearer " + apiToken)
+                                            .header("Content-Type", "application/json")
+                                            .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+                                            .build();
+        return HTTP.sendString(request).await()
+                              .flatMap(BootstrapOrchestrator::extractHetznerBody);
     }
 
     private static Result<String> extractHetznerBody(HttpResult<String> response) {
@@ -426,36 +381,31 @@ sealed interface BootstrapOrchestrator {
 
     private static List<ProvisionedNode> listTaggedInstances(String apiToken, String clusterName) {
         var uri = URI.create(HETZNER_API_BASE + "/servers?label_selector=aether-cluster%3D" + clusterName);
-        var request = HttpRequest.newBuilder()
-                                 .uri(uri)
-                                 .header("Authorization", "Bearer " + apiToken)
-                                 .GET()
-                                 .build();
-        return HTTP.sendString(request)
-                   .await()
-                   .map(BootstrapOrchestrator::parseServerList)
-                   .or(List.of());
+        var request = HttpRequest.newBuilder().uri(uri)
+                                            .header("Authorization", "Bearer " + apiToken)
+                                            .GET()
+                                            .build();
+        return HTTP.sendString(request).await()
+                              .map(BootstrapOrchestrator::parseServerList)
+                              .or(List.of());
     }
 
     private static List<ProvisionedNode> parseServerList(HttpResult<String> response) {
-        if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            return List.of();
-        }
+        if ( response.statusCode() < 200 || response.statusCode() >= 300) {
+        return List.of();}
         return parseServersFromJson(response.body());
     }
 
     private static List<ProvisionedNode> parseServersFromJson(String json) {
-        return MAPPER.readTree(json)
-                     .map(root -> parseServerArray(root.path("servers")))
-                     .or(List.of());
+        return MAPPER.readTree(json).map(root -> parseServerArray(root.path("servers")))
+                              .or(List.of());
     }
 
     private static List<ProvisionedNode> parseServerArray(JsonNode serversNode) {
         var result = new ArrayList<ProvisionedNode>();
-        if (!serversNode.isArray()) {
-            return List.of();
-        }
-        for (var server : serversNode) {
+        if ( !serversNode.isArray()) {
+        return List.of();}
+        for ( var server : serversNode) {
             var serverId = server.path("id").asText("0");
             var name = server.path("name").asText("");
             var publicIp = extractPublicIp(server);
@@ -466,24 +416,20 @@ sealed interface BootstrapOrchestrator {
 
     // --- Generic HTTP helpers ---
     private static Result<String> httpGet(String url) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create(url))
-                                 .GET()
-                                 .build();
-        return HTTP.sendString(request)
-                   .await()
-                   .flatMap(BootstrapOrchestrator::extractSuccessBody);
+        var request = HttpRequest.newBuilder().uri(URI.create(url))
+                                            .GET()
+                                            .build();
+        return HTTP.sendString(request).await()
+                              .flatMap(BootstrapOrchestrator::extractSuccessBody);
     }
 
     private static void httpPost(String url, String jsonBody, String apiKey) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create(url))
-                                 .header("Content-Type", "application/json")
-                                 .header("X-API-Key", apiKey)
-                                 .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
-                                 .build();
-        HTTP.sendString(request)
-            .await();
+        var request = HttpRequest.newBuilder().uri(URI.create(url))
+                                            .header("Content-Type", "application/json")
+                                            .header("X-API-Key", apiKey)
+                                            .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+                                            .build();
+        HTTP.sendString(request).await();
     }
 
     private static Result<String> extractSuccessBody(HttpResult<String> response) {
@@ -500,17 +446,15 @@ sealed interface BootstrapOrchestrator {
     private static String generateApiKey() {
         var bytes = new byte[API_KEY_BYTES];
         new SecureRandom().nextBytes(bytes);
-        return Base64.getUrlEncoder()
-                     .withoutPadding()
-                     .encodeToString(bytes);
+        return Base64.getUrlEncoder().withoutPadding()
+                                   .encodeToString(bytes);
     }
 
     private static String generateRandomSecret() {
         var bytes = new byte[API_KEY_BYTES];
         new SecureRandom().nextBytes(bytes);
-        return Base64.getUrlEncoder()
-                     .withoutPadding()
-                     .encodeToString(bytes);
+        return Base64.getUrlEncoder().withoutPadding()
+                                   .encodeToString(bytes);
     }
 
     private static int quorumSize(int totalNodes) {
@@ -522,19 +466,22 @@ sealed interface BootstrapOrchestrator {
     }
 
     private static String escapeJsonString(String value) {
-        return value.replace("\\", "\\\\")
-                    .replace("\"", "\\\"")
-                    .replace("\n", "\\n")
-                    .replace("\r", "\\r")
-                    .replace("\t", "\\t");
+        return value.replace("\\", "\\\\").replace("\"", "\\\"")
+                            .replace("\n", "\\n")
+                            .replace("\r", "\\r")
+                            .replace("\t", "\\t");
     }
 
     private static void sleepQuietly(long millis) {
-        try{
+        try {
             Thread.sleep(millis);
-        } catch (InterruptedException _) {
-            Thread.currentThread()
-                  .interrupt();
+        }
+
+
+
+
+        catch (InterruptedException _) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -543,10 +490,10 @@ sealed interface BootstrapOrchestrator {
                            String endpoint,
                            String apiKey,
                            List<ProvisionedNode> nodes,
-                           String apiKeyEnvName) {}
+                           String apiKeyEnvName){}
 
     /// A provisioned cloud instance.
-    record ProvisionedNode(String nodeId, String serverId, String publicIp) {}
+    record ProvisionedNode(String nodeId, String serverId, String publicIp){}
 
     /// Internal context carrying resolved configuration and credentials through the bootstrap pipeline.
     record BootstrapContext(ClusterManagementConfig config,
@@ -565,22 +512,19 @@ sealed interface BootstrapOrchestrator {
     /// Errors specific to bootstrap operations.
     sealed interface BootstrapError extends Cause {
         record UnsupportedProvider(String provider) implements BootstrapError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Unsupported deployment provider for bootstrap: " + provider + ". Phase 1 supports Hetzner only.";
             }
         }
 
         record CloudApiError(int statusCode, String body) implements BootstrapError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Cloud API error (HTTP " + statusCode + "): " + body;
             }
         }
 
         record HealthCheckFailed(int statusCode) implements BootstrapError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Health check failed with HTTP " + statusCode;
             }
         }

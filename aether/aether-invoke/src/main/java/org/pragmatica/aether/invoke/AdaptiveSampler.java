@@ -35,8 +35,7 @@ public final class AdaptiveSampler {
 
     /// Check if the current invocation should be sampled.
     public boolean shouldSample() {
-        return ThreadLocalRandom.current()
-                                .nextDouble() < effectiveRate;
+        return ThreadLocalRandom.current().nextDouble() < effectiveRate;
     }
 
     /// Current effective sampling rate (0.0 to 1.0).

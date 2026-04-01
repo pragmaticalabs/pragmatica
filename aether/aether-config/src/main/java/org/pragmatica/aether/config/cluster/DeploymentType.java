@@ -25,10 +25,9 @@ public enum DeploymentType {
     }
     /// Parse a deployment type from its string representation.
     public static Result<DeploymentType> deploymentType(String raw) {
-        return Arrays.stream(values())
-                     .filter(dt -> dt.value.equals(raw))
-                     .findFirst()
-                     .map(Result::success)
-                     .orElseGet(INVALID_TYPE::result);
+        return Arrays.stream(values()).filter(dt -> dt.value.equals(raw))
+                            .findFirst()
+                            .map(Result::success)
+                            .orElseGet(INVALID_TYPE::result);
     }
 }

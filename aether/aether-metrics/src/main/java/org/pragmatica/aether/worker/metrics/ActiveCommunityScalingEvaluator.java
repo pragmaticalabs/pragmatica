@@ -51,13 +51,12 @@ final class ActiveCommunityScalingEvaluator implements CommunityScalingEvaluator
         this.lastScalingRequestTime = lastScalingRequestTime;
     }
 
-    @Override
-    public Option<CommunityScalingRequest> evaluate(String communityId,
-                                                    NodeId governorId,
-                                                    int memberCount,
-                                                    WindowSample currentSample) {
+    @Override public Option<CommunityScalingRequest> evaluate(String communityId,
+                                                              NodeId governorId,
+                                                              int memberCount,
+                                                              WindowSample currentSample) {
         addSample(currentSample);
-        if (window.size() < sustainedCount) {
+        if ( window.size() < sustainedCount) {
             log.trace("Window not full enough ({}/{}), skipping evaluation", window.size(), sustainedCount);
             return empty();
         }
@@ -65,22 +64,19 @@ final class ActiveCommunityScalingEvaluator implements CommunityScalingEvaluator
         .orElse(() -> detectScaleDown(communityId, governorId, memberCount));
     }
 
-    @Override
-    public List<WindowSample> slidingWindow() {
+    @Override public List<WindowSample> slidingWindow() {
         return List.copyOf(window);
     }
 
-    @Override
-    public void reset() {
+    @Override public void reset() {
         window.clear();
         lastScalingRequestTime.clear();
     }
 
     private void addSample(WindowSample sample) {
         window.addLast(sample);
-        while (window.size() > windowSize) {
-            window.removeFirst();
-        }
+        while ( window.size() > windowSize) {
+        window.removeFirst();}
     }
 
     private Option<CommunityScalingRequest> detectScaleUp(String communityId,
@@ -89,43 +85,37 @@ final class ActiveCommunityScalingEvaluator implements CommunityScalingEvaluator
         var cpuBreaches = countCpuBreachesUp();
         var p95Breaches = countP95Breaches();
         var errorBreaches = countErrorBreaches();
-        if (cpuBreaches >= sustainedCount || p95Breaches >= sustainedCount || errorBreaches >= sustainedCount) {
-            return emitIfNotCoolingDown(communityId, governorId, SCALE_UP, memberCount, memberCount + 1);
-        }
+        if ( cpuBreaches >= sustainedCount || p95Breaches >= sustainedCount || errorBreaches >= sustainedCount) {
+        return emitIfNotCoolingDown(communityId, governorId, SCALE_UP, memberCount, memberCount + 1);}
         return empty();
     }
 
     private Option<CommunityScalingRequest> detectScaleDown(String communityId,
                                                             NodeId governorId,
                                                             int memberCount) {
-        if (countCpuBreachesDown() >= sustainedCount) {
-            return emitIfNotCoolingDown(communityId, governorId, SCALE_DOWN, memberCount, Math.max(1, memberCount - 1));
-        }
+        if ( countCpuBreachesDown() >= sustainedCount) {
+        return emitIfNotCoolingDown(communityId, governorId, SCALE_DOWN, memberCount, Math.max(1, memberCount - 1));}
         return empty();
     }
 
     private long countCpuBreachesUp() {
-        return window.stream()
-                     .filter(s -> s.avgCpuUsage() > scaleUpCpuThreshold)
-                     .count();
+        return window.stream().filter(s -> s.avgCpuUsage() > scaleUpCpuThreshold)
+                            .count();
     }
 
     private long countCpuBreachesDown() {
-        return window.stream()
-                     .filter(s -> s.avgCpuUsage() < scaleDownCpuThreshold)
-                     .count();
+        return window.stream().filter(s -> s.avgCpuUsage() < scaleDownCpuThreshold)
+                            .count();
     }
 
     private long countP95Breaches() {
-        return window.stream()
-                     .filter(s -> s.avgP95LatencyMs() > scaleUpP95ThresholdMs)
-                     .count();
+        return window.stream().filter(s -> s.avgP95LatencyMs() > scaleUpP95ThresholdMs)
+                            .count();
     }
 
     private long countErrorBreaches() {
-        return window.stream()
-                     .filter(s -> s.avgErrorRate() > scaleUpErrorRateThreshold)
-                     .count();
+        return window.stream().filter(s -> s.avgErrorRate() > scaleUpErrorRateThreshold)
+                            .count();
     }
 
     private Option<CommunityScalingRequest> emitIfNotCoolingDown(String communityId,
@@ -136,7 +126,7 @@ final class ActiveCommunityScalingEvaluator implements CommunityScalingEvaluator
         var now = System.currentTimeMillis();
         var cooldownKey = communityId + ":" + direction;
         var lastTime = lastScalingRequestTime.get(cooldownKey);
-        if (lastTime != null && (now - lastTime) < cooldownMs) {
+        if ( lastTime != null && (now - lastTime) < cooldownMs) {
             log.debug("Scaling {} for {} in cooldown ({} ms remaining)",
                       direction,
                       communityId,
@@ -162,39 +152,32 @@ final class ActiveCommunityScalingEvaluator implements CommunityScalingEvaluator
     }
 
     private ScalingEvidence buildEvidence(int memberCount) {
-        var avgCpu = window.stream()
-                           .mapToDouble(WindowSample::avgCpuUsage)
-                           .average()
-                           .orElse(0.0);
-        var avgP95 = window.stream()
-                           .mapToDouble(WindowSample::avgP95LatencyMs)
-                           .average()
-                           .orElse(0.0);
-        var totalInvocations = window.stream()
-                                     .mapToLong(WindowSample::totalActiveInvocations)
-                                     .sum();
-        var avgError = window.stream()
-                             .mapToDouble(WindowSample::avgErrorRate)
-                             .average()
-                             .orElse(0.0);
+        var avgCpu = window.stream().mapToDouble(WindowSample::avgCpuUsage)
+                                  .average()
+                                  .orElse(0.0);
+        var avgP95 = window.stream().mapToDouble(WindowSample::avgP95LatencyMs)
+                                  .average()
+                                  .orElse(0.0);
+        var totalInvocations = window.stream().mapToLong(WindowSample::totalActiveInvocations)
+                                            .sum();
+        var avgError = window.stream().mapToDouble(WindowSample::avgErrorRate)
+                                    .average()
+                                    .orElse(0.0);
         var windowDuration = computeWindowDuration();
         return ScalingEvidence.scalingEvidence(memberCount, avgCpu, avgP95, totalInvocations, avgError, windowDuration);
     }
 
     private long computeWindowDuration() {
         return Option.all(Option.option(window.peekFirst()),
-                          Option.option(window.peekLast()))
-                     .map((first, last) -> last.timestampMs() - first.timestampMs())
-                     .or(0L);
+                          Option.option(window.peekLast())).map((first, last) -> last.timestampMs() - first.timestampMs())
+                         .or(0L);
     }
 
     private static Artifact buildPlaceholderArtifact(String communityId) {
-        return Artifact.artifact("org.aether:" + sanitizeArtifactId(communityId) + ":0.0.0")
-                       .unwrap();
+        return Artifact.artifact("org.aether:" + sanitizeArtifactId(communityId) + ":0.0.0").unwrap();
     }
 
     private static String sanitizeArtifactId(String communityId) {
-        return communityId.toLowerCase()
-                          .replaceAll("[^a-z0-9-]", "-");
+        return communityId.toLowerCase().replaceAll("[^a-z0-9-]", "-");
     }
 }

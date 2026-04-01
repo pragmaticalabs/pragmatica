@@ -60,44 +60,34 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
     public static HetznerDiscoveryProvider hetznerDiscoveryProvider(HetznerClient client,
                                                                     HetznerEnvironmentConfig config) {
         return new HetznerDiscoveryProvider(client,
-                                            config.clusterName()
-                                                  .or("default"),
+                                            config.clusterName().or("default"),
                                             config.selfServerId(),
                                             config.discoveryPollIntervalMs());
     }
 
-    @Override
-    public Promise<List<PeerInfo>> discoverPeers() {
-        return client.listServers(clusterLabelSelector())
-                     .map(HetznerDiscoveryProvider::toPeerInfoList)
-                     .mapError(HetznerDiscoveryProvider::toDiscoveryError);
+    @Override public Promise<List<PeerInfo>> discoverPeers() {
+        return client.listServers(clusterLabelSelector()).map(HetznerDiscoveryProvider::toPeerInfoList)
+                                 .mapError(HetznerDiscoveryProvider::toDiscoveryError);
     }
 
-    @Override
-    public Promise<Unit> watchPeers(Consumer<List<PeerInfo>> onChange) {
-        var thread = Thread.ofVirtual()
-                           .name("hetzner-discovery-watcher")
-                           .start(() -> pollLoop(onChange));
+    @Override public Promise<Unit> watchPeers(Consumer<List<PeerInfo>> onChange) {
+        var thread = Thread.ofVirtual().name("hetzner-discovery-watcher")
+                                     .start(() -> pollLoop(onChange));
         watchThread.set(thread);
         return Promise.success(unit());
     }
 
-    @Override
-    public Promise<Unit> stopWatching() {
+    @Override public Promise<Unit> stopWatching() {
         interruptWatchThread();
         return Promise.success(unit());
     }
 
-    @Override
-    public Promise<Unit> registerSelf(PeerInfo self) {
-        return selfServerId.map(id -> applyRegistrationLabels(id, self))
-                           .or(NO_SELF_SERVER_ID.promise());
+    @Override public Promise<Unit> registerSelf(PeerInfo self) {
+        return selfServerId.map(id -> applyRegistrationLabels(id, self)).or(NO_SELF_SERVER_ID.promise());
     }
 
-    @Override
-    public Promise<Unit> deregisterSelf() {
-        return selfServerId.map(this::clearLabels)
-                           .or(NO_SELF_SERVER_ID.promise());
+    @Override public Promise<Unit> deregisterSelf() {
+        return selfServerId.map(this::clearLabels).or(NO_SELF_SERVER_ID.promise());
     }
 
     // --- Leaf: build label selector for cluster ---
@@ -122,15 +112,13 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
                       LABEL_PORT,
                       String.valueOf(self.port()),
                       LABEL_ROLE,
-                      self.metadata()
-                          .getOrDefault("role", DEFAULT_ROLE));
+                      self.metadata().getOrDefault("role", DEFAULT_ROLE));
     }
 
     // --- Leaf: map server list to peer info list ---
     private static List<PeerInfo> toPeerInfoList(List<Server> servers) {
-        return servers.stream()
-                      .map(HetznerDiscoveryProvider::serverToPeerInfo)
-                      .toList();
+        return servers.stream().map(HetznerDiscoveryProvider::serverToPeerInfo)
+                             .toList();
     }
 
     // --- Leaf: extract PeerInfo from a server ---
@@ -151,8 +139,7 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: get first IP from private net list ---
     private static String firstIp(List<Server.PrivateNet> nets) {
-        return nets.getFirst()
-                   .ip();
+        return nets.getFirst().ip();
     }
 
     // --- Leaf: extract public IPv4 address ---
@@ -170,8 +157,7 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: parse port string to int, falling back to default ---
     private static int parsePortOrDefault(String portStr) {
-        return Number.parseInt(portStr)
-                     .or(DEFAULT_PORT);
+        return Number.parseInt(portStr).or(DEFAULT_PORT);
     }
 
     // --- Leaf: extract metadata from server labels ---
@@ -182,8 +168,7 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
     // --- Leaf: poll loop for watching peers ---
     private void pollLoop(Consumer<List<PeerInfo>> onChange) {
         var previousPeers = new AtomicReference<Set<String>>(Set.of());
-        while (!Thread.currentThread()
-                      .isInterrupted()) {
+        while ( !Thread.currentThread().isInterrupted()) {
             pollOnce(onChange, previousPeers);
             sleepOrExit();
         }
@@ -202,7 +187,7 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
                                         Consumer<List<PeerInfo>> onChange,
                                         AtomicReference<Set<String>> previousPeers) {
         var currentKeys = toPeerKeys(peers);
-        if (!currentKeys.equals(previousPeers.get())) {
+        if ( !currentKeys.equals(previousPeers.get())) {
             previousPeers.set(currentKeys);
             onChange.accept(peers);
         }
@@ -210,9 +195,8 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: convert peer list to set of host:port keys for comparison ---
     private static Set<String> toPeerKeys(List<PeerInfo> peers) {
-        return peers.stream()
-                    .map(HetznerDiscoveryProvider::peerKey)
-                    .collect(Collectors.toSet());
+        return peers.stream().map(HetznerDiscoveryProvider::peerKey)
+                           .collect(Collectors.toSet());
     }
 
     // --- Leaf: format peer key for comparison ---
@@ -222,11 +206,15 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: sleep for poll interval, exit on interrupt ---
     private void sleepOrExit() {
-        try{
+        try {
             Thread.sleep(pollIntervalMs);
-        } catch (InterruptedException e) {
-            Thread.currentThread()
-                  .interrupt();
+        }
+
+
+
+
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 

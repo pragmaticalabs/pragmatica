@@ -8,9 +8,8 @@ import org.pragmatica.serialization.Codec;
 ///
 /// @param sender      governor node ID
 /// @param timestampMs when the ping was sent
-@Codec
-public record WorkerMetricsPing(NodeId sender,
-                                long timestampMs) implements Message.Wired {
+@Codec public record WorkerMetricsPing( NodeId sender,
+                                        long timestampMs) implements Message.Wired {
     /// Factory with explicit timestamp.
     public static WorkerMetricsPing workerMetricsPing(NodeId sender, long timestampMs) {
         return new WorkerMetricsPing(sender, timestampMs);

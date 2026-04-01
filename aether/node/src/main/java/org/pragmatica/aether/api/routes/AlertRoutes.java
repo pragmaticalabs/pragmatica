@@ -28,27 +28,26 @@ public final class AlertRoutes implements RouteSource {
     }
 
     // Request DTO
-    record ThresholdRequest(String metric, Double warning, Double critical) {}
+    record ThresholdRequest(String metric, Double warning, Double critical){}
 
-    @Override
-    public Stream<Route<?>> routes() {
+    @Override public Stream<Route<?>> routes() {
         return Stream.of(// GET endpoints
-        Route.<Object> get("/api/thresholds")
+        Route.<Object>get("/api/thresholds")
              .toJson(alertManager::thresholdsAsJson),
-        Route.<AlertsResponse> get("/api/alerts")
+        Route.<AlertsResponse>get("/api/alerts")
              .toJson(this::buildAlertsResponse),
-        Route.<Object> get("/api/alerts/active")
+        Route.<Object>get("/api/alerts/active")
              .toJson(alertManager::activeAlertsAsJson),
-        Route.<Object> get("/api/alerts/history")
+        Route.<Object>get("/api/alerts/history")
              .toJson(alertManager::alertHistoryAsJson),
         // POST endpoints
-        Route.<ThresholdSetResponse> post("/api/thresholds")
+        Route.<ThresholdSetResponse>post("/api/thresholds")
              .withBody(ThresholdRequest.class)
              .toJson(this::handleSetThreshold),
-        Route.<AlertsClearedResponse> post("/api/alerts/clear")
+        Route.<AlertsClearedResponse>post("/api/alerts/clear")
              .toJson(this::handleClearAlerts),
         // DELETE with path parameter
-        Route.<ThresholdRemovedResponse> delete("/api/thresholds")
+        Route.<ThresholdRemovedResponse>delete("/api/thresholds")
              .withPath(aString())
              .to(this::handleDeleteThreshold)
              .asJson());
@@ -59,20 +58,17 @@ public final class AlertRoutes implements RouteSource {
                                        .flatMap(valid -> alertManager.setThreshold(valid.metric(),
                                                                                    valid.warning(),
                                                                                    valid.critical())
-                                                                     .map(_ -> new ThresholdSetResponse("threshold_set",
-                                                                                                        valid.metric(),
-                                                                                                        valid.warning(),
-                                                                                                        valid.critical())));
+        .map(_ -> new ThresholdSetResponse("threshold_set",
+                                           valid.metric(),
+                                           valid.warning(),
+                                           valid.critical())));
     }
 
     private Result<ThresholdRequest> validateThresholdRequest(ThresholdRequest req) {
-        if (req.metric() == null || req.metric()
-                                       .isEmpty()) {
-            return AlertError.MISSING_FIELDS.result();
-        }
-        if (req.warning() == null || req.critical() == null) {
-            return AlertError.MISSING_FIELDS.result();
-        }
+        if ( req.metric() == null || req.metric().isEmpty()) {
+        return AlertError.MISSING_FIELDS.result();}
+        if ( req.warning() == null || req.critical() == null) {
+        return AlertError.MISSING_FIELDS.result();}
         return Result.success(req);
     }
 
@@ -82,11 +78,9 @@ public final class AlertRoutes implements RouteSource {
     }
 
     private Promise<ThresholdRemovedResponse> handleDeleteThreshold(String metric) {
-        if (metric.isEmpty()) {
-            return AlertError.METRIC_REQUIRED.promise();
-        }
-        return alertManager.removeThreshold(metric)
-                           .map(_ -> new ThresholdRemovedResponse("threshold_removed", metric));
+        if ( metric.isEmpty()) {
+        return AlertError.METRIC_REQUIRED.promise();}
+        return alertManager.removeThreshold(metric).map(_ -> new ThresholdRemovedResponse("threshold_removed", metric));
     }
 
     private AlertsResponse buildAlertsResponse() {
@@ -100,8 +94,7 @@ public final class AlertRoutes implements RouteSource {
         AlertError(String message) {
             this.message = message;
         }
-        @Override
-        public String message() {
+        @Override public String message() {
             return message;
         }
     }

@@ -82,8 +82,7 @@ public interface JooqConnector extends DatabaseConnector {
     /// Receives a JooqConnector bound to the current transaction.
     ///
     /// @param <T> Result type
-    @FunctionalInterface
-    interface TransactionCallback<T> {
+    @FunctionalInterface interface TransactionCallback<T> {
         /// Executes operations within the transaction.
         ///
         /// @param connector JooqConnector bound to the transaction
@@ -93,27 +92,17 @@ public interface JooqConnector extends DatabaseConnector {
 
     /// Maps DatabaseType to jOOQ SQLDialect.
     static SQLDialect mapDialect(DatabaseType type) {
-        return switch (type) {
-            case POSTGRESQL, COCKROACHDB -> SQLDialect.POSTGRES;
-            case MYSQL -> SQLDialect.MYSQL;
-            case MARIADB -> SQLDialect.MARIADB;
-            case H2 -> SQLDialect.H2;
-            case SQLITE -> SQLDialect.SQLITE;
-            case ORACLE, SQLSERVER, DB2 -> SQLDialect.DEFAULT;
-        };
+        return switch (type) {case POSTGRESQL, COCKROACHDB -> SQLDialect.POSTGRES;case MYSQL -> SQLDialect.MYSQL;case MARIADB -> SQLDialect.MARIADB;case H2 -> SQLDialect.H2;case SQLITE -> SQLDialect.SQLITE;case ORACLE, SQLSERVER, DB2 -> SQLDialect.DEFAULT;};
     }
 
     /// Extracts a single record from a jOOQ Result, failing if empty or multiple.
     static <R extends Record> R extractSingleResult(org.jooq.Result<R> result) {
-        if (result.isEmpty()) {
-            return DatabaseConnectorError.ResultNotFound.INSTANCE.<R> result()
-                                         .unwrap();
-        }
-        if (result.size() > 1) {
-            return DatabaseConnectorError.multipleResults(result.size())
-                                         .<R> result()
-                                         .unwrap();
-        }
+        if ( result.isEmpty()) {
+        return DatabaseConnectorError.ResultNotFound.INSTANCE.<R>result()
+                                                             .unwrap();}
+        if ( result.size() > 1) {
+        return DatabaseConnectorError.multipleResults(result.size()).<R>result()
+                                                     .unwrap();}
         return result.getFirst();
     }
 

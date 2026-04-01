@@ -49,7 +49,7 @@ public final class StorageBackedPersistence<C extends Command> implements RabiaP
 
     /// Create a storage-backed persistence with a custom snapshot name.
     public static <C extends Command> StorageBackedPersistence<C> storageBackedPersistence(
-            ContentStore contentStore, String snapshotName) {
+    ContentStore contentStore, String snapshotName) {
         return new StorageBackedPersistence<>(contentStore, snapshotName);
     }
 
@@ -58,19 +58,17 @@ public final class StorageBackedPersistence<C extends Command> implements RabiaP
         return storageBackedPersistence(contentStore, "rabia/snapshot/latest");
     }
 
-    @Override
-    public Result<Unit> save(StateMachine<C> stateMachine, Phase lastCommittedPhase, Collection<Batch<C>> pendingBatches) {
-        return stateMachine.makeSnapshot()
-                           .map(snapshot -> encodeSnapshot(snapshot, lastCommittedPhase))
-                           .flatMap(this::storeEncoded);
+    @Override public Result<Unit> save(StateMachine<C> stateMachine,
+                                       Phase lastCommittedPhase,
+                                       Collection<Batch<C>> pendingBatches) {
+        return stateMachine.makeSnapshot().map(snapshot -> encodeSnapshot(snapshot, lastCommittedPhase))
+                                        .flatMap(this::storeEncoded);
     }
 
-    @Override
-    public Option<SavedState<C>> load() {
-        return contentStore.get(snapshotName)
-                           .await()
-                           .fold(_ -> Option.none(),
-                                 opt -> opt.flatMap(this::decodeState));
+    @Override public Option<SavedState<C>> load() {
+        return contentStore.get(snapshotName).await()
+                               .fold(_ -> Option.none(),
+                                     opt -> opt.flatMap(this::decodeState));
     }
 
     private Option<SavedState<C>> decodeState(byte[] encoded) {
@@ -78,9 +76,8 @@ public final class StorageBackedPersistence<C extends Command> implements RabiaP
     }
 
     private Result<Unit> storeEncoded(byte[] encoded) {
-        return contentStore.put(snapshotName, encoded)
-                           .await()
-                           .mapToUnit();
+        return contentStore.put(snapshotName, encoded).await()
+                               .mapToUnit();
     }
 
     static byte[] encodeSnapshot(byte[] snapshot, Phase phase) {
@@ -91,15 +88,12 @@ public final class StorageBackedPersistence<C extends Command> implements RabiaP
     }
 
     static <C extends Command> Option<SavedState<C>> decodeSnapshot(byte[] encoded) {
-        if (encoded.length < PHASE_HEADER_SIZE) {
-            return Option.none();
-        }
-
+        if ( encoded.length < PHASE_HEADER_SIZE) {
+        return Option.none();}
         var buffer = ByteBuffer.wrap(encoded);
         var phaseValue = buffer.getLong();
         var snapshot = new byte[encoded.length - PHASE_HEADER_SIZE];
         buffer.get(snapshot);
-
         return Option.some(savedState(snapshot, Phase.phase(phaseValue), List.of()));
     }
 }

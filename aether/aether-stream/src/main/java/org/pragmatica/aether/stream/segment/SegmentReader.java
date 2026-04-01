@@ -3,14 +3,15 @@ package org.pragmatica.aether.stream.segment;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.storage.StorageInstance;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /// Reads events from sealed segments stored in AHSE.
 /// Used as fallback when the ring buffer no longer holds the requested offset.
@@ -38,47 +39,54 @@ public final class SegmentReader {
     public Promise<List<RawEvent>> readEvents(String streamName, int partition, long fromOffset, int maxEvents) {
         var endOffset = fromOffset + maxEvents - 1;
         var refs = index.segmentRange(streamName, partition, fromOffset, endOffset);
-
-        if (refs.isEmpty()) {
-            return Promise.success(List.of());
-        }
-
+        if ( refs.isEmpty()) {
+        return Promise.success(List.of());}
         return readFromSegmentRefs(streamName, partition, refs, fromOffset, maxEvents);
     }
 
-    private Promise<List<RawEvent>> readFromSegmentRefs(String streamName, int partition,
+    private Promise<List<RawEvent>> readFromSegmentRefs(String streamName,
+                                                        int partition,
                                                         List<SegmentIndex.SegmentRef> refs,
-                                                        long fromOffset, int maxEvents) {
+                                                        long fromOffset,
+                                                        int maxEvents) {
         return readNextSegment(streamName, partition, refs, 0, fromOffset, maxEvents, List.of());
     }
 
-    private Promise<List<RawEvent>> readNextSegment(String streamName, int partition,
-                                                    List<SegmentIndex.SegmentRef> refs, int refIndex,
-                                                    long fromOffset, int remaining, List<RawEvent> accumulated) {
-        if (refIndex >= refs.size() || remaining <= 0) {
-            return Promise.success(accumulated);
-        }
-
+    private Promise<List<RawEvent>> readNextSegment(String streamName,
+                                                    int partition,
+                                                    List<SegmentIndex.SegmentRef> refs,
+                                                    int refIndex,
+                                                    long fromOffset,
+                                                    int remaining,
+                                                    List<RawEvent> accumulated) {
+        if ( refIndex >= refs.size() || remaining <= 0) {
+        return Promise.success(accumulated);}
         var ref = refs.get(refIndex);
         var refName = buildRefName(streamName, partition, ref);
-
-        return storage.resolveRef(refName)
-                      .async(SegmentError.General.SEGMENT_REF_NOT_FOUND)
-                      .flatMap(storage::get)
-                      .flatMap(opt -> opt.async(SegmentError.General.SEGMENT_DATA_NOT_FOUND))
-                      .map(bytes -> deserializeAndFilter(bytes, fromOffset, remaining))
-                      .flatMap(events -> continueWithImmutableAccumulation(streamName, partition, refs,
-                                                                           refIndex, fromOffset, remaining,
-                                                                           accumulated, events));
+        return storage.resolveRef(refName).async(SegmentError.General.SEGMENT_REF_NOT_FOUND)
+                                 .flatMap(storage::get)
+                                 .flatMap(opt -> opt.async(SegmentError.General.SEGMENT_DATA_NOT_FOUND))
+                                 .map(bytes -> deserializeAndFilter(bytes, fromOffset, remaining))
+                                 .flatMap(events -> continueWithImmutableAccumulation(streamName,
+                                                                                      partition,
+                                                                                      refs,
+                                                                                      refIndex,
+                                                                                      fromOffset,
+                                                                                      remaining,
+                                                                                      accumulated,
+                                                                                      events));
     }
 
-    private Promise<List<RawEvent>> continueWithImmutableAccumulation(String streamName, int partition,
-                                                                      List<SegmentIndex.SegmentRef> refs, int refIndex,
-                                                                      long fromOffset, int remaining,
-                                                                      List<RawEvent> accumulated, List<RawEvent> events) {
+    private Promise<List<RawEvent>> continueWithImmutableAccumulation(String streamName,
+                                                                      int partition,
+                                                                      List<SegmentIndex.SegmentRef> refs,
+                                                                      int refIndex,
+                                                                      long fromOffset,
+                                                                      int remaining,
+                                                                      List<RawEvent> accumulated,
+                                                                      List<RawEvent> events) {
         var combined = List.copyOf(Stream.concat(accumulated.stream(), events.stream()).toList());
         var newRemaining = remaining - events.size();
-
         return readNextSegment(streamName, partition, refs, refIndex + 1, fromOffset, newRemaining, combined);
     }
 
@@ -89,15 +97,11 @@ public final class SegmentReader {
     static List<RawEvent> deserializeAndFilter(byte[] serialized, long fromOffset, int maxEvents) {
         var buffer = ByteBuffer.wrap(serialized).order(ByteOrder.BIG_ENDIAN);
         var result = new ArrayList<RawEvent>();
-
-        while (buffer.remaining() >= PER_EVENT_HEADER && result.size() < maxEvents) {
+        while ( buffer.remaining() >= PER_EVENT_HEADER && result.size() < maxEvents) {
             var event = readSingleEvent(buffer);
-
-            if (event.offset() >= fromOffset) {
-                result.add(event);
-            }
+            if ( event.offset() >= fromOffset) {
+            result.add(event);}
         }
-
         return List.copyOf(result);
     }
 
@@ -107,7 +111,6 @@ public final class SegmentReader {
         var len = buffer.getInt();
         var data = new byte[len];
         buffer.get(data);
-
         return RawEvent.rawEvent(offset, data, timestamp);
     }
 }

@@ -11,8 +11,7 @@ import org.pragmatica.serialization.Codec;
 /// Used in conjunction with {@link SecurityContext} for access control.
 ///
 /// @param value the role name
-@Codec
-public record Role(String value) {
+@Codec public record Role( String value) {
     /// Validation errors for Role.
     public sealed interface RoleError extends Cause {
         enum General implements RoleError {
@@ -22,16 +21,13 @@ public record Role(String value) {
             General(String message) {
                 this.message = message;
             }
-            @Override
-            public String message() {
+            @Override public String message() {
                 return message;
             }
         }
 
-        @SuppressWarnings("unused")
-        record unused() implements RoleError {
-            @Override
-            public String message() {
+        @SuppressWarnings("unused") record unused() implements RoleError {
+            @Override public String message() {
                 return "";
             }
         }
@@ -56,6 +52,6 @@ public record Role(String value) {
 
     private static Result<String> ensureNotBlank(String value) {
         return Verify.ensure(value, Verify.Is::notNull, RoleError.General.NULL_VALUE)
-                     .filter(RoleError.General.BLANK_VALUE, Verify.Is::notBlank);
+        .filter(RoleError.General.BLANK_VALUE, Verify.Is::notBlank);
     }
 }

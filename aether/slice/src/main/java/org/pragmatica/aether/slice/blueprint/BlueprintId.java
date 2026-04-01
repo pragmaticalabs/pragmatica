@@ -9,18 +9,15 @@ import org.pragmatica.serialization.Codec;
 
 /// Blueprint identifier using Maven artifact coordinates (RFC-0005).
 /// Format: groupId:artifactId:version (e.g., "org.example:commerce:1.0.0")
-@Codec
-public record BlueprintId(Artifact artifact) {
+@Codec public record BlueprintId( Artifact artifact) {
     private static final Fn1<Cause, String> INVALID_FORMAT = Causes.forOneValue("Invalid blueprint ID format: %s");
 
     public static Result<BlueprintId> blueprintId(String input) {
-        return Artifact.artifact(input)
-                       .mapError(_ -> INVALID_FORMAT.apply(input))
-                       .map(BlueprintId::new);
+        return Artifact.artifact(input).mapError(_ -> INVALID_FORMAT.apply(input))
+                                .map(BlueprintId::new);
     }
 
-    @Override
-    public String toString() {
+    @Override public String toString() {
         return asString();
     }
 

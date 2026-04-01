@@ -43,9 +43,8 @@ public sealed interface AetherValue {
 
         /// Compact constructor: normalize null/empty placement at construction time.
         public SliceTargetValue {
-            if (placement == null || placement.isEmpty()) {
-                placement = DEFAULT_PLACEMENT;
-            }
+            if ( placement == null || placement.isEmpty()) {
+            placement = DEFAULT_PLACEMENT;}
         }
 
         /// Creates a new slice target value with current timestamp.
@@ -775,8 +774,7 @@ public sealed interface AetherValue {
     ///                    ←────────────┘
     ///           any KV state ──────────→ SHUTTING_DOWN
     /// ```
-    @Codec
-    enum NodeLifecycleState {
+    @Codec enum NodeLifecycleState {
         JOINING,
         ON_DUTY,
         DRAINING,
@@ -795,9 +793,8 @@ public sealed interface AetherValue {
     record NodeLifecycleValue(NodeLifecycleState state, long updatedAt, String host, int port) implements AetherValue {
         /// Compact constructor: normalize null host for backward compatibility with old serialization.
         public NodeLifecycleValue {
-            if (host == null) {
-                host = "";
-            }
+            if ( host == null) {
+            host = "";}
         }
 
         /// Creates a new lifecycle value with current timestamp (no address).
@@ -861,9 +858,8 @@ public sealed interface AetherValue {
 
         /// Returns a new value with updated state, preserving endpoint info if transitioning to ACTIVE.
         public NodeArtifactValue withState(SliceState newState) {
-            if (newState == SliceState.ACTIVE) {
-                return new NodeArtifactValue(newState, Option.none(), false, instanceNumber, methods);
-            }
+            if ( newState == SliceState.ACTIVE) {
+            return new NodeArtifactValue(newState, Option.none(), false, instanceNumber, methods);}
             return new NodeArtifactValue(newState, Option.none(), false, 0, List.of());
         }
 
@@ -1023,8 +1019,7 @@ public sealed interface AetherValue {
     }
 
     /// Schema migration status.
-    @Codec
-    enum SchemaStatus {
+    @Codec enum SchemaStatus {
         PENDING,
         MIGRATING,
         COMPLETED,
@@ -1212,14 +1207,18 @@ public sealed interface AetherValue {
                              long lastAccessedAt,
                              long createdAt,
                              int accessCount) implements AetherValue {
-
         public static StorageBlockValue storageBlockValue(String blockIdHex,
                                                           Set<String> presentIn,
                                                           int refCount,
                                                           long lastAccessedAt,
                                                           long createdAt,
                                                           int accessCount) {
-            return new StorageBlockValue(blockIdHex, Set.copyOf(presentIn), refCount, lastAccessedAt, createdAt, accessCount);
+            return new StorageBlockValue(blockIdHex,
+                                         Set.copyOf(presentIn),
+                                         refCount,
+                                         lastAccessedAt,
+                                         createdAt,
+                                         accessCount);
         }
 
         public StorageBlockValue withTierAdded(String tier) {
@@ -1233,11 +1232,21 @@ public sealed interface AetherValue {
         }
 
         public StorageBlockValue withRefCountDecremented() {
-            return new StorageBlockValue(blockIdHex, presentIn, Math.max(0, refCount - 1), lastAccessedAt, createdAt, accessCount);
+            return new StorageBlockValue(blockIdHex,
+                                         presentIn,
+                                         Math.max(0, refCount - 1),
+                                         lastAccessedAt,
+                                         createdAt,
+                                         accessCount);
         }
 
         public StorageBlockValue withAccessTimestamp() {
-            return new StorageBlockValue(blockIdHex, presentIn, refCount, System.currentTimeMillis(), createdAt, accessCount + 1);
+            return new StorageBlockValue(blockIdHex,
+                                         presentIn,
+                                         refCount,
+                                         System.currentTimeMillis(),
+                                         createdAt,
+                                         accessCount + 1);
         }
     }
 
@@ -1246,7 +1255,6 @@ public sealed interface AetherValue {
     /// @param blockIdHex hex-encoded SHA-256 block ID this reference points to
     /// @param updatedAt timestamp of last update
     record StorageRefValue(String blockIdHex, long updatedAt) implements AetherValue {
-
         public static StorageRefValue storageRefValue(String blockIdHex) {
             return new StorageRefValue(blockIdHex, System.currentTimeMillis());
         }
@@ -1271,7 +1279,6 @@ public sealed interface AetherValue {
                               long lastSnapshotEpoch,
                               long lastSnapshotTimestamp,
                               long updatedAt) implements AetherValue {
-
         /// Tier utilization detail within a storage status.
         ///
         /// @param level tier level name

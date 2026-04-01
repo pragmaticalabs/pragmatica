@@ -26,12 +26,10 @@ public interface AetherMaps {
     ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> httpRoutes();
 
     /// Dispatch a remote DHT put to the appropriate map's subscribers.
-    @SuppressWarnings("JBCT-RET-01")
-    void dispatchRemotePut(byte[] rawKey, byte[] rawValue);
+    @SuppressWarnings("JBCT-RET-01") void dispatchRemotePut(byte[] rawKey, byte[] rawValue);
 
     /// Dispatch a remote DHT remove to the appropriate map's subscribers.
-    @SuppressWarnings("JBCT-RET-01")
-    void dispatchRemoteRemove(byte[] rawKey);
+    @SuppressWarnings("JBCT-RET-01") void dispatchRemoteRemove(byte[] rawKey);
 
     /// Create AetherMaps backed by the given DHT client.
     static AetherMaps aetherMaps(DHTClient client) {
@@ -51,9 +49,9 @@ public interface AetherMaps {
                                                                               AetherMaps::deserializeHttpRouteKey,
                                                                               AetherMaps::serializeHttpRouteValue,
                                                                               AetherMaps::deserializeHttpRouteValue);
-        record aetherMaps(ReplicatedMap<EndpointKey, EndpointValue> endpoints,
-                          ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodes,
-                          ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> httpRoutes) implements AetherMaps {
+        record aetherMaps( ReplicatedMap<EndpointKey, EndpointValue> endpoints,
+                           ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodes,
+                           ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> httpRoutes) implements AetherMaps {
             @Override
             @SuppressWarnings("JBCT-RET-01")
             public void dispatchRemotePut(byte[] rawKey, byte[] rawValue) {
@@ -77,25 +75,19 @@ public interface AetherMaps {
                 return (NamespacedReplicatedMap<K, V>) map;
             }
 
-            @SafeVarargs
-            private static void dispatchPutToFirst(byte[] rawKey,
-                                                   byte[] rawValue,
-                                                   NamespacedReplicatedMap<?, ?>... maps) {
-                for (var map : maps) {
-                    if (map.onRemotePut(rawKey, rawValue)) {
-                        return;
-                    }
-                }
+            @SafeVarargs private static void dispatchPutToFirst(byte[] rawKey,
+                                                                byte[] rawValue,
+                                                                NamespacedReplicatedMap<?, ?>... maps) {
+                for ( var map : maps) {
+                if ( map.onRemotePut(rawKey, rawValue)) {
+                return;}}
             }
 
-            @SafeVarargs
-            private static void dispatchRemoveToFirst(byte[] rawKey,
-                                                      NamespacedReplicatedMap<?, ?>... maps) {
-                for (var map : maps) {
-                    if (map.onRemoteRemove(rawKey)) {
-                        return;
-                    }
-                }
+            @SafeVarargs private static void dispatchRemoveToFirst(byte[] rawKey,
+                                                                   NamespacedReplicatedMap<?, ?>... maps) {
+                for ( var map : maps) {
+                if ( map.onRemoteRemove(rawKey)) {
+                return;}}
             }
         }
         return new aetherMaps(endpoints, sliceNodes, httpRoutes);
@@ -103,42 +95,34 @@ public interface AetherMaps {
 
     // --- Endpoint serializers ---
     private static byte[] serializeEndpointKey(EndpointKey key) {
-        return key.asString()
-                  .getBytes(StandardCharsets.UTF_8);
+        return key.asString().getBytes(StandardCharsets.UTF_8);
     }
 
     private static EndpointKey deserializeEndpointKey(byte[] bytes) {
-        return EndpointKey.endpointKey(new String(bytes, StandardCharsets.UTF_8))
-                          .unwrap();
+        return EndpointKey.endpointKey(new String(bytes, StandardCharsets.UTF_8)).unwrap();
     }
 
     private static byte[] serializeEndpointValue(EndpointValue value) {
-        return value.nodeId()
-                    .id()
-                    .getBytes(StandardCharsets.UTF_8);
+        return value.nodeId().id()
+                           .getBytes(StandardCharsets.UTF_8);
     }
 
     private static EndpointValue deserializeEndpointValue(byte[] bytes) {
-        return new EndpointValue(NodeId.nodeId(new String(bytes, StandardCharsets.UTF_8))
-                                       .unwrap());
+        return new EndpointValue(NodeId.nodeId(new String(bytes, StandardCharsets.UTF_8)).unwrap());
     }
 
     // --- SliceNode serializers ---
     private static byte[] serializeSliceNodeKey(SliceNodeKey key) {
-        return key.asString()
-                  .getBytes(StandardCharsets.UTF_8);
+        return key.asString().getBytes(StandardCharsets.UTF_8);
     }
 
     private static SliceNodeKey deserializeSliceNodeKey(byte[] bytes) {
-        return SliceNodeKey.sliceNodeKey(new String(bytes, StandardCharsets.UTF_8))
-                           .unwrap();
+        return SliceNodeKey.sliceNodeKey(new String(bytes, StandardCharsets.UTF_8)).unwrap();
     }
 
     private static byte[] serializeSliceNodeValue(SliceNodeValue value) {
-        var reason = value.failureReason()
-                          .or("");
-        return (value.state()
-                     .name() + "|" + reason + "|" + value.fatal()).getBytes(StandardCharsets.UTF_8);
+        var reason = value.failureReason().or("");
+        return (value.state().name() + "|" + reason + "|" + value.fatal()).getBytes(StandardCharsets.UTF_8);
     }
 
     @SuppressWarnings("JBCT-EX-01") // Adapter boundary — deserializing DHT bytes
@@ -154,18 +138,15 @@ public interface AetherMaps {
 
     // --- HttpRoute serializers ---
     public static byte[] serializeHttpRouteKey(HttpNodeRouteKey key) {
-        return key.asString()
-                  .getBytes(StandardCharsets.UTF_8);
+        return key.asString().getBytes(StandardCharsets.UTF_8);
     }
 
     public static HttpNodeRouteKey deserializeHttpRouteKey(byte[] bytes) {
-        return HttpNodeRouteKey.httpNodeRouteKey(new String(bytes, StandardCharsets.UTF_8))
-                               .unwrap();
+        return HttpNodeRouteKey.httpNodeRouteKey(new String(bytes, StandardCharsets.UTF_8)).unwrap();
     }
 
     public static byte[] serializeHttpRouteValue(HttpNodeRouteValue value) {
-        var encoded = value.artifactCoord() + "|" + value.sliceMethod() + "|" + value.state() + "|" + value.weight()
-                      + "|" + value.registeredAt();
+        var encoded = value.artifactCoord() + "|" + value.sliceMethod() + "|" + value.state() + "|" + value.weight() + "|" + value.registeredAt();
         return encoded.getBytes(StandardCharsets.UTF_8);
     }
 

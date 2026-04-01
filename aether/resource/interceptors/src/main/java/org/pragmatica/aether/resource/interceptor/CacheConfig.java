@@ -12,7 +12,7 @@ import static org.pragmatica.lang.Verify.ensure;
 /// @param ttlSeconds Time-to-live for cached entries in seconds
 /// @param maxEntries Maximum number of entries in the cache
 /// @param mode       Cache storage mode (local, distributed, or tiered)
-public record CacheConfig(String cacheName, CacheStrategy strategy, int ttlSeconds, int maxEntries, CacheMode mode) {
+public record CacheConfig( String cacheName, CacheStrategy strategy, int ttlSeconds, int maxEntries, CacheMode mode) {
     @SuppressWarnings("JBCT-VO-02")
     private static final CacheConfig DEFAULTS = new CacheConfig("default",
                                                                 CacheStrategy.CACHE_ASIDE,
@@ -36,7 +36,7 @@ public record CacheConfig(String cacheName, CacheStrategy strategy, int ttlSecon
                           ensure(ttlSeconds, Verify.Is::positive),
                           ensure(maxEntries, Verify.Is::positive),
                           ensure(mode, Verify.Is::notNull))
-                     .map(CacheConfig::new);
+        .map(CacheConfig::new);
     }
 
     /// Create cache configuration with name and strategy, using default TTL, max entries, and local mode.

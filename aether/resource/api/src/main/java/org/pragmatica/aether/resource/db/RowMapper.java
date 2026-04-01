@@ -8,8 +8,7 @@ import org.pragmatica.lang.Result;
 /// into domain types with proper error handling.
 ///
 /// @param <T> Target domain type
-@FunctionalInterface
-public interface RowMapper<T> {
+@FunctionalInterface public interface RowMapper<T> {
     /// Maps the current row to a domain object.
     ///
     /// Implementations should:

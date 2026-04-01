@@ -48,16 +48,13 @@ public interface HttpForwarder {
                                       String requestId);
 
     /// Handle HTTP forward response from another node.
-    @MessageReceiver
-    void onHttpForwardResponse(HttpForwardResponse response);
+    @MessageReceiver void onHttpForwardResponse(HttpForwardResponse response);
 
     /// Handle node removal for immediate retry of pending forwards.
-    @MessageReceiver
-    void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved);
+    @MessageReceiver void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved);
 
     /// Handle node down for immediate retry of pending forwards.
-    @MessageReceiver
-    void onNodeDown(TopologyChangeNotification.NodeDown nodeDown);
+    @MessageReceiver void onNodeDown(TopologyChangeNotification.NodeDown nodeDown);
 
     /// Create an HttpForwarder instance with default retry settings.
     static HttpForwarder httpForwarder(NodeId selfNodeId,
@@ -88,18 +85,17 @@ public interface HttpForwarder {
                                        TimeSpan forwardTimeout,
                                        long retryDelayMs,
                                        int maxForwardRetries) {
-        @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
-        record httpForwarder(NodeId selfNodeId,
-                             HttpRouteRegistry routeRegistry,
-                             ClusterNetwork clusterNetwork,
-                             Serializer serializer,
-                             Deserializer deserializer,
-                             TimeSpan forwardTimeout,
-                             long retryDelayMs,
-                             int maxForwardRetries,
-                             Map<String, PendingForward> pendingForwards,
-                             Map<NodeId, Set<String>> pendingForwardsByNode,
-                             Map<String, AtomicInteger> roundRobinCounters) implements HttpForwarder {
+        @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) record httpForwarder( NodeId selfNodeId,
+                                                                                HttpRouteRegistry routeRegistry,
+                                                                                ClusterNetwork clusterNetwork,
+                                                                                Serializer serializer,
+                                                                                Deserializer deserializer,
+                                                                                TimeSpan forwardTimeout,
+                                                                                long retryDelayMs,
+                                                                                int maxForwardRetries,
+                                                                                Map<String, PendingForward> pendingForwards,
+                                                                                Map<NodeId, Set<String>> pendingForwardsByNode,
+                                                                                Map<String, AtomicInteger> roundRobinCounters) implements HttpForwarder {
             private static final Logger log = LoggerFactory.getLogger(HttpForwarder.class);
             private static final int MAX_PENDING_FORWARDS = 10_000;
 
@@ -107,18 +103,16 @@ public interface HttpForwarder {
                                   long createdAtMs,
                                   String requestId,
                                   NodeId targetNode,
-                                  Runnable onFailure) {}
+                                  Runnable onFailure){}
 
-            @Override
-            public Promise<HttpResponseData> forward(HttpRequestContext requestContext,
-                                                     String httpMethod,
-                                                     String pathPrefix,
-                                                     String requestId) {
+            @Override public Promise<HttpResponseData> forward(HttpRequestContext requestContext,
+                                                               String httpMethod,
+                                                               String pathPrefix,
+                                                               String requestId) {
                 var resultPromise = Promise.<HttpResponseData>promise();
-                var connectedNodes = filterConnectedNodes(routeRegistry.findRoute(httpMethod, pathPrefix)
-                                                                       .map(HttpRouteRegistry.RouteInfo::nodes)
-                                                                       .or(Set.of()));
-                if (connectedNodes.isEmpty()) {
+                var connectedNodes = filterConnectedNodes(routeRegistry.findRoute(httpMethod, pathPrefix).map(HttpRouteRegistry.RouteInfo::nodes)
+                                                                                 .or(Set.of()));
+                if ( connectedNodes.isEmpty()) {
                     log.warn("No connected nodes available for route {} {} [{}]", httpMethod, pathPrefix, requestId);
                     resultPromise.fail(Causes.cause("No available nodes for route"));
                     return resultPromise;
@@ -134,48 +128,41 @@ public interface HttpForwarder {
                 return resultPromise;
             }
 
-            @Override
-            public void onHttpForwardResponse(HttpForwardResponse response) {
+            @Override public void onHttpForwardResponse(HttpForwardResponse response) {
                 log.trace("Received HttpForwardResponse [{}] correlationId={} success={}",
                           response.requestId(),
                           response.correlationId(),
                           response.success());
-                Option.option(pendingForwards.remove(response.correlationId()))
-                      .onEmpty(() -> log.debug("[{}] Received forward response for unknown correlationId: {}",
-                                               response.requestId(),
-                                               response.correlationId()))
-                      .onPresent(pending -> processForwardResponse(pending, response));
+                Option.option(pendingForwards.remove(response.correlationId())).onEmpty(() -> log.debug("[{}] Received forward response for unknown correlationId: {}",
+                                                                                                        response.requestId(),
+                                                                                                        response.correlationId()))
+                             .onPresent(pending -> processForwardResponse(pending, response));
             }
 
-            @Override
-            public void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved) {
+            @Override public void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved) {
                 handleNodeDeparture(nodeRemoved.nodeId());
             }
 
-            @Override
-            public void onNodeDown(TopologyChangeNotification.NodeDown nodeDown) {
+            @Override public void onNodeDown(TopologyChangeNotification.NodeDown nodeDown) {
                 handleNodeDeparture(nodeDown.nodeId());
             }
 
             // ================== Forwarding Logic ==================
             private List<NodeId> filterConnectedNodes(Set<NodeId> nodes) {
                 var connected = clusterNetwork.connectedPeers();
-                return nodes.stream()
-                            .filter(connected::contains)
-                            .toList();
+                return nodes.stream().filter(connected::contains)
+                                   .toList();
             }
 
             private List<NodeId> freshCandidatesForRoute(String routeIdentity) {
                 // Parse routeIdentity back to method:prefix
                 var colonIdx = routeIdentity.indexOf(':');
-                if (colonIdx == - 1) {
-                    return List.of();
-                }
+                if ( colonIdx == - 1) {
+                return List.of();}
                 var method = routeIdentity.substring(0, colonIdx);
                 var prefix = routeIdentity.substring(colonIdx + 1);
-                return routeRegistry.findRoute(method, prefix)
-                                    .map(r -> filterConnectedNodes(r.nodes()))
-                                    .or(List.of());
+                return routeRegistry.findRoute(method, prefix).map(r -> filterConnectedNodes(r.nodes()))
+                                              .or(List.of());
             }
 
             private NodeId selectNodeFromCandidates(String routeIdentity, List<NodeId> candidates) {
@@ -191,10 +178,9 @@ public interface HttpForwarder {
                                           String routeIdentity,
                                           String requestId,
                                           int retriesRemaining) {
-                var candidates = availableNodes.stream()
-                                               .filter(n -> !triedNodes.contains(n))
-                                               .toList();
-                if (candidates.isEmpty()) {
+                var candidates = availableNodes.stream().filter(n -> !triedNodes.contains(n))
+                                                      .toList();
+                if ( candidates.isEmpty()) {
                     handleNoCandidates(requestContext, resultPromise, routeIdentity, requestId, retriesRemaining);
                     return;
                 }
@@ -218,13 +204,13 @@ public interface HttpForwarder {
                                             String routeIdentity,
                                             String requestId,
                                             int retriesRemaining) {
-                if (retriesRemaining > 0) {
+                if ( retriesRemaining > 0) {
                     log.debug("No candidates for {} [{}], waiting {}ms before re-query ({} retries remaining)",
                               routeIdentity,
                               requestId,
                               retryDelayMs,
                               retriesRemaining);
-                    Promise.<Unit> promise()
+                    Promise.<Unit>promise()
                            .timeout(timeSpan(retryDelayMs).millis())
                            .onResult(_ -> retryAfterDelay(requestContext,
                                                           resultPromise,
@@ -258,7 +244,7 @@ public interface HttpForwarder {
                                                 String routeIdentity,
                                                 String requestId,
                                                 int retriesRemaining) {
-                if (retriesRemaining > 0) {
+                if ( retriesRemaining > 0) {
                     log.debug("Retrying request [{}], {} retries remaining, re-querying route",
                               requestId,
                               retriesRemaining);
@@ -270,7 +256,12 @@ public interface HttpForwarder {
                                      routeIdentity,
                                      requestId,
                                      retriesRemaining - 1);
-                } else {
+                } else
+
+
+
+
+                {
                     log.error("All retries exhausted for [{}]", requestId);
                     resultPromise.fail(Causes.cause("Request failed after all retries"));
                 }
@@ -282,25 +273,27 @@ public interface HttpForwarder {
                                        String requestId,
                                        Runnable onFailure) {
                 // Fast path: if the target is already known to be disconnected, fail immediately
-                if (!clusterNetwork.connectedPeers()
-                                   .contains(targetNode)) {
+                if ( !clusterNetwork.connectedPeers().contains(targetNode)) {
                     log.debug("Target node {} already disconnected, immediate retry [{}]", targetNode, requestId);
                     onFailure.run();
                     return;
                 }
-                var correlationId = KSUID.ksuid()
-                                         .toString();
+                var correlationId = KSUID.ksuid().toString();
                 // Serialize the request context
                 byte[] requestData;
-                try{
+                try {
                     requestData = serializer.encode(requestContext);
-                } catch (Exception e) {
+                }
+
+
+
+
+                catch (Exception e) {
                     log.error("Failed to serialize request [{}]: {}", requestId, e.getMessage());
                     resultPromise.fail(Causes.cause("Request serialization failed"));
                     return;
                 }
-                // Backpressure: reject if too many pending forwards
-                if (pendingForwards.size() >= MAX_PENDING_FORWARDS) {
+                if ( pendingForwards.size() >= MAX_PENDING_FORWARDS) {
                     log.warn("Pending forwards limit reached ({}), rejecting forward [{}]",
                              MAX_PENDING_FORWARDS,
                              requestId);
@@ -315,9 +308,8 @@ public interface HttpForwarder {
                                                  targetNode,
                                                  onFailure);
                 pendingForwards.put(correlationId, pending);
-                pendingForwardsByNode.computeIfAbsent(targetNode,
-                                                      _ -> ConcurrentHashMap.newKeySet())
-                                     .add(correlationId);
+                pendingForwardsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet())
+                .add(correlationId);
                 // Set up timeout — will resolve internalPromise with CoreError.Timeout
                 internalPromise.timeout(forwardTimeout);
                 // Send forward request
@@ -326,11 +318,7 @@ public interface HttpForwarder {
                 log.trace("Forwarded request to {} [{}] correlationId={}", targetNode, requestId, correlationId);
                 // Handle resolution — atomic removal ensures only one path processes the result
                 internalPromise.onSuccess(resultPromise::succeed)
-                               .onFailure(cause -> handleInternalFailure(cause,
-                                                                         correlationId,
-                                                                         targetNode,
-                                                                         requestId,
-                                                                         onFailure));
+                .onFailure(cause -> handleInternalFailure(cause, correlationId, targetNode, requestId, onFailure));
             }
 
             private void handleInternalFailure(Cause cause,
@@ -339,89 +327,83 @@ public interface HttpForwarder {
                                                String requestId,
                                                Runnable onFailure) {
                 var removed = pendingForwards.remove(correlationId);
-                if (removed != null) {
-                    removeFromNodeIndex(correlationId, targetNode);
-                }
-                if (cause instanceof CoreError.Timeout) {
-                    log.warn("Forward to {} timed out after {} [{}]", targetNode, forwardTimeout, requestId);
-                }
+                if ( removed != null) {
+                removeFromNodeIndex(correlationId, targetNode);}
+                if ( cause instanceof CoreError.Timeout) {
+                log.warn("Forward to {} timed out after {} [{}]", targetNode, forwardTimeout, requestId);}
                 onFailure.run();
             }
 
             // ================== Response Processing ==================
             private void processForwardResponse(PendingForward pending, HttpForwardResponse response) {
                 removeFromNodeIndex(response.correlationId(), pending.targetNode());
-                if (response.success()) {
-                    handleSuccessfulForwardResponse(pending, response);
-                } else {
-                    handleFailedForwardResponse(pending, response);
-                }
+                if ( response.success()) {
+                handleSuccessfulForwardResponse(pending, response);} else
+                {
+                handleFailedForwardResponse(pending, response);}
             }
 
             private void handleSuccessfulForwardResponse(PendingForward pending, HttpForwardResponse response) {
-                try{
+                try {
                     HttpResponseData responseData = deserializer.decode(response.payload());
-                    pending.promise()
-                           .succeed(responseData);
+                    pending.promise().succeed(responseData);
                     log.trace("Completed forward request [{}]", pending.requestId());
-                } catch (Exception e) {
+                }
+
+
+
+
+                catch (Exception e) {
                     log.error("Failed to deserialize forward response [{}]: {}", pending.requestId(), e.getMessage());
-                    pending.promise()
-                           .fail(Causes.cause("Response deserialization failed: " + e.getMessage()));
+                    pending.promise().fail(Causes.cause("Response deserialization failed: " + e.getMessage()));
                 }
             }
 
             private void handleFailedForwardResponse(PendingForward pending, HttpForwardResponse response) {
                 var errorMessage = new String(response.payload(), StandardCharsets.UTF_8);
                 log.warn("Failed to forward request [{}]: {}", pending.requestId(), errorMessage);
-                pending.promise()
-                       .fail(Causes.cause("Remote processing failed: " + errorMessage));
+                pending.promise().fail(Causes.cause("Remote processing failed: " + errorMessage));
             }
 
             // ================== Node Departure ==================
             private void handleNodeDeparture(NodeId departedNode) {
-                Option.option(pendingForwardsByNode.remove(departedNode))
-                      .filter(ids -> !ids.isEmpty())
-                      .onPresent(correlationIds -> retryPendingForwards(departedNode, correlationIds));
+                Option.option(pendingForwardsByNode.remove(departedNode)).filter(ids -> !ids.isEmpty())
+                             .onPresent(correlationIds -> retryPendingForwards(departedNode, correlationIds));
             }
 
             private void retryPendingForwards(NodeId departedNode, Set<String> correlationIds) {
-                var affectedRequestIds = correlationIds.stream()
-                                                       .map(pendingForwards::get)
-                                                       .map(Option::option)
-                                                       .flatMap(Option::stream)
-                                                       .map(PendingForward::requestId)
-                                                       .limit(5)
-                                                       .toList();
+                var affectedRequestIds = correlationIds.stream().map(pendingForwards::get)
+                                                              .map(Option::option)
+                                                              .flatMap(Option::stream)
+                                                              .map(PendingForward::requestId)
+                                                              .limit(5)
+                                                              .toList();
                 log.debug("Node {} departed, triggering immediate retry for {} pending forwards, requestIds={}",
                           departedNode,
                           correlationIds.size(),
                           affectedRequestIds);
-                for (var correlationId : correlationIds) {
-                    Option.option(pendingForwards.remove(correlationId))
-                          .onPresent(pending -> failPendingForwardOnDeparture(pending, departedNode));
-                }
+                for ( var correlationId : correlationIds) {
+                Option.option(pendingForwards.remove(correlationId))
+                .onPresent(pending -> failPendingForwardOnDeparture(pending, departedNode));}
             }
 
             private void failPendingForwardOnDeparture(PendingForward pending, NodeId departedNode) {
                 log.debug("Triggering retry for request [{}] due to node {} departure",
                           pending.requestId(),
                           departedNode);
-                pending.promise()
-                       .fail(Causes.cause("Target node " + departedNode + " departed"));
+                pending.promise().fail(Causes.cause("Target node " + departedNode + " departed"));
             }
 
             // ================== Cleanup ==================
             private void removeFromNodeIndex(String correlationId, NodeId targetNode) {
                 Option.option(pendingForwardsByNode.get(targetNode))
-                      .onPresent(nodeCorrelations -> cleanupNodeCorrelation(nodeCorrelations, correlationId, targetNode));
+                .onPresent(nodeCorrelations -> cleanupNodeCorrelation(nodeCorrelations, correlationId, targetNode));
             }
 
             private void cleanupNodeCorrelation(Set<String> nodeCorrelations, String correlationId, NodeId targetNode) {
                 nodeCorrelations.remove(correlationId);
-                if (nodeCorrelations.isEmpty()) {
-                    pendingForwardsByNode.remove(targetNode, nodeCorrelations);
-                }
+                if ( nodeCorrelations.isEmpty()) {
+                pendingForwardsByNode.remove(targetNode, nodeCorrelations);}
             }
         }
         return new httpForwarder(selfNodeId,

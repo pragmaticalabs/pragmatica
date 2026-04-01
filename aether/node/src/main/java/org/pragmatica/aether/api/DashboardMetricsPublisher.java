@@ -79,51 +79,48 @@ public class DashboardMetricsPublisher {
     }
 
     public void start() {
-        if (!running.compareAndSet(false, true)) {
-            return;
-        }
+        if ( !running.compareAndSet(false, true)) {
+        return;}
         scheduledTask.set(Option.some(SharedScheduler.scheduleAtFixedRate(this::publishMetrics,
                                                                           TimeSpan.timeSpan(broadcastIntervalMs)
-                                                                                  .millis())));
+        .millis())));
         log.info("Dashboard metrics publisher started");
     }
 
     public void stop() {
-        if (!running.compareAndSet(true, false)) {
-            return;
-        }
-        scheduledTask.getAndSet(Option.none())
-                     .onPresent(task -> task.cancel(false));
+        if ( !running.compareAndSet(true, false)) {
+        return;}
+        scheduledTask.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
         log.info("Dashboard metrics publisher stopped");
     }
 
     @SuppressWarnings("JBCT-EX-01") // Infrastructure boundary: scheduled task must not propagate exceptions
     private void publishMetrics() {
-        if (DashboardWebSocketHandler.connectedClients() == 0) {
-            return;
-        }
-        try{
+        if ( DashboardWebSocketHandler.connectedClients() == 0) {
+        return;}
+        try {
             var message = buildMetricsUpdate();
             DashboardWebSocketHandler.broadcast(message);
             checkAndBroadcastAlerts();
-        } catch (Exception e) {
+        }
+
+
+
+
+        catch (Exception e) {
             log.error("Error publishing metrics", e);
         }
     }
 
     private void checkAndBroadcastAlerts() {
         var node = nodeSupplier.get();
-        var allMetrics = node.metricsCollector()
-                             .allMetrics();
-        for (var entry : allMetrics.entrySet()) {
+        var allMetrics = node.metricsCollector().allMetrics();
+        for ( var entry : allMetrics.entrySet()) {
             var nodeId = entry.getKey();
             var metrics = entry.getValue();
-            for (var metric : metrics.entrySet()) {
-                alertManager.checkThreshold(metric.getKey(),
-                                            nodeId,
-                                            metric.getValue())
-                            .onPresent(DashboardWebSocketHandler::broadcast);
-            }
+            for ( var metric : metrics.entrySet()) {
+            alertManager.checkThreshold(metric.getKey(), nodeId, metric.getValue())
+            .onPresent(DashboardWebSocketHandler::broadcast);}
         }
     }
 
@@ -131,37 +128,28 @@ public class DashboardMetricsPublisher {
     public String buildInitialState() {
         var node = nodeSupplier.get();
         var sb = new StringBuilder();
-        sb.append("{\"type\":\"INITIAL_STATE\",\"timestamp\":")
-          .append(System.currentTimeMillis())
-          .append(",\"data\":{");
+        sb.append("{\"type\":\"INITIAL_STATE\",\"timestamp\":").append(System.currentTimeMillis())
+                 .append(",\"data\":{");
         // Nodes (first node in sorted list is typically the leader in Rabia)
-        var allMetrics = node.metricsCollector()
-                             .allMetrics();
+        var allMetrics = node.metricsCollector().allMetrics();
         // Filter against current topology to exclude stale entries for dead nodes
-        var currentTopology = new HashSet<>(node.topologyManager()
-                                                .topology());
-        var sortedNodes = allMetrics.keySet()
-                                    .stream()
-                                    .filter(currentTopology::contains)
-                                    .sorted((a, b) -> a.id()
-                                                       .compareTo(b.id()))
-                                    .collect(Collectors.toList());
+        var currentTopology = new HashSet<>(node.topologyManager().topology());
+        var sortedNodes = allMetrics.keySet().stream()
+                                           .filter(currentTopology::contains)
+                                           .sorted((a, b) -> a.id().compareTo(b.id()))
+                                           .collect(Collectors.toList());
         var leaderId = sortedNodes.isEmpty()
                        ? ""
-                       : sortedNodes.get(0)
-                                    .id();
+                       : sortedNodes.get(0).id();
         var coreNodeIds = node.initialTopology();
         sb.append("\"nodes\":[");
         boolean firstNode = true;
-        for (var nodeId : sortedNodes) {
-            if (!firstNode) sb.append(",");
-            sb.append("{\"id\":\"")
-              .append(nodeId.id())
-              .append("\",");
-            sb.append("\"isLeader\":")
-              .append(nodeId.id()
-                            .equals(leaderId))
-              .append("}");
+        for ( var nodeId : sortedNodes) {
+            if ( !firstNode) sb.append(",");
+            sb.append("{\"id\":\"").append(nodeId.id())
+                     .append("\",");
+            sb.append("\"isLeader\":").append(nodeId.id().equals(leaderId))
+                     .append("}");
             firstNode = false;
         }
         sb.append("],");
@@ -169,15 +157,13 @@ public class DashboardMetricsPublisher {
         appendNodeMetrics(sb, node, allMetrics, sortedNodes, leaderId, coreNodeIds);
         sb.append(",");
         // Slices (backward compatibility - artifact names only)
-        var deployments = node.deploymentMap()
-                              .allDeployments();
+        var deployments = node.deploymentMap().allDeployments();
         sb.append("\"slices\":[");
         boolean firstSlice = true;
-        for (var deployment : deployments) {
-            if (!firstSlice) sb.append(",");
-            sb.append("\"")
-              .append(deployment.artifact())
-              .append("\"");
+        for ( var deployment : deployments) {
+            if ( !firstSlice) sb.append(",");
+            sb.append("\"").append(deployment.artifact())
+                     .append("\"");
             firstSlice = false;
         }
         sb.append("],");
@@ -185,9 +171,8 @@ public class DashboardMetricsPublisher {
         appendDeployments(sb, deployments);
         sb.append(",");
         // Thresholds
-        sb.append("\"thresholds\":")
-          .append(alertManager.thresholdsAsJson())
-          .append(",");
+        sb.append("\"thresholds\":").append(alertManager.thresholdsAsJson())
+                 .append(",");
         // Topology (static — only changes on deploy/undeploy)
         appendTopology(sb, node);
         sb.append(",");
@@ -210,8 +195,7 @@ public class DashboardMetricsPublisher {
         appendRoutes(sb, node);
         sb.append(",");
         // Current metrics snapshot
-        sb.append("\"metrics\":")
-          .append(buildMetricsData());
+        sb.append("\"metrics\":").append(buildMetricsData());
         sb.append("}}");
         return sb.toString();
     }
@@ -219,11 +203,9 @@ public class DashboardMetricsPublisher {
     /// Build periodic metrics update message.
     private String buildMetricsUpdate() {
         var sb = new StringBuilder();
-        sb.append("{\"type\":\"METRICS_UPDATE\",\"timestamp\":")
-          .append(System.currentTimeMillis());
-        sb.append(",\"data\":")
-          .append(buildMetricsData())
-          .append("}");
+        sb.append("{\"type\":\"METRICS_UPDATE\",\"timestamp\":").append(System.currentTimeMillis());
+        sb.append(",\"data\":").append(buildMetricsData())
+                 .append("}");
         return sb.toString();
     }
 
@@ -232,56 +214,45 @@ public class DashboardMetricsPublisher {
         var sb = new StringBuilder();
         sb.append("{");
         // Load metrics with role and per-node invocation data
-        var allMetrics = node.metricsCollector()
-                             .allMetrics();
+        var allMetrics = node.metricsCollector().allMetrics();
         var coreNodeIdSet = new HashSet<>(node.initialTopology());
         var perNodeInvocations = aggregateInvocationsByNode(node);
         sb.append("\"load\":{");
         boolean firstNode = true;
-        for (var entry : allMetrics.entrySet()) {
-            if (!firstNode) sb.append(",");
+        for ( var entry : allMetrics.entrySet()) {
+            if ( !firstNode) sb.append(",");
             var nodeId = entry.getKey();
             var role = coreNodeIdSet.contains(nodeId)
                        ? "CORE"
                        : "WORKER";
             var invocData = perNodeInvocations.getOrDefault(nodeId.id(), PerNodeInvocationData.EMPTY);
-            sb.append("\"")
-              .append(nodeId.id())
-              .append("\":{");
+            sb.append("\"").append(nodeId.id())
+                     .append("\":{");
             boolean firstMetric = true;
-            for (var metric : entry.getValue()
-                                   .entrySet()) {
-                if (!firstMetric) sb.append(",");
-                sb.append("\"")
-                  .append(metric.getKey())
-                  .append("\":")
-                  .append(metric.getValue());
+            for ( var metric : entry.getValue().entrySet()) {
+                if ( !firstMetric) sb.append(",");
+                sb.append("\"").append(metric.getKey())
+                         .append("\":")
+                         .append(metric.getValue());
                 firstMetric = false;
             }
-            sb.append(",\"role\":\"")
-              .append(role)
-              .append("\"");
-            sb.append(",\"rps\":")
-              .append(String.format("%.2f", invocData.rps));
-            sb.append(",\"avgLatencyMs\":")
-              .append(String.format("%.2f", invocData.avgLatencyMs));
-            sb.append(",\"successRate\":")
-              .append(String.format("%.4f", invocData.successRate));
+            sb.append(",\"role\":\"").append(role)
+                     .append("\"");
+            sb.append(",\"rps\":").append(String.format("%.2f", invocData.rps));
+            sb.append(",\"avgLatencyMs\":").append(String.format("%.2f", invocData.avgLatencyMs));
+            sb.append(",\"successRate\":").append(String.format("%.4f", invocData.successRate));
             sb.append("}");
             firstNode = false;
         }
         sb.append("},");
         // Invocation metrics (if available)
-        sb.append("\"invocations\":")
-          .append(buildInvocationMetrics())
-          .append(",");
+        sb.append("\"invocations\":").append(buildInvocationMetrics())
+                 .append(",");
         // Deployments (cluster-wide)
         appendDeployments(sb,
-                          node.deploymentMap()
-                              .allDeployments());
-        sb.append(",\"aggregates\":")
-          .append(buildAggregates())
-          .append(",");
+                          node.deploymentMap().allDeployments());
+        sb.append(",\"aggregates\":").append(buildAggregates())
+                 .append(",");
         // Topology (included so late-connecting clients get updated topology)
         appendTopology(sb, node);
         sb.append(",");
@@ -317,25 +288,24 @@ public class DashboardMetricsPublisher {
                              long totalFailure,
                              double weightedLatency,
                              long totalSamples,
-                             List<long[]> allSamples) {}
+                             List<long[]> allSamples){}
 
     private RawTotals computeRawTotals() {
         var node = nodeSupplier.get();
-        var snapshots = node.invocationMetrics()
-                            .snapshot();
+        var snapshots = node.invocationMetrics().snapshot();
         long totalInvocations = 0;
         long totalSuccess = 0;
         long totalFailure = 0;
         double weightedLatency = 0.0;
         long totalSamples = 0;
         var allSamples = new ArrayList<long[]>();
-        for (var snapshot : snapshots) {
+        for ( var snapshot : snapshots) {
             var metrics = snapshot.metrics();
             totalInvocations += metrics.count();
             totalSuccess += metrics.successCount();
             totalFailure += metrics.failureCount();
             weightedLatency += metrics.averageLatencyNs() / 1_000_000.0 * metrics.count();
-            if (metrics.latencySamples().length > 0) {
+            if ( metrics.latencySamples().length > 0) {
                 allSamples.add(metrics.latencySamples());
                 totalSamples += metrics.latencySamples().length;
             }
@@ -365,8 +335,7 @@ public class DashboardMetricsPublisher {
     }
 
     private static String formatAggregates(EmaState ema, double[] percentiles) {
-        return String.format("{\"rps\":%.2f,\"successRate\":%.4f,\"errorRate\":%.4f,\"avgLatencyMs\":%.2f,"
-                             + "\"p50\":%.2f,\"p95\":%.2f,\"p99\":%.2f}",
+        return String.format("{\"rps\":%.2f,\"successRate\":%.4f,\"errorRate\":%.4f,\"avgLatencyMs\":%.2f," + "\"p50\":%.2f,\"p95\":%.2f,\"p99\":%.2f}",
                              ema.emaRps,
                              ema.emaSuccessRate,
                              ema.emaErrorRate,
@@ -377,12 +346,11 @@ public class DashboardMetricsPublisher {
     }
 
     private double[] computePercentiles(List<long[]> allSamples, long totalSamples) {
-        if (totalSamples == 0) {
-            return new double[]{0.0, 0.0, 0.0};
-        }
+        if ( totalSamples == 0) {
+        return new double[]{0.0, 0.0, 0.0};}
         var merged = new long[(int) totalSamples];
         int offset = 0;
-        for (var samples : allSamples) {
+        for ( var samples : allSamples) {
             System.arraycopy(samples, 0, merged, offset, samples.length);
             offset += samples.length;
         }
@@ -395,49 +363,43 @@ public class DashboardMetricsPublisher {
 
     private String buildInvocationMetrics() {
         var node = nodeSupplier.get();
-        var snapshots = node.invocationMetrics()
-                            .snapshot();
-        if (snapshots.isEmpty()) {
-            return "[]";
-        }
+        var snapshots = node.invocationMetrics().snapshot();
+        if ( snapshots.isEmpty()) {
+        return "[]";}
         var sb = new StringBuilder();
         sb.append("[");
         boolean first = true;
-        for (var snapshot : snapshots) {
-            if (!first) sb.append(",");
+        for ( var snapshot : snapshots) {
+            if ( !first) sb.append(",");
             first = false;
             var metrics = snapshot.metrics();
-            sb.append("{\"artifact\":\"")
-              .append(snapshot.artifact()
-                              .asString())
-              .append("\",\"method\":\"")
-              .append(snapshot.methodName()
-                              .name())
-              .append("\",\"count\":")
-              .append(metrics.count())
-              .append(",\"successCount\":")
-              .append(metrics.successCount())
-              .append(",\"failureCount\":")
-              .append(metrics.failureCount())
-              .append(",\"avgDurationMs\":")
-              .append(String.format("%.2f",
-                                    metrics.averageLatencyNs() / 1_000_000.0))
-              .append(",\"errorRate\":")
-              .append(String.format("%.4f",
-                                    1.0 - metrics.successRate()))
-              .append(",\"slowCalls\":")
-              .append(snapshot.slowInvocations()
-                              .size())
-              .append(",\"p50\":")
-              .append(String.format("%.2f",
-                                    metrics.p50() / 1_000_000.0))
-              .append(",\"p95\":")
-              .append(String.format("%.2f",
-                                    metrics.p95() / 1_000_000.0))
-              .append(",\"p99\":")
-              .append(String.format("%.2f",
-                                    metrics.p99() / 1_000_000.0))
-              .append("}");
+            sb.append("{\"artifact\":\"").append(snapshot.artifact().asString())
+                     .append("\",\"method\":\"")
+                     .append(snapshot.methodName().name())
+                     .append("\",\"count\":")
+                     .append(metrics.count())
+                     .append(",\"successCount\":")
+                     .append(metrics.successCount())
+                     .append(",\"failureCount\":")
+                     .append(metrics.failureCount())
+                     .append(",\"avgDurationMs\":")
+                     .append(String.format("%.2f",
+                                           metrics.averageLatencyNs() / 1_000_000.0))
+                     .append(",\"errorRate\":")
+                     .append(String.format("%.4f",
+                                           1.0 - metrics.successRate()))
+                     .append(",\"slowCalls\":")
+                     .append(snapshot.slowInvocations().size())
+                     .append(",\"p50\":")
+                     .append(String.format("%.2f",
+                                           metrics.p50() / 1_000_000.0))
+                     .append(",\"p95\":")
+                     .append(String.format("%.2f",
+                                           metrics.p95() / 1_000_000.0))
+                     .append(",\"p99\":")
+                     .append(String.format("%.2f",
+                                           metrics.p99() / 1_000_000.0))
+                     .append("}");
         }
         sb.append("]");
         return sb.toString();
@@ -454,8 +416,8 @@ public class DashboardMetricsPublisher {
         var perNodeInvocations = aggregateInvocationsByNode(node);
         sb.append("\"nodeMetrics\":[");
         boolean first = true;
-        for (var nodeId : sortedNodes) {
-            if (!first) sb.append(",");
+        for ( var nodeId : sortedNodes) {
+            if ( !first) sb.append(",");
             var metrics = allMetrics.getOrDefault(nodeId, Map.of());
             var role = coreNodeIdSet.contains(nodeId)
                        ? "CORE"
@@ -482,56 +444,50 @@ public class DashboardMetricsPublisher {
         var heapMax = metrics.getOrDefault("heap.max", 0.0);
         var heapUsedMb = heapUsed / (1024 * 1024);
         var heapMaxMb = heapMax / (1024 * 1024);
-        sb.append("{\"id\":\"")
-          .append(nodeId.id())
-          .append("\",\"isLeader\":")
-          .append(nodeId.id()
-                        .equals(leaderId))
-          .append(",\"cpuUsage\":")
-          .append(String.format("%.4f", cpuUsage))
-          .append(",\"heapUsedMb\":")
-          .append(String.format("%.1f", heapUsedMb))
-          .append(",\"heapMaxMb\":")
-          .append(String.format("%.1f", heapMaxMb))
-          .append(",\"role\":\"")
-          .append(role)
-          .append("\"")
-          .append(",\"rps\":")
-          .append(String.format("%.2f", invocData.rps))
-          .append(",\"avgLatencyMs\":")
-          .append(String.format("%.2f", invocData.avgLatencyMs))
-          .append(",\"successRate\":")
-          .append(String.format("%.4f", invocData.successRate))
-          .append("}");
+        sb.append("{\"id\":\"").append(nodeId.id())
+                 .append("\",\"isLeader\":")
+                 .append(nodeId.id().equals(leaderId))
+                 .append(",\"cpuUsage\":")
+                 .append(String.format("%.4f", cpuUsage))
+                 .append(",\"heapUsedMb\":")
+                 .append(String.format("%.1f", heapUsedMb))
+                 .append(",\"heapMaxMb\":")
+                 .append(String.format("%.1f", heapMaxMb))
+                 .append(",\"role\":\"")
+                 .append(role)
+                 .append("\"")
+                 .append(",\"rps\":")
+                 .append(String.format("%.2f", invocData.rps))
+                 .append(",\"avgLatencyMs\":")
+                 .append(String.format("%.2f", invocData.avgLatencyMs))
+                 .append(",\"successRate\":")
+                 .append(String.format("%.4f", invocData.successRate))
+                 .append("}");
     }
 
     private Map<String, PerNodeInvocationData> aggregateInvocationsByNode(AetherNode node) {
         var result = new java.util.HashMap<String, PerNodeInvocationData>();
-        var deployments = node.deploymentMap()
-                              .allDeployments();
-        var snapshots = node.invocationMetrics()
-                            .snapshot();
+        var deployments = node.deploymentMap().allDeployments();
+        var snapshots = node.invocationMetrics().snapshot();
         // Map artifact names to the nodes they run on
         var artifactToNodes = new java.util.HashMap<String, Set<String>>();
-        for (var deployment : deployments) {
+        for ( var deployment : deployments) {
             var nodeIds = new HashSet<String>();
-            for (var instance : deployment.instances()) {
-                nodeIds.add(instance.nodeId());
-            }
+            for ( var instance : deployment.instances()) {
+            nodeIds.add(instance.nodeId());}
             artifactToNodes.put(deployment.artifact(), nodeIds);
         }
         // Distribute invocation metrics across nodes proportionally
-        for (var snapshot : snapshots) {
-            var artifactName = snapshot.artifact()
-                                       .asString();
+        for ( var snapshot : snapshots) {
+            var artifactName = snapshot.artifact().asString();
             var nodeIds = artifactToNodes.getOrDefault(artifactName, Set.of());
-            if (nodeIds.isEmpty()) continue;
+            if ( nodeIds.isEmpty()) continue;
             var metrics = snapshot.metrics();
             var perNodeCount = metrics.count() / (double) nodeIds.size();
             var perNodeSuccess = metrics.successCount() / (double) nodeIds.size();
             var avgLatencyMs = metrics.averageLatencyNs() / 1_000_000.0;
             var successRate = metrics.successRate();
-            for (var nid : nodeIds) {
+            for ( var nid : nodeIds) {
                 var existing = result.getOrDefault(nid, PerNodeInvocationData.EMPTY);
                 var newData = new PerNodeInvocationData(existing.totalCount + perNodeCount,
                                                         existing.totalSuccess + perNodeSuccess,
@@ -544,7 +500,7 @@ public class DashboardMetricsPublisher {
         }
         // Compute final RPS and successRate
         var finalResult = new java.util.HashMap<String, PerNodeInvocationData>();
-        for (var entry : result.entrySet()) {
+        for ( var entry : result.entrySet()) {
             var data = entry.getValue();
             var rps = data.totalCount / (broadcastIntervalMs / 1000.0);
             var sr = data.totalCount > 0
@@ -577,23 +533,19 @@ public class DashboardMetricsPublisher {
     private static void appendDeployments(StringBuilder sb, List<SliceDeploymentInfo> deployments) {
         sb.append("\"deployments\":[");
         boolean firstDeployment = true;
-        for (var deployment : deployments) {
-            if (!firstDeployment) sb.append(",");
-            sb.append("{\"artifact\":\"")
-              .append(deployment.artifact())
-              .append("\",\"state\":\"")
-              .append(deployment.aggregateState()
-                                .name())
-              .append("\",\"instances\":[");
+        for ( var deployment : deployments) {
+            if ( !firstDeployment) sb.append(",");
+            sb.append("{\"artifact\":\"").append(deployment.artifact())
+                     .append("\",\"state\":\"")
+                     .append(deployment.aggregateState().name())
+                     .append("\",\"instances\":[");
             boolean firstInstance = true;
-            for (var instance : deployment.instances()) {
-                if (!firstInstance) sb.append(",");
-                sb.append("{\"nodeId\":\"")
-                  .append(instance.nodeId())
-                  .append("\",\"state\":\"")
-                  .append(instance.state()
-                                  .name())
-                  .append("\"}");
+            for ( var instance : deployment.instances()) {
+                if ( !firstInstance) sb.append(",");
+                sb.append("{\"nodeId\":\"").append(instance.nodeId())
+                         .append("\",\"state\":\"")
+                         .append(instance.state().name())
+                         .append("\"}");
                 firstInstance = false;
             }
             sb.append("]}");
@@ -604,52 +556,43 @@ public class DashboardMetricsPublisher {
 
     @SuppressWarnings("JBCT-PAT-01")
     private void appendTopology(StringBuilder sb, AetherNode node) {
-        var loaded = node.sliceStore()
-                         .loaded();
+        var loaded = node.sliceStore().loaded();
         log.debug("appendTopology: loaded slices count={}", loaded.size());
-        var sliceTopologies = loaded.stream()
-                                    .flatMap(ls -> TopologyParser.parse(ls.slice(),
-                                                                        ls.artifact()
-                                                                          .asString())
-                                                                 .stream())
-                                    .toList();
+        var sliceTopologies = loaded.stream().flatMap(ls -> TopologyParser.parse(ls.slice(),
+                                                                                 ls.artifact().asString())
+        .stream())
+                                           .toList();
         log.debug("appendTopology: parsed topologies={}, building graph", sliceTopologies.size());
         var graph = TopologyGraph.build(sliceTopologies);
         log.debug("appendTopology: graph nodes={}, edges={}",
-                  graph.nodes()
-                       .size(),
-                  graph.edges()
-                       .size());
+                  graph.nodes().size(),
+                  graph.edges().size());
         sb.append("\"topology\":{\"nodes\":[");
         boolean firstNode = true;
-        for (var n : graph.nodes()) {
-            if (!firstNode) sb.append(",");
-            sb.append("{\"id\":\"")
-              .append(escapeJson(n.id()))
-              .append("\",\"type\":\"")
-              .append(n.type()
-                       .name())
-              .append("\",\"label\":\"")
-              .append(escapeJson(n.label()))
-              .append("\",\"sliceArtifact\":\"")
-              .append(escapeJson(n.sliceArtifact()))
-              .append("\"}");
+        for ( var n : graph.nodes()) {
+            if ( !firstNode) sb.append(",");
+            sb.append("{\"id\":\"").append(escapeJson(n.id()))
+                     .append("\",\"type\":\"")
+                     .append(n.type().name())
+                     .append("\",\"label\":\"")
+                     .append(escapeJson(n.label()))
+                     .append("\",\"sliceArtifact\":\"")
+                     .append(escapeJson(n.sliceArtifact()))
+                     .append("\"}");
             firstNode = false;
         }
         sb.append("],\"edges\":[");
         boolean firstEdge = true;
-        for (var e : graph.edges()) {
-            if (!firstEdge) sb.append(",");
-            sb.append("{\"from\":\"")
-              .append(escapeJson(e.from()))
-              .append("\",\"to\":\"")
-              .append(escapeJson(e.to()))
-              .append("\",\"style\":\"")
-              .append(e.style()
-                       .name())
-              .append("\",\"topicConfig\":\"")
-              .append(escapeJson(e.topicConfig()))
-              .append("\"}");
+        for ( var e : graph.edges()) {
+            if ( !firstEdge) sb.append(",");
+            sb.append("{\"from\":\"").append(escapeJson(e.from()))
+                     .append("\",\"to\":\"")
+                     .append(escapeJson(e.to()))
+                     .append("\",\"style\":\"")
+                     .append(e.style().name())
+                     .append("\",\"topicConfig\":\"")
+                     .append(escapeJson(e.topicConfig()))
+                     .append("\"}");
             firstEdge = false;
         }
         sb.append("]}");
@@ -657,26 +600,21 @@ public class DashboardMetricsPublisher {
 
     private void appendSchema(StringBuilder sb, AetherNode node) {
         var entries = new ArrayList<SchemaVersionValue>();
-        node.kvStore()
-            .forEach(SchemaVersionKey.class,
-                     SchemaVersionValue.class,
-                     (_, value) -> entries.add(value));
+        node.kvStore().forEach(SchemaVersionKey.class, SchemaVersionValue.class, (_, value) -> entries.add(value));
         sb.append("\"schema\":{\"datasources\":[");
         boolean first = true;
-        for (var entry : entries) {
-            if (!first) sb.append(",");
-            sb.append("{\"name\":\"")
-              .append(escapeJson(entry.datasourceName()))
-              .append("\",\"status\":\"")
-              .append(entry.status()
-                           .name())
-              .append("\",\"currentVersion\":")
-              .append(entry.currentVersion())
-              .append(",\"lastMigration\":\"")
-              .append(escapeJson(entry.lastMigration()))
-              .append("\",\"attemptCount\":")
-              .append(entry.attemptCount())
-              .append("}");
+        for ( var entry : entries) {
+            if ( !first) sb.append(",");
+            sb.append("{\"name\":\"").append(escapeJson(entry.datasourceName()))
+                     .append("\",\"status\":\"")
+                     .append(entry.status().name())
+                     .append("\",\"currentVersion\":")
+                     .append(entry.currentVersion())
+                     .append(",\"lastMigration\":\"")
+                     .append(escapeJson(entry.lastMigration()))
+                     .append("\",\"attemptCount\":")
+                     .append(entry.attemptCount())
+                     .append("}");
             first = false;
         }
         sb.append("]}");
@@ -686,29 +624,26 @@ public class DashboardMetricsPublisher {
         sb.append("\"governors\":[");
         var governors = new ArrayList<String>();
         node.kvStore()
-            .forEach(GovernorAnnouncementKey.class,
-                     GovernorAnnouncementValue.class,
-                     (key, value) -> governors.add(formatGovernor(key, value)));
+        .forEach(GovernorAnnouncementKey.class,
+                 GovernorAnnouncementValue.class,
+                 (key, value) -> governors.add(formatGovernor(key, value)));
         sb.append(String.join(",", governors));
         sb.append("]");
     }
 
     private String formatGovernor(GovernorAnnouncementKey key, GovernorAnnouncementValue value) {
         var sb = new StringBuilder();
-        sb.append("{\"governorId\":\"")
-          .append(escapeJson(value.governorId()
-                                  .id()))
-          .append("\",\"community\":\"")
-          .append(escapeJson(key.communityId()))
-          .append("\",\"memberCount\":")
-          .append(value.memberCount())
-          .append(",\"members\":[");
+        sb.append("{\"governorId\":\"").append(escapeJson(value.governorId().id()))
+                 .append("\",\"community\":\"")
+                 .append(escapeJson(key.communityId()))
+                 .append("\",\"memberCount\":")
+                 .append(value.memberCount())
+                 .append(",\"members\":[");
         boolean first = true;
-        for (var member : value.members()) {
-            if (!first) sb.append(",");
-            sb.append("\"")
-              .append(escapeJson(member.id()))
-              .append("\"");
+        for ( var member : value.members()) {
+            if ( !first) sb.append(",");
+            sb.append("\"").append(escapeJson(member.id()))
+                     .append("\"");
             first = false;
         }
         sb.append("]}");
@@ -721,107 +656,84 @@ public class DashboardMetricsPublisher {
         var connectedCount = node.connectedNodeCount();
         var coreCount = coreNodeIds.size();
         var workerCount = Math.max(0, connectedCount - coreCount);
-        sb.append("\"clusterTopology\":{\"coreCount\":")
-          .append(coreCount)
-          .append(",\"workerCount\":")
-          .append(workerCount)
-          .append(",\"coreMax\":")
-          .append(topologyConfig.coreMax())
-          .append(",\"clusterSize\":")
-          .append(topologyConfig.clusterSize())
-          .append("}");
+        sb.append("\"clusterTopology\":{\"coreCount\":").append(coreCount)
+                 .append(",\"workerCount\":")
+                 .append(workerCount)
+                 .append(",\"coreMax\":")
+                 .append(topologyConfig.coreMax())
+                 .append(",\"clusterSize\":")
+                 .append(topologyConfig.clusterSize())
+                 .append("}");
     }
 
     private void appendStrategies(StringBuilder sb, AetherNode node) {
         sb.append("\"strategies\":{");
         // Canaries
         sb.append("\"canaries\":[");
-        var canaries = node.canaryDeploymentManager()
-                           .allCanaries();
+        var canaries = node.canaryDeploymentManager().allCanaries();
         boolean first = true;
-        for (var canary : canaries) {
-            if (!first) sb.append(",");
-            sb.append("{\"canaryId\":\"")
-              .append(escapeJson(canary.canaryId()))
-              .append("\",\"artifactBase\":\"")
-              .append(escapeJson(canary.artifactBase()
-                                       .asString()))
-              .append("\",\"oldVersion\":\"")
-              .append(escapeJson(canary.oldVersion()
-                                       .toString()))
-              .append("\",\"newVersion\":\"")
-              .append(escapeJson(canary.newVersion()
-                                       .toString()))
-              .append("\",\"state\":\"")
-              .append(canary.state()
-                            .name())
-              .append("\",\"routing\":\"")
-              .append(escapeJson(canary.routing()
-                                       .toString()))
-              .append("\",\"currentStage\":")
-              .append(canary.currentStageIndex() + 1)
-              .append(",\"totalStages\":")
-              .append(canary.stages()
-                            .size())
-              .append(",\"newInstances\":")
-              .append(canary.newInstances())
-              .append("}");
+        for ( var canary : canaries) {
+            if ( !first) sb.append(",");
+            sb.append("{\"canaryId\":\"").append(escapeJson(canary.canaryId()))
+                     .append("\",\"artifactBase\":\"")
+                     .append(escapeJson(canary.artifactBase().asString()))
+                     .append("\",\"oldVersion\":\"")
+                     .append(escapeJson(canary.oldVersion().toString()))
+                     .append("\",\"newVersion\":\"")
+                     .append(escapeJson(canary.newVersion().toString()))
+                     .append("\",\"state\":\"")
+                     .append(canary.state().name())
+                     .append("\",\"routing\":\"")
+                     .append(escapeJson(canary.routing().toString()))
+                     .append("\",\"currentStage\":")
+                     .append(canary.currentStageIndex() + 1)
+                     .append(",\"totalStages\":")
+                     .append(canary.stages().size())
+                     .append(",\"newInstances\":")
+                     .append(canary.newInstances())
+                     .append("}");
             first = false;
         }
         sb.append("],");
         // Blue-green
         sb.append("\"blueGreen\":[");
-        var blueGreenList = node.blueGreenDeploymentManager()
-                                .allDeployments();
+        var blueGreenList = node.blueGreenDeploymentManager().allDeployments();
         first = true;
-        for (var bg : blueGreenList) {
-            if (!first) sb.append(",");
-            sb.append("{\"deploymentId\":\"")
-              .append(escapeJson(bg.deploymentId()))
-              .append("\",\"artifactBase\":\"")
-              .append(escapeJson(bg.artifactBase()
-                                   .asString()))
-              .append("\",\"blueVersion\":\"")
-              .append(escapeJson(bg.blueVersion()
-                                   .toString()))
-              .append("\",\"greenVersion\":\"")
-              .append(escapeJson(bg.greenVersion()
-                                   .toString()))
-              .append("\",\"state\":\"")
-              .append(bg.state()
-                        .name())
-              .append("\",\"activeEnvironment\":\"")
-              .append(bg.activeEnvironment()
-                        .name())
-              .append("\",\"routing\":\"")
-              .append(escapeJson(bg.routing()
-                                   .toString()))
-              .append("\"}");
+        for ( var bg : blueGreenList) {
+            if ( !first) sb.append(",");
+            sb.append("{\"deploymentId\":\"").append(escapeJson(bg.deploymentId()))
+                     .append("\",\"artifactBase\":\"")
+                     .append(escapeJson(bg.artifactBase().asString()))
+                     .append("\",\"blueVersion\":\"")
+                     .append(escapeJson(bg.blueVersion().toString()))
+                     .append("\",\"greenVersion\":\"")
+                     .append(escapeJson(bg.greenVersion().toString()))
+                     .append("\",\"state\":\"")
+                     .append(bg.state().name())
+                     .append("\",\"activeEnvironment\":\"")
+                     .append(bg.activeEnvironment().name())
+                     .append("\",\"routing\":\"")
+                     .append(escapeJson(bg.routing().toString()))
+                     .append("\"}");
             first = false;
         }
         sb.append("],");
         // A/B tests
         sb.append("\"abTests\":[");
-        var abTests = node.abTestManager()
-                          .allTests();
+        var abTests = node.abTestManager().allTests();
         first = true;
-        for (var test : abTests) {
-            if (!first) sb.append(",");
-            sb.append("{\"testId\":\"")
-              .append(escapeJson(test.testId()))
-              .append("\",\"artifactBase\":\"")
-              .append(escapeJson(test.artifactBase()
-                                     .asString()))
-              .append("\",\"baselineVersion\":\"")
-              .append(escapeJson(test.baselineVersion()
-                                     .toString()))
-              .append("\",\"state\":\"")
-              .append(test.state()
-                          .name())
-              .append("\",\"variantCount\":")
-              .append(test.variantVersions()
-                          .size())
-              .append("}");
+        for ( var test : abTests) {
+            if ( !first) sb.append(",");
+            sb.append("{\"testId\":\"").append(escapeJson(test.testId()))
+                     .append("\",\"artifactBase\":\"")
+                     .append(escapeJson(test.artifactBase().asString()))
+                     .append("\",\"baselineVersion\":\"")
+                     .append(escapeJson(test.baselineVersion().toString()))
+                     .append("\",\"state\":\"")
+                     .append(test.state().name())
+                     .append("\",\"variantCount\":")
+                     .append(test.variantVersions().size())
+                     .append("}");
             first = false;
         }
         sb.append("]}");
@@ -829,20 +741,18 @@ public class DashboardMetricsPublisher {
 
     private void appendStreams(StringBuilder sb, AetherNode node) {
         sb.append("\"streams\":[");
-        var streams = node.streamPartitionManager()
-                          .listStreams();
+        var streams = node.streamPartitionManager().listStreams();
         boolean first = true;
-        for (var stream : streams) {
-            if (!first) sb.append(",");
-            sb.append("{\"name\":\"")
-              .append(escapeJson(stream.name()))
-              .append("\",\"partitions\":")
-              .append(stream.partitions())
-              .append(",\"totalEvents\":")
-              .append(stream.totalEvents())
-              .append(",\"totalBytes\":")
-              .append(stream.totalBytes())
-              .append("}");
+        for ( var stream : streams) {
+            if ( !first) sb.append(",");
+            sb.append("{\"name\":\"").append(escapeJson(stream.name()))
+                     .append("\",\"partitions\":")
+                     .append(stream.partitions())
+                     .append(",\"totalEvents\":")
+                     .append(stream.totalEvents())
+                     .append(",\"totalBytes\":")
+                     .append(stream.totalBytes())
+                     .append("}");
             first = false;
         }
         sb.append("]");
@@ -850,24 +760,21 @@ public class DashboardMetricsPublisher {
 
     private void appendRoutes(StringBuilder sb, AetherNode node) {
         sb.append("\"routes\":[");
-        var routes = node.httpRouteRegistry()
-                         .allRoutes();
+        var routes = node.httpRouteRegistry().allRoutes();
         boolean first = true;
-        for (var route : routes) {
-            if (!first) sb.append(",");
-            sb.append("{\"method\":\"")
-              .append(escapeJson(route.httpMethod()))
-              .append("\",\"path\":\"")
-              .append(escapeJson(route.pathPrefix()))
-              .append("\",\"security\":\"")
-              .append(escapeJson(route.security()))
-              .append("\",\"nodes\":[");
+        for ( var route : routes) {
+            if ( !first) sb.append(",");
+            sb.append("{\"method\":\"").append(escapeJson(route.httpMethod()))
+                     .append("\",\"path\":\"")
+                     .append(escapeJson(route.pathPrefix()))
+                     .append("\",\"security\":\"")
+                     .append(escapeJson(route.security()))
+                     .append("\",\"nodes\":[");
             boolean firstNode = true;
-            for (var nodeId : route.nodes()) {
-                if (!firstNode) sb.append(",");
-                sb.append("\"")
-                  .append(escapeJson(nodeId.id()))
-                  .append("\"");
+            for ( var nodeId : route.nodes()) {
+                if ( !firstNode) sb.append(",");
+                sb.append("\"").append(escapeJson(nodeId.id()))
+                         .append("\"");
                 firstNode = false;
             }
             sb.append("]}");
@@ -877,11 +784,10 @@ public class DashboardMetricsPublisher {
     }
 
     private static String escapeJson(String value) {
-        return value.replace("\\", "\\\\")
-                    .replace("\"", "\\\"")
-                    .replace("\n", "\\n")
-                    .replace("\r", "\\r")
-                    .replace("\t", "\\t");
+        return value.replace("\\", "\\\\").replace("\"", "\\\"")
+                            .replace("\n", "\\n")
+                            .replace("\r", "\\r")
+                            .replace("\t", "\\t");
     }
 
     /// Handle threshold configuration from client.
@@ -893,7 +799,7 @@ public class DashboardMetricsPublisher {
         var metricMatch = metricPattern.matcher(message);
         var warningMatch = warningPattern.matcher(message);
         var criticalMatch = criticalPattern.matcher(message);
-        if (metricMatch.find() && warningMatch.find() && criticalMatch.find()) {
+        if ( metricMatch.find() && warningMatch.find() && criticalMatch.find()) {
             var metric = metricMatch.group(1);
             var warning = Double.parseDouble(warningMatch.group(1));
             var critical = Double.parseDouble(criticalMatch.group(1));
@@ -908,40 +814,32 @@ public class DashboardMetricsPublisher {
         var rangePattern = Pattern.compile("\"timeRange\"\\s*:\\s*\"([^\"]+)\"");
         var rangeMatch = rangePattern.matcher(message);
         var range = "1h";
-        if (rangeMatch.find()) {
-            range = rangeMatch.group(1);
-        }
+        if ( rangeMatch.find()) {
+        range = rangeMatch.group(1);}
         var node = nodeSupplier.get();
-        var historicalData = node.metricsCollector()
-                                 .historicalMetrics();
+        var historicalData = node.metricsCollector().historicalMetrics();
         var cutoff = System.currentTimeMillis() - parseTimeRange(range);
         var sb = new StringBuilder();
-        sb.append("{\"type\":\"HISTORY\",\"timeRange\":\"")
-          .append(range)
-          .append("\",\"nodes\":{");
+        sb.append("{\"type\":\"HISTORY\",\"timeRange\":\"").append(range)
+                 .append("\",\"nodes\":{");
         // Build node-centric history: {"nodes": {"node-1": [{"timestamp": ..., "metrics": {...}}, ...]}}
         boolean firstNode = true;
-        for (var nodeEntry : historicalData.entrySet()) {
-            if (!firstNode) sb.append(",");
-            sb.append("\"")
-              .append(nodeEntry.getKey()
-                               .id())
-              .append("\":[");
+        for ( var nodeEntry : historicalData.entrySet()) {
+            if ( !firstNode) sb.append(",");
+            sb.append("\"").append(nodeEntry.getKey().id())
+                     .append("\":[");
             boolean firstSnapshot = true;
-            for (var snapshot : nodeEntry.getValue()) {
-                if (snapshot.timestamp() < cutoff) continue;
-                if (!firstSnapshot) sb.append(",");
-                sb.append("{\"timestamp\":")
-                  .append(snapshot.timestamp())
-                  .append(",\"metrics\":{");
+            for ( var snapshot : nodeEntry.getValue()) {
+                if ( snapshot.timestamp() < cutoff) continue;
+                if ( !firstSnapshot) sb.append(",");
+                sb.append("{\"timestamp\":").append(snapshot.timestamp())
+                         .append(",\"metrics\":{");
                 boolean firstMetric = true;
-                for (var metric : snapshot.metrics()
-                                          .entrySet()) {
-                    if (!firstMetric) sb.append(",");
-                    sb.append("\"")
-                      .append(metric.getKey())
-                      .append("\":")
-                      .append(metric.getValue());
+                for ( var metric : snapshot.metrics().entrySet()) {
+                    if ( !firstMetric) sb.append(",");
+                    sb.append("\"").append(metric.getKey())
+                             .append("\":")
+                             .append(metric.getValue());
                     firstMetric = false;
                 }
                 sb.append("}}");
@@ -955,12 +853,6 @@ public class DashboardMetricsPublisher {
     }
 
     private long parseTimeRange(String range) {
-        return switch (range) {
-            case "5m" -> 5 * 60 * 1000L;
-            case "15m" -> 15 * 60 * 1000L;
-            case "1h" -> 60 * 60 * 1000L;
-            case "2h" -> 2 * 60 * 60 * 1000L;
-            default -> 60 * 60 * 1000L;
-        };
+        return switch (range) {case "5m" -> 5 * 60 * 1000L; case "15m" -> 15 * 60 * 1000L; case "1h" -> 60 * 60 * 1000L; case "2h" -> 2 * 60 * 60 * 1000L; default -> 60 * 60 * 1000L;};
     }
 }

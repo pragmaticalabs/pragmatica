@@ -26,10 +26,9 @@ public interface RepositoryFactory {
     /// @param config Slice configuration containing repository types
     /// @return List of Repository implementations in configuration order
     default List<Repository> createAll(SliceConfig config) {
-        return config.repositories()
-                     .stream()
-                     .map(this::create)
-                     .toList();
+        return config.repositories().stream()
+                                  .map(this::create)
+                                  .toList();
     }
 
     /// Create a RepositoryFactory with the given ArtifactStore for BUILTIN repositories.
@@ -37,10 +36,7 @@ public interface RepositoryFactory {
     /// @param artifactStore Store for built-in artifact resolution
     /// @return RepositoryFactory instance
     static RepositoryFactory repositoryFactory(ArtifactStore artifactStore) {
-        return type -> switch (type) {
-            case RepositoryType.Local _ -> localRepository();
-            case RepositoryType.Builtin _ -> BuiltinRepository.builtinRepository(artifactStore);
-            case RepositoryType.Remote remote -> RemoteRepository.remoteRepository(remote.id(), remote.url());
-        };
+        return type -> switch (type) {case RepositoryType.Local _ -> localRepository();case RepositoryType.Builtin _ -> BuiltinRepository.builtinRepository(artifactStore);case RepositoryType.Remote remote -> RemoteRepository.remoteRepository(remote.id(),
+                                                                                                                                                                                                                                                  remote.url());};
     }
 }

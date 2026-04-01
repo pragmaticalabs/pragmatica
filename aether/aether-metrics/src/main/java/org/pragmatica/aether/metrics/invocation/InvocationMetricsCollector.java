@@ -139,12 +139,10 @@ public final class InvocationMetricsCollector {
     ///
     /// @return Total count of currently active invocations
     public long totalActiveInvocations() {
-        return metricsMap.values()
-                         .stream()
-                         .flatMap(methods -> methods.values()
-                                                    .stream())
-                         .mapToLong(m -> m.metrics.activeInvocations())
-                         .sum();
+        return metricsMap.values().stream()
+                                .flatMap(methods -> methods.values().stream())
+                                .mapToLong(m -> m.metrics.activeInvocations())
+                                .sum();
     }
 
     /// Convenience method for recording failure.
@@ -202,9 +200,8 @@ public final class InvocationMetricsCollector {
                                int requestBytes,
                                int responseBytes,
                                Option<String> errorType) {
-        if (!thresholdStrategy.isSlow(method, durationNs)) {
-            return;
-        }
+        if ( !thresholdStrategy.isSlow(method, durationNs)) {
+        return;}
         var slow = success
                    ? SlowInvocation.slowInvocation(method, System.nanoTime(), durationNs, requestBytes, responseBytes)
                    : SlowInvocation.slowInvocation(method,
@@ -227,9 +224,8 @@ public final class InvocationMetricsCollector {
     }
 
     private MethodMetricsWithSlowCalls getOrCreateMetrics(Artifact artifact, MethodName method) {
-        return metricsMap.computeIfAbsent(artifact,
-                                          _ -> new ConcurrentHashMap<>())
-                         .computeIfAbsent(method, MethodMetricsWithSlowCalls::new);
+        return metricsMap.computeIfAbsent(artifact, _ -> new ConcurrentHashMap<>())
+        .computeIfAbsent(method, MethodMetricsWithSlowCalls::new);
     }
 
     /// Combines MethodMetrics with a ring buffer for slow invocations.
@@ -247,37 +243,35 @@ public final class InvocationMetricsCollector {
 
         void addSlowInvocation(SlowInvocation slow) {
             lock.lock();
-            try{
+            try {
                 slowBuffer[writeIndex % MAX_SLOW_INVOCATIONS_PER_METHOD] = slow;
                 writeIndex++;
-                if (count < MAX_SLOW_INVOCATIONS_PER_METHOD) {
-                    count++;
-                }
-            } finally{
+                if ( count < MAX_SLOW_INVOCATIONS_PER_METHOD) {
+                count++;}
+            } finally {
                 lock.unlock();
             }
         }
 
         List<SlowInvocation> drainSlowInvocations() {
             lock.lock();
-            try{
+            try {
                 var result = copySlowInvocationsUnlocked();
                 writeIndex = 0;
                 count = 0;
-                for (int i = 0; i < MAX_SLOW_INVOCATIONS_PER_METHOD; i++) {
-                    slowBuffer[i] = null;
-                }
+                for ( int i = 0; i < MAX_SLOW_INVOCATIONS_PER_METHOD; i++) {
+                slowBuffer[i] = null;}
                 return result;
-            } finally{
+            } finally {
                 lock.unlock();
             }
         }
 
         List<SlowInvocation> copySlowInvocations() {
             lock.lock();
-            try{
+            try {
                 return copySlowInvocationsUnlocked();
-            } finally{
+            } finally {
                 lock.unlock();
             }
         }
@@ -288,12 +282,11 @@ public final class InvocationMetricsCollector {
             var startIdx = writeIndex >= MAX_SLOW_INVOCATIONS_PER_METHOD
                            ? writeIndex % MAX_SLOW_INVOCATIONS_PER_METHOD
                            : 0;
-            for (int i = 0; i < currentCount; i++) {
+            for ( int i = 0; i < currentCount; i++) {
                 var idx = (startIdx + i) % MAX_SLOW_INVOCATIONS_PER_METHOD;
                 var slow = slowBuffer[idx];
-                if (slow != null) {
-                    result.add(slow);
-                }
+                if ( slow != null) {
+                result.add(slow);}
             }
             return result;
         }

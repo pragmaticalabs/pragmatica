@@ -34,17 +34,15 @@ public final class NetworkMetricsAggregator {
 
     /// Get aggregated snapshot from all registered handlers.
     public NetworkMetrics snapshot() {
-        if (handlers.isEmpty()) {
-            return NetworkMetrics.EMPTY;
-        }
+        if ( handlers.isEmpty()) {
+        return NetworkMetrics.EMPTY;}
         return aggregateHandlers(false);
     }
 
     /// Get aggregated snapshot and reset all handlers.
     public NetworkMetrics snapshotAndReset() {
-        if (handlers.isEmpty()) {
-            return NetworkMetrics.EMPTY;
-        }
+        if ( handlers.isEmpty()) {
+        return NetworkMetrics.EMPTY;}
         return aggregateHandlers(true);
     }
 
@@ -56,7 +54,7 @@ public final class NetworkMetricsAggregator {
         int activeConnections = 0;
         int backpressureEvents = 0;
         long lastBackpressure = 0;
-        for (NetworkMetricsHandler handler : handlers) {
+        for ( NetworkMetricsHandler handler : handlers) {
             var metrics = reset
                           ? handler.snapshotAndReset()
                           : handler.snapshot();

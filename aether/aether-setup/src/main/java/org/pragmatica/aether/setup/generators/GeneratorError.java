@@ -5,15 +5,13 @@ import org.pragmatica.lang.Cause;
 /// Errors that can occur during artifact generation.
 public sealed interface GeneratorError extends Cause {
     record IoError(String details) implements GeneratorError {
-        @Override
-        public String message() {
+        @Override public String message() {
             return "I/O error during generation: " + details;
         }
     }
 
     record UnsupportedEnvironment(String environment) implements GeneratorError {
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Unsupported environment for this generator: " + environment;
         }
     }
@@ -27,8 +25,7 @@ public sealed interface GeneratorError extends Cause {
     }
 
     record unused() implements GeneratorError {
-        @Override
-        public String message() {
+        @Override public String message() {
             return "";
         }
     }

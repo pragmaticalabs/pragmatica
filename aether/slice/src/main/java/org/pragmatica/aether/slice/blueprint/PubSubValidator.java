@@ -22,31 +22,25 @@ public sealed interface PubSubValidator {
     /// @return success with the input topologies if valid, or failure with orphan topic details
     static Result<List<SliceTopology>> validate(List<SliceTopology> topologies) {
         var orphans = findOrphanPublishers(topologies);
-        if (orphans.isEmpty()) {
-            return success(topologies);
-        }
-        return ExpanderError.OrphanPublishers.orphanPublishers(orphans)
-                            .result();
+        if ( orphans.isEmpty()) {
+        return success(topologies);}
+        return ExpanderError.OrphanPublishers.orphanPublishers(orphans).result();
     }
 
     private static List<String> findOrphanPublishers(List<SliceTopology> topologies) {
         var subscribedConfigs = collectSubscriberConfigs(topologies);
-        return topologies.stream()
-                         .flatMap(topology -> topology.publishes()
-                                                      .stream()
-                                                      .map(SliceTopology.TopicPub::config))
-                         .filter(config -> !subscribedConfigs.contains(config))
-                         .distinct()
-                         .toList();
+        return topologies.stream().flatMap(topology -> topology.publishes().stream()
+                                                                         .map(SliceTopology.TopicPub::config))
+                                .filter(config -> !subscribedConfigs.contains(config))
+                                .distinct()
+                                .toList();
     }
 
     private static Set<String> collectSubscriberConfigs(List<SliceTopology> topologies) {
-        return topologies.stream()
-                         .flatMap(topology -> topology.subscribes()
-                                                      .stream()
-                                                      .map(SliceTopology.TopicSub::config))
-                         .collect(Collectors.toUnmodifiableSet());
+        return topologies.stream().flatMap(topology -> topology.subscribes().stream()
+                                                                          .map(SliceTopology.TopicSub::config))
+                                .collect(Collectors.toUnmodifiableSet());
     }
 
-    record unused() implements PubSubValidator {}
+    record unused() implements PubSubValidator{}
 }

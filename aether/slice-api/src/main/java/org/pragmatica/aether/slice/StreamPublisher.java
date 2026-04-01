@@ -21,7 +21,6 @@ import org.pragmatica.lang.Unit;
 ///
 /// static OrderService orderService(@OrderStream StreamPublisher<OrderEvent> stream) { ... }
 /// }```
-@FunctionalInterface
-public interface StreamPublisher<T> {
+@FunctionalInterface public interface StreamPublisher<T> {
     Promise<Unit> publish(T event);
 }

@@ -22,10 +22,10 @@ import static org.pragmatica.lang.Result.success;
 /// Provides compute capabilities backed by the AWS EC2 API.
 /// Optionally provides ELBv2 load balancer management and tag-based discovery when configured.
 /// Always provides AWS Secrets Manager-based secrets resolution.
-public record AwsEnvironmentIntegration(AwsComputeProvider computeProvider,
-                                        Option<LoadBalancerProvider> loadBalancerProvider,
-                                        Option<DiscoveryProvider> discoveryProvider,
-                                        Option<SecretsProvider> secretsProvider) implements EnvironmentIntegration {
+public record AwsEnvironmentIntegration( AwsComputeProvider computeProvider,
+                                         Option<LoadBalancerProvider> loadBalancerProvider,
+                                         Option<DiscoveryProvider> discoveryProvider,
+                                         Option<SecretsProvider> secretsProvider) implements EnvironmentIntegration {
     /// Factory method for creating an AwsEnvironmentIntegration from configuration.
     public static Result<AwsEnvironmentIntegration> awsEnvironmentIntegration(AwsEnvironmentConfig config) {
         var client = AwsClient.awsClient(config.awsConfig());
@@ -40,15 +40,13 @@ public record AwsEnvironmentIntegration(AwsComputeProvider computeProvider,
         var discovery = resolveDiscoveryProvider(client, config);
         var secrets = resolveSecretsProvider(client);
         return Result.all(compute, lbProvider)
-                     .map((cp, lb) -> new AwsEnvironmentIntegration(cp, lb, discovery, secrets));
+        .map((cp, lb) -> new AwsEnvironmentIntegration(cp, lb, discovery, secrets));
     }
 
     // --- Leaf: resolve optional load balancer provider ---
     private static Result<Option<LoadBalancerProvider>> resolveLbProvider(AwsClient client,
                                                                           AwsEnvironmentConfig config) {
-        return config.loadBalancer()
-                     .fold(() -> success(Option.empty()),
-                           lbConfig -> toLbOption(client, lbConfig));
+        return config.loadBalancer().fold(() -> success(Option.empty()), lbConfig -> toLbOption(client, lbConfig));
     }
 
     // --- Leaf: create optional LB provider from config ---
@@ -65,34 +63,28 @@ public record AwsEnvironmentIntegration(AwsComputeProvider computeProvider,
     // --- Leaf: resolve optional discovery provider based on clusterName ---
     private static Option<DiscoveryProvider> resolveDiscoveryProvider(AwsClient client,
                                                                       AwsEnvironmentConfig config) {
-        return config.clusterName()
-                     .map(name -> awsDiscoveryProvider(client, config));
+        return config.clusterName().map(name -> awsDiscoveryProvider(client, config));
     }
 
     // --- Leaf: resolve secrets provider (AWS Secrets Manager with TTL cache) ---
     private static Option<SecretsProvider> resolveSecretsProvider(AwsClient client) {
         return some(CachingSecretsProvider.cachingSecretsProvider(awsSecretsProvider(client).unwrap(),
-                                                                  TimeSpan.timeSpan(5)
-                                                                          .minutes()));
+                                                                  TimeSpan.timeSpan(5).minutes()));
     }
 
-    @Override
-    public Option<ComputeProvider> compute() {
+    @Override public Option<ComputeProvider> compute() {
         return some(computeProvider);
     }
 
-    @Override
-    public Option<SecretsProvider> secrets() {
+    @Override public Option<SecretsProvider> secrets() {
         return secretsProvider;
     }
 
-    @Override
-    public Option<LoadBalancerProvider> loadBalancer() {
+    @Override public Option<LoadBalancerProvider> loadBalancer() {
         return loadBalancerProvider;
     }
 
-    @Override
-    public Option<DiscoveryProvider> discovery() {
+    @Override public Option<DiscoveryProvider> discovery() {
         return discoveryProvider;
     }
 }

@@ -6,20 +6,20 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Centralized timeout configuration for all Aether subsystems.
 /// All duration fields use TimeSpan; TOML values use human-readable strings ("5s", "500ms").
-public record TimeoutsConfig(InvocationTimeouts invocation,
-                             ForwardingTimeouts forwarding,
-                             DeploymentTimeouts deployment,
-                             RollingUpdateTimeouts rollingUpdate,
-                             ClusterTimeouts cluster,
-                             ConsensusTimeouts consensus,
-                             ElectionTimeouts election,
-                             SwimTimeouts swim,
-                             ObservabilityTimeouts observability,
-                             DhtTimeouts dht,
-                             WorkerTimeouts worker,
-                             SecurityTimeouts security,
-                             RepositoryTimeouts repository,
-                             ScalingTimeouts scaling) {
+public record TimeoutsConfig( InvocationTimeouts invocation,
+                              ForwardingTimeouts forwarding,
+                              DeploymentTimeouts deployment,
+                              RollingUpdateTimeouts rollingUpdate,
+                              ClusterTimeouts cluster,
+                              ConsensusTimeouts consensus,
+                              ElectionTimeouts election,
+                              SwimTimeouts swim,
+                              ObservabilityTimeouts observability,
+                              DhtTimeouts dht,
+                              WorkerTimeouts worker,
+                              SecurityTimeouts security,
+                              RepositoryTimeouts repository,
+                              ScalingTimeouts scaling) {
     public static TimeoutsConfig timeoutsConfig() {
         return new TimeoutsConfig(InvocationTimeouts.invocationTimeouts(),
                                   ForwardingTimeouts.forwardingTimeouts(),

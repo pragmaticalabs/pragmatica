@@ -14,7 +14,6 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
-
 import tools.jackson.databind.JsonNode;
 
 /// Applies a cluster configuration file to the active cluster.
@@ -22,8 +21,7 @@ import tools.jackson.databind.JsonNode;
 /// Parses the config, computes a diff against the stored config, and either
 /// prints planned changes (dry-run) or executes them.
 @Command(name = "apply", description = "Apply cluster configuration changes")
-@SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"})
-class ClusterApplyCommand implements Callable<Integer> {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterApplyCommand implements Callable<Integer> {
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
     @Parameters(index = "0", description = "Path to aether-cluster.toml config file")
@@ -35,13 +33,11 @@ class ClusterApplyCommand implements Callable<Integer> {
     @Option(names = "--yes", description = "Skip confirmation prompt")
     private boolean skipConfirmation;
 
-    @CommandLine.ParentCommand
-    private ClusterCommand parent;
+    @CommandLine.ParentCommand private ClusterCommand parent;
 
-    @Override
-    public Integer call() {
+    @Override public Integer call() {
         return readConfigFile().flatMap(this::executeApply)
-                               .fold(ClusterApplyCommand::onFailure, v -> v);
+                             .fold(ClusterApplyCommand::onFailure, v -> v);
     }
 
     private Result<String> readConfigFile() {
@@ -53,19 +49,23 @@ class ClusterApplyCommand implements Callable<Integer> {
     }
 
     private Result<Long> fetchCurrentVersion() {
-        return ClusterHttpClient.fetchFromCluster("/api/cluster/config")
-                                .flatMap(MAPPER::readTree)
-                                .map(node -> node.path("configVersion").asLong(0));
+        return ClusterHttpClient.fetchFromCluster("/api/cluster/config").flatMap(MAPPER::readTree)
+                                                 .map(node -> node.path("configVersion").asLong(0));
     }
 
     private Result<Integer> sendApplyRequest(String tomlContent, long expectedVersion) {
-        var jsonBody = buildApplyJson(tomlContent, dryRun ? 0 : expectedVersion);
-        return ClusterHttpClient.postToCluster("/api/cluster/config", jsonBody)
-                                .map(this::printResult);
+        var jsonBody = buildApplyJson(tomlContent, dryRun
+                                                  ? 0
+                                                  : expectedVersion);
+        return ClusterHttpClient.postToCluster("/api/cluster/config", jsonBody).map(this::printResult);
     }
 
     private int printResult(String json) {
-        return OutputFormatter.printAction(json, parent.outputOptions(), dryRun ? "Dry-run complete." : "Applied successfully.");
+        return OutputFormatter.printAction(json,
+                                           parent.outputOptions(),
+                                           dryRun
+                                           ? "Dry-run complete."
+                                           : "Applied successfully.");
     }
 
     private static String buildApplyJson(String tomlContent, long expectedVersion) {
@@ -74,11 +74,10 @@ class ClusterApplyCommand implements Callable<Integer> {
     }
 
     private static String escapeJsonString(String value) {
-        return value.replace("\\", "\\\\")
-                    .replace("\"", "\\\"")
-                    .replace("\n", "\\n")
-                    .replace("\r", "\\r")
-                    .replace("\t", "\\t");
+        return value.replace("\\", "\\\\").replace("\"", "\\\"")
+                            .replace("\n", "\\n")
+                            .replace("\r", "\\r")
+                            .replace("\t", "\\t");
     }
 
     private static int onFailure(Cause cause) {

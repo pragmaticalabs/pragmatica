@@ -23,7 +23,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 ///   --cluster-port=<port>   Cluster communication port (default: 7000)
 ///   --peers=<host:port,...>  Comma-separated list of cluster node addresses (required)
 @SuppressWarnings("JBCT-RET-01")
-public record Main(String[] args) {
+public record Main( String[] args) {
     private static final Logger log = LoggerFactory.getLogger(Main.class);
     private static final int DEFAULT_HTTP_PORT = 8080;
     private static final int DEFAULT_CLUSTER_PORT = 7000;
@@ -38,17 +38,13 @@ public record Main(String[] args) {
         var clusterPort = parseIntOption("--cluster-port=", "LB_CLUSTER_PORT").or(DEFAULT_CLUSTER_PORT);
         var nodeId = parseNodeId();
         var peers = parsePeers();
-
-        if (peers.isEmpty()) {
+        if ( peers.isEmpty()) {
             log.error("No peers specified. Use --peers=host1:port1,host2:port2 or set PEERS env var");
             System.exit(1);
         }
-
         var selfInfo = NodeInfo.nodeInfo(nodeId, nodeAddress("0.0.0.0", clusterPort).unwrap(), NodeRole.PASSIVE);
         var config = PassiveLBConfig.passiveLBConfig(httpPort, selfInfo, peers, peers.size());
-
         logStartupInfo(httpPort, clusterPort, nodeId, peers);
-
         var lb = AetherPassiveLB.aetherPassiveLB(config);
         registerShutdownHook(lb);
         startAndWait(lb);
@@ -56,56 +52,47 @@ public record Main(String[] args) {
 
     private NodeId parseNodeId() {
         return findArg("--node-id=").orElse(findEnv("LB_NODE_ID"))
-                   .flatMap(id -> NodeId.nodeId(id)
-                                        .option())
-                   .or(() -> NodeId.nodeId(DEFAULT_NODE_ID)
-                                   .unwrap());
+                      .flatMap(id -> NodeId.nodeId(id).option())
+                      .or(() -> NodeId.nodeId(DEFAULT_NODE_ID).unwrap());
     }
 
     private List<NodeInfo> parsePeers() {
         var peersStr = findArg("--peers=").orElse(findEnv("PEERS"))
-                           .or("");
-
-        if (peersStr.isBlank()) {
-            return List.of();
-        }
-
-        return Arrays.stream(peersStr.split(","))
-                     .map(String::trim)
-                     .filter(s -> !s.isEmpty())
-                     .map(this::parsePeerAddress)
-                     .flatMap(Option::stream)
-                     .toList();
+                              .or("");
+        if ( peersStr.isBlank()) {
+        return List.of();}
+        return Arrays.stream(peersStr.split(",")).map(String::trim)
+                            .filter(s -> !s.isEmpty())
+                            .map(this::parsePeerAddress)
+                            .flatMap(Option::stream)
+                            .toList();
     }
 
     private Option<NodeInfo> parsePeerAddress(String hostPort) {
         var parts = hostPort.split(":");
-
-        if (parts.length != 2) {
+        if ( parts.length != 2) {
             log.warn("Invalid peer address (expected host:port): {}", hostPort);
             return Option.none();
         }
-
-        return nodeAddress(parts[0], Integer.parseInt(parts[1]))
-                   .map(addr -> NodeInfo.nodeInfo(NodeId.randomNodeId(), addr))
-                   .option();
+        return nodeAddress(parts[0],
+                           Integer.parseInt(parts[1])).map(addr -> NodeInfo.nodeInfo(NodeId.randomNodeId(),
+                                                                                     addr))
+                          .option();
     }
 
     private Option<Integer> parseIntOption(String argPrefix, String envName) {
         return findArg(argPrefix).map(Integer::parseInt)
-                   .orElse(findEnv(envName).map(Integer::parseInt));
+                      .orElse(findEnv(envName).map(Integer::parseInt));
     }
 
     private Option<String> findArg(String prefix) {
-        return Option.from(Arrays.stream(args)
-                                 .filter(a -> a.startsWith(prefix))
-                                 .map(a -> a.substring(prefix.length()))
-                                 .findFirst());
+        return Option.from(Arrays.stream(args).filter(a -> a.startsWith(prefix))
+                                        .map(a -> a.substring(prefix.length()))
+                                        .findFirst());
     }
 
     private static Option<String> findEnv(String name) {
-        return Option.option(System.getenv(name))
-                     .filter(s -> !s.isBlank());
+        return Option.option(System.getenv(name)).filter(s -> !s.isBlank());
     }
 
     private static void logStartupInfo(int httpPort, int clusterPort, NodeId nodeId, List<NodeInfo> peers) {
@@ -117,22 +104,20 @@ public record Main(String[] args) {
     }
 
     private void registerShutdownHook(AetherPassiveLB lb) {
-        Runtime.getRuntime()
-               .addShutdownHook(new Thread(() -> shutdownLB(lb)));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> shutdownLB(lb)));
     }
 
     private static void shutdownLB(AetherPassiveLB lb) {
         log.info("Shutdown requested, stopping LB...");
-        lb.stop()
-          .await();
+        lb.stop().await();
         log.info("LB stopped");
     }
 
     private void startAndWait(AetherPassiveLB lb) {
-        lb.start()
-          .onSuccess(_ -> log.info("Aether Passive LB is running on port {}", lb.port()))
-          .onFailure(cause -> exitWithError(cause.message()))
-          .await();
+        lb.start().onSuccess(_ -> log.info("Aether Passive LB is running on port {}",
+                                           lb.port()))
+                .onFailure(cause -> exitWithError(cause.message()))
+                .await();
         waitForInterrupt();
     }
 
@@ -143,11 +128,14 @@ public record Main(String[] args) {
 
     private static void waitForInterrupt() {
         try {
-            Thread.currentThread()
-                  .join();
-        } catch (InterruptedException e) {
-            Thread.currentThread()
-                  .interrupt();
+            Thread.currentThread().join();
+        }
+
+
+
+
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 }

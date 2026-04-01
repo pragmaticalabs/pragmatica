@@ -15,12 +15,12 @@ import java.util.List;
 /// @param drainTimeoutMs blue-green drain timeout in milliseconds
 /// @param schemaRequired whether schema migrations must complete before slice activation (default true)
 @SuppressWarnings({"JBCT-VO-02", "JBCT-UTIL-02"})
-public record DeploymentConfig(Strategy strategy,
-                               List<CanaryStageConfig> canaryStages,
-                               double maxErrorRate,
-                               long maxLatencyMs,
-                               long drainTimeoutMs,
-                               boolean schemaRequired) {
+public record DeploymentConfig( Strategy strategy,
+                                List<CanaryStageConfig> canaryStages,
+                                double maxErrorRate,
+                                long maxLatencyMs,
+                                long drainTimeoutMs,
+                                boolean schemaRequired) {
     /// Deployment strategy types.
     public enum Strategy {
         ROLLING,

@@ -31,8 +31,7 @@ public final class TemplateProcessor {
                 return success(new Literal(text));
             }
 
-            @Override
-            public String render() {
+            @Override public String render() {
                 return text;
             }
         }
@@ -42,15 +41,13 @@ public final class TemplateProcessor {
                 return success(new Generator(generator));
             }
 
-            @Override
-            public String render() {
+            @Override public String render() {
                 return generator.generate();
             }
         }
 
         record unused() implements Segment {
-            @Override
-            public String render() {
+            @Override public String render() {
                 return "";
             }
         }
@@ -79,12 +76,11 @@ public final class TemplateProcessor {
     }
 
     private static Result<List<Segment>> buildSegments(String template) {
-        var matches = PATTERN_REGEX.matcher(template)
-                                   .results()
-                                   .map(m -> new MatchInfo(m.start(),
-                                                           m.end(),
-                                                           m.group(1)))
-                                   .toList();
+        var matches = PATTERN_REGEX.matcher(template).results()
+                                           .map(m -> new MatchInfo(m.start(),
+                                                                   m.end(),
+                                                                   m.group(1)))
+                                           .toList();
         return toSegments(template, matches);
     }
 
@@ -101,11 +97,9 @@ public final class TemplateProcessor {
     }
 
     private static Result<List<Segment>> compileGenerators(String template, List<MatchInfo> matches) {
-        var generatorResults = matches.stream()
-                                      .map(m -> PatternParser.parse(m.pattern()))
-                                      .toList();
-        return Result.allOf(generatorResults)
-                     .map(gens -> assembleSegments(template, matches, gens));
+        var generatorResults = matches.stream().map(m -> PatternParser.parse(m.pattern()))
+                                             .toList();
+        return Result.allOf(generatorResults).map(gens -> assembleSegments(template, matches, gens));
     }
 
     private static List<Segment> literalOnlySegments(String template) {
@@ -119,13 +113,8 @@ public final class TemplateProcessor {
                                                   List<PatternGenerator> generators) {
         var segments = new ArrayList<Segment>();
         var lastEnd = new int[]{0};
-        IntStream.range(0,
-                        matches.size())
-                 .forEach(i -> addSegment(segments,
-                                          template,
-                                          matches.get(i),
-                                          generators.get(i),
-                                          lastEnd));
+        IntStream.range(0, matches.size())
+        .forEach(i -> addSegment(segments, template, matches.get(i), generators.get(i), lastEnd));
         addTrailingLiteral(segments, template, lastEnd[0]);
         return List.copyOf(segments);
     }
@@ -135,17 +124,15 @@ public final class TemplateProcessor {
                                    MatchInfo match,
                                    PatternGenerator generator,
                                    int[] lastEnd) {
-        if (match.start() > lastEnd[0]) {
-            segments.add(new Segment.Literal(template.substring(lastEnd[0], match.start())));
-        }
+        if ( match.start() > lastEnd[0]) {
+        segments.add(new Segment.Literal(template.substring(lastEnd[0], match.start())));}
         segments.add(new Segment.Generator(generator));
         lastEnd[0] = match.end();
     }
 
     private static void addTrailingLiteral(List<Segment> segments, String template, int lastEnd) {
-        if (lastEnd < template.length()) {
-            segments.add(new Segment.Literal(template.substring(lastEnd)));
-        }
+        if ( lastEnd < template.length()) {
+        segments.add(new Segment.Literal(template.substring(lastEnd)));}
     }
 
     /// Processes the template, replacing all patterns with generated values.
@@ -158,10 +145,9 @@ public final class TemplateProcessor {
     }
 
     private String renderSegments() {
-        return segments.stream()
-                       .map(Segment::render)
-                       .collect(StringBuilder::new, StringBuilder::append, StringBuilder::append)
-                       .toString();
+        return segments.stream().map(Segment::render)
+                              .collect(StringBuilder::new, StringBuilder::append, StringBuilder::append)
+                              .toString();
     }
 
     /// Returns the original template string.
@@ -171,22 +157,19 @@ public final class TemplateProcessor {
 
     /// Returns true if this template contains any patterns.
     public boolean hasPatterns() {
-        return segments.stream()
-                       .anyMatch(s -> s instanceof Segment.Generator);
+        return segments.stream().anyMatch(s -> s instanceof Segment.Generator);
     }
 
     /// Returns the number of pattern generators in this template.
     public int patternCount() {
-        return (int) segments.stream()
-                            .filter(s -> s instanceof Segment.Generator)
-                            .count();
+        return (int) segments.stream().filter(s -> s instanceof Segment.Generator)
+                                    .count();
     }
 
     /// Resets all sequence generators in this template.
     public Result<Unit> resetSequences() {
-        var sequenceGenerators = segments.stream()
-                                         .filter(TemplateProcessor::isSequenceSegment)
-                                         .map(TemplateProcessor::toSequenceGenerator);
+        var sequenceGenerators = segments.stream().filter(TemplateProcessor::isSequenceSegment)
+                                                .map(TemplateProcessor::toSequenceGenerator);
         sequenceGenerators.forEach(SequenceGenerator::reset);
         return unitResult();
     }

@@ -59,7 +59,7 @@ public final class ConfigurableLoadRunner {
 
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(5);
     private static final Cause NO_TARGETS_CONFIGURED = LoadConfigError.ParseFailed.parseFailed("No targets configured")
-                                                                     .unwrap();
+    .unwrap();
 
     /// Current runner state.
     public enum State {
@@ -76,8 +76,7 @@ public final class ConfigurableLoadRunner {
     private final AtomicInteger portRoundRobin = new AtomicInteger(0);
 
     private final AtomicReference<State> state = new AtomicReference<>(State.IDLE);
-    private final AtomicReference<LoadConfig> currentConfig = new AtomicReference<>(LoadConfig.loadConfig()
-                                                                                              .unwrap());
+    private final AtomicReference<LoadConfig> currentConfig = new AtomicReference<>(LoadConfig.loadConfig().unwrap());
     private final AtomicReference<Double> rateMultiplier = new AtomicReference<>(1.0);
 
     private final Map<String, TargetRunner> activeRunners = new ConcurrentHashMap<>();
@@ -95,11 +94,10 @@ public final class ConfigurableLoadRunner {
     }
 
     private static HttpOperations buildHttpOperations() {
-        var client = HttpClient.newBuilder()
-                               .version(HttpClient.Version.HTTP_1_1)
-                               .connectTimeout(REQUEST_TIMEOUT)
-                               .executor(Executors.newVirtualThreadPerTaskExecutor())
-                               .build();
+        var client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1)
+                                          .connectTimeout(REQUEST_TIMEOUT)
+                                          .executor(Executors.newVirtualThreadPerTaskExecutor())
+                                          .build();
         return JdkHttpOperations.jdkHttpOperations(client);
     }
 
@@ -137,16 +135,14 @@ public final class ConfigurableLoadRunner {
 
     /// Load configuration from TOML string content.
     public Result<LoadConfig> loadConfigFromString(String tomlContent) {
-        return LoadConfigLoader.loadFromString(tomlContent)
-                               .onSuccess(this::applyConfig);
+        return LoadConfigLoader.loadFromString(tomlContent).onSuccess(this::applyConfig);
     }
 
     /// Set the current configuration.
     public Result<Unit> applyConfig(LoadConfig config) {
         currentConfig.set(config);
         log.info("Loaded configuration with {} targets, total {} req/s",
-                 config.targets()
-                       .size(),
+                 config.targets().size(),
                  config.totalRequestsPerSecond());
         return unitResult();
     }
@@ -158,9 +154,8 @@ public final class ConfigurableLoadRunner {
 
     /// Start load generation using the current configuration.
     public Result<State> start() {
-        var hasNoTargets = currentConfig.get()
-                                        .targets()
-                                        .isEmpty();
+        var hasNoTargets = currentConfig.get().targets()
+                                            .isEmpty();
         return hasNoTargets
                ? NO_TARGETS_CONFIGURED.result()
                : tryStart();
@@ -180,14 +175,12 @@ public final class ConfigurableLoadRunner {
     private Result<State> launchLoadGeneration() {
         var config = currentConfig.get();
         log.info("Starting load generation with {} targets",
-                 config.targets()
-                       .size());
+                 config.targets().size());
         scheduler.set(Executors.newScheduledThreadPool(2));
         var runnerResults = buildRunnerEntries();
-        return Result.allOf(runnerResults)
-                     .onFailure(this::logRunnerCreationFailure)
-                     .onSuccess(this::startAllRunners)
-                     .map(_ -> State.RUNNING);
+        return Result.allOf(runnerResults).onFailure(this::logRunnerCreationFailure)
+                           .onSuccess(this::startAllRunners)
+                           .map(_ -> State.RUNNING);
     }
 
     private boolean tryTransitionToRunning() {
@@ -195,11 +188,10 @@ public final class ConfigurableLoadRunner {
     }
 
     private List<Result<Map.Entry<LoadTarget, TargetRunner>>> buildRunnerEntries() {
-        return currentConfig.get()
-                            .targets()
-                            .stream()
-                            .map(this::toRunnerEntry)
-                            .toList();
+        return currentConfig.get().targets()
+                                .stream()
+                                .map(this::toRunnerEntry)
+                                .toList();
     }
 
     private Result<Map.Entry<LoadTarget, TargetRunner>> toRunnerEntry(LoadTarget target) {
@@ -222,8 +214,7 @@ public final class ConfigurableLoadRunner {
     }
 
     private void scheduleMetricsSync() {
-        scheduler.get()
-                 .onPresent(this::scheduleMetricsSyncOn);
+        scheduler.get().onPresent(this::scheduleMetricsSyncOn);
     }
 
     private void scheduleMetricsSyncOn(ScheduledExecutorService sched) {
@@ -233,18 +224,15 @@ public final class ConfigurableLoadRunner {
     }
 
     private void cleanupScheduler() {
-        scheduler.getAndClear()
-                 .onPresent(ScheduledExecutorService::shutdownNow);
+        scheduler.getAndClear().onPresent(ScheduledExecutorService::shutdownNow);
     }
 
     /// Stop all load generation.
     public Result<Unit> stop() {
-        if (!tryTransitionToStopping()) {
-            return unitResult();
-        }
+        if ( !tryTransitionToStopping()) {
+        return unitResult();}
         log.info("Stopping load generation");
-        activeRunners.values()
-                     .forEach(TargetRunner::stop);
+        activeRunners.values().forEach(TargetRunner::stop);
         joinRunnerThreads();
         activeRunners.clear();
         runnerThreads.clear();
@@ -262,40 +250,40 @@ public final class ConfigurableLoadRunner {
     }
 
     private void joinThread(Thread thread) {
-        try{
+        try {
             thread.join(2000);
-        } catch (InterruptedException e) {
-            Thread.currentThread()
-                  .interrupt();
+        }
+
+
+
+
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
     /// Pause load generation (can be resumed).
     public Result<Unit> pause() {
-        if (state.compareAndSet(State.RUNNING, State.PAUSED)) {
-            pauseAllRunners();
-        }
+        if ( state.compareAndSet(State.RUNNING, State.PAUSED)) {
+        pauseAllRunners();}
         return unitResult();
     }
 
     private void pauseAllRunners() {
         log.info("Pausing load generation");
-        activeRunners.values()
-                     .forEach(TargetRunner::pause);
+        activeRunners.values().forEach(TargetRunner::pause);
     }
 
     /// Resume paused load generation.
     public Result<Unit> resume() {
-        if (state.compareAndSet(State.PAUSED, State.RUNNING)) {
-            resumeAllRunners();
-        }
+        if ( state.compareAndSet(State.PAUSED, State.RUNNING)) {
+        resumeAllRunners();}
         return unitResult();
     }
 
     private void resumeAllRunners() {
         log.info("Resuming load generation");
-        activeRunners.values()
-                     .forEach(TargetRunner::resume);
+        activeRunners.values().forEach(TargetRunner::resume);
     }
 
     /// Set the total target rate by calculating and applying a multiplier.
@@ -321,15 +309,18 @@ public final class ConfigurableLoadRunner {
     }
 
     private Result<Unit> scaleAndRestart(LoadConfig config, double multiplier) {
-        var newConfig = LoadConfig.loadConfig(config, multiplier)
-                                  .unwrap();
-        if (state.get() == State.RUNNING || state.get() == State.PAUSED) {
+        var newConfig = LoadConfig.loadConfig(config, multiplier).unwrap();
+        if ( state.get() == State.RUNNING || state.get() == State.PAUSED) {
             stop();
             applyConfig(newConfig);
             start();
-        } else {
-            applyConfig(newConfig);
-        }
+        } else
+
+
+
+
+        {
+        applyConfig(newConfig);}
         return unitResult();
     }
 
@@ -370,7 +361,7 @@ public final class ConfigurableLoadRunner {
         var templateResult = compilePathTemplate(target.httpPath());
         var bodyResult = compileBodyProcessor(target.body());
         return Result.all(pathResult, templateResult, bodyResult)
-                     .flatMap((paths, tmpl, body) -> createTargetRunner(target, paths, tmpl, body));
+        .flatMap((paths, tmpl, body) -> createTargetRunner(target, paths, tmpl, body));
     }
 
     private Result<TargetRunner> createTargetRunner(LoadTarget target,
@@ -390,47 +381,39 @@ public final class ConfigurableLoadRunner {
 
     private static Result<Option<TemplateProcessor>> compilePathTemplate(String httpPath) {
         return httpPath.contains("${")
-               ? TemplateProcessor.compile(httpPath)
-                                  .map(Option::some)
+               ? TemplateProcessor.compile(httpPath).map(Option::some)
                : success(none());
     }
 
     private static Result<Map<String, TemplateProcessor>> compilePathProcessors(Map<String, String> pathVars) {
-        var entries = pathVars.entrySet()
-                              .stream()
-                              .map(ConfigurableLoadRunner::compileEntry)
-                              .toList();
-        return Result.allOf(entries)
-                     .map(ConfigurableLoadRunner::entriesToMap);
+        var entries = pathVars.entrySet().stream()
+                                       .map(ConfigurableLoadRunner::compileEntry)
+                                       .toList();
+        return Result.allOf(entries).map(ConfigurableLoadRunner::entriesToMap);
     }
 
     private static Result<Map.Entry<String, TemplateProcessor>> compileEntry(Map.Entry<String, String> entry) {
         var key = entry.getKey();
         var value = entry.getValue();
-        return TemplateProcessor.compile(value)
-                                .map(proc -> Map.entry(key, proc));
+        return TemplateProcessor.compile(value).map(proc -> Map.entry(key, proc));
     }
 
     private static Map<String, TemplateProcessor> entriesToMap(List<Map.Entry<String, TemplateProcessor>> list) {
-        return list.stream()
-                   .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        return list.stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
     private static Result<Option<TemplateProcessor>> compileBodyProcessor(Option<String> body) {
-        return body.map(TemplateProcessor::compile)
-                   .map(result -> result.map(Option::some))
-                   .or(success(none()));
+        return body.map(TemplateProcessor::compile).map(result -> result.map(Option::some))
+                       .or(success(none()));
     }
 
     private void launchRunner(TargetRunner runner, LoadTarget target) {
         activeRunners.put(runner.name(), runner);
-        var thread = Thread.ofVirtual()
-                           .name("load-" + runner.name())
-                           .start(runner::run);
+        var thread = Thread.ofVirtual().name("load-" + runner.name())
+                                     .start(runner::run);
         runnerThreads.add(thread);
         entryPointMetrics.setRate(runner.name(),
-                                  target.rate()
-                                        .requestsPerSecond());
+                                  target.rate().requestsPerSecond());
     }
 
     private void syncMetrics() {
@@ -446,14 +429,12 @@ public final class ConfigurableLoadRunner {
     private void updateRunnerLatency(EntryPointMetrics.EntryPointSnapshot snapshot) {
         var latencyMs = snapshot.avgLatencyMs();
         var runner = option(activeRunners.get(snapshot.name()));
-        runner.filter(_ -> latencyMs > 0)
-              .onPresent(r -> r.updateLatencyEma(latencyMs));
+        runner.filter(_ -> latencyMs > 0).onPresent(r -> r.updateLatencyEma(latencyMs));
     }
 
     private void syncRunnerMetrics(String name, TargetRunner runner) {
         entryPointMetrics.setRate(name,
-                                  runner.collectTargetMetrics()
-                                        .targetRate());
+                                  runner.collectTargetMetrics().targetRate());
     }
 
     /// Metrics for a single target.
@@ -525,8 +506,7 @@ public final class ConfigurableLoadRunner {
                                                  EntryPointMetrics entryPointMetrics,
                                                  Supplier<State> stateSupplier) {
             return success(new TargetRunner(target,
-                                            target.name()
-                                                  .or(deriveNameFromTarget(target.target())),
+                                            target.name().or(deriveNameFromTarget(target.target())),
                                             pathProcessors,
                                             pathTemplateProcessor,
                                             bodyProcessor,
@@ -575,8 +555,7 @@ public final class ConfigurableLoadRunner {
 
         void run() {
             setStartTime(Instant.now());
-            var rps = target.rate()
-                            .requestsPerSecond();
+            var rps = target.rate().requestsPerSecond();
             var intervalMicros = rps > 0
                                  ? 1_000_000 / rps
                                  : 1_000_000;
@@ -584,51 +563,55 @@ public final class ConfigurableLoadRunner {
             log.info("Starting target '{}' at {} req/s{}",
                      name,
                      rps,
-                     duration.map(d -> " for " + d)
-                             .or(""));
+                     duration.map(d -> " for " + d).or(""));
             runLoop(intervalMicros, duration);
             logCompletion();
         }
 
         @SuppressWarnings("JBCT-PAT-01")
         private void runLoop(long intervalMicros, Option<Duration> duration) {
-            while (running.get()) {
-                try{
-                    if (!awaitUnpaused()) break;
-                    if (isDurationExceeded(duration)) break;
-                    performRequest(intervalMicros);
-                } catch (Exception e) {
-                    log.debug("Error in target '{}': {}", name, e.getMessage());
-                }
+            while ( running.get()) {
+            try {
+                if ( !awaitUnpaused()) break;
+                if ( isDurationExceeded(duration)) break;
+                performRequest(intervalMicros);
             }
+
+
+
+
+            catch (Exception e) {
+                log.debug("Error in target '{}': {}", name, e.getMessage());
+            }}
         }
 
         @SuppressWarnings("JBCT-PAT-01")
         private boolean awaitUnpaused() {
-            try{
-                while (paused.get() && running.get()) {
-                    Thread.sleep(100);
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread()
-                      .interrupt();
+            try {
+                while ( paused.get() && running.get()) {
+                Thread.sleep(100);}
+            }
+
+
+
+
+            catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
                 return false;
             }
             return running.get();
         }
 
         private boolean isDurationExceeded(Option<Duration> duration) {
-            return duration.filter(d -> !d.isZero())
-                           .map(this::isElapsedBeyond)
-                           .or(false);
+            return duration.filter(d -> !d.isZero()).map(this::isElapsedBeyond)
+                                  .or(false);
         }
 
         private boolean isElapsedBeyond(Duration limit) {
             var elapsed = Duration.between(startTime(), Instant.now());
             var exceeded = elapsed.compareTo(limit) >= 0;
-            if (exceeded) {
-                log.info("Target '{}' completed (duration limit reached)", name);
-            }
+            if ( exceeded) {
+            log.info("Target '{}' completed (duration limit reached)", name);}
             return exceeded;
         }
 
@@ -641,9 +624,7 @@ public final class ConfigurableLoadRunner {
         }
 
         private void refreshActualRate(long requests) {
-            var elapsedMs = Duration.between(startTime(),
-                                             Instant.now())
-                                    .toMillis();
+            var elapsedMs = Duration.between(startTime(), Instant.now()).toMillis();
             var computedRate = elapsedMs > 0
                                ? (int)(requests * 1000 / elapsedMs)
                                : 0;
@@ -657,11 +638,15 @@ public final class ConfigurableLoadRunner {
         }
 
         private static void trySleep(long sleepMicros) {
-            try{
+            try {
                 Thread.sleep(sleepMicros / 1000, (int)((sleepMicros % 1000) * 1000));
-            } catch (InterruptedException e) {
-                Thread.currentThread()
-                      .interrupt();
+            }
+
+
+
+
+            catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
         }
 
@@ -679,41 +664,34 @@ public final class ConfigurableLoadRunner {
             var body = buildBody();
             var method = httpMethodFor(path, body);
             var uriStr = "http://localhost:" + portSupplier.get() + path;
-            Network.parseURI(uriStr)
-                   .onSuccess(uri -> dispatchRequest(uri, method, body, requestStartTime))
-                   .onFailure(cause -> log.debug("Invalid URI '{}': {}",
-                                                 uriStr,
-                                                 cause.message()));
+            Network.parseURI(uriStr).onSuccess(uri -> dispatchRequest(uri, method, body, requestStartTime))
+                            .onFailure(cause -> log.debug("Invalid URI '{}': {}",
+                                                          uriStr,
+                                                          cause.message()));
         }
 
         private void dispatchRequest(URI uri, String method, String body, long requestStartTime) {
             var request = buildHttpRequest(uri, method, body).build();
-            http.sendString(request)
-                .onSuccess(result -> recordHttpResult(result, requestStartTime))
-                .onFailure(cause -> recordFailure(System.nanoTime() - requestStartTime));
+            http.sendString(request).onSuccess(result -> recordHttpResult(result, requestStartTime))
+                           .onFailure(cause -> recordFailure(System.nanoTime() - requestStartTime));
         }
 
         private String httpMethodFor(String path, String body) {
             return target.isHttpPath()
-                   ? target.httpMethod()
-                           .or(() -> inferMethod(path, body))
+                   ? target.httpMethod().or(() -> inferMethod(path, body))
                    : "POST";
         }
 
         private HttpRequest.Builder buildHttpRequest(URI uri, String method, String body) {
-            var builder = HttpRequest.newBuilder()
-                                     .uri(uri)
-                                     .timeout(REQUEST_TIMEOUT);
+            var builder = HttpRequest.newBuilder().uri(uri)
+                                                .timeout(REQUEST_TIMEOUT);
             return methodHandler(builder, method, body);
         }
 
         private static HttpRequest.Builder methodHandler(HttpRequest.Builder builder, String method, String body) {
-            return switch (method) {
-                case "POST" -> withJsonBody(builder, body, true);
-                case "PUT" -> withJsonBody(builder, body, false);
-                case "DELETE" -> deleteRequest(builder);
-                default -> getRequest(builder);
-            };
+            return switch (method) {case "POST" -> withJsonBody(builder, body, true);case "PUT" -> withJsonBody(builder,
+                                                                                                                body,
+                                                                                                                false);case "DELETE" -> deleteRequest(builder);default -> getRequest(builder);};
         }
 
         private static HttpRequest.Builder withJsonBody(HttpRequest.Builder builder, String body, boolean isPost) {
@@ -737,11 +715,10 @@ public final class ConfigurableLoadRunner {
         private void recordHttpResult(HttpResult<String> result, long requestStartTime) {
             var latencyNanos = System.nanoTime() - requestStartTime;
             totalLatencyNanos.addAndGet(latencyNanos);
-            if (result.isSuccess()) {
-                recordSuccess(latencyNanos);
-            } else {
-                recordHttpResultFailure(latencyNanos, result);
-            }
+            if ( result.isSuccess()) {
+            recordSuccess(latencyNanos);} else
+            {
+            recordHttpResultFailure(latencyNanos, result);}
         }
 
         private void recordHttpResultFailure(long latencyNanos, HttpResult<String> result) {
@@ -769,35 +746,30 @@ public final class ConfigurableLoadRunner {
         }
 
         private String buildHttpPath() {
-            return pathTemplateProcessor.map(TemplateProcessor::process)
-                                        .or(target.httpPath());
+            return pathTemplateProcessor.map(TemplateProcessor::process).or(target.httpPath());
         }
 
         private String buildInvokePath() {
-            var parts = target.target()
-                              .split("\\.", 2);
+            var parts = target.target().split("\\.", 2);
             return parts.length == 2
                    ? "/api/invoke/" + parts[0] + "/" + parts[1]
                    : "/api/invoke/" + target.target();
         }
 
         private String substitutePathVars(String path) {
-            return pathProcessors.entrySet()
-                                 .stream()
-                                 .reduce(path,
-                                         (p, e) -> substituteVar(p, e),
-                                         (a, b) -> b);
+            return pathProcessors.entrySet().stream()
+                                          .reduce(path,
+                                                  (p, e) -> substituteVar(p, e),
+                                                  (a, b) -> b);
         }
 
         private static String substituteVar(String path, Map.Entry<String, TemplateProcessor> entry) {
             return path.replace("{" + entry.getKey() + "}",
-                                entry.getValue()
-                                     .process());
+                                entry.getValue().process());
         }
 
         private String buildBody() {
-            return bodyProcessor.map(TemplateProcessor::process)
-                                .or("");
+            return bodyProcessor.map(TemplateProcessor::process).or("");
         }
 
         private String inferMethod(String path, String body) {
@@ -806,13 +778,12 @@ public final class ConfigurableLoadRunner {
             return hasBody
                    ? "POST"
                    : isDeletePath
-                     ? "DELETE"
-                     : "GET";
+                   ? "DELETE"
+                   : "GET";
         }
 
         TargetMetrics collectTargetMetrics() {
-            var targetRate = target.rate()
-                                   .requestsPerSecond();
+            var targetRate = target.rate().requestsPerSecond();
             var total = totalRequests.get();
             var successes = successCount.get();
             var failures = failureCount.get();
@@ -826,13 +797,12 @@ public final class ConfigurableLoadRunner {
                                                failures,
                                                avgLatency,
                                                remaining)
-                                .unwrap();
+            .unwrap();
         }
 
         private Option<Duration> computeRemainingDuration() {
-            return target.duration()
-                         .filter(d -> !d.isZero())
-                         .flatMap(this::computeRemaining);
+            return target.duration().filter(d -> !d.isZero())
+                                  .flatMap(this::computeRemaining);
         }
 
         private Option<Duration> computeRemaining(Duration targetDuration) {
@@ -845,8 +815,7 @@ public final class ConfigurableLoadRunner {
         }
 
         private static String deriveNameFromTarget(String target) {
-            var path = HTTP_METHOD_PREFIX.matcher(target)
-                                         .replaceFirst("");
+            var path = HTTP_METHOD_PREFIX.matcher(target).replaceFirst("");
             return path.startsWith("/")
                    ? deriveFromHttpPath(path)
                    : deriveFromSliceMethod(path);
@@ -858,10 +827,8 @@ public final class ConfigurableLoadRunner {
         }
 
         private static String findLastNonVariableSegment(String[] segments) {
-            var nonVariable = Arrays.stream(segments)
-                                    .filter(TargetRunner::isNonVariableSegment);
-            return nonVariable.reduce((first, second) -> second)
-                              .orElse("target");
+            var nonVariable = Arrays.stream(segments).filter(TargetRunner::isNonVariableSegment);
+            return nonVariable.reduce((first, second) -> second).orElse("target");
         }
 
         private static boolean isNonVariableSegment(String s) {

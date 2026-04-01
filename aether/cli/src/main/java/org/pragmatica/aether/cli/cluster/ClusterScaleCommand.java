@@ -17,37 +17,32 @@ import picocli.CommandLine.Option;
 /// Thin wrapper around `POST /api/cluster/scale`. Validates quorum safety
 /// (N >= 3, odd) on the CLI side before sending the request.
 @Command(name = "scale", description = "Scale cluster core node count")
-@SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"})
-class ClusterScaleCommand implements Callable<Integer> {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterScaleCommand implements Callable<Integer> {
     private static final int MINIMUM_CORE_COUNT = 3;
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
     @Option(names = "--core", required = true, description = "Target core node count (minimum 3, must be odd)")
     private int coreCount;
 
-    @CommandLine.ParentCommand
-    private ClusterCommand parent;
+    @CommandLine.ParentCommand private ClusterCommand parent;
 
-    @Override
-    public Integer call() {
+    @Override public Integer call() {
         return validateCoreCount().flatMap(this::fetchConfigVersion)
-                                  .flatMap(this::sendScaleRequest)
-                                  .fold(ClusterScaleCommand::onFailure, this::onSuccess);
+                                .flatMap(this::sendScaleRequest)
+                                .fold(ClusterScaleCommand::onFailure, this::onSuccess);
     }
 
     private Result<Integer> validateCoreCount() {
-        if (coreCount < MINIMUM_CORE_COUNT) {
-            return new ScaleError.QuorumSafety(coreCount, MINIMUM_CORE_COUNT).result();
-        }
-        if (coreCount % 2 == 0) {
-            return new ScaleError.MustBeOdd(coreCount).result();
-        }
+        if ( coreCount < MINIMUM_CORE_COUNT) {
+        return new ScaleError.QuorumSafety(coreCount, MINIMUM_CORE_COUNT).result();}
+        if ( coreCount % 2 == 0) {
+        return new ScaleError.MustBeOdd(coreCount).result();}
         return Result.success(coreCount);
     }
 
     private Result<Long> fetchConfigVersion(int count) {
         return ClusterHttpClient.fetchFromCluster("/api/cluster/config")
-                                .flatMap(ClusterScaleCommand::extractConfigVersion);
+        .flatMap(ClusterScaleCommand::extractConfigVersion);
     }
 
     private Result<String> sendScaleRequest(long expectedVersion) {
@@ -60,8 +55,7 @@ class ClusterScaleCommand implements Callable<Integer> {
     }
 
     private static Result<Long> extractConfigVersion(String responseJson) {
-        return MAPPER.readTree(responseJson)
-                     .map(node -> node.path("configVersion").asLong(0));
+        return MAPPER.readTree(responseJson).map(node -> node.path("configVersion").asLong(0));
     }
 
     private static int onFailure(Cause cause) {
@@ -71,15 +65,13 @@ class ClusterScaleCommand implements Callable<Integer> {
 
     sealed interface ScaleError extends Cause {
         record QuorumSafety(int requested, int minimum) implements ScaleError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Core count " + requested + " is below quorum minimum of " + minimum;
             }
         }
 
         record MustBeOdd(int requested) implements ScaleError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Core count must be odd for quorum safety, got " + requested;
             }
         }

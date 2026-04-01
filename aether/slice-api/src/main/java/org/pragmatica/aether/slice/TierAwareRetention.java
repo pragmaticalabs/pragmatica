@@ -1,14 +1,5 @@
 package org.pragmatica.aether.slice;
-
-/// Post-seal retention: how long to keep events in ring buffer after they have been sealed to storage.
-///
-/// Once events are safely persisted in AHSE, the ring buffer can evict them more aggressively.
-/// The post-seal limits replace the normal retention limits for events at or below the sealed offset.
-///
-/// @param postSealBufferMs maximum time (ms) to keep sealed events in the ring buffer
-/// @param postSealMaxCount maximum number of sealed events to keep in the ring buffer
-public record TierAwareRetention(long postSealBufferMs, long postSealMaxCount) {
-
+public record TierAwareRetention( long postSealBufferMs, long postSealMaxCount) {
     private static final long DEFAULT_POST_SEAL_BUFFER_MS = 60_000L;
     private static final long DEFAULT_POST_SEAL_MAX_COUNT = 10_000L;
 

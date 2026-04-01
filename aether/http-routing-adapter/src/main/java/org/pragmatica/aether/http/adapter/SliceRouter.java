@@ -61,24 +61,22 @@ public interface SliceRouter {
     static SliceRouter sliceRouter(RouteSource routes,
                                    ErrorMapper errorMapper,
                                    JsonMapper jsonMapper) {
-        record sliceRouter(RequestRouter requestRouter,
-                           ErrorMapper errorMapper,
-                           JsonMapper jsonMapper) implements SliceRouter {
+        record sliceRouter( RequestRouter requestRouter,
+                            ErrorMapper errorMapper,
+                            JsonMapper jsonMapper) implements SliceRouter {
             private static final Map<String, String> JSON_HEADERS = Map.of("Content-Type",
                                                                            "application/json; charset=UTF-8");
             private static final Map<String, String> TEXT_HEADERS = Map.of("Content-Type", "text/plain; charset=UTF-8");
 
-            @Override
-            public Promise<HttpResponseData> handle(HttpRequestContext request) {
+            @Override public Promise<HttpResponseData> handle(HttpRequestContext request) {
                 return parseMethod(request.method()).map(method -> findAndHandleRoute(method, request))
                                   .or(() -> Promise.success(methodNotAllowed(request)));
             }
 
             private Promise<HttpResponseData> findAndHandleRoute(HttpMethod method, HttpRequestContext request) {
                 return requestRouter.findRoute(method,
-                                               request.path())
-                                    .map(route -> handleRoute(route, request))
-                                    .or(() -> Promise.success(notFound(request)));
+                                               request.path()).map(route -> handleRoute(route, request))
+                                              .or(() -> Promise.success(notFound(request)));
             }
 
             private Promise<HttpResponseData> handleRoute(Route<?> route, HttpRequestContext request) {
@@ -92,31 +90,26 @@ public interface SliceRouter {
             private HttpResponseData resultToResponse(Object result,
                                                       ContentType contentType,
                                                       HttpRequestContext request) {
-                return switch (result) {
-                    case Result.Success<?> success -> successToResponse(success.value(), contentType);
-                    case Result.Failure<?> failure -> errorToResponse(failure.cause(), request);
-                    default -> successToResponse(result, contentType);
-                };
+                return switch (result) {case Result.Success<?> success -> successToResponse(success.value(), contentType);case Result.Failure<?> failure -> errorToResponse(failure.cause(),
+                                                                                                                                                                            request);default -> successToResponse(result,
+                                                                                                                                                                                                                  contentType);};
             }
 
             private <T> Promise<T> invokeHandler(Route<T> route, SliceRequestContext context) {
-                return route.handler()
-                            .handle(context);
+                return route.handler().handle(context);
             }
 
             private HttpResponseData successToResponse(Object value, ContentType contentType) {
-                if (value == null) {
-                    return HttpResponseData.httpResponseData(204);
-                }
+                if ( value == null) {
+                return HttpResponseData.httpResponseData(204);}
                 var headers = headersForContentType(contentType);
-                if (isTextContent(contentType)) {
-                    var body = value.toString()
-                                    .getBytes(StandardCharsets.UTF_8);
+                if ( isTextContent(contentType)) {
+                    var body = value.toString().getBytes(StandardCharsets.UTF_8);
                     return HttpResponseData.httpResponseData(200, headers, body);
                 }
                 return jsonMapper.writeAsBytes(value)
-                                 .fold(_ -> HttpResponseData.httpResponseData(500, "Serialization failed"),
-                                       body -> HttpResponseData.httpResponseData(200, headers, body));
+                .fold(_ -> HttpResponseData.httpResponseData(500, "Serialization failed"),
+                      body -> HttpResponseData.httpResponseData(200, headers, body));
             }
 
             private HttpResponseData errorToResponse(Cause cause, HttpRequestContext request) {
@@ -125,17 +118,14 @@ public interface SliceRouter {
                          request.requestId(),
                          request.method(),
                          request.path(),
-                         httpError.status()
-                                  .code(),
+                         httpError.status().code(),
                          cause.message());
                 var problemDetail = ProblemDetail.fromHttpError(httpError, request.path(), request.requestId());
                 return jsonMapper.writeAsBytes(problemDetail)
-                                 .fold(_ -> plainErrorResponse(httpError.status(),
-                                                               httpError.message()),
-                                       body -> HttpResponseData.httpResponseData(httpError.status()
-                                                                                          .code(),
-                                                                                 JSON_HEADERS,
-                                                                                 body));
+                .fold(_ -> plainErrorResponse(httpError.status(), httpError.message()),
+                      body -> HttpResponseData.httpResponseData(httpError.status().code(),
+                                                                JSON_HEADERS,
+                                                                body));
             }
 
             private HttpResponseData notFound(HttpRequestContext request) {
@@ -144,8 +134,8 @@ public interface SliceRouter {
                                                                 request.path(),
                                                                 request.requestId());
                 return jsonMapper.writeAsBytes(problemDetail)
-                                 .fold(_ -> plainErrorResponse(HttpStatus.NOT_FOUND, "Not Found"),
-                                       body -> HttpResponseData.httpResponseData(404, JSON_HEADERS, body));
+                .fold(_ -> plainErrorResponse(HttpStatus.NOT_FOUND, "Not Found"),
+                      body -> HttpResponseData.httpResponseData(404, JSON_HEADERS, body));
             }
 
             private HttpResponseData methodNotAllowed(HttpRequestContext request) {
@@ -154,8 +144,8 @@ public interface SliceRouter {
                                                                 request.path(),
                                                                 request.requestId());
                 return jsonMapper.writeAsBytes(problemDetail)
-                                 .fold(_ -> plainErrorResponse(HttpStatus.METHOD_NOT_ALLOWED, "Method Not Allowed"),
-                                       body -> HttpResponseData.httpResponseData(405, JSON_HEADERS, body));
+                .fold(_ -> plainErrorResponse(HttpStatus.METHOD_NOT_ALLOWED, "Method Not Allowed"),
+                      body -> HttpResponseData.httpResponseData(405, JSON_HEADERS, body));
             }
 
             private HttpResponseData plainErrorResponse(HttpStatus status, String message) {
@@ -173,8 +163,7 @@ public interface SliceRouter {
             }
 
             private static boolean isTextContent(ContentType contentType) {
-                var headerText = contentType.headerText()
-                                            .toLowerCase();
+                var headerText = contentType.headerText().toLowerCase();
                 return headerText.startsWith("text/") || headerText.contains("plain");
             }
         }

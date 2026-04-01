@@ -1,6 +1,4 @@
 package org.pragmatica.aether.resource.config;
-/// Configuration scopes for hierarchical config lookup.
-/// Values at more specific scopes override less specific ones.
 public enum ConfigScope {
     /// Cluster-wide configuration shared by all nodes and slices.
     GLOBAL,

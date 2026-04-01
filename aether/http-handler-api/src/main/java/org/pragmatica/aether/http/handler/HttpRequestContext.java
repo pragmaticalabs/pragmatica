@@ -24,14 +24,13 @@ import static org.pragmatica.lang.Result.success;
 /// @param body        request body bytes (empty for GET)
 /// @param requestId   unique request identifier for tracing
 /// @param security    security context with authentication info
-@Codec
-public record HttpRequestContext(String path,
-                                 String method,
-                                 Map<String, List<String>> queryParams,
-                                 Map<String, List<String>> headers,
-                                 byte[] body,
-                                 String requestId,
-                                 SecurityContext security) {
+@Codec public record HttpRequestContext( String path,
+                                         String method,
+                                         Map<String, List<String>> queryParams,
+                                         Map<String, List<String>> headers,
+                                         byte[] body,
+                                         String requestId,
+                                         SecurityContext security) {
     private static final byte[] EMPTY_BODY = new byte[0];
 
     public HttpRequestContext {
@@ -41,9 +40,8 @@ public record HttpRequestContext(String path,
         Objects.requireNonNull(headers, "headers");
         Objects.requireNonNull(requestId, "requestId");
         Objects.requireNonNull(security, "security");
-        if (body == null || body.length == 0) {
-            body = EMPTY_BODY;
-        }
+        if ( body == null || body.length == 0) {
+        body = EMPTY_BODY;}
     }
 
     /// Validated factory for constructing request context.
@@ -54,8 +52,7 @@ public record HttpRequestContext(String path,
                                                                 Result<byte[]> body,
                                                                 Result<String> requestId,
                                                                 Result<SecurityContext> security) {
-        return Result.all(path, method, queryParams, headers, body, requestId, security)
-                     .map(HttpRequestContext::new);
+        return Result.all(path, method, queryParams, headers, body, requestId, security).map(HttpRequestContext::new);
     }
 
     /// Create context with empty body and anonymous security.
@@ -97,9 +94,8 @@ public record HttpRequestContext(String path,
                           success(headers),
                           success(body),
                           success(requestId),
-                          success(security))
-                     .map(HttpRequestContext::new)
-                     .unwrap();
+                          success(security)).map(HttpRequestContext::new)
+                         .unwrap();
     }
 
     /// Create new context with updated security (immutable copy).

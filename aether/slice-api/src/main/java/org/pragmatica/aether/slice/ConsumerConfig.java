@@ -1,17 +1,12 @@
 package org.pragmatica.aether.slice;
-
-/// Configuration for a stream consumer group.
-///
-/// Controls batch size, processing mode (ordered vs parallel), error handling strategy,
-/// checkpoint interval, max retries, dead-letter stream routing, and read preference.
-public record ConsumerConfig(String groupId,
-                             int maxBatchSize,
-                             ProcessingMode processingMode,
-                             ErrorStrategy errorStrategy,
-                             long checkpointIntervalMs,
-                             int maxRetries,
-                             String deadLetterStream,
-                             ReadPreference readPreference) {
+public record ConsumerConfig( String groupId,
+                              int maxBatchSize,
+                              ProcessingMode processingMode,
+                              ErrorStrategy errorStrategy,
+                              long checkpointIntervalMs,
+                              int maxRetries,
+                              String deadLetterStream,
+                              ReadPreference readPreference) {
     /// Controls whether events within a partition are processed sequentially or in parallel.
     public enum ProcessingMode {
         ORDERED,

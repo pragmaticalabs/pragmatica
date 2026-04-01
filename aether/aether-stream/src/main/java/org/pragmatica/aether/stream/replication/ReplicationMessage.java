@@ -7,7 +7,6 @@ import java.util.List;
 
 /// Protocol messages for stream replication between governor and replicas.
 public sealed interface ReplicationMessage {
-
     /// Governor to Replica: replicate a batch of events.
     record ReplicateEvents(NodeId governorId,
                            String streamName,
@@ -15,11 +14,9 @@ public sealed interface ReplicationMessage {
                            long fromOffset,
                            List<byte[]> payloads,
                            List<Long> timestamps) implements ReplicationMessage {
-
         public ReplicateEvents {
-            payloads = payloads.stream()
-                               .map(byte[]::clone)
-                               .toList();
+            payloads = payloads.stream().map(byte[]::clone)
+                                      .toList();
             timestamps = List.copyOf(timestamps);
         }
 
@@ -32,11 +29,9 @@ public sealed interface ReplicationMessage {
             return new ReplicateEvents(governorId, streamName, partition, fromOffset, payloads, timestamps);
         }
 
-        @Override
-        public List<byte[]> payloads() {
-            return payloads.stream()
-                           .map(byte[]::clone)
-                           .toList();
+        @Override public List<byte[]> payloads() {
+            return payloads.stream().map(byte[]::clone)
+                                  .toList();
         }
     }
 
@@ -45,7 +40,6 @@ public sealed interface ReplicationMessage {
                         String streamName,
                         int partition,
                         long confirmedOffset) implements ReplicationMessage {
-
         public static ReplicateAck replicateAck(NodeId replicaId,
                                                 String streamName,
                                                 int partition,
@@ -61,7 +55,6 @@ public sealed interface ReplicationMessage {
                      long fromOffset,
                      long toOffset,
                      byte[] compressedBatch) implements ReplicationMessage {
-
         public BatchSync {
             compressedBatch = compressedBatch.clone();
         }
@@ -75,24 +68,19 @@ public sealed interface ReplicationMessage {
             return new BatchSync(governorId, streamName, partition, fromOffset, toOffset, compressedBatch);
         }
 
-        @Override
-        public byte[] compressedBatch() {
+        @Override public byte[] compressedBatch() {
             return compressedBatch.clone();
         }
 
-        @Override
-        public boolean equals(Object obj) {
-            return obj instanceof BatchSync other
-                   && governorId.equals(other.governorId)
-                   && streamName.equals(other.streamName)
-                   && partition == other.partition
-                   && fromOffset == other.fromOffset
-                   && toOffset == other.toOffset
-                   && Arrays.equals(compressedBatch, other.compressedBatch);
+        @Override public boolean equals(Object obj) {
+            return obj instanceof BatchSync other &&
+            governorId.equals(other.governorId) &&
+            streamName.equals(other.streamName) &&
+            partition == other.partition && fromOffset == other.fromOffset && toOffset == other.toOffset && Arrays.equals(compressedBatch,
+                                                                                                                          other.compressedBatch);
         }
 
-        @Override
-        public int hashCode() {
+        @Override public int hashCode() {
             int result = governorId.hashCode();
             result = 31 * result + streamName.hashCode();
             result = 31 * result + Integer.hashCode(partition);
@@ -108,7 +96,6 @@ public sealed interface ReplicationMessage {
                           String streamName,
                           int partition,
                           long fromOffset) implements ReplicationMessage {
-
         public static CatchupRequest catchupRequest(NodeId replicaId,
                                                     String streamName,
                                                     int partition,
@@ -125,11 +112,9 @@ public sealed interface ReplicationMessage {
                            long toOffset,
                            List<byte[]> payloads,
                            List<Long> timestamps) implements ReplicationMessage {
-
         public CatchupResponse {
-            payloads = payloads.stream()
-                               .map(byte[]::clone)
-                               .toList();
+            payloads = payloads.stream().map(byte[]::clone)
+                                      .toList();
             timestamps = List.copyOf(timestamps);
         }
 
@@ -143,11 +128,9 @@ public sealed interface ReplicationMessage {
             return new CatchupResponse(governorId, streamName, partition, fromOffset, toOffset, payloads, timestamps);
         }
 
-        @Override
-        public List<byte[]> payloads() {
-            return payloads.stream()
-                           .map(byte[]::clone)
-                           .toList();
+        @Override public List<byte[]> payloads() {
+            return payloads.stream().map(byte[]::clone)
+                                  .toList();
         }
     }
 }

@@ -8,18 +8,15 @@ import org.pragmatica.lang.Promise;
 /// Records method execution duration and success/failure counts using the
 /// {@link io.micrometer.core.instrument.MeterRegistry} provided in the config.
 public final class MetricsInterceptorFactory implements ResourceFactory<MetricsMethodInterceptor, MetricsConfig> {
-    @Override
-    public Class<MetricsMethodInterceptor> resourceType() {
+    @Override public Class<MetricsMethodInterceptor> resourceType() {
         return MetricsMethodInterceptor.class;
     }
 
-    @Override
-    public Class<MetricsConfig> configType() {
+    @Override public Class<MetricsConfig> configType() {
         return MetricsConfig.class;
     }
 
-    @Override
-    public Promise<MetricsMethodInterceptor> provision(MetricsConfig config) {
+    @Override public Promise<MetricsMethodInterceptor> provision(MetricsConfig config) {
         return Promise.success(new MetricsMethodInterceptor(config));
     }
 }

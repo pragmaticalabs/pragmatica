@@ -19,16 +19,14 @@ import static org.pragmatica.lang.Result.success;
 /// @param followRedirects Redirect policy
 /// @param json            Optional JSON serialization configuration
 /// @param defaultHeaders  Default headers added to every request
-public record HttpClientConfig(Option<String> baseUrl,
-                               TimeSpan connectTimeout,
-                               TimeSpan requestTimeout,
-                               Redirect followRedirects,
-                               Option<JsonConfig> json,
-                               Map<String, String> defaultHeaders) {
-    private static final TimeSpan DEFAULT_CONNECT_TIMEOUT = TimeSpan.timeSpan(10)
-                                                                   .seconds();
-    private static final TimeSpan DEFAULT_REQUEST_TIMEOUT = TimeSpan.timeSpan(30)
-                                                                   .seconds();
+public record HttpClientConfig( Option<String> baseUrl,
+                                TimeSpan connectTimeout,
+                                TimeSpan requestTimeout,
+                                Redirect followRedirects,
+                                Option<JsonConfig> json,
+                                Map<String, String> defaultHeaders) {
+    private static final TimeSpan DEFAULT_CONNECT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
+    private static final TimeSpan DEFAULT_REQUEST_TIMEOUT = TimeSpan.timeSpan(30).seconds();
     private static final Redirect DEFAULT_REDIRECT = Redirect.NORMAL;
 
     public static Result<HttpClientConfig> httpClientConfig() {

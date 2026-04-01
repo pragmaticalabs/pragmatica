@@ -14,8 +14,7 @@ import org.pragmatica.serialization.Codec;
 ///
 ///
 /// Format: groupId:artifactId (e.g., "org.pragmatica-lite.aether:example-slice")
-@Codec
-public record ArtifactBase(GroupId groupId, ArtifactId artifactId) {
+@Codec public record ArtifactBase( GroupId groupId, ArtifactId artifactId) {
     private static final Fn1<Cause, String> INVALID_FORMAT = Causes.forOneValue("Invalid artifact base format %s");
 
     /// Parses an artifact base from string format (groupId:artifactId).
@@ -24,13 +23,9 @@ public record ArtifactBase(GroupId groupId, ArtifactId artifactId) {
     /// @return parsed artifact base or error
     public static Result<ArtifactBase> artifactBase(String artifactBaseString) {
         var parts = artifactBaseString.split(":", 2);
-        if (parts.length != 2) {
-            return INVALID_FORMAT.apply(artifactBaseString)
-                                 .result();
-        }
-        return Result.all(GroupId.groupId(parts[0]),
-                          ArtifactId.artifactId(parts[1]))
-                     .map(ArtifactBase::new);
+        if ( parts.length != 2) {
+        return INVALID_FORMAT.apply(artifactBaseString).result();}
+        return Result.all(GroupId.groupId(parts[0]), ArtifactId.artifactId(parts[1])).map(ArtifactBase::new);
     }
 
     /// Creates an artifact base from components.
@@ -64,8 +59,7 @@ public record ArtifactBase(GroupId groupId, ArtifactId artifactId) {
         return groupId.equals(artifact.groupId()) && artifactId.equals(artifact.artifactId());
     }
 
-    @Override
-    public String toString() {
+    @Override public String toString() {
         return asString();
     }
 

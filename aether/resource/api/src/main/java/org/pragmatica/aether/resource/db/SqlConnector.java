@@ -81,8 +81,7 @@ public interface SqlConnector extends DatabaseConnector {
     /// All operations performed through this connector participate in the transaction.
     ///
     /// @param <T> Result type
-    @FunctionalInterface
-    interface TransactionCallback<T> {
+    @FunctionalInterface interface TransactionCallback<T> {
         /// Executes operations within the transaction.
         ///
         /// @param connector SqlConnector bound to the transaction

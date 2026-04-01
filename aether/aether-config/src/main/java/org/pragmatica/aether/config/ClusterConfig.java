@@ -11,11 +11,11 @@ import static org.pragmatica.lang.Result.success;
 /// @param tls         Enable TLS for cluster communication
 /// @param ports       Port configuration
 /// @param coreMax     Maximum number of core consensus nodes (0 = unlimited)
-public record ClusterConfig(Environment environment,
-                            int nodes,
-                            boolean tls,
-                            PortsConfig ports,
-                            int coreMax) {
+public record ClusterConfig( Environment environment,
+                             int nodes,
+                             boolean tls,
+                             PortsConfig ports,
+                             int coreMax) {
     /// Factory method following JBCT naming convention.
     public static Result<ClusterConfig> clusterConfig(Environment environment,
                                                       int nodes,

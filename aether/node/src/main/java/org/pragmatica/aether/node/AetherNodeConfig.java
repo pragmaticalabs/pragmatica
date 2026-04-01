@@ -63,31 +63,31 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param managementHttpProtocol    HTTP protocol for management server (H1, H3, BOTH) — default H1
 /// @param storageConfig            Named hierarchical storage instance configurations (empty map for defaults)
 /// @param backupConfig             Consensus state backup configuration (empty for in-memory only)
-public record AetherNodeConfig(TopologyConfig topology,
-                               ProtocolConfig protocol,
-                               SliceActionConfig sliceAction,
-                               SliceConfig sliceConfig,
-                               int managementPort,
-                               DHTConfig artifactRepo,
-                               DHTConfig cache,
-                               Option<TlsConfig> tls,
-                               TtmConfig ttm,
-                               RollbackConfig rollback,
-                               AppHttpConfig appHttp,
-                               ControllerConfig controllerConfig,
-                               Option<ConfigurationProvider> configProvider,
-                               Option<EnvironmentIntegration> environment,
-                               AutoHealConfig autoHeal,
-                               ObservabilityConfig observability,
-                               DeploymentAtomicity atomicity,
-                               boolean activationGated,
-                               TimeoutsConfig timeouts,
-                               Option<CertificateProvider> certificateProvider,
-                               Option<WorkerConfig> workerConfig,
-                               DeploymentDefaults deploymentDefaults,
-                               HttpProtocol managementHttpProtocol,
-                               Map<String, StorageConfig> storageConfig,
-                               Option<BackupConfig> backupConfig) {
+public record AetherNodeConfig( TopologyConfig topology,
+                                ProtocolConfig protocol,
+                                SliceActionConfig sliceAction,
+                                SliceConfig sliceConfig,
+                                int managementPort,
+                                DHTConfig artifactRepo,
+                                DHTConfig cache,
+                                Option<TlsConfig> tls,
+                                TtmConfig ttm,
+                                RollbackConfig rollback,
+                                AppHttpConfig appHttp,
+                                ControllerConfig controllerConfig,
+                                Option<ConfigurationProvider> configProvider,
+                                Option<EnvironmentIntegration> environment,
+                                AutoHealConfig autoHeal,
+                                ObservabilityConfig observability,
+                                DeploymentAtomicity atomicity,
+                                boolean activationGated,
+                                TimeoutsConfig timeouts,
+                                Option<CertificateProvider> certificateProvider,
+                                Option<WorkerConfig> workerConfig,
+                                DeploymentDefaults deploymentDefaults,
+                                HttpProtocol managementHttpProtocol,
+                                Map<String, StorageConfig> storageConfig,
+                                Option<BackupConfig> backupConfig) {
     /// Node-level deployment defaults applied when a blueprint does not specify its own configuration.
     ///
     /// @param canaryEvaluationIntervalMs interval between canary health evaluations in milliseconds
@@ -827,15 +827,10 @@ public record AetherNodeConfig(TopologyConfig topology,
     ///
     /// @return success if valid, failure with cause otherwise
     public Result<Unit> validate() {
-        if (managementPort < 0 || managementPort > 65535) {
-            return Causes.cause("Invalid management port: " + managementPort)
-                         .result();
-        }
-        if (managementPort != MANAGEMENT_DISABLED && topology.coreNodes()
-                                                             .isEmpty()) {
-            return Causes.cause("At least one core node required when management is enabled")
-                         .result();
-        }
+        if ( managementPort < 0 || managementPort > 65535) {
+        return Causes.cause("Invalid management port: " + managementPort).result();}
+        if ( managementPort != MANAGEMENT_DISABLED && topology.coreNodes().isEmpty()) {
+        return Causes.cause("At least one core node required when management is enabled").result();}
         return Result.unitResult();
     }
 }

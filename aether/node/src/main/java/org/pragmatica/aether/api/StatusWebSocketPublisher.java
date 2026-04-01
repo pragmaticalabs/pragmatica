@@ -44,32 +44,32 @@ public class StatusWebSocketPublisher {
     }
 
     public void start() {
-        if (!running.compareAndSet(false, true)) {
-            return;
-        }
+        if ( !running.compareAndSet(false, true)) {
+        return;}
         taskRef.set(Option.some(SharedScheduler.scheduleAtFixedRate(this::publish,
-                                                                    TimeSpan.timeSpan(intervalMs)
-                                                                            .millis())));
+                                                                    TimeSpan.timeSpan(intervalMs).millis())));
         log.info("Status WebSocket publisher started ({}ms interval)", intervalMs);
     }
 
     public void stop() {
-        if (!running.compareAndSet(true, false)) {
-            return;
-        }
-        taskRef.getAndSet(Option.none())
-               .onPresent(task -> task.cancel(false));
+        if ( !running.compareAndSet(true, false)) {
+        return;}
+        taskRef.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
         log.info("Status WebSocket publisher stopped");
     }
 
     private void publish() {
-        if (handler.connectedClients() == 0) {
-            return;
-        }
-        try{
+        if ( handler.connectedClients() == 0) {
+        return;}
+        try {
             var json = jsonSupplier.get();
             handler.broadcast(json);
-        } catch (Exception e) {
+        }
+
+
+
+
+        catch (Exception e) {
             log.error("Error publishing status via WebSocket", e);
         }
     }

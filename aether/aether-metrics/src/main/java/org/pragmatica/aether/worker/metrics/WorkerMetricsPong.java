@@ -14,14 +14,13 @@ import org.pragmatica.serialization.Codec;
 /// @param p95LatencyMs      estimated P95 latency in milliseconds
 /// @param errorRate         error rate ratio (0.0-1.0)
 /// @param timestampMs       when the pong was created
-@Codec
-public record WorkerMetricsPong(NodeId sender,
-                                double cpuUsage,
-                                double heapUsage,
-                                long activeInvocations,
-                                double p95LatencyMs,
-                                double errorRate,
-                                long timestampMs) implements Message.Wired {
+@Codec public record WorkerMetricsPong( NodeId sender,
+                                        double cpuUsage,
+                                        double heapUsage,
+                                        long activeInvocations,
+                                        double p95LatencyMs,
+                                        double errorRate,
+                                        long timestampMs) implements Message.Wired {
     /// Factory with all fields.
     public static WorkerMetricsPong workerMetricsPong(NodeId sender,
                                                       double cpuUsage,

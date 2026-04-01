@@ -11,7 +11,7 @@ import static org.pragmatica.lang.Result.success;
 /// Root configuration for load generation, containing multiple targets.
 ///
 /// @param targets List of load generation targets to run in parallel
-public record LoadConfig(List<LoadTarget> targets) {
+public record LoadConfig( List<LoadTarget> targets) {
     private static final Cause EMPTY_CONFIG = Causes.cause("Load config must have at least one target");
 
     /// Creates a LoadConfig with validation.
@@ -34,22 +34,19 @@ public record LoadConfig(List<LoadTarget> targets) {
 
     /// Returns the total target requests per second across all targets.
     public int totalRequestsPerSecond() {
-        return targets.stream()
-                      .mapToInt(LoadConfig::targetRequestsPerSecond)
-                      .sum();
+        return targets.stream().mapToInt(LoadConfig::targetRequestsPerSecond)
+                             .sum();
     }
 
     private static int targetRequestsPerSecond(LoadTarget t) {
-        return t.rate()
-                .requestsPerSecond();
+        return t.rate().requestsPerSecond();
     }
 
     /// Creates a new LoadConfig with all target rates scaled by the given multiplier.
     public static Result<LoadConfig> loadConfig(LoadConfig config, double multiplier) {
-        var scaledTargets = config.targets()
-                                  .stream()
-                                  .map(t -> t.withScaledRate(multiplier))
-                                  .toList();
+        var scaledTargets = config.targets().stream()
+                                          .map(t -> t.withScaledRate(multiplier))
+                                          .toList();
         return success(new LoadConfig(scaledTargets));
     }
 }

@@ -37,11 +37,10 @@ public final class ObservabilityRoutes implements RouteSource {
     }
 
     // Request DTO for depth configuration
-    record SetDepthRequest(String artifact, String method, int depthThreshold) {}
+    record SetDepthRequest(String artifact, String method, int depthThreshold){}
 
-    @Override
-    public Stream<Route<?>> routes() {
-        return Stream.of(Route.<Object> get("/api/traces")
+    @Override public Stream<Route<?>> routes() {
+        return Stream.of(Route.<Object>get("/api/traces")
                               .withQuery(QueryParameter.aString("limit"),
                                          QueryParameter.aString("method"),
                                          QueryParameter.aString("status"),
@@ -49,18 +48,18 @@ public final class ObservabilityRoutes implements RouteSource {
                                          QueryParameter.aString("maxDepth"))
                               .toValue(this::handleQueryTraces)
                               .asJson(),
-                         Route.<TraceStats> get("/api/traces/stats")
+                         Route.<TraceStats>get("/api/traces/stats")
                               .toJson(this::handleTraceStats),
-                         Route.<Object> get("/api/traces")
+                         Route.<Object>get("/api/traces")
                               .withPath(aString())
                               .to(this::handleTraceByRequestId)
                               .asJson(),
-                         Route.<Object> get("/api/observability/depth")
+                         Route.<Object>get("/api/observability/depth")
                               .toJson(this::handleGetDepthConfigs),
-                         Route.<Object> post("/api/observability/depth")
+                         Route.<Object>post("/api/observability/depth")
                               .withBody(SetDepthRequest.class)
                               .toJson(this::handleSetDepth),
-                         Route.<Object> delete("/api/observability/depth")
+                         Route.<Object>delete("/api/observability/depth")
                               .withPath(aString(),
                                         aString())
                               .to(this::handleDeleteDepth)
@@ -72,17 +71,15 @@ public final class ObservabilityRoutes implements RouteSource {
                                      Option<String> statusOpt,
                                      Option<String> minDepthOpt,
                                      Option<String> maxDepthOpt) {
-        var limit = limitOpt.map(ObservabilityRoutes::parseIntOrDefault)
-                            .or(DEFAULT_LIMIT);
+        var limit = limitOpt.map(ObservabilityRoutes::parseIntOrDefault).or(DEFAULT_LIMIT);
         var traces = traceStore.query(node -> matchesTraceFilters(node, methodOpt, statusOpt, minDepthOpt, maxDepthOpt),
                                       limit);
         return tracesAsJson(traces);
     }
 
     private Promise<Object> handleTraceByRequestId(String requestId) {
-        if (requestId.isEmpty()) {
-            return ObservabilityError.REQUEST_ID_REQUIRED.promise();
-        }
+        if ( requestId.isEmpty()) {
+        return ObservabilityError.REQUEST_ID_REQUIRED.promise();}
         var traces = traceStore.forRequest(requestId);
         return Promise.success(tracesAsJson(traces));
     }
@@ -100,30 +97,23 @@ public final class ObservabilityRoutes implements RouteSource {
                                       .flatMap(valid -> depthRegistry.setConfig(valid.artifact(),
                                                                                 valid.method(),
                                                                                 valid.depthThreshold())
-                                                                     .map(_ -> depthSetResponseAsJson(valid)));
+        .map(_ -> depthSetResponseAsJson(valid)));
     }
 
     private Promise<Object> handleDeleteDepth(String artifact, String method) {
-        if (artifact.isEmpty() || method.isEmpty()) {
-            return ObservabilityError.KEY_REQUIRED.promise();
-        }
-        return depthRegistry.removeConfig(artifact, method)
-                            .map(_ -> depthRemovedResponseAsJson(artifact, method));
+        if ( artifact.isEmpty() || method.isEmpty()) {
+        return ObservabilityError.KEY_REQUIRED.promise();}
+        return depthRegistry.removeConfig(artifact, method).map(_ -> depthRemovedResponseAsJson(artifact, method));
     }
 
     // --- Validation ---
     private static Result<SetDepthRequest> validateSetDepthRequest(SetDepthRequest req) {
-        if (req.artifact() == null || req.artifact()
-                                         .isEmpty()) {
-            return ObservabilityError.MISSING_FIELDS.result();
-        }
-        if (req.method() == null || req.method()
-                                       .isEmpty()) {
-            return ObservabilityError.MISSING_FIELDS.result();
-        }
-        if (req.depthThreshold() < 0) {
-            return ObservabilityError.INVALID_DEPTH.result();
-        }
+        if ( req.artifact() == null || req.artifact().isEmpty()) {
+        return ObservabilityError.MISSING_FIELDS.result();}
+        if ( req.method() == null || req.method().isEmpty()) {
+        return ObservabilityError.MISSING_FIELDS.result();}
+        if ( req.depthThreshold() < 0) {
+        return ObservabilityError.INVALID_DEPTH.result();}
         return Result.success(req);
     }
 
@@ -133,24 +123,23 @@ public final class ObservabilityRoutes implements RouteSource {
                                                Option<String> statusOpt,
                                                Option<String> minDepthOpt,
                                                Option<String> maxDepthOpt) {
-        var matchesMethod = methodOpt.map(m -> node.callee()
-                                                   .contains(m))
-                                     .or(true);
-        var matchesStatus = statusOpt.map(s -> node.outcome()
-                                                   .name()
-                                                   .equals(s))
-                                     .or(true);
-        var matchesMinDepth = minDepthOpt.map(d -> node.depth() >= parseIntOrDefault(d))
-                                         .or(true);
-        var matchesMaxDepth = maxDepthOpt.map(d -> node.depth() <= parseIntOrDefault(d))
-                                         .or(true);
+        var matchesMethod = methodOpt.map(m -> node.callee().contains(m)).or(true);
+        var matchesStatus = statusOpt.map(s -> node.outcome().name()
+                                                           .equals(s)).or(true);
+        var matchesMinDepth = minDepthOpt.map(d -> node.depth() >= parseIntOrDefault(d)).or(true);
+        var matchesMaxDepth = maxDepthOpt.map(d -> node.depth() <= parseIntOrDefault(d)).or(true);
         return matchesMethod && matchesStatus && matchesMinDepth && matchesMaxDepth;
     }
 
     private static int parseIntOrDefault(String value) {
-        try{
+        try {
             return Integer.parseInt(value);
-        } catch (NumberFormatException _) {
+        }
+
+
+
+
+        catch (NumberFormatException _) {
             return DEFAULT_LIMIT;
         }
     }
@@ -161,8 +150,8 @@ public final class ObservabilityRoutes implements RouteSource {
         var sb = new StringBuilder(traces.size() * 256);
         sb.append("[");
         var first = true;
-        for (var node : traces) {
-            if (!first) sb.append(",");
+        for ( var node : traces) {
+            if ( !first) sb.append(",");
             appendTraceNodeJson(sb, node);
             first = false;
         }
@@ -172,39 +161,25 @@ public final class ObservabilityRoutes implements RouteSource {
 
     @SuppressWarnings("JBCT-PAT-01")
     private static void appendTraceNodeJson(StringBuilder sb, InvocationNode node) {
-        sb.append("{\"requestId\":\"")
-          .append(escapeJson(node.requestId()))
-          .append("\"");
-        sb.append(",\"depth\":")
-          .append(node.depth());
-        sb.append(",\"timestamp\":\"")
-          .append(node.timestamp())
-          .append("\"");
-        sb.append(",\"nodeId\":\"")
-          .append(escapeJson(node.nodeId()))
-          .append("\"");
-        sb.append(",\"caller\":\"")
-          .append(escapeJson(node.caller()))
-          .append("\"");
-        sb.append(",\"callee\":\"")
-          .append(escapeJson(node.callee()))
-          .append("\"");
-        sb.append(",\"durationNs\":")
-          .append(node.durationNs());
-        sb.append(",\"durationMs\":")
-          .append(node.durationMs());
-        sb.append(",\"outcome\":\"")
-          .append(node.outcome()
-                      .name())
-          .append("\"");
-        node.errorMessage()
-            .onPresent(msg -> sb.append(",\"errorMessage\":\"")
-                                .append(escapeJson(msg))
-                                .append("\""));
-        sb.append(",\"local\":")
-          .append(node.local());
-        sb.append(",\"hops\":")
-          .append(node.hops());
+        sb.append("{\"requestId\":\"").append(escapeJson(node.requestId()))
+                 .append("\"");
+        sb.append(",\"depth\":").append(node.depth());
+        sb.append(",\"timestamp\":\"").append(node.timestamp())
+                 .append("\"");
+        sb.append(",\"nodeId\":\"").append(escapeJson(node.nodeId()))
+                 .append("\"");
+        sb.append(",\"caller\":\"").append(escapeJson(node.caller()))
+                 .append("\"");
+        sb.append(",\"callee\":\"").append(escapeJson(node.callee()))
+                 .append("\"");
+        sb.append(",\"durationNs\":").append(node.durationNs());
+        sb.append(",\"durationMs\":").append(node.durationMs());
+        sb.append(",\"outcome\":\"").append(node.outcome().name())
+                 .append("\"");
+        node.errorMessage().onPresent(msg -> sb.append(",\"errorMessage\":\"").append(escapeJson(msg))
+                                                      .append("\""));
+        sb.append(",\"local\":").append(node.local());
+        sb.append(",\"hops\":").append(node.hops());
         sb.append("}");
     }
 
@@ -213,17 +188,12 @@ public final class ObservabilityRoutes implements RouteSource {
         var sb = new StringBuilder(configs.size() * 128);
         sb.append("[");
         var first = true;
-        for (var entry : configs.entrySet()) {
-            if (!first) sb.append(",");
-            sb.append("{\"key\":\"")
-              .append(escapeJson(entry.getKey()))
-              .append("\"");
-            sb.append(",\"depthThreshold\":")
-              .append(entry.getValue()
-                           .depthThreshold());
-            sb.append(",\"targetTracesPerSec\":")
-              .append(entry.getValue()
-                           .targetTracesPerSec());
+        for ( var entry : configs.entrySet()) {
+            if ( !first) sb.append(",");
+            sb.append("{\"key\":\"").append(escapeJson(entry.getKey()))
+                     .append("\"");
+            sb.append(",\"depthThreshold\":").append(entry.getValue().depthThreshold());
+            sb.append(",\"targetTracesPerSec\":").append(entry.getValue().targetTracesPerSec());
             sb.append("}");
             first = false;
         }
@@ -232,18 +202,15 @@ public final class ObservabilityRoutes implements RouteSource {
     }
 
     private static Object depthSetResponseAsJson(SetDepthRequest req) {
-        return "{\"status\":\"depth_set\"" + ",\"artifact\":\"" + escapeJson(req.artifact()) + "\"" + ",\"method\":\"" + escapeJson(req.method())
-               + "\"" + ",\"depthThreshold\":" + req.depthThreshold() + "}";
+        return "{\"status\":\"depth_set\"" + ",\"artifact\":\"" + escapeJson(req.artifact()) + "\"" + ",\"method\":\"" + escapeJson(req.method()) + "\"" + ",\"depthThreshold\":" + req.depthThreshold() + "}";
     }
 
     private static Object depthRemovedResponseAsJson(String artifact, String method) {
-        return "{\"status\":\"depth_removed\"" + ",\"artifact\":\"" + escapeJson(artifact) + "\"" + ",\"method\":\"" + escapeJson(method)
-               + "\"" + "}";
+        return "{\"status\":\"depth_removed\"" + ",\"artifact\":\"" + escapeJson(artifact) + "\"" + ",\"method\":\"" + escapeJson(method) + "\"" + "}";
     }
 
     private static String escapeJson(String value) {
-        return value.replace("\\", "\\\\")
-                    .replace("\"", "\\\"");
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     // --- Error causes ---
@@ -256,8 +223,7 @@ public final class ObservabilityRoutes implements RouteSource {
         ObservabilityError(String message) {
             this.message = message;
         }
-        @Override
-        public String message() {
+        @Override public String message() {
             return message;
         }
     }

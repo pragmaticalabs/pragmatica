@@ -67,13 +67,13 @@ public final class ScheduledTaskRoutes implements RouteSource {
                        long lastExecutionAt,
                        long nextFireAt,
                        int consecutiveFailures,
-                       int totalExecutions) {}
+                       int totalExecutions){}
 
-    record ScheduledTasksResponse(List<TaskSummary> tasks, int activeTimers) {}
+    record ScheduledTasksResponse(List<TaskSummary> tasks, int activeTimers){}
 
-    record FilteredTasksResponse(List<TaskSummary> tasks, String configSection) {}
+    record FilteredTasksResponse(List<TaskSummary> tasks, String configSection){}
 
-    record TaskActionResult(boolean success, String configSection, String artifact, String method, String action) {}
+    record TaskActionResult(boolean success, String configSection, String artifact, String method, String action){}
 
     record TaskStateResponse(String configSection,
                              String artifact,
@@ -83,24 +83,23 @@ public final class ScheduledTaskRoutes implements RouteSource {
                              int consecutiveFailures,
                              int totalExecutions,
                              String lastFailureMessage,
-                             long updatedAt) {}
+                             long updatedAt){}
 
-    @Override
-    public Stream<Route<?>> routes() {
-        return Stream.of(Route.<ScheduledTasksResponse> get("/api/scheduled-tasks")
+    @Override public Stream<Route<?>> routes() {
+        return Stream.of(Route.<ScheduledTasksResponse>get("/api/scheduled-tasks")
                               .toJson(this::buildTasksResponse),
-                         Route.<FilteredTasksResponse> get("/api/scheduled-tasks")
+                         Route.<FilteredTasksResponse>get("/api/scheduled-tasks")
                               .withPath(aString())
                               .to(this::buildFilteredResponse)
                               .asJson(),
-                         Route.<TaskStateResponse> get("/api/scheduled-tasks")
+                         Route.<TaskStateResponse>get("/api/scheduled-tasks")
                               .withPath(aString(),
                                         aString(),
                                         aString(),
                                         aString())
                               .to(this::getTaskState)
                               .asJson(),
-                         Route.<TaskActionResult> post("/api/scheduled-tasks")
+                         Route.<TaskActionResult>post("/api/scheduled-tasks")
                               .withPath(aString(),
                                         aString(),
                                         aString(),
@@ -110,20 +109,17 @@ public final class ScheduledTaskRoutes implements RouteSource {
     }
 
     private ScheduledTasksResponse buildTasksResponse() {
-        var tasks = registry.allTasks()
-                            .stream()
-                            .map(this::toSummary)
-                            .toList();
+        var tasks = registry.allTasks().stream()
+                                     .map(this::toSummary)
+                                     .toList();
         return new ScheduledTasksResponse(tasks, manager.activeTimerCount());
     }
 
     private Promise<FilteredTasksResponse> buildFilteredResponse(String configSection) {
-        var tasks = registry.allTasks()
-                            .stream()
-                            .filter(task -> task.configSection()
-                                                .equals(configSection))
-                            .map(this::toSummary)
-                            .toList();
+        var tasks = registry.allTasks().stream()
+                                     .filter(task -> task.configSection().equals(configSection))
+                                     .map(this::toSummary)
+                                     .toList();
         return Promise.success(new FilteredTasksResponse(tasks, configSection));
     }
 
@@ -132,12 +128,12 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                        String artifactStr,
                                                        String methodStr,
                                                        String action) {
-        return switch (action) {
-            case "pause" -> setPaused(configSection, artifactStr, methodStr, true);
-            case "resume" -> setPaused(configSection, artifactStr, methodStr, false);
-            case "trigger" -> triggerTask(configSection, artifactStr, methodStr);
-            default -> UNKNOWN_ACTION.promise();
-        };
+        return switch (action) {case "pause" -> setPaused(configSection, artifactStr, methodStr, true);case "resume" -> setPaused(configSection,
+                                                                                                                                  artifactStr,
+                                                                                                                                  methodStr,
+                                                                                                                                  false);case "trigger" -> triggerTask(configSection,
+                                                                                                                                                                       artifactStr,
+                                                                                                                                                                       methodStr);default -> UNKNOWN_ACTION.promise();};
     }
 
     private Promise<TaskActionResult> setPaused(String configSection,
@@ -163,9 +159,8 @@ public final class ScheduledTaskRoutes implements RouteSource {
         var action = paused
                      ? "paused"
                      : "resumed";
-        return nodeSupplier.get()
-                           .apply(List.of(command))
-                           .map(_ -> new TaskActionResult(true, configSection, artifactStr, methodStr, action));
+        return nodeSupplier.get().apply(List.of(command))
+                               .map(_ -> new TaskActionResult(true, configSection, artifactStr, methodStr, action));
     }
 
     private Promise<TaskActionResult> triggerTask(String configSection,
@@ -179,30 +174,24 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                            String configSection,
                                                            String artifactStr,
                                                            String methodStr) {
-        return invoker.invoke(task.artifact(),
-                              task.methodName(),
-                              Unit.unit())
-                      .map(_ -> new TaskActionResult(true, configSection, artifactStr, methodStr, "triggered"));
+        return invoker.invoke(task.artifact(), task.methodName(), Unit.unit())
+        .map(_ -> new TaskActionResult(true, configSection, artifactStr, methodStr, "triggered"));
     }
 
     private Promise<ScheduledTask> findTask(String configSection,
                                             String artifactStr,
                                             String methodStr) {
-        return registry.allTasks()
-                       .stream()
-                       .filter(t -> matchesTask(t, configSection, artifactStr, methodStr))
-                       .findFirst()
-                       .map(Promise::success)
-                       .orElse(TASK_NOT_FOUND.promise());
+        return registry.allTasks().stream()
+                                .filter(t -> matchesTask(t, configSection, artifactStr, methodStr))
+                                .findFirst()
+                                .map(Promise::success)
+                                .orElse(TASK_NOT_FOUND.promise());
     }
 
     private static boolean matchesTask(ScheduledTask task, String configSection, String artifactStr, String methodStr) {
-        return task.configSection()
-                   .equals(configSection) && task.artifact()
-                                                 .asString()
-                                                 .equals(artifactStr) && task.methodName()
-                                                                             .name()
-                                                                             .equals(methodStr);
+        return task.configSection().equals(configSection) && task.artifact().asString()
+                                                                          .equals(artifactStr) && task.methodName().name()
+                                                                                                                 .equals(methodStr);
     }
 
     private TaskSummary toSummary(ScheduledTask task) {
@@ -210,12 +199,12 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                    task.artifact(),
                                                                    task.methodName());
         return stateRegistry.stateFor(stateKey)
-                            .fold(() -> buildSummary(task, 0, 0, 0, 0),
-                                  state -> buildSummary(task,
-                                                        state.lastExecutionAt(),
-                                                        state.nextFireAt(),
-                                                        state.consecutiveFailures(),
-                                                        state.totalExecutions()));
+        .fold(() -> buildSummary(task, 0, 0, 0, 0),
+              state -> buildSummary(task,
+                                    state.lastExecutionAt(),
+                                    state.nextFireAt(),
+                                    state.consecutiveFailures(),
+                                    state.totalExecutions()));
     }
 
     private static TaskSummary buildSummary(ScheduledTask task,
@@ -224,16 +213,13 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                             int consecutiveFailures,
                                             int totalExecutions) {
         return new TaskSummary(task.configSection(),
-                               task.artifact()
-                                   .asString(),
-                               task.methodName()
-                                   .name(),
+                               task.artifact().asString(),
+                               task.methodName().name(),
                                task.interval(),
                                task.cron(),
                                task.executionMode(),
                                task.paused(),
-                               task.registeredBy()
-                                   .id(),
+                               task.registeredBy().id(),
                                lastExecutionAt,
                                nextFireAt,
                                consecutiveFailures,
@@ -245,10 +231,8 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                     String artifactStr,
                                                     String methodStr,
                                                     String stateAction) {
-        if (!"state".equals(stateAction)) {
-            return Causes.cause("Unknown GET action: " + stateAction)
-                         .promise();
-        }
+        if ( !"state".equals(stateAction)) {
+        return Causes.cause("Unknown GET action: " + stateAction).promise();}
         return findTask(configSection, artifactStr, methodStr)
         .flatMap(task -> buildStateResponse(task, configSection, artifactStr, methodStr));
     }
@@ -261,16 +245,16 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                    task.artifact(),
                                                                    task.methodName());
         return stateRegistry.stateFor(stateKey)
-                            .fold(() -> Promise.success(emptyStateResponse(configSection, artifactStr, methodStr)),
-                                  state -> Promise.success(new TaskStateResponse(configSection,
-                                                                                 artifactStr,
-                                                                                 methodStr,
-                                                                                 state.lastExecutionAt(),
-                                                                                 state.nextFireAt(),
-                                                                                 state.consecutiveFailures(),
-                                                                                 state.totalExecutions(),
-                                                                                 state.lastFailureMessage(),
-                                                                                 state.updatedAt())));
+        .fold(() -> Promise.success(emptyStateResponse(configSection, artifactStr, methodStr)),
+              state -> Promise.success(new TaskStateResponse(configSection,
+                                                             artifactStr,
+                                                             methodStr,
+                                                             state.lastExecutionAt(),
+                                                             state.nextFireAt(),
+                                                             state.consecutiveFailures(),
+                                                             state.totalExecutions(),
+                                                             state.lastFailureMessage(),
+                                                             state.updatedAt())));
     }
 
     private static TaskStateResponse emptyStateResponse(String configSection, String artifactStr, String methodStr) {

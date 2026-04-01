@@ -17,14 +17,13 @@ import java.util.List;
 /// @param sliceMetrics per-slice metrics breakdown
 /// @param slidingWindow sliding window history
 /// @param timestampMs  when the snapshot was created
-@Codec
-public record CommunityMetricsSnapshot(String communityId,
-                                       NodeId governorId,
-                                       long requestId,
-                                       int memberCount,
-                                       List<PerSliceMetrics> sliceMetrics,
-                                       List<WindowSample> slidingWindow,
-                                       long timestampMs) implements Message.Wired {
+@Codec public record CommunityMetricsSnapshot( String communityId,
+                                               NodeId governorId,
+                                               long requestId,
+                                               int memberCount,
+                                               List<PerSliceMetrics> sliceMetrics,
+                                               List<WindowSample> slidingWindow,
+                                               long timestampMs) implements Message.Wired {
     /// Factory following JBCT naming convention.
     public static CommunityMetricsSnapshot communityMetricsSnapshot(String communityId,
                                                                     NodeId governorId,

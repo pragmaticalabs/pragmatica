@@ -44,35 +44,33 @@ public final class ControllerRoutes implements RouteSource {
                              double latencyP95,
                              double latencyP99,
                              double errorRate,
-                             int eventCount) {}
+                             int eventCount){}
 
     // Request DTO
     record ControllerConfigRequest(Double cpuScaleUpThreshold,
                                    Double cpuScaleDownThreshold,
                                    Double callRateScaleUpThreshold,
-                                   Long evaluationIntervalMs) {}
+                                   Long evaluationIntervalMs){}
 
-    @Override
-    public Stream<Route<?>> routes() {
-        return Stream.of(Route.<ControllerConfig> get("/api/controller/config")
+    @Override public Stream<Route<?>> routes() {
+        return Stream.of(Route.<ControllerConfig>get("/api/controller/config")
                               .toJson(this::buildControllerConfigResponse),
-                         Route.<ControllerStatusResponse> get("/api/controller/status")
+                         Route.<ControllerStatusResponse>get("/api/controller/status")
                               .toJson(this::buildControllerStatusResponse),
-                         Route.<TtmStatusResponse> get("/api/ttm/status")
+                         Route.<TtmStatusResponse>get("/api/ttm/status")
                               .toJson(this::buildTtmStatusResponse),
-                         Route.<ControllerConfigUpdatedResponse> post("/api/controller/config")
+                         Route.<ControllerConfigUpdatedResponse>post("/api/controller/config")
                               .withBody(ControllerConfigRequest.class)
                               .toJson(this::handleControllerConfig),
-                         Route.<EvaluationTriggeredResponse> post("/api/controller/evaluate")
+                         Route.<EvaluationTriggeredResponse>post("/api/controller/evaluate")
                               .toJson(() -> new EvaluationTriggeredResponse("evaluation_triggered")),
-                         Route.<List<TrainingDataPoint>> get("/api/ttm/training-data")
+                         Route.<List<TrainingDataPoint>>get("/api/ttm/training-data")
                               .toJson(this::buildTrainingDataResponse));
     }
 
     private Promise<ControllerConfigUpdatedResponse> handleControllerConfig(ControllerConfigRequest req) {
         var node = nodeSupplier.get();
-        var currentConfig = node.controlLoop()
-                                .configuration();
+        var currentConfig = node.controlLoop().configuration();
         return mergeConfig(req, currentConfig).async()
                           .withSuccess(node.controlLoop()::updateConfiguration)
                           .map(newConfig -> new ControllerConfigUpdatedResponse("updated", newConfig));
@@ -99,15 +97,13 @@ public final class ControllerRoutes implements RouteSource {
     }
 
     private ControllerConfig buildControllerConfigResponse() {
-        return nodeSupplier.get()
-                           .controlLoop()
-                           .configuration();
+        return nodeSupplier.get().controlLoop()
+                               .configuration();
     }
 
     private ControllerStatusResponse buildControllerStatusResponse() {
         var node = nodeSupplier.get();
-        var config = node.controlLoop()
-                         .configuration();
+        var config = node.controlLoop().configuration();
         return new ControllerStatusResponse(true, config.evaluationIntervalMs(), config);
     }
 
@@ -115,16 +111,13 @@ public final class ControllerRoutes implements RouteSource {
         var node = nodeSupplier.get();
         var ttm = node.ttmManager();
         var config = ttm.config();
-        var forecast = ttm.currentForecast()
-                          .map(this::toTtmForecast);
+        var forecast = ttm.currentForecast().map(this::toTtmForecast);
         return new TtmStatusResponse(config.enabled(),
                                      ttm.isEnabled(),
-                                     ttm.state()
-                                        .name(),
+                                     ttm.state().name(),
                                      config.modelPath(),
                                      config.inputWindowMinutes(),
-                                     config.evaluationInterval()
-                                           .millis(),
+                                     config.evaluationInterval().millis(),
                                      config.confidenceThreshold(),
                                      forecast.isPresent(),
                                      forecast);
@@ -133,19 +126,17 @@ public final class ControllerRoutes implements RouteSource {
     private TtmForecast toTtmForecast(TTMForecast f) {
         return new TtmForecast(f.timestamp(),
                                f.confidence(),
-                               f.recommendation()
-                                .getClass()
-                                .getSimpleName());
+                               f.recommendation().getClass()
+                                               .getSimpleName());
     }
 
     private List<TrainingDataPoint> buildTrainingDataResponse() {
-        return nodeSupplier.get()
-                           .snapshotCollector()
-                           .minuteAggregator()
-                           .recent(120)
-                           .stream()
-                           .map(ControllerRoutes::toTrainingDataPoint)
-                           .toList();
+        return nodeSupplier.get().snapshotCollector()
+                               .minuteAggregator()
+                               .recent(120)
+                               .stream()
+                               .map(ControllerRoutes::toTrainingDataPoint)
+                               .toList();
     }
 
     private static TrainingDataPoint toTrainingDataPoint(org.pragmatica.aether.metrics.MinuteAggregate agg) {

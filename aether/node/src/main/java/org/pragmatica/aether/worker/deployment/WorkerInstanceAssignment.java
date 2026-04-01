@@ -10,7 +10,7 @@ import java.util.List;
 /// All workers evaluate the same function and arrive at the same result.
 @SuppressWarnings("JBCT-UTIL-02") // Utility interface -- static methods only
 public sealed interface WorkerInstanceAssignment {
-    record unused() implements WorkerInstanceAssignment {}
+    record unused() implements WorkerInstanceAssignment{}
 
     /// Compute how many instances this worker should run for the given artifact.
     ///
@@ -26,16 +26,13 @@ public sealed interface WorkerInstanceAssignment {
                                  int targetInstances,
                                  List<NodeId> aliveMembers,
                                  NodeId self) {
-        if (aliveMembers.isEmpty() || targetInstances <= 0) {
-            return 0;
-        }
-        var sortedMembers = aliveMembers.stream()
-                                        .sorted(Comparator.comparingInt(member -> hashFor(member, artifact)))
-                                        .toList();
+        if ( aliveMembers.isEmpty() || targetInstances <= 0) {
+        return 0;}
+        var sortedMembers = aliveMembers.stream().sorted(Comparator.comparingInt(member -> hashFor(member, artifact)))
+                                               .toList();
         var selfIndex = sortedMembers.indexOf(self);
-        if (selfIndex < 0) {
-            return 0;
-        }
+        if ( selfIndex < 0) {
+        return 0;}
         var memberCount = sortedMembers.size();
         var baseCount = targetInstances / memberCount;
         var remainder = targetInstances % memberCount;

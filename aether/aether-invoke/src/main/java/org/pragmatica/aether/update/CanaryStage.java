@@ -14,31 +14,91 @@ import java.util.List;
 ///
 /// @param trafficPercent percentage of traffic to route to the canary version (1-100)
 /// @param observationMinutes how long to observe at this traffic level before advancing
-public record CanaryStage(int trafficPercent, int observationMinutes) {
+public record CanaryStage( int trafficPercent, int observationMinutes) {
     private static final Cause INVALID_TRAFFIC = Causes.cause("Traffic percent must be between 1 and 100");
     private static final Cause NEGATIVE_OBSERVATION = Causes.cause("Observation minutes must be non-negative");
 
     /// Factory method with validation.
     public static Result<CanaryStage> canaryStage(int trafficPercent, int observationMinutes) {
-        if (trafficPercent < 1 || trafficPercent > 100) {
-            return INVALID_TRAFFIC.result();
-        }
-        if (observationMinutes < 0) {
-            return NEGATIVE_OBSERVATION.result();
-        }
+        if ( trafficPercent < 1 || trafficPercent > 100) {
+        return INVALID_TRAFFIC.result();}
+        if ( observationMinutes < 0) {
+        return NEGATIVE_OBSERVATION.result();}
         return Result.success(new CanaryStage(trafficPercent, observationMinutes));
     }
 
     /// Converts traffic percentage to a VersionRouting ratio.
     /// For example: 5% -> VersionRouting(5, 95), 25% -> (25, 75), 100% -> (100, 0)
     @SuppressWarnings("JBCT-VO-02") // Pre-validated: trafficPercent guaranteed [1-100] by factory
-    public VersionRouting toRouting() {
+    public// Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    // Pre-validated: trafficPercent guaranteed [1-100] by factory
+    VersionRouting toRouting() {
         return new VersionRouting(trafficPercent, 100 - trafficPercent);
     }
 
     /// Default canary stages for progressive traffic shift.
     @SuppressWarnings("JBCT-VO-02") // Static constants use pre-validated values
-    public static List<CanaryStage> defaultStages() {
+    public static// Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    List<CanaryStage> defaultStages() {
         return List.of(new CanaryStage(1, 5),
                        new CanaryStage(5, 5),
                        new CanaryStage(25, 10),

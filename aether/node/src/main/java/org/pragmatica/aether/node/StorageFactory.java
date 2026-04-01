@@ -39,7 +39,8 @@ public final class StorageFactory {
                                StorageInstance instance,
                                SnapshotManager snapshotManager,
                                StorageReadinessGate readinessGate) {
-        public static StorageSetup storageSetup(String name, StorageInstance instance,
+        public static StorageSetup storageSetup(String name,
+                                                StorageInstance instance,
                                                 SnapshotManager snapshotManager,
                                                 StorageReadinessGate readinessGate) {
             return StorageSetup.storageSetup(name, instance, snapshotManager, readinessGate);
@@ -47,41 +48,44 @@ public final class StorageFactory {
     }
 
     /// Create StorageSetup instances for all configured storage entries.
-    static Map<String, StorageSetup> createAll(Map<String, StorageConfig> configs, String nodeId,
+    static Map<String, StorageSetup> createAll(Map<String, StorageConfig> configs,
+                                               String nodeId,
                                                Option<DHTClient> dhtClient) {
         var result = new LinkedHashMap<String, StorageSetup>();
-
-        configs.forEach((name, config) -> createOne(name, config, nodeId, dhtClient)
-            .onSuccess(setup -> result.put(name, setup))
-            .onFailure(cause -> log.error("Failed to create storage '{}': {}", name, cause.message())));
-
+        configs.forEach((name, config) -> createOne(name, config, nodeId, dhtClient).onSuccess(setup -> result.put(name,
+                                                                                                                   setup))
+                                                   .onFailure(cause -> log.error("Failed to create storage '{}': {}",
+                                                                                 name,
+                                                                                 cause.message())));
         return Map.copyOf(result);
     }
 
     /// Create a default artifact StorageInstance with memory cache and DHT durable tier.
     static StorageInstance defaultArtifactStorage(Option<DHTClient> dhtClient) {
         var memoryTier = MemoryTier.memoryTier(DEFAULT_MEMORY_BYTES);
-
-        return dhtClient
-            .map(client -> DhtStorageTier.dhtStorageTier(client, "artifact-blocks"))
-            .map(dht -> StorageInstance.storageInstance("artifacts", List.of(memoryTier, dht)))
-            .or(StorageInstance.storageInstance("artifacts", List.of(memoryTier)));
+        return dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "artifact-blocks")).map(dht -> StorageInstance.storageInstance("artifacts",
+                                                                                                                                            List.of(memoryTier,
+                                                                                                                                                    dht)))
+                            .or(StorageInstance.storageInstance("artifacts",
+                                                                List.of(memoryTier)));
     }
 
-    private static Result<StorageSetup> createOne(String name, StorageConfig config, String nodeId,
-                                                   Option<DHTClient> dhtClient) {
-        return buildTiers(name, config, dhtClient)
-            .map(tiers -> assembleSetup(name, tiers, config, nodeId));
+    private static Result<StorageSetup> createOne(String name,
+                                                  StorageConfig config,
+                                                  String nodeId,
+                                                  Option<DHTClient> dhtClient) {
+        return buildTiers(name, config, dhtClient).map(tiers -> assembleSetup(name, tiers, config, nodeId));
     }
 
-    private static Result<List<StorageTier>> buildTiers(String name, StorageConfig config,
-                                                         Option<DHTClient> dhtClient) {
+    private static Result<List<StorageTier>> buildTiers(String name,
+                                                        StorageConfig config,
+                                                        Option<DHTClient> dhtClient) {
         var memoryTier = MemoryTier.memoryTier(config.memoryMaxBytes());
         var dhtTier = dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, name + "-blocks"));
-
-        return LocalDiskTier.localDiskTier(Path.of(config.diskPath()), config.diskMaxBytes())
-                            .fold(cause -> handleDiskTierUnavailable(name, cause, memoryTier, dhtTier),
-                                  disk -> buildTierList(memoryTier, disk, dhtTier));
+        return LocalDiskTier.localDiskTier(Path.of(config.diskPath()),
+                                           config.diskMaxBytes())
+        .fold(cause -> handleDiskTierUnavailable(name, cause, memoryTier, dhtTier),
+              disk -> buildTierList(memoryTier, disk, dhtTier));
     }
 
     private static Result<List<StorageTier>> handleDiskTierUnavailable(String name,
@@ -89,15 +93,14 @@ public final class StorageFactory {
                                                                        MemoryTier memoryTier,
                                                                        Option<DhtStorageTier> dhtTier) {
         log.warn("Disk tier for '{}' unavailable: {}, using memory + DHT fallback", name, cause.message());
-        return Result.success(dhtTier.map(dht -> List.<StorageTier>of(memoryTier, dht))
-                                     .or(List.of(memoryTier)));
+        return Result.success(dhtTier.map(dht -> List.<StorageTier>of(memoryTier, dht)).or(List.of(memoryTier)));
     }
 
     private static Result<List<StorageTier>> buildTierList(MemoryTier memoryTier,
-                                                            StorageTier diskTier,
-                                                            Option<DhtStorageTier> dhtTier) {
+                                                           StorageTier diskTier,
+                                                           Option<DhtStorageTier> dhtTier) {
         return Result.success(dhtTier.map(dht -> List.<StorageTier>of(memoryTier, diskTier, dht))
-                                     .or(List.of(memoryTier, diskTier)));
+        .or(List.of(memoryTier, diskTier)));
     }
 
     private static StorageSetup assembleSetup(String name,
@@ -109,18 +112,13 @@ public final class StorageFactory {
         var snapshotConfig = buildSnapshotConfig(config, nodeId);
         var snapshotManager = SnapshotManager.snapshotManager(metadataStore, snapshotConfig);
         var readinessGate = StorageReadinessGate.storageReadinessGate();
-
         restoreAndSignalReady(name, snapshotManager, metadataStore, readinessGate);
-
-        log.info("Storage '{}' created: {} tier(s), snapshot path={}",
-                 name, tiers.size(), config.snapshotPath());
-
+        log.info("Storage '{}' created: {} tier(s), snapshot path={}", name, tiers.size(), config.snapshotPath());
         return StorageSetup.storageSetup(name, instance, snapshotManager, readinessGate);
     }
 
     private static SnapshotConfig buildSnapshotConfig(StorageConfig config, String nodeId) {
         var intervalMillis = parseIntervalMillis(config.snapshotMaxInterval());
-
         return SnapshotConfig.snapshotConfig(Path.of(config.snapshotPath()),
                                              config.snapshotMutationThreshold(),
                                              intervalMillis,
@@ -132,9 +130,7 @@ public final class StorageFactory {
                                               SnapshotManager snapshotManager,
                                               MetadataStore metadataStore,
                                               StorageReadinessGate readinessGate) {
-        snapshotManager.restoreFromLatest()
-                       .onPresent(snapshot -> applySnapshot(name, snapshot, metadataStore));
-
+        snapshotManager.restoreFromLatest().onPresent(snapshot -> applySnapshot(name, snapshot, metadataStore));
         readinessGate.snapshotLoaded();
     }
 
@@ -144,12 +140,14 @@ public final class StorageFactory {
         metadataStore.restoreLifecycles(snapshot.lifecycles());
         metadataStore.restoreRefs(snapshot.refs());
         log.info("Restored snapshot for '{}': epoch={}, lifecycles={}, refs={}",
-                 name, snapshot.epoch(), snapshot.lifecycles().size(), snapshot.refs().size());
+                 name,
+                 snapshot.epoch(),
+                 snapshot.lifecycles().size(),
+                 snapshot.refs().size());
     }
 
     private static long parseIntervalMillis(String interval) {
-        return TimeSpan.timeSpan(interval)
-                       .map(TimeSpan::toMillis)
-                       .or(60_000L);
+        return TimeSpan.timeSpan(interval).map(TimeSpan::toMillis)
+                                .or(60_000L);
     }
 }

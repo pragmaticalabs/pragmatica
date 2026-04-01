@@ -31,8 +31,7 @@ public sealed interface ClusterConfigApplier {
     }
 
     record unused() implements ClusterConfigApplier {
-        @Override
-        public Promise<Unit> apply(List<ConfigChange> changes) {
+        @Override public Promise<Unit> apply(List<ConfigChange> changes) {
             return Promise.unitPromise();
         }
     }
@@ -40,34 +39,23 @@ public sealed interface ClusterConfigApplier {
 
 /// Applies config changes via CTM for scale operations.
 /// Deferred operations (version upgrade, TLS rotation) log warnings.
-@SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-01"})
-record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implements ClusterConfigApplier {
-    @Override
-    public Promise<Unit> apply(List<ConfigChange> changes) {
+@SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-01"}) record ClusterConfigApplierRecord( ClusterTopologyManager topologyManager) implements ClusterConfigApplier {
+    @Override public Promise<Unit> apply(List<ConfigChange> changes) {
         var promise = Promise.unitPromise();
-        for (var change : changes) {
-            promise = promise.flatMap(_ -> applySingle(change));
-        }
+        for ( var change : changes) {
+        promise = promise.flatMap(_ -> applySingle(change));}
         return promise;
     }
 
     private Promise<Unit> applySingle(ConfigChange change) {
-        return switch (change) {
-            case ScaleCore scale -> applyScale(scale);
-            case UpdateCoreMin _ -> logApplied(change);
-            case UpdateCoreMax _ -> logApplied(change);
-            case UpdateAutoHeal _ -> logApplied(change);
-            case UpdateVersion upgrade -> logDeferred(upgrade);
-            default -> logApplied(change);
-        };
+        return switch (change) {case ScaleCore scale -> applyScale(scale);case UpdateCoreMin _ -> logApplied(change);case UpdateCoreMax _ -> logApplied(change);case UpdateAutoHeal _ -> logApplied(change);case UpdateVersion upgrade -> logDeferred(upgrade);default -> logApplied(change);};
     }
 
     private Promise<Unit> applyScale(ScaleCore scale) {
-        return topologyManager.setDesiredSize(scale.to())
-                              .async()
-                              .onSuccess(_ -> ClusterConfigApplier.log.info("Applied: {}",
-                                                                            scale.description()))
-                              .mapToUnit();
+        return topologyManager.setDesiredSize(scale.to()).async()
+                                             .onSuccess(_ -> ClusterConfigApplier.log.info("Applied: {}",
+                                                                                           scale.description()))
+                                             .mapToUnit();
     }
 
     private static Promise<Unit> logApplied(ConfigChange change) {

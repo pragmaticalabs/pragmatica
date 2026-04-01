@@ -13,10 +13,10 @@ import static org.pragmatica.lang.Option.some;
 /// @param smtpConfig SMTP configuration (required when backend is "smtp")
 /// @param httpConfig HTTP vendor configuration (required when backend is "http")
 /// @param retryConfig Optional retry configuration (defaults to 3 attempts with exponential backoff)
-public record NotificationConfig(String backend,
-                                 Option<SmtpConfig> smtpConfig,
-                                 Option<HttpEmailConfig> httpConfig,
-                                 Option<RetryConfig> retryConfig) {
+public record NotificationConfig( String backend,
+                                  Option<SmtpConfig> smtpConfig,
+                                  Option<HttpEmailConfig> httpConfig,
+                                  Option<RetryConfig> retryConfig) {
     /// Create a notification config for the given backend with no backend-specific config.
     public static NotificationConfig notificationConfig(String backend) {
         return new NotificationConfig(backend, none(), none(), none());

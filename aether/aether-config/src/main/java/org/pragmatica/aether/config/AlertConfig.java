@@ -30,9 +30,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param enabled Whether alerting is enabled
 /// @param webhook Webhook configuration
 /// @param events Event stream configuration
-public record AlertConfig(boolean enabled,
-                          WebhookConfig webhook,
-                          EventConfig events) {
+public record AlertConfig( boolean enabled,
+                           WebhookConfig webhook,
+                           EventConfig events) {
     private static final AlertConfig DEFAULT = alertConfig(true,
                                                            WebhookConfig.webhookConfig(),
                                                            EventConfig.eventConfig()).unwrap();
@@ -52,13 +52,8 @@ public record AlertConfig(boolean enabled,
     /// Create AlertConfig with webhook URLs.
     public static AlertConfig alertConfig(List<String> urls) {
         return alertConfig(true,
-                           WebhookConfig.webhookConfig(true,
-                                                       urls,
-                                                       3,
-                                                       timeSpan(5).seconds())
-                                        .unwrap(),
-                           EventConfig.eventConfig(true)
-                                      .unwrap()).unwrap();
+                           WebhookConfig.webhookConfig(true, urls, 3, timeSpan(5).seconds()).unwrap(),
+                           EventConfig.eventConfig(true).unwrap()).unwrap();
     }
 
     /// Configuration for webhook-based alert forwarding.
@@ -97,7 +92,7 @@ public record AlertConfig(boolean enabled,
             return ! enabled || hasUrls()
                    ? success(this)
                    : AlertConfigError.InvalidAlertConfig.invalidAlertConfig("webhook.urls cannot be empty when enabled")
-                                     .result();
+            .result();
         }
 
         private boolean hasUrls() {
@@ -108,14 +103,14 @@ public record AlertConfig(boolean enabled,
             return retryCount >= 0
                    ? success(this)
                    : AlertConfigError.InvalidAlertConfig.invalidAlertConfig("webhook.retry_count must be >= 0")
-                                     .result();
+            .result();
         }
 
         private Result<WebhookConfig> checkTimeout() {
             return ! enabled || timeout.millis() >= 100
                    ? success(this)
                    : AlertConfigError.InvalidAlertConfig.invalidAlertConfig("webhook.timeout must be >= 100ms")
-                                     .result();
+            .result();
         }
     }
 
@@ -137,8 +132,7 @@ public record AlertConfig(boolean enabled,
     /// Error hierarchy for alert configuration failures.
     public sealed interface AlertConfigError extends Cause {
         record unused() implements AlertConfigError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "unused";
             }
         }
@@ -155,8 +149,7 @@ public record AlertConfig(boolean enabled,
                 return invalidAlertConfig(detail, true).unwrap();
             }
 
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Invalid alert configuration: " + detail;
             }
         }

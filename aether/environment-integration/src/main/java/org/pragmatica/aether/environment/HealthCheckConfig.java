@@ -7,13 +7,13 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Health check configuration for load balancer targets.
-public record HealthCheckConfig(String protocol,
-                                int port,
-                                String path,
-                                TimeSpan interval,
-                                TimeSpan timeout,
-                                int healthyThreshold,
-                                int unhealthyThreshold) {
+public record HealthCheckConfig( String protocol,
+                                 int port,
+                                 String path,
+                                 TimeSpan interval,
+                                 TimeSpan timeout,
+                                 int healthyThreshold,
+                                 int unhealthyThreshold) {
     @SuppressWarnings("JBCT-VO-02")
     public static final HealthCheckConfig DEFAULT = new HealthCheckConfig("http",
                                                                           8080,

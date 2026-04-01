@@ -46,14 +46,12 @@ public sealed interface BackendSimulation {
     /// Shutdown the scheduler. Should be called on application shutdown.
     static Result<Unit> shutdown() {
         SCHEDULER.shutdown();
-        try{
-            if (!SCHEDULER.awaitTermination(5, TimeUnit.SECONDS)) {
-                SCHEDULER.shutdownNow();
-            }
+        try {
+            if ( !SCHEDULER.awaitTermination(5, TimeUnit.SECONDS)) {
+            SCHEDULER.shutdownNow();}
         } catch (InterruptedException e) {
             SCHEDULER.shutdownNow();
-            Thread.currentThread()
-                  .interrupt();
+            Thread.currentThread().interrupt();
         }
         return unitResult();
     }
@@ -71,8 +69,7 @@ public sealed interface BackendSimulation {
             return success(new NoOp());
         }
 
-        @Override
-        public Promise<Unit> apply() {
+        @Override public Promise<Unit> apply() {
             return Promise.success(unit());
         }
     }
@@ -80,12 +77,10 @@ public sealed interface BackendSimulation {
     /// Simulates network/processing latency with optional jitter and spikes.
     record LatencySimulation(long baseLatencyMs, long jitterMs, double spikeChance, long spikeLatencyMs)
     implements BackendSimulation {
-        @Override
-        public Promise<Unit> apply() {
+        @Override public Promise<Unit> apply() {
             var delay = calculateDelay();
-            if (Verify.Is.nonPositive(delay)) {
-                return Promise.success(unit());
-            }
+            if ( Verify.Is.nonPositive(delay)) {
+            return Promise.success(unit());}
             return scheduleDelay(delay);
         }
 
@@ -126,9 +121,10 @@ public sealed interface BackendSimulation {
         }
 
         private static Result<Long> validateTimings(long baseMs, long jitterMs, long spikeMs) {
-            return Verify.ensure(baseMs, Verify.Is::nonNegative, BASE_LATENCY_NEGATIVE)
-                         .flatMap(_ -> Verify.ensure(jitterMs, Verify.Is::nonNegative, JITTER_NEGATIVE))
-                         .flatMap(_ -> Verify.ensure(spikeMs, Verify.Is::nonNegative, SPIKE_LATENCY_NEGATIVE));
+            return Verify.ensure(baseMs, Verify.Is::nonNegative, BASE_LATENCY_NEGATIVE).flatMap(_ -> Verify.ensure(jitterMs,
+                                                                                                                   Verify.Is::nonNegative,
+                                                                                                                   JITTER_NEGATIVE))
+                                .flatMap(_ -> Verify.ensure(spikeMs, Verify.Is::nonNegative, SPIKE_LATENCY_NEGATIVE));
         }
 
         public static LatencySimulation latencySimulation(long latencyMs) {
@@ -149,12 +145,10 @@ public sealed interface BackendSimulation {
                               : List.copyOf(errorTypes);
         }
 
-        @Override
-        public Promise<Unit> apply() {
+        @Override public Promise<Unit> apply() {
             var random = ThreadLocalRandom.current();
-            if (random.nextDouble() < failureRate) {
-                return selectRandomError(random).promise();
-            }
+            if ( random.nextDouble() < failureRate) {
+            return selectRandomError(random).promise();}
             return Promise.success(unit());
         }
 
@@ -163,15 +157,13 @@ public sealed interface BackendSimulation {
         }
 
         public static Result<FailureInjection> failureInjection(double rate, List<SimulatedError> errors) {
-            return Verify.ensure(rate, Verify.Is::between, 0.0, 1.0, FAILURE_RATE_OUT_OF_RANGE)
-                         .flatMap(_ -> ensureNonEmptyErrors(errors))
-                         .map(_ -> new FailureInjection(rate, errors));
+            return Verify.ensure(rate, Verify.Is::between, 0.0, 1.0, FAILURE_RATE_OUT_OF_RANGE).flatMap(_ -> ensureNonEmptyErrors(errors))
+                                .map(_ -> new FailureInjection(rate, errors));
         }
 
         private static Result<List<SimulatedError>> ensureNonEmptyErrors(List<SimulatedError> errors) {
             return Verify.ensure(errors, Verify.Is::notNull, ERROR_TYPES_EMPTY)
-                         .filter(ERROR_TYPES_EMPTY,
-                                 list -> !list.isEmpty());
+            .filter(ERROR_TYPES_EMPTY, list -> !list.isEmpty());
         }
 
         public static Result<FailureInjection> failureInjection(double rate, SimulatedError... errors) {
@@ -188,20 +180,17 @@ public sealed interface BackendSimulation {
                                : List.copyOf(simulations);
         }
 
-        @Override
-        public Promise<Unit> apply() {
+        @Override public Promise<Unit> apply() {
             var result = Promise.success(unit());
-            for (var simulation : simulations) {
-                result = result.flatMap(_ -> simulation.apply());
-            }
+            for ( var simulation : simulations) {
+            result = result.flatMap(_ -> simulation.apply());}
             return result;
         }
 
         public static Result<Composite> composite(List<BackendSimulation> simulations) {
-            return Verify.ensure(simulations, Verify.Is::notNull, SIMULATIONS_EMPTY)
-                         .filter(SIMULATIONS_EMPTY,
-                                 list -> !list.isEmpty())
-                         .map(Composite::new);
+            return Verify.ensure(simulations, Verify.Is::notNull, SIMULATIONS_EMPTY).filter(SIMULATIONS_EMPTY,
+                                                                                            list -> !list.isEmpty())
+                                .map(Composite::new);
         }
 
         public static Result<Composite> composite(BackendSimulation... simulations) {
@@ -216,8 +205,7 @@ public sealed interface BackendSimulation {
                 return success(new ServiceUnavailable(serviceName));
             }
 
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Service unavailable: " + serviceName;
             }
         }
@@ -227,8 +215,7 @@ public sealed interface BackendSimulation {
                 return success(new Timeout(operation, timeoutMs));
             }
 
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Timeout after " + timeoutMs + "ms: " + operation;
             }
         }
@@ -238,8 +225,7 @@ public sealed interface BackendSimulation {
                 return success(new ConnectionRefused(host, port));
             }
 
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Connection refused: " + host + ":" + port;
             }
         }
@@ -249,8 +235,7 @@ public sealed interface BackendSimulation {
                 return success(new DatabaseError(query));
             }
 
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Database error executing: " + query;
             }
         }
@@ -260,8 +245,7 @@ public sealed interface BackendSimulation {
                 return success(new RateLimited(retryAfterSeconds));
             }
 
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Rate limited, retry after " + retryAfterSeconds + " seconds";
             }
         }
@@ -271,23 +255,20 @@ public sealed interface BackendSimulation {
                 return success(new CustomError(errorType, errorMessage));
             }
 
-            @Override
-            public String message() {
+            @Override public String message() {
                 return errorType + ": " + errorMessage;
             }
         }
 
         record unused() implements SimulatedError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "";
             }
         }
     }
 
     record unused() implements BackendSimulation {
-        @Override
-        public Promise<Unit> apply() {
+        @Override public Promise<Unit> apply() {
             return Promise.success(unit());
         }
     }

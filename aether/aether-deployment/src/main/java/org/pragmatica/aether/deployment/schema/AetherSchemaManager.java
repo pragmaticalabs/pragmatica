@@ -69,60 +69,53 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
         this.historyRepo = historyRepo;
     }
 
-    @Override
-    public Promise<SchemaResult> migrate(String datasource,
-                                         List<MigrationEntry> scripts,
-                                         SqlConnector connector,
-                                         String nodeId) {
+    @Override public Promise<SchemaResult> migrate(String datasource,
+                                                   List<MigrationEntry> scripts,
+                                                   SqlConnector connector,
+                                                   String nodeId) {
         return parseAll(scripts).async()
-                       .flatMap(parsed -> historyRepo.bootstrap(connector)
-                                                     .flatMap(_ -> historyRepo.queryApplied(connector))
-                                                     .flatMap(applied -> executeMigration(datasource,
-                                                                                          parsed,
-                                                                                          applied,
-                                                                                          connector,
-                                                                                          nodeId)));
+                       .flatMap(parsed -> historyRepo.bootstrap(connector).flatMap(_ -> historyRepo.queryApplied(connector))
+                                                               .flatMap(applied -> executeMigration(datasource,
+                                                                                                    parsed,
+                                                                                                    applied,
+                                                                                                    connector,
+                                                                                                    nodeId)));
     }
 
-    @Override
-    public Promise<SchemaResult> undo(String datasource,
-                                      int targetVersion,
-                                      List<MigrationEntry> scripts,
-                                      SqlConnector connector,
-                                      String nodeId) {
+    @Override public Promise<SchemaResult> undo(String datasource,
+                                                int targetVersion,
+                                                List<MigrationEntry> scripts,
+                                                SqlConnector connector,
+                                                String nodeId) {
         return parseAll(scripts).async()
-                       .flatMap(parsed -> historyRepo.bootstrap(connector)
-                                                     .flatMap(_ -> historyRepo.queryApplied(connector))
-                                                     .flatMap(applied -> executeUndo(datasource,
-                                                                                     targetVersion,
-                                                                                     parsed,
-                                                                                     applied,
-                                                                                     connector,
-                                                                                     nodeId)));
+                       .flatMap(parsed -> historyRepo.bootstrap(connector).flatMap(_ -> historyRepo.queryApplied(connector))
+                                                               .flatMap(applied -> executeUndo(datasource,
+                                                                                               targetVersion,
+                                                                                               parsed,
+                                                                                               applied,
+                                                                                               connector,
+                                                                                               nodeId)));
     }
 
-    @Override
-    public Promise<SchemaResult> baseline(String datasource,
-                                          int baselineVersion,
-                                          List<MigrationEntry> scripts,
-                                          SqlConnector connector,
-                                          String nodeId) {
+    @Override public Promise<SchemaResult> baseline(String datasource,
+                                                    int baselineVersion,
+                                                    List<MigrationEntry> scripts,
+                                                    SqlConnector connector,
+                                                    String nodeId) {
         return parseAll(scripts).async()
-                       .flatMap(parsed -> historyRepo.bootstrap(connector)
-                                                     .flatMap(_ -> historyRepo.queryApplied(connector))
-                                                     .flatMap(applied -> executeBaseline(datasource,
-                                                                                         baselineVersion,
-                                                                                         parsed,
-                                                                                         applied,
-                                                                                         connector,
-                                                                                         nodeId)));
+                       .flatMap(parsed -> historyRepo.bootstrap(connector).flatMap(_ -> historyRepo.queryApplied(connector))
+                                                               .flatMap(applied -> executeBaseline(datasource,
+                                                                                                   baselineVersion,
+                                                                                                   parsed,
+                                                                                                   applied,
+                                                                                                   connector,
+                                                                                                   nodeId)));
     }
 
     // ========== Parsing ==========
     private static Result<List<ParsedMigration>> parseAll(List<MigrationEntry> scripts) {
-        return Result.allOf(scripts.stream()
-                                   .map(ParsedMigration::parsedMigration)
-                                   .toList());
+        return Result.allOf(scripts.stream().map(ParsedMigration::parsedMigration)
+                                          .toList());
     }
 
     // ========== Migrate ==========
@@ -150,41 +143,34 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                             List<AppliedMigration> applied,
                                             SqlConnector connector,
                                             String nodeId) {
-        if (baselines.isEmpty()) {
-            return Promise.success(0);
-        }
-        var maxBaseline = baselines.stream()
-                                   .mapToInt(ParsedMigration::version)
-                                   .max()
-                                   .orElse(0);
-        var appliedVersioned = applied.stream()
-                                      .filter(a -> a.type() == MigrationType.VERSIONED)
-                                      .toList();
-        if (!appliedVersioned.isEmpty()) {
-            var maxApplied = appliedVersioned.stream()
-                                             .mapToInt(AppliedMigration::version)
-                                             .max()
-                                             .orElse(0);
-            if (maxApplied > 0) {
-                return baselineConflict(datasource, maxApplied).promise();
-            }
+        if ( baselines.isEmpty()) {
+        return Promise.success(0);}
+        var maxBaseline = baselines.stream().mapToInt(ParsedMigration::version)
+                                          .max()
+                                          .orElse(0);
+        var appliedVersioned = applied.stream().filter(a -> a.type() == MigrationType.VERSIONED)
+                                             .toList();
+        if ( !appliedVersioned.isEmpty()) {
+            var maxApplied = appliedVersioned.stream().mapToInt(AppliedMigration::version)
+                                                    .max()
+                                                    .orElse(0);
+            if ( maxApplied > 0) {
+            return baselineConflict(datasource, maxApplied).promise();}
         }
         return recordSyntheticBaselines(maxBaseline, connector, nodeId);
     }
 
     private Promise<Integer> recordSyntheticBaselines(int maxVersion, SqlConnector connector, String nodeId) {
         var now = System.currentTimeMillis();
-        return IntStream.rangeClosed(1, maxVersion)
-                        .mapToObj(v -> recordSyntheticEntry(v, connector, nodeId, now))
-                        .reduce(Promise.success(0),
-                                this::chainCount,
-                                (a, _) -> a);
+        return IntStream.rangeClosed(1, maxVersion).mapToObj(v -> recordSyntheticEntry(v, connector, nodeId, now))
+                                    .reduce(Promise.success(0),
+                                            this::chainCount,
+                                            (a, _) -> a);
     }
 
     private Promise<Integer> recordSyntheticEntry(int version, SqlConnector connector, String nodeId, long now) {
         var migration = appliedMigration(version, MigrationType.BASELINE, "baseline", "synthetic", 0L, nodeId, now, 0);
-        return historyRepo.recordMigration(connector, migration)
-                          .map(_ -> 1);
+        return historyRepo.recordMigration(connector, migration).map(_ -> 1);
     }
 
     private Promise<Integer> chainCount(Promise<Integer> accumulated, Promise<Integer> next) {
@@ -196,12 +182,11 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                             List<AppliedMigration> applied,
                                             SqlConnector connector,
                                             String nodeId) {
-        var appliedVersions = applied.stream()
-                                     .filter(a -> a.type() == MigrationType.VERSIONED)
-                                     .collect(Collectors.toMap(AppliedMigration::version, AppliedMigration::checksum));
-        var sorted = versioned.stream()
-                              .sorted(Comparator.comparingInt(ParsedMigration::version))
-                              .toList();
+        var appliedVersions = applied.stream().filter(a -> a.type() == MigrationType.VERSIONED)
+                                            .collect(Collectors.toMap(AppliedMigration::version,
+                                                                      AppliedMigration::checksum));
+        var sorted = versioned.stream().sorted(Comparator.comparingInt(ParsedMigration::version))
+                                     .toList();
         return validateAndApplyVersioned(datasource, sorted, appliedVersions, connector, nodeId);
     }
 
@@ -211,14 +196,13 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                                        SqlConnector connector,
                                                        String nodeId) {
         var initial = Promise.success(0);
-        for (var migration : sorted) {
-            initial = initial.flatMap(count -> applyOrValidateVersioned(datasource,
-                                                                        migration,
-                                                                        appliedVersions,
-                                                                        connector,
-                                                                        nodeId)
-            .map(n -> count + n));
-        }
+        for ( var migration : sorted) {
+        initial = initial.flatMap(count -> applyOrValidateVersioned(datasource,
+                                                                    migration,
+                                                                    appliedVersions,
+                                                                    connector,
+                                                                    nodeId)
+        .map(n -> count + n));}
         return initial;
     }
 
@@ -229,69 +213,60 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                                       String nodeId) {
         var version = migration.version();
         return Option.option(appliedVersions.get(version))
-                     .fold(() -> executeSingle(migration, connector, nodeId),
-                           checksum -> checksum != migration.entry()
-                                                            .checksum()
-                                       ? checksumMismatch(datasource,
-                                                          version,
-                                                          checksum,
-                                                          migration.entry()
-                                                                   .checksum()).promise()
-                                       : Promise.success(0));
+        .fold(() -> executeSingle(migration, connector, nodeId),
+              checksum -> checksum != migration.entry().checksum()
+                         ? checksumMismatch(datasource,
+                                            version,
+                                            checksum,
+                                            migration.entry().checksum()).promise()
+                         : Promise.success(0));
     }
 
     private Promise<Integer> applyRepeatables(List<ParsedMigration> repeatables,
                                               SqlConnector connector,
                                               String nodeId) {
         var initial = Promise.success(0);
-        for (var migration : repeatables) {
-            initial = initial.flatMap(count -> checkAndApplyRepeatable(migration, connector, nodeId).map(n -> count + n));
-        }
+        for ( var migration : repeatables) {
+        initial = initial.flatMap(count -> checkAndApplyRepeatable(migration, connector, nodeId).map(n -> count + n));}
         return initial;
     }
 
     private Promise<Integer> checkAndApplyRepeatable(ParsedMigration migration,
                                                      SqlConnector connector,
                                                      String nodeId) {
-        return historyRepo.queryRepeatableChecksum(connector,
-                                                   migration.description())
-                          .flatMap(existing -> shouldApplyRepeatable(existing, migration)
-                                               ? executeSingle(migration, connector, nodeId)
-                                               : Promise.success(0));
+        return historyRepo.queryRepeatableChecksum(connector, migration.description())
+        .flatMap(existing -> shouldApplyRepeatable(existing, migration)
+                            ? executeSingle(migration, connector, nodeId)
+                            : Promise.success(0));
     }
 
     private static boolean shouldApplyRepeatable(Option<Long> existing, ParsedMigration migration) {
         return existing.fold(() -> true,
-                             checksum -> checksum != migration.entry()
-                                                              .checksum());
+                             checksum -> checksum != migration.entry().checksum());
     }
 
     private Promise<Integer> executeSingle(ParsedMigration migration, SqlConnector connector, String nodeId) {
         var startNanos = System.nanoTime();
         return connector.transactional(tx -> executeStatements(tx,
-                                                               migration.entry()
-                                                                        .sql()))
-                        .flatMap(_ -> recordExecution(migration, connector, nodeId, startNanos))
-                        .map(_ -> 1);
+                                                               migration.entry().sql())).flatMap(_ -> recordExecution(migration,
+                                                                                                                      connector,
+                                                                                                                      nodeId,
+                                                                                                                      startNanos))
+                                      .map(_ -> 1);
     }
 
     /// Split SQL into individual statements and execute sequentially.
     /// Required because async Postgres driver doesn't support multi-statement prepared statements.
     private static Promise<Unit> executeStatements(SqlConnector tx, String sql) {
         // Strip comment lines before splitting — comments may precede first statement without a separator
-        var stripped = java.util.Arrays.stream(sql.split("\n"))
-                           .filter(line -> !line.strip()
-                                                .startsWith("--"))
-                           .collect(java.util.stream.Collectors.joining("\n"));
-        var statements = java.util.Arrays.stream(stripped.split(";"))
-                             .map(String::strip)
-                             .filter(s -> !s.isEmpty())
-                             .toList();
+        var stripped = java.util.Arrays.stream(sql.split("\n")).filter(line -> !line.strip().startsWith("--"))
+                                              .collect(java.util.stream.Collectors.joining("\n"));
+        var statements = java.util.Arrays.stream(stripped.split(";")).map(String::strip)
+                                                .filter(s -> !s.isEmpty())
+                                                .toList();
         var result = Promise.unitPromise();
-        for (var stmt : statements) {
-            result = result.flatMap(_ -> tx.update(stmt)
-                                           .mapToUnit());
-        }
+        for ( var stmt : statements) {
+        result = result.flatMap(_ -> tx.update(stmt).mapToUnit());}
         return result;
     }
 
@@ -303,10 +278,8 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
         var record = appliedMigration(migration.version(),
                                       migration.type(),
                                       migration.description(),
-                                      migration.entry()
-                                               .filename(),
-                                      migration.entry()
-                                               .checksum(),
+                                      migration.entry().filename(),
+                                      migration.entry().checksum(),
                                       nodeId,
                                       System.currentTimeMillis(),
                                       elapsedMs);
@@ -320,15 +293,12 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                               List<AppliedMigration> applied,
                                               SqlConnector connector,
                                               String nodeId) {
-        var undoScripts = parsed.stream()
-                                .filter(p -> p.type() == MigrationType.UNDO)
-                                .collect(Collectors.toMap(ParsedMigration::version, p -> p));
-        var toUndo = applied.stream()
-                            .filter(a -> a.type() == MigrationType.VERSIONED)
-                            .filter(a -> a.version() > targetVersion)
-                            .sorted(Comparator.comparingInt(AppliedMigration::version)
-                                              .reversed())
-                            .toList();
+        var undoScripts = parsed.stream().filter(p -> p.type() == MigrationType.UNDO)
+                                       .collect(Collectors.toMap(ParsedMigration::version, p -> p));
+        var toUndo = applied.stream().filter(a -> a.type() == MigrationType.VERSIONED)
+                                   .filter(a -> a.version() > targetVersion)
+                                   .sorted(Comparator.comparingInt(AppliedMigration::version).reversed())
+                                   .toList();
         var startNanos = System.nanoTime();
         return executeUndoSequence(datasource, toUndo, undoScripts, connector, nodeId)
         .map(count -> buildUndoResult(count, targetVersion, startNanos));
@@ -340,16 +310,14 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                                  SqlConnector connector,
                                                  String nodeId) {
         var initial = Promise.success(0);
-        for (var applied : toUndo) {
-            initial = initial.flatMap(count -> Option.option(undoScripts.get(applied.version()))
-                                                     .async(undoNotAvailable(datasource,
-                                                                             applied.version()))
-                                                     .flatMap(script -> executeUndoStep(script,
-                                                                                        applied.version(),
-                                                                                        connector,
-                                                                                        nodeId))
-                                                     .map(n -> count + n));
-        }
+        for ( var applied : toUndo) {
+        initial = initial.flatMap(count -> Option.option(undoScripts.get(applied.version())).async(undoNotAvailable(datasource,
+                                                                                                                    applied.version()))
+                                                        .flatMap(script -> executeUndoStep(script,
+                                                                                           applied.version(),
+                                                                                           connector,
+                                                                                           nodeId))
+                                                        .map(n -> count + n));}
         return initial;
     }
 
@@ -357,11 +325,10 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                              int version,
                                              SqlConnector connector,
                                              String nodeId) {
-        return connector.transactional(tx -> tx.update(undoScript.entry()
-                                                                 .sql())
-                                               .mapToUnit())
-                        .flatMap(_ -> historyRepo.removeMigration(connector, version, MigrationType.VERSIONED))
-                        .map(_ -> 1);
+        return connector.transactional(tx -> tx.update(undoScript.entry().sql()).mapToUnit()).flatMap(_ -> historyRepo.removeMigration(connector,
+                                                                                                                                       version,
+                                                                                                                                       MigrationType.VERSIONED))
+                                      .map(_ -> 1);
     }
 
     // ========== Baseline ==========
@@ -371,14 +338,12 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                                   List<AppliedMigration> applied,
                                                   SqlConnector connector,
                                                   String nodeId) {
-        var existingVersioned = applied.stream()
-                                       .filter(a -> a.type() == MigrationType.VERSIONED)
-                                       .toList();
-        if (!existingVersioned.isEmpty()) {
-            var maxApplied = existingVersioned.stream()
-                                              .mapToInt(AppliedMigration::version)
-                                              .max()
-                                              .orElse(0);
+        var existingVersioned = applied.stream().filter(a -> a.type() == MigrationType.VERSIONED)
+                                              .toList();
+        if ( !existingVersioned.isEmpty()) {
+            var maxApplied = existingVersioned.stream().mapToInt(AppliedMigration::version)
+                                                     .max()
+                                                     .orElse(0);
             return baselineConflict(datasource, maxApplied).promise();
         }
         var startNanos = System.nanoTime();
@@ -391,15 +356,13 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                             List<ParsedMigration> versioned,
                                             List<AppliedMigration> applied,
                                             long startNanos) {
-        var maxVersionedScript = versioned.stream()
-                                          .mapToInt(ParsedMigration::version)
-                                          .max()
-                                          .orElse(0);
-        var maxAppliedVersion = applied.stream()
-                                       .filter(a -> a.type() == MigrationType.VERSIONED)
-                                       .mapToInt(AppliedMigration::version)
-                                       .max()
-                                       .orElse(0);
+        var maxVersionedScript = versioned.stream().mapToInt(ParsedMigration::version)
+                                                 .max()
+                                                 .orElse(0);
+        var maxAppliedVersion = applied.stream().filter(a -> a.type() == MigrationType.VERSIONED)
+                                              .mapToInt(AppliedMigration::version)
+                                              .max()
+                                              .orElse(0);
         var currentVersion = Math.max(maxVersionedScript, maxAppliedVersion);
         return SchemaResult.schemaResult(appliedCount, currentVersion, elapsedMs(startNanos));
     }
@@ -417,7 +380,6 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
     }
 
     private static Map<MigrationType, List<ParsedMigration>> groupByType(List<ParsedMigration> parsed) {
-        return parsed.stream()
-                     .collect(Collectors.groupingBy(ParsedMigration::type));
+        return parsed.stream().collect(Collectors.groupingBy(ParsedMigration::type));
     }
 }

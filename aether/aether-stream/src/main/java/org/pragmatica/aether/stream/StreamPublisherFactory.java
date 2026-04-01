@@ -19,27 +19,22 @@ import java.util.function.Function;
 public final class StreamPublisherFactory implements ResourceFactory<StreamPublisher, StreamConfig> {
     private static final Cause REQUIRES_CONTEXT = Causes.cause("StreamPublisher requires ProvisioningContext with runtime extensions");
 
-    @Override
-    public Class<StreamPublisher> resourceType() {
+    @Override public Class<StreamPublisher> resourceType() {
         return StreamPublisher.class;
     }
 
-    @Override
-    public Class<StreamConfig> configType() {
+    @Override public Class<StreamConfig> configType() {
         return StreamConfig.class;
     }
 
-    @Override
-    public Promise<StreamPublisher> provision(StreamConfig config) {
+    @Override public Promise<StreamPublisher> provision(StreamConfig config) {
         return REQUIRES_CONTEXT.promise();
     }
 
-    @Override
-    public Promise<StreamPublisher> provision(StreamConfig config, ProvisioningContext context) {
-        return context.extension(StreamPartitionManager.class)
-                      .flatMap(manager -> context.extension(Serializer.class)
-                                                 .map(serializer -> buildPublisher(manager, serializer, config, context)))
-                      .async();
+    @Override public Promise<StreamPublisher> provision(StreamConfig config, ProvisioningContext context) {
+        return context.extension(StreamPartitionManager.class).flatMap(manager -> context.extension(Serializer.class)
+        .map(serializer -> buildPublisher(manager, serializer, config, context)))
+                                .async();
     }
 
     @SuppressWarnings("unchecked")
@@ -55,7 +50,7 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static <T> Option<Function<T, Object>> extractPartitionKeyFunction(ProvisioningContext context) {
         return context.keyExtractor()
-                      .map(fn -> (Function<T, Object>) input -> ((org.pragmatica.lang.Functions.Fn1) fn).apply(input));
+        .map(fn -> (Function<T, Object>) input -> ((org.pragmatica.lang.Functions.Fn1) fn).apply(input));
     }
 
     private static void ensureStreamExists(StreamPartitionManager manager, StreamConfig config) {

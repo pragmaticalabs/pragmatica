@@ -22,10 +22,10 @@ import static org.pragmatica.lang.Result.success;
 /// Provides compute capabilities backed by the Hetzner Cloud API.
 /// Optionally provides load balancer management and label-based discovery when configured.
 /// Always provides environment-variable-based secrets resolution.
-public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvider,
-                                            Option<LoadBalancerProvider> loadBalancerProvider,
-                                            Option<DiscoveryProvider> discoveryProvider,
-                                            Option<SecretsProvider> secretsProvider) implements EnvironmentIntegration {
+public record HetznerEnvironmentIntegration( HetznerComputeProvider computeProvider,
+                                             Option<LoadBalancerProvider> loadBalancerProvider,
+                                             Option<DiscoveryProvider> discoveryProvider,
+                                             Option<SecretsProvider> secretsProvider) implements EnvironmentIntegration {
     /// Factory method for creating a HetznerEnvironmentIntegration from configuration.
     public static Result<HetznerEnvironmentIntegration> hetznerEnvironmentIntegration(HetznerEnvironmentConfig config) {
         var client = HetznerClient.hetznerClient(config.hetznerConfig());
@@ -40,15 +40,13 @@ public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvid
         var discovery = resolveDiscoveryProvider(client, config);
         var secrets = resolveSecretsProvider();
         return Result.all(compute, lbProvider)
-                     .map((cp, lb) -> new HetznerEnvironmentIntegration(cp, lb, discovery, secrets));
+        .map((cp, lb) -> new HetznerEnvironmentIntegration(cp, lb, discovery, secrets));
     }
 
     // --- Leaf: resolve optional load balancer provider ---
     private static Result<Option<LoadBalancerProvider>> resolveLbProvider(HetznerClient client,
                                                                           HetznerEnvironmentConfig config) {
-        return config.loadBalancer()
-                     .fold(() -> success(Option.empty()),
-                           lbConfig -> toLbOption(client, lbConfig));
+        return config.loadBalancer().fold(() -> success(Option.empty()), lbConfig -> toLbOption(client, lbConfig));
     }
 
     // --- Leaf: create optional LB provider from config ---
@@ -66,34 +64,28 @@ public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvid
     // --- Leaf: resolve optional discovery provider based on clusterName ---
     private static Option<DiscoveryProvider> resolveDiscoveryProvider(HetznerClient client,
                                                                       HetznerEnvironmentConfig config) {
-        return config.clusterName()
-                     .map(name -> hetznerDiscoveryProvider(client, config));
+        return config.clusterName().map(name -> hetznerDiscoveryProvider(client, config));
     }
 
     // --- Leaf: resolve secrets provider (env vars with TTL cache) ---
     private static Option<SecretsProvider> resolveSecretsProvider() {
         return some(CachingSecretsProvider.cachingSecretsProvider(EnvSecretsProvider.envSecretsProvider(),
-                                                                  TimeSpan.timeSpan(5)
-                                                                          .minutes()));
+                                                                  TimeSpan.timeSpan(5).minutes()));
     }
 
-    @Override
-    public Option<ComputeProvider> compute() {
+    @Override public Option<ComputeProvider> compute() {
         return some(computeProvider);
     }
 
-    @Override
-    public Option<SecretsProvider> secrets() {
+    @Override public Option<SecretsProvider> secrets() {
         return secretsProvider;
     }
 
-    @Override
-    public Option<LoadBalancerProvider> loadBalancer() {
+    @Override public Option<LoadBalancerProvider> loadBalancer() {
         return loadBalancerProvider;
     }
 
-    @Override
-    public Option<DiscoveryProvider> discovery() {
+    @Override public Option<DiscoveryProvider> discovery() {
         return discoveryProvider;
     }
 }

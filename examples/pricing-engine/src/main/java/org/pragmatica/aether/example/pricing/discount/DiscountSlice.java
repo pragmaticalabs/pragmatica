@@ -6,26 +6,27 @@ import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-@Slice public interface DiscountSlice{
-    record DiscountRequest(String couponCode, int subtotalCents){
-        static DiscountRequest discountRequest(String couponCode, int subtotalCents){
+
+@Slice public interface DiscountSlice {
+    record DiscountRequest(String couponCode, int subtotalCents) {
+        static DiscountRequest discountRequest(String couponCode, int subtotalCents) {
             return new DiscountRequest(couponCode, subtotalCents);
         }
     }
 
-    record DiscountResponse(int discountAmountCents, String appliedCode){
-        static DiscountResponse discountResponse(int discountAmountCents, String appliedCode){
+    record DiscountResponse(int discountAmountCents, String appliedCode) {
+        static DiscountResponse discountResponse(int discountAmountCents, String appliedCode) {
             return new DiscountResponse(discountAmountCents, appliedCode);
         }
     }
 
     Promise<DiscountResponse> calculateDiscount(DiscountRequest request);
 
-    static DiscountSlice discountSlice(@Sql SqlConnector db){
-        record discountSlice(SqlConnector db) implements DiscountSlice{
+    static DiscountSlice discountSlice(@Sql SqlConnector db) {
+        record discountSlice( SqlConnector db) implements DiscountSlice {
             private static final String SELECT_DISCOUNT = "SELECT percent_off FROM discount_codes WHERE code = ?";
 
-            @Override public Promise<DiscountResponse> calculateDiscount(DiscountRequest request){
+            @Override public Promise<DiscountResponse> calculateDiscount(DiscountRequest request) {
                 var couponCode = request.couponCode();
                 return db.queryOptional(SELECT_DISCOUNT, PERCENT_OFF_MAPPER, couponCode).map(maybePercent -> resolveDiscount(request,
                                                                                                                              maybePercent));
@@ -33,15 +34,15 @@ import org.pragmatica.lang.Promise;
 
             private static final RowMapper<Integer> PERCENT_OFF_MAPPER = row -> row.getInt("percent_off");
 
-            private static DiscountResponse resolveDiscount(DiscountRequest request, Option<Integer> maybePercent){
+            private static DiscountResponse resolveDiscount(DiscountRequest request, Option<Integer> maybePercent) {
                 return maybePercent.map(pct -> discountFor(request, pct)).or(noDiscount());
             }
 
-            private static DiscountResponse discountFor(DiscountRequest request, int percentOff){
+            private static DiscountResponse discountFor(DiscountRequest request, int percentOff) {
                 return new DiscountResponse(request.subtotalCents() * percentOff / 100, request.couponCode());
             }
 
-            private static DiscountResponse noDiscount(){
+            private static DiscountResponse noDiscount() {
                 return new DiscountResponse(0, "");
             }
         }

@@ -7,7 +7,7 @@ import java.util.Set;
 /// @param name              human-readable name for audit logs
 /// @param roles             assigned role names (e.g., "admin", "service")
 /// @param authorizationRole hierarchical authorization level (ADMIN, OPERATOR, VIEWER); defaults to ADMIN
-public record ApiKeyEntry(String name, Set<String> roles, String authorizationRole) {
+public record ApiKeyEntry( String name, Set<String> roles, String authorizationRole) {
     /// Canonical constructor — defensive copy.
     public ApiKeyEntry {
         name = name == null || name.isBlank()

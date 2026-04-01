@@ -13,16 +13,13 @@ import java.util.Map;
 /// Phase 2a provides the infrastructure. Full wiring happens in Phase 2b (multi-group).
 public interface GovernorMesh {
     /// Register a governor for a community (no TCP address).
-    @SuppressWarnings("JBCT-RET-01") // Mutating operation
-    void registerGovernor(String communityId, NodeId governorId);
+    @SuppressWarnings("JBCT-RET-01") void registerGovernor(String communityId, NodeId governorId);
 
     /// Register a governor for a community with TCP address for cross-community connectivity.
-    @SuppressWarnings("JBCT-RET-01") // Mutating operation
-    void registerGovernor(String communityId, NodeId governorId, String tcpAddress);
+    @SuppressWarnings("JBCT-RET-01") void registerGovernor(String communityId, NodeId governorId, String tcpAddress);
 
     /// Unregister a governor when it steps down or its community dissolves.
-    @SuppressWarnings("JBCT-RET-01") // Mutating operation
-    void unregisterGovernor(String communityId);
+    @SuppressWarnings("JBCT-RET-01") void unregisterGovernor(String communityId);
 
     /// Get the governor for a community.
     Option<NodeId> governorFor(String communityId);

@@ -2,6 +2,7 @@ package org.pragmatica.aether.metrics.consensus;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.ConsensusMetrics;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.consensus.rabia.StateValue;
 import org.pragmatica.lang.Option;
@@ -35,43 +36,35 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
     }
 
     @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void recordDecision(NodeId nodeId, Phase phase, StateValue stateValue, long durationNs) {
+    @Contract public void recordDecision(NodeId nodeId, Phase phase, StateValue stateValue, long durationNs) {
         decisionsCount.incrementAndGet();
         totalDecisionLatencyNs.add(durationNs);
     }
 
     @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void recordProposal(NodeId nodeId, Phase phase) {
+    @Contract public void recordProposal(NodeId nodeId, Phase phase) {
         proposalsCount.incrementAndGet();
     }
 
     @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void recordVoteRound1(NodeId nodeId, Phase phase, StateValue stateValue) {}
+    @Contract public void recordVoteRound1(NodeId nodeId, Phase phase, StateValue stateValue) {}
 
     @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void recordVoteRound2(NodeId nodeId, Phase phase, StateValue stateValue) {}
+    @Contract public void recordVoteRound2(NodeId nodeId, Phase phase, StateValue stateValue) {}
 
     @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void recordFastPath(NodeId nodeId, Phase phase, StateValue value) {}
+    @Contract public void recordFastPath(NodeId nodeId, Phase phase, StateValue value) {}
 
     @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void recordSyncAttempt(NodeId nodeId, boolean success) {
-        if (success) {
-            syncSuccessCount.incrementAndGet();
-        } else {
-            syncFailureCount.incrementAndGet();
-        }
+    @Contract public void recordSyncAttempt(NodeId nodeId, boolean success) {
+        if ( success) {
+        syncSuccessCount.incrementAndGet();} else
+        {
+        syncFailureCount.incrementAndGet();}
     }
 
     @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void updatePendingBatches(NodeId nodeId, int count) {
+    @Contract public void updatePendingBatches(NodeId nodeId, int count) {
         pendingBatches.set(count);
     }
 

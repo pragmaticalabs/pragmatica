@@ -31,17 +31,17 @@ import org.pragmatica.lang.utils.Causes;
 /// @param newInstances target number of new version instances
 /// @param createdAt timestamp when update was created
 /// @param updatedAt timestamp of last state change
-public record RollingUpdate(String updateId,
-                            ArtifactBase artifactBase,
-                            Version oldVersion,
-                            Version newVersion,
-                            RollingUpdateState state,
-                            VersionRouting routing,
-                            HealthThresholds thresholds,
-                            CleanupPolicy cleanupPolicy,
-                            int newInstances,
-                            long createdAt,
-                            long updatedAt) implements DeploymentStrategy {
+public record RollingUpdate( String updateId,
+                             ArtifactBase artifactBase,
+                             Version oldVersion,
+                             Version newVersion,
+                             RollingUpdateState state,
+                             VersionRouting routing,
+                             HealthThresholds thresholds,
+                             CleanupPolicy cleanupPolicy,
+                             int newInstances,
+                             long createdAt,
+                             long updatedAt) implements DeploymentStrategy {
     private static final Fn1<Cause, String> INVALID_TRANSITION = Causes.forOneValue("Invalid state transition: %s");
 
     /// Creates a new rolling update in PENDING state.
@@ -55,13 +55,44 @@ public record RollingUpdate(String updateId,
     /// @param cleanupPolicy cleanup policy
     /// @return new rolling update
     @SuppressWarnings("JBCT-VO-02") // Factory method — validated construction
-    public static RollingUpdate rollingUpdate(String updateId,
-                                              ArtifactBase artifactBase,
-                                              Version oldVersion,
-                                              Version newVersion,
-                                              int newInstances,
-                                              HealthThresholds thresholds,
-                                              CleanupPolicy cleanupPolicy) {
+    public static// Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    RollingUpdate rollingUpdate(String updateId,
+                                ArtifactBase artifactBase,
+                                Version oldVersion,
+                                Version newVersion,
+                                int newInstances,
+                                HealthThresholds thresholds,
+                                CleanupPolicy cleanupPolicy) {
         var now = System.currentTimeMillis();
         return new RollingUpdate(updateId,
                                  artifactBase,
@@ -81,12 +112,40 @@ public record RollingUpdate(String updateId,
     /// @param newState the new state
     /// @return updated rolling update, or failure if transition is invalid
     @SuppressWarnings("JBCT-VO-02") // Record copy method with validated state transition
-    public Result<RollingUpdate> transitionTo(RollingUpdateState newState) {
-        if (!state.validTransitions()
-                  .contains(newState)) {
-            return INVALID_TRANSITION.apply(state + " -> " + newState)
-                                     .result();
-        }
+    public// Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    Result<RollingUpdate> transitionTo(RollingUpdateState newState) {
+        if ( !state.validTransitions().contains(newState)) {
+        return INVALID_TRANSITION.apply(state + " -> " + newState).result();}
         return Result.success(new RollingUpdate(updateId,
                                                 artifactBase,
                                                 oldVersion,
@@ -105,7 +164,38 @@ public record RollingUpdate(String updateId,
     /// @param newRouting the new routing configuration
     /// @return updated rolling update
     @SuppressWarnings("JBCT-VO-02") // Record copy method with known-valid fields
-    public RollingUpdate withRouting(VersionRouting newRouting) {
+    public// Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    RollingUpdate withRouting(VersionRouting newRouting) {
         return new RollingUpdate(updateId,
                                  artifactBase,
                                  oldVersion,
@@ -119,20 +209,17 @@ public record RollingUpdate(String updateId,
                                  System.currentTimeMillis());
     }
 
-    @Override
-    public String strategyId() {
+    @Override public String strategyId() {
         return updateId;
     }
 
     /// Checks if this update is in a terminal state.
-    @Override
-    public boolean isTerminal() {
+    @Override public boolean isTerminal() {
         return state.isTerminal();
     }
 
     /// Checks if this update is active (not terminal).
-    @Override
-    public boolean isActive() {
+    @Override public boolean isActive() {
         return ! isTerminal();
     }
 

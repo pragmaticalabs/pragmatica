@@ -2,6 +2,7 @@ package org.pragmatica.aether.stream.segment;
 
 import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.lang.Contract;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -25,12 +26,9 @@ public final class SegmentSealer implements EvictionListener {
         return new SegmentSealer(sink);
     }
 
-    @Override
-    public void onEviction(String streamName, int partition, List<RawEvent> events) {
-        if (events.isEmpty()) {
-            return;
-        }
-
+    @Contract @Override public void onEviction(String streamName, int partition, List<RawEvent> events) {
+        if ( events.isEmpty()) {
+        return;}
         var segment = buildSegment(streamName, partition, events);
         sink.seal(segment);
     }
@@ -40,28 +38,29 @@ public final class SegmentSealer implements EvictionListener {
         var endOffset = events.getLast().offset();
         var timestamps = extractTimestamps(events);
         var serialized = serializeEvents(events);
-
-        return SealedSegment.sealedSegment(streamName, partition, startOffset, endOffset,
-                                           events.size(), timestamps[0], timestamps[1], serialized);
+        return SealedSegment.sealedSegment(streamName,
+                                           partition,
+                                           startOffset,
+                                           endOffset,
+                                           events.size(),
+                                           timestamps[0],
+                                           timestamps[1],
+                                           serialized);
     }
 
     private long[] extractTimestamps(List<RawEvent> events) {
         var min = Long.MAX_VALUE;
         var max = Long.MIN_VALUE;
-
-        for (var event : events) {
+        for ( var event : events) {
             min = Math.min(min, event.timestamp());
             max = Math.max(max, event.timestamp());
         }
-
         return new long[]{min, max};
     }
 
     private byte[] serializeEvents(List<RawEvent> events) {
-        var totalSize = events.stream()
-                              .mapToInt(e -> PER_EVENT_HEADER + e.data().length)
-                              .sum();
-
+        var totalSize = events.stream().mapToInt(e -> PER_EVENT_HEADER + e.data().length)
+                                     .sum();
         var buffer = ByteBuffer.allocate(totalSize).order(ByteOrder.BIG_ENDIAN);
         events.forEach(event -> writeEvent(buffer, event));
         return buffer.array();

@@ -9,9 +9,9 @@ import static org.pragmatica.lang.Result.success;
 /// @param management             Base port for management API (HTTP). Nodes use management, management+1, etc.
 /// @param cluster                Base port for cluster communication. Nodes use cluster, cluster+1, etc.
 /// @param managementHttpProtocol HTTP protocol for management server (H1, H3, BOTH) — default H1
-public record PortsConfig(int management,
-                          int cluster,
-                          HttpProtocol managementHttpProtocol) {
+public record PortsConfig( int management,
+                           int cluster,
+                           HttpProtocol managementHttpProtocol) {
     public static final int DEFAULT_MANAGEMENT_PORT = 8080;
     public static final int DEFAULT_CLUSTER_PORT = 8090;
 

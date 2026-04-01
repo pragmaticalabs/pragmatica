@@ -10,7 +10,6 @@ import java.util.concurrent.Callable;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
-
 import tools.jackson.databind.JsonNode;
 
 /// Exports the cluster configuration as TOML from the management API.
@@ -18,28 +17,23 @@ import tools.jackson.databind.JsonNode;
 /// Default output is the raw TOML content. Use `--with-status` to prepend
 /// runtime state as TOML comments.
 @Command(name = "export", description = "Export cluster configuration as TOML")
-@SuppressWarnings("JBCT-RET-01")
-class ClusterExportCommand implements Callable<Integer> {
+@SuppressWarnings("JBCT-RET-01") class ClusterExportCommand implements Callable<Integer> {
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
     @Option(names = "--with-status", description = "Include runtime state as comments")
     private boolean withStatus;
 
-    @CommandLine.ParentCommand
-    private ClusterCommand parent;
+    @CommandLine.ParentCommand private ClusterCommand parent;
 
-    @Override
-    public Integer call() {
-        return ClusterHttpClient.fetchFromCluster("/api/cluster/config")
-                                .flatMap(MAPPER::readTree)
-                                .fold(ClusterExportCommand::onFailure, this::onSuccess);
+    @Override public Integer call() {
+        return ClusterHttpClient.fetchFromCluster("/api/cluster/config").flatMap(MAPPER::readTree)
+                                                 .fold(ClusterExportCommand::onFailure, this::onSuccess);
     }
 
     private int onSuccess(JsonNode root) {
         var tomlContent = root.path("tomlContent").asText("");
-        if (withStatus) {
-            printStatusHeader(root);
-        }
+        if ( withStatus) {
+        printStatusHeader(root);}
         System.out.println(tomlContent);
         return ExitCode.SUCCESS;
     }
@@ -56,9 +50,8 @@ class ClusterExportCommand implements Callable<Integer> {
     }
 
     private void enrichWithLiveStatus() {
-        ClusterHttpClient.fetchFromCluster("/api/cluster/status")
-                         .flatMap(MAPPER::readTree)
-                         .onSuccess(ClusterExportCommand::printLiveStatusComments);
+        ClusterHttpClient.fetchFromCluster("/api/cluster/status").flatMap(MAPPER::readTree)
+                                          .onSuccess(ClusterExportCommand::printLiveStatusComments);
     }
 
     private static void printLiveStatusComments(JsonNode status) {

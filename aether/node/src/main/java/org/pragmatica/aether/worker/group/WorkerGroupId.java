@@ -1,5 +1,5 @@
 package org.pragmatica.aether.worker.group;
-public record WorkerGroupId(String groupName, String zone) {
+public record WorkerGroupId( String groupName, String zone) {
     public static final WorkerGroupId DEFAULT = workerGroupId("default", "local");
 
     @SuppressWarnings("JBCT-VO-02")
@@ -11,8 +11,7 @@ public record WorkerGroupId(String groupName, String zone) {
         return groupName + ":" + zone;
     }
 
-    @Override
-    public String toString() {
+    @Override public String toString() {
         return communityId();
     }
 }

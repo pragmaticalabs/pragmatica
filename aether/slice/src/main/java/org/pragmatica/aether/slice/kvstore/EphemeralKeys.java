@@ -48,5 +48,5 @@ public sealed interface EphemeralKeys {
         return EPHEMERAL_SECTIONS.contains(section);
     }
 
-    record unused() implements EphemeralKeys {}
+    record unused() implements EphemeralKeys{}
 }

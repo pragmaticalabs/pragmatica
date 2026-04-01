@@ -14,9 +14,9 @@ import org.pragmatica.serialization.CodecFor;
 /// @param command        the KV command to apply
 @Codec
 @CodecFor(KVCommand.class)
-public record WorkerMutation(NodeId sourceWorker,
-                             String correlationId,
-                             KVCommand<AetherKey> command) implements Message.Wired {
+public record WorkerMutation( NodeId sourceWorker,
+                              String correlationId,
+                              KVCommand<AetherKey> command) implements Message.Wired {
     public static WorkerMutation workerMutation(NodeId sourceWorker,
                                                 String correlationId,
                                                 KVCommand<AetherKey> command) {

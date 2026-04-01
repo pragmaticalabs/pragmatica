@@ -40,33 +40,29 @@ public final class DerivedMetricsCalculator {
 
     /// Add a sample and recalculate derived metrics.
     public Result<Unit> addSample(ComprehensiveSnapshot snapshot) {
-        lock.writeLock()
-            .lock();
-        try{
+        lock.writeLock().lock();
+        try {
             samples.add(snapshot);
             recalculate();
-        } finally{
-            lock.writeLock()
-                .unlock();
+        } finally {
+            lock.writeLock().unlock();
         }
         return unitResult();
     }
 
     /// Get current derived metrics.
     public DerivedMetrics current() {
-        lock.readLock()
-            .lock();
-        try{
+        lock.readLock().lock();
+        try {
             return current;
-        } finally{
-            lock.readLock()
-                .unlock();
+        } finally {
+            lock.readLock().unlock();
         }
     }
 
     private void recalculate() {
         var sampleList = samples.toList();
-        if (sampleList.isEmpty()) {
+        if ( sampleList.isEmpty()) {
             current = DerivedMetrics.EMPTY;
             return;
         }
@@ -92,27 +88,22 @@ public final class DerivedMetricsCalculator {
     }
 
     private double calculateWindowSeconds(List<ComprehensiveSnapshot> sampleList) {
-        long firstTs = sampleList.getFirst()
-                                 .timestamp();
-        long lastTs = sampleList.getLast()
-                                .timestamp();
+        long firstTs = sampleList.getFirst().timestamp();
+        long lastTs = sampleList.getLast().timestamp();
         return Math.max(1.0, (lastTs - firstTs) / 1000.0);
     }
 
     private Totals accumulateTotals(List<ComprehensiveSnapshot> sampleList) {
         long totalInvocations = 0, totalFailed = 0, totalGc = 0, totalBackpressure = 0;
         double sumLatency = 0, sumHeapUsage = 0, sumEventLoopLag = 0;
-        for (var sample : sampleList) {
+        for ( var sample : sampleList) {
             totalInvocations += sample.totalInvocations();
             totalFailed += sample.failedInvocations();
-            totalGc += sample.gc()
-                             .totalGcCount();
-            totalBackpressure += sample.network()
-                                       .backpressureEvents();
+            totalGc += sample.gc().totalGcCount();
+            totalBackpressure += sample.network().backpressureEvents();
             sumLatency += sample.avgLatencyMs();
             sumHeapUsage += sample.heapUsage();
-            sumEventLoopLag += sample.eventLoop()
-                                     .lagNanos();
+            sumEventLoopLag += sample.eventLoop().lagNanos();
         }
         return new Totals(totalInvocations,
                           totalFailed,
@@ -131,28 +122,26 @@ public final class DerivedMetricsCalculator {
     }
 
     private Percentiles calculatePercentiles(List<ComprehensiveSnapshot> sampleList) {
-        double[] latencies = sampleList.stream()
-                                       .mapToDouble(ComprehensiveSnapshot::avgLatencyMs)
-                                       .sorted()
-                                       .toArray();
+        double[] latencies = sampleList.stream().mapToDouble(ComprehensiveSnapshot::avgLatencyMs)
+                                              .sorted()
+                                              .toArray();
         return new Percentiles(percentile(latencies, 50), percentile(latencies, 95), percentile(latencies, 99));
     }
 
     private Trends calculateTrends(List<ComprehensiveSnapshot> sampleList, int n, double windowSeconds) {
-        if (n < 10) {
-            return new Trends(0, 0, 0);
-        }
+        if ( n < 10) {
+        return new Trends(0, 0, 0);}
         int halfN = n / 2;
         double firstHalfCpu = 0, secondHalfCpu = 0;
         double firstHalfLatency = 0, secondHalfLatency = 0;
         long firstHalfErrors = 0, secondHalfErrors = 0;
-        for (int i = 0; i < halfN; i++) {
+        for ( int i = 0; i < halfN; i++) {
             var sample = sampleList.get(i);
             firstHalfCpu += sample.cpuUsage();
             firstHalfLatency += sample.avgLatencyMs();
             firstHalfErrors += sample.failedInvocations();
         }
-        for (int i = halfN; i < n; i++) {
+        for ( int i = halfN; i < n; i++) {
             var sample = sampleList.get(i);
             secondHalfCpu += sample.cpuUsage();
             secondHalfLatency += sample.avgLatencyMs();
@@ -171,16 +160,14 @@ public final class DerivedMetricsCalculator {
                                        long secondHalfErrors) {
         double firstHalfWindow = halfN / windowSeconds * n;
         double secondHalfWindow = (n - halfN) / windowSeconds * n;
-        if (firstHalfWindow > 0 && secondHalfWindow > 0) {
-            return (secondHalfErrors / secondHalfWindow) - (firstHalfErrors / firstHalfWindow);
-        }
+        if ( firstHalfWindow > 0 && secondHalfWindow > 0) {
+        return (secondHalfErrors / secondHalfWindow) - (firstHalfErrors / firstHalfWindow);}
         return 0;
     }
 
     private double percentile(double[] sorted, int percentile) {
-        if (sorted.length == 0) {
-            return 0;
-        }
+        if ( sorted.length == 0) {
+        return 0;}
         int index = (int) Math.ceil(percentile / 100.0 * sorted.length) - 1;
         return sorted[Math.max(0, Math.min(index, sorted.length - 1))];
     }
@@ -191,11 +178,11 @@ public final class DerivedMetricsCalculator {
                           long totalBackpressure,
                           double sumLatency,
                           double sumHeapUsage,
-                          double sumEventLoopLag) {}
+                          double sumEventLoopLag){}
 
-    private record Rates(double requestRate, double errorRate, double gcRate, double backpressureRate) {}
+    private record Rates(double requestRate, double errorRate, double gcRate, double backpressureRate){}
 
-    private record Percentiles(double p50, double p95, double p99) {}
+    private record Percentiles(double p50, double p95, double p99){}
 
-    private record Trends(double cpuTrend, double latencyTrend, double errorTrend) {}
+    private record Trends(double cpuTrend, double latencyTrend, double errorTrend){}
 }

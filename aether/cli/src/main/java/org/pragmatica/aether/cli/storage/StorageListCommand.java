@@ -14,22 +14,16 @@ import picocli.CommandLine.Command;
 /// Without `--node`, queries the cluster-wide aggregation endpoint.
 /// With `--node`, queries the per-node endpoint on the specified node.
 @Command(name = "list", description = "List storage instances")
-@SuppressWarnings("JBCT-RET-01")
-class StorageListCommand implements Callable<Integer> {
-    @CommandLine.ParentCommand
-    private StorageCommand parent;
+@SuppressWarnings("JBCT-RET-01") class StorageListCommand implements Callable<Integer> {
+    @CommandLine.ParentCommand private StorageCommand parent;
 
     @CommandLine.Option(names = "--node", description = "Target specific node")
     private String nodeId;
 
-    @Override
-    public Integer call() {
-        var path = Option.option(nodeId)
-                         .fold(() -> "/api/cluster/storage",
-                               _ -> "/api/storage");
-
+    @Override public Integer call() {
+        var path = Option.option(nodeId).fold(() -> "/api/cluster/storage", _ -> "/api/storage");
         return ClusterHttpClient.fetchFromCluster(path)
-                                .fold(StorageCliHelper::onFailure,
-                                      json -> OutputFormatter.printQuery(json, parent.outputOptions()));
+        .fold(StorageCliHelper::onFailure,
+              json -> OutputFormatter.printQuery(json, parent.outputOptions()));
     }
 }

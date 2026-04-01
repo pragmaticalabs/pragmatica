@@ -9,10 +9,8 @@ public sealed interface SchemaError extends Cause {
             return new ChecksumMismatch(datasource, version, expected, actual);
         }
 
-        @Override
-        public String message() {
-            return "Checksum mismatch for datasource '" + datasource + "' at version " + version + ": expected " + expected
-                   + " but found " + actual;
+        @Override public String message() {
+            return "Checksum mismatch for datasource '" + datasource + "' at version " + version + ": expected " + expected + " but found " + actual;
         }
     }
 
@@ -21,8 +19,7 @@ public sealed interface SchemaError extends Cause {
             return new MigrationFailed(datasource, version, detail);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Migration failed for datasource '" + datasource + "' at version " + version + ": " + detail;
         }
     }
@@ -32,8 +29,7 @@ public sealed interface SchemaError extends Cause {
             return new DatasourceUnreachable(datasource, detail);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Datasource unreachable: '" + datasource + "' — " + detail;
         }
     }
@@ -43,8 +39,7 @@ public sealed interface SchemaError extends Cause {
             return new LockAcquisitionFailed(datasource);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Failed to acquire migration lock for datasource '" + datasource + "'";
         }
     }
@@ -54,10 +49,8 @@ public sealed interface SchemaError extends Cause {
             return new BaselineConflict(datasource, existingVersion);
         }
 
-        @Override
-        public String message() {
-            return "Baseline conflict for datasource '" + datasource
-                   + "': versioned migrations already applied up to version " + existingVersion;
+        @Override public String message() {
+            return "Baseline conflict for datasource '" + datasource + "': versioned migrations already applied up to version " + existingVersion;
         }
     }
 
@@ -66,8 +59,7 @@ public sealed interface SchemaError extends Cause {
             return new UndoNotAvailable(datasource, version);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Undo script not available for datasource '" + datasource + "' at version " + version;
         }
     }
@@ -77,8 +69,7 @@ public sealed interface SchemaError extends Cause {
             return new InvalidMigrationFormat(filename, detail);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Invalid migration filename '" + filename + "': " + detail;
         }
     }

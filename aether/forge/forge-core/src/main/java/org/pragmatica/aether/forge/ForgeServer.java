@@ -100,11 +100,11 @@ public final class ForgeServer {
     private static final String VERSION = "Aether Forge 0.20.0";
 
     public static void main(String[] args) {
-        if (hasFlag(args, "--help", "-h")) {
+        if ( hasFlag(args, "--help", "-h")) {
             printHelp();
             return;
         }
-        if (hasFlag(args, "--version", "-V")) {
+        if ( hasFlag(args, "--version", "-V")) {
             System.out.println(VERSION);
             return;
         }
@@ -114,21 +114,24 @@ public final class ForgeServer {
             log.error("Configuration error: {}", cause.message());
             System.exit(1);
         });
-        if (startupConfigResult.isFailure()) {
-            return;
-        }
+        if ( startupConfigResult.isFailure()) {
+        return;}
         var startupConfig = startupConfigResult.unwrap();
         var forgeConfig = loadForgeConfig(startupConfig);
         printBanner(forgeConfig, startupConfig);
         var server = new ForgeServer(startupConfig, forgeConfig);
-        Runtime.getRuntime()
-               .addShutdownHook(new Thread(() -> {
-                   log.info("Shutting down...");
-                   server.stop();
-               }));
-        try{
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            log.info("Shutting down...");
+            server.stop();
+        }));
+        try {
             server.start();
-        } catch (Exception e) {
+        }
+
+
+
+
+        catch (Exception e) {
             log.error("Failed to start Forge server", e);
             System.exit(1);
         }
@@ -136,11 +139,9 @@ public final class ForgeServer {
 
     @SuppressWarnings("JBCT-SEQ-01")
     private static boolean hasFlag(String[] args, String longFlag, String shortFlag) {
-        for (var arg : args) {
-            if (arg.equals(longFlag) || arg.equals(shortFlag)) {
-                return true;
-            }
-        }
+        for ( var arg : args) {
+        if ( arg.equals(longFlag) || arg.equals(shortFlag)) {
+        return true;}}
         return false;
     }
 
@@ -170,12 +171,11 @@ public final class ForgeServer {
     }
 
     private static EmberConfig loadForgeConfig(StartupConfig startupConfig) {
-        return startupConfig.forgeConfig()
-                            .map(EmberConfig::load)
-                            .map(r -> r.onFailure(c -> log.error("Failed to load forge config: {}",
-                                                                 c.message()))
-                                       .or(EmberConfig.DEFAULT))
-                            .or(createDefaultForgeConfig(startupConfig));
+        return startupConfig.forgeConfig().map(EmberConfig::load)
+                                        .map(r -> r.onFailure(c -> log.error("Failed to load forge config: {}",
+                                                                             c.message()))
+        .or(EmberConfig.DEFAULT))
+                                        .or(createDefaultForgeConfig(startupConfig));
     }
 
     private static EmberConfig createDefaultForgeConfig(StartupConfig startupConfig) {
@@ -183,7 +183,7 @@ public final class ForgeServer {
         return EmberConfig.emberConfig(startupConfig.clusterSize(),
                                        EmberConfig.DEFAULT_MANAGEMENT_PORT,
                                        startupConfig.port())
-                          .or(EmberConfig.DEFAULT);
+        .or(EmberConfig.DEFAULT);
     }
 
     private static void printBanner(EmberConfig forgeConfig, StartupConfig startupConfig) {
@@ -193,16 +193,12 @@ public final class ForgeServer {
         log.info("  Dashboard: http://localhost:{}", forgeConfig.dashboardPort());
         log.info("  Cluster size: {} nodes", forgeConfig.nodes());
         log.info("  App HTTP port: {} (load target)", forgeConfig.appHttpPort());
-        if (forgeConfig.lbEnabled()) {
-            log.info("  Load balancer: http://localhost:{}", forgeConfig.lbPort());
-        }
-        startupConfig.blueprint()
-                     .onPresent(coords -> log.info("  Blueprint: {}", coords));
-        startupConfig.loadConfig()
-                     .onPresent(p -> log.info("  Load config: {}", p));
-        if (startupConfig.autoStart()) {
-            log.info("  Auto-start: enabled");
-        }
+        if ( forgeConfig.lbEnabled()) {
+        log.info("  Load balancer: http://localhost:{}", forgeConfig.lbPort());}
+        startupConfig.blueprint().onPresent(coords -> log.info("  Blueprint: {}", coords));
+        startupConfig.loadConfig().onPresent(p -> log.info("  Load config: {}", p));
+        if ( startupConfig.autoStart()) {
+        log.info("  Auto-start: enabled");}
         log.info("=".repeat(60));
     }
 
@@ -260,60 +256,50 @@ public final class ForgeServer {
                                           long startTime,
                                           ConfigurableLoadRunner loadRunner) {
         var status = StatusRoutes.buildFullStatus(cluster, metrics, startTime, loadRunner);
-        return CODEC.serialize(status)
-                    .map(byteBuf -> {
-                             try{
-                                 var bytes = new byte[byteBuf.readableBytes()];
-                                 byteBuf.readBytes(bytes);
-                                 return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
-                             } finally{
-                                 byteBuf.release();
-                             }
-                         })
-                    .or("{}");
+        return CODEC.serialize(status).map(byteBuf -> {
+                                               try {
+                                                   var bytes = new byte[byteBuf.readableBytes()];
+                                                   byteBuf.readBytes(bytes);
+                                                   return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+                                               } finally {
+                                                   byteBuf.release();
+                                               }
+                                           })
+                              .or("{}");
     }
 
     private void startCluster() {
         log.info("Starting {} node cluster...", forgeConfig.nodes());
-        cluster.onPresent(c -> c.start()
-                                .await(TimeSpan.timeSpan(60)
-                                               .seconds())
-                                .onFailure(cause -> {
-                                               throw new IllegalStateException("Failed to start cluster: " + cause.message());
-                                           }));
-        TimeSpan.timeSpan(2)
-                .seconds()
-                .sleep();
+        cluster.onPresent(c -> c.start().await(TimeSpan.timeSpan(60).seconds())
+                                      .onFailure(cause -> {
+                                                     throw new IllegalStateException("Failed to start cluster: " + cause.message());
+                                                 }));
+        TimeSpan.timeSpan(2).seconds()
+                         .sleep();
     }
 
     private void startLoadBalancer() {
-        if (!forgeConfig.lbEnabled()) {
-            return;
-        }
-        var clusterNodeInfos = cluster.map(EmberCluster::getNodeInfos)
-                                      .or(List.of());
-        if (clusterNodeInfos.isEmpty()) {
+        if ( !forgeConfig.lbEnabled()) {
+        return;}
+        var clusterNodeInfos = cluster.map(EmberCluster::getNodeInfos).or(List.of());
+        if ( clusterNodeInfos.isEmpty()) {
             log.warn("No cluster nodes available, skipping load balancer start");
             return;
         }
-        var selfNodeId = NodeId.nodeId("lb-passive")
-                               .unwrap();
+        var selfNodeId = NodeId.nodeId("lb-passive").unwrap();
         var lbClusterPort = EmberCluster.DEFAULT_BASE_PORT + forgeConfig.nodes() + 10;
         var selfInfo = NodeInfo.nodeInfo(selfNodeId,
-                                         NodeAddress.nodeAddress("localhost", lbClusterPort)
-                                                    .unwrap(),
+                                         NodeAddress.nodeAddress("localhost", lbClusterPort).unwrap(),
                                          NodeRole.PASSIVE);
         var lbConfig = PassiveLBConfig.passiveLBConfig(forgeConfig.lbPort(),
                                                        selfInfo,
                                                        clusterNodeInfos,
                                                        forgeConfig.nodes());
         var lb = AetherPassiveLB.aetherPassiveLB(lbConfig);
-        lb.start()
-          .await(TimeSpan.timeSpan(30)
-                         .seconds())
-          .onSuccess(_ -> registerLoadBalancer(lb, lbClusterPort))
-          .onFailure(cause -> log.error("Failed to start passive LB: {}",
-                                        cause.message()));
+        lb.start().await(TimeSpan.timeSpan(30).seconds())
+                .onSuccess(_ -> registerLoadBalancer(lb, lbClusterPort))
+                .onFailure(cause -> log.error("Failed to start passive LB: {}",
+                                              cause.message()));
     }
 
     private void registerLoadBalancer(AetherPassiveLB lb, int lbClusterPort) {
@@ -330,43 +316,37 @@ public final class ForgeServer {
     }
 
     private void pollNodeEvents() {
-        try{
-            var port = cluster.flatMap(EmberCluster::getLeaderManagementPort)
-                              .or(forgeConfig.managementPort());
+        try {
+            var port = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
             var uriStr = "http://localhost:" + port + "/api/events";
-            if (!lastEventTimestamp.isEmpty()) {
-                uriStr += "?since=" + java.net.URLEncoder.encode(lastEventTimestamp,
-                                                                 java.nio.charset.StandardCharsets.UTF_8);
-            }
-            var request = HttpRequest.newBuilder()
-                                     .uri(URI.create(uriStr))
-                                     .GET()
-                                     .timeout(java.time.Duration.ofSeconds(2))
-                                     .build();
-            http.sendString(request)
-                .await(TimeSpan.timeSpan(3)
-                               .seconds())
-                .flatMap(org.pragmatica.http.HttpResult::toResult)
-                .onSuccess(this::parseAndMergeEvents);
-        } catch (Exception e) {
+            if ( !lastEventTimestamp.isEmpty()) {
+            uriStr += "?since=" + java.net.URLEncoder.encode(lastEventTimestamp, java.nio.charset.StandardCharsets.UTF_8);}
+            var request = HttpRequest.newBuilder().uri(URI.create(uriStr))
+                                                .GET()
+                                                .timeout(java.time.Duration.ofSeconds(2))
+                                                .build();
+            http.sendString(request).await(TimeSpan.timeSpan(3).seconds())
+                           .flatMap(org.pragmatica.http.HttpResult::toResult)
+                           .onSuccess(this::parseAndMergeEvents);
+        }
+
+
+
+
+        catch (Exception e) {
             log.trace("Event polling failed: {}", e.getMessage());
         }
     }
 
     private void parseAndMergeEvents(String json) {
-        if (json == null || json.length() < 3 || !json.startsWith("[")) {
-            return;
-        }
-        var content = json.substring(1,
-                                     json.length() - 1)
-                          .trim();
-        if (content.isEmpty()) {
-            return;
-        }
+        if ( json == null || json.length() < 3 || !json.startsWith("[")) {
+        return;}
+        var content = json.substring(1, json.length() - 1).trim();
+        if ( content.isEmpty()) {
+        return;}
         var events = splitJsonObjects(content);
-        for (var eventJson : events) {
-            mergeEvent(eventJson);
-        }
+        for ( var eventJson : events) {
+        mergeEvent(eventJson);}
     }
 
     private void mergeEvent(String eventJson) {
@@ -384,16 +364,20 @@ public final class ForgeServer {
         var objects = new java.util.ArrayList<String>();
         var depth = 0;
         var start = - 1;
-        for (int i = 0; i < content.length(); i++) {
+        for ( int i = 0; i < content.length(); i++) {
             var ch = content.charAt(i);
-            if (ch == '{') {
-                if (depth == 0) {
-                    start = i;
-                }
+            if ( ch == '{') {
+                if ( depth == 0) {
+                start = i;}
                 depth++;
-            } else if (ch == '}') {
+            } else
+
+
+
+
+            if ( ch == '}') {
                 depth--;
-                if (depth == 0 && start >= 0) {
+                if ( depth == 0 && start >= 0) {
                     objects.add(content.substring(start, i + 1));
                     start = - 1;
                 }
@@ -405,24 +389,19 @@ public final class ForgeServer {
     private static Option<String> extractJsonString(String json, String key) {
         var search = "\"" + key + "\":\"";
         var idx = json.indexOf(search);
-        if (idx < 0) {
-            return Option.empty();
-        }
+        if ( idx < 0) {
+        return Option.empty();}
         var valStart = idx + search.length();
         var valEnd = json.indexOf("\"", valStart);
-        if (valEnd < 0) {
-            return Option.empty();
-        }
+        if ( valEnd < 0) {
+        return Option.empty();}
         return Option.some(json.substring(valStart, valEnd));
     }
 
     private void deployAndStartLoad() {
-        startupConfig.blueprint()
-                     .onPresent(this::deployBlueprintFromArtifact);
-        startupConfig.loadConfig()
-                     .onPresent(this::loadLoadConfig);
-        if (startupConfig.autoStart() && startupConfig.loadConfig()
-                                                      .isPresent()) {
+        startupConfig.blueprint().onPresent(this::deployBlueprintFromArtifact);
+        startupConfig.loadConfig().onPresent(this::loadLoadConfig);
+        if ( startupConfig.autoStart() && startupConfig.loadConfig().isPresent()) {
             log.info("Auto-starting load generation...");
             configurableLoadRunner.onPresent(ConfigurableLoadRunner::start);
             apiHandler.onPresent(h -> h.addEvent("LOAD_STARTED", "Load generation auto-started"));
@@ -430,12 +409,15 @@ public final class ForgeServer {
     }
 
     private static void joinMainThread() {
-        try{
-            Thread.currentThread()
-                  .join();
-        } catch (InterruptedException e) {
-            Thread.currentThread()
-                  .interrupt();
+        try {
+            Thread.currentThread().join();
+        }
+
+
+
+
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -444,71 +426,62 @@ public final class ForgeServer {
     /// (local Maven repo, builtin, etc.) before falling back to ArtifactStore (DHT).
     private void deployBlueprintFromArtifact(String artifactCoords) {
         log.info("Deploying blueprint artifact: {}...", artifactCoords);
-        var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort)
-                                .or(forgeConfig.managementPort());
+        var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
         var body = "{\"artifact\":\"" + artifactCoords + "\"}";
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + leaderPort + "/api/blueprint/deploy"))
-                                 .header("Content-Type", "application/json")
-                                 .POST(HttpRequest.BodyPublishers.ofString(body))
-                                 .build();
+        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + leaderPort + "/api/blueprint/deploy"))
+                                            .header("Content-Type", "application/json")
+                                            .POST(HttpRequest.BodyPublishers.ofString(body))
+                                            .build();
         log.info("Deploying blueprint by coordinates: POST /api/blueprint/deploy — {}", artifactCoords);
-        http.sendString(request)
-            .await(TimeSpan.timeSpan(10)
-                           .seconds())
-            .onSuccess(result -> handleDeployResponse(result, artifactCoords))
-            .onFailure(cause -> log.error("Failed to deploy blueprint: {}",
-                                          cause.message()));
+        http.sendString(request).await(TimeSpan.timeSpan(10).seconds())
+                       .onSuccess(result -> handleDeployResponse(result, artifactCoords))
+                       .onFailure(cause -> log.error("Failed to deploy blueprint: {}",
+                                                     cause.message()));
     }
 
     private void handleDeployResponse(org.pragmatica.http.HttpResult<String> result, String artifactCoords) {
-        if (result.isSuccess()) {
+        if ( result.isSuccess()) {
             log.info("Blueprint deployed from artifact: {}", artifactCoords);
             apiHandler.onPresent(h -> h.addEvent("BLUEPRINT_DEPLOYED",
                                                  "Blueprint deployed from artifact " + artifactCoords));
-            TimeSpan.timeSpan(1)
-                    .seconds()
-                    .sleep();
-        } else {
-            log.error("Blueprint deploy failed (HTTP {}): {}", result.statusCode(), result.body());
-        }
+            TimeSpan.timeSpan(1).seconds()
+                             .sleep();
+        } else
+
+
+
+
+        {
+        log.error("Blueprint deploy failed (HTTP {}): {}", result.statusCode(), result.body());}
     }
 
     private void loadLoadConfig(Path loadConfigPath) {
         log.info("Loading load configuration from {}...", loadConfigPath);
-        LoadConfigLoader.load(loadConfigPath)
-                        .onSuccess(config -> {
-                                       configurableLoadRunner.onPresent(r -> r.applyConfig(config));
-                                       log.info("Load configuration loaded: {} targets",
-                                                config.targets()
-                                                      .size());
-                                       apiHandler.onPresent(h -> h.addEvent("LOAD_CONFIG_LOADED",
-                                                                            "Loaded " + config.targets()
-                                                                                              .size() + " targets from " + loadConfigPath.getFileName()));
-                                   })
-                        .onFailure(cause -> log.error("Failed to load configuration: {}",
-                                                      cause.message()));
+        LoadConfigLoader.load(loadConfigPath).onSuccess(config -> {
+                                                            configurableLoadRunner.onPresent(r -> r.applyConfig(config));
+                                                            log.info("Load configuration loaded: {} targets",
+                                                                     config.targets().size());
+                                                            apiHandler.onPresent(h -> h.addEvent("LOAD_CONFIG_LOADED",
+                                                                                                 "Loaded " + config.targets()
+        .size() + " targets from " + loadConfigPath.getFileName()));
+                                                        })
+                             .onFailure(cause -> log.error("Failed to load configuration: {}",
+                                                           cause.message()));
     }
 
     public void stop() {
         log.info("Stopping Forge server...");
         wsPublisher.onPresent(StatusWebSocketPublisher::stop);
         metricsScheduler.onPresent(ScheduledExecutorService::shutdownNow);
-        httpServer.onPresent(server -> server.stop()
-                                             .await(TimeSpan.timeSpan(10)
-                                                            .seconds())
-                                             .onFailure(cause -> log.warn("Error stopping HTTP server: {}",
-                                                                          cause.message())));
-        loadBalancer.onPresent(lb -> lb.stop()
-                                       .await(TimeSpan.timeSpan(10)
-                                                      .seconds())
-                                       .onFailure(cause -> log.warn("Error stopping load balancer: {}",
-                                                                    cause.message())));
-        cluster.onPresent(c -> c.stop()
-                                .await(TimeSpan.timeSpan(30)
-                                               .seconds())
-                                .onFailure(cause -> log.warn("Error stopping cluster: {}",
-                                                             cause.message())));
+        httpServer.onPresent(server -> server.stop().await(TimeSpan.timeSpan(10).seconds())
+                                                  .onFailure(cause -> log.warn("Error stopping HTTP server: {}",
+                                                                               cause.message())));
+        loadBalancer.onPresent(lb -> lb.stop().await(TimeSpan.timeSpan(10).seconds())
+                                            .onFailure(cause -> log.warn("Error stopping load balancer: {}",
+                                                                         cause.message())));
+        cluster.onPresent(c -> c.stop().await(TimeSpan.timeSpan(30).seconds())
+                                     .onFailure(cause -> log.warn("Error stopping cluster: {}",
+                                                                  cause.message())));
         log.info("Forge server stopped.");
     }
 
@@ -526,23 +499,18 @@ public final class ForgeServer {
     private Option<ConfigurationProvider> buildConfigurationProvider() {
         var builder = ConfigurationProvider.builder();
         // Add TOML files (lowest priority)
-        startupConfig.forgeConfig()
-                     .map(path -> path.resolveSibling("aether.toml"))
-                     .filter(path -> path.toFile()
-                                         .exists())
-                     .onPresent(builder::withTomlFile);
-        startupConfig.forgeConfig()
-                     .onPresent(builder::withTomlFile);
+        startupConfig.forgeConfig().map(path -> path.resolveSibling("aether.toml"))
+                                 .filter(path -> path.toFile().exists())
+                                 .onPresent(builder::withTomlFile);
+        startupConfig.forgeConfig().onPresent(builder::withTomlFile);
         // Add system properties and environment (higher priority)
-        builder.withSystemProperties("aether.")
-               .withEnvironment("AETHER_");
+        builder.withSystemProperties("aether.").withEnvironment("AETHER_");
         return Option.some(builder.build());
     }
 
     private void startHttpServer() {
-        Option.all(apiHandler, staticHandler)
-              .map(ForgeRequestHandler::forgeRequestHandler)
-              .onPresent(this::launchHttpServer);
+        Option.all(apiHandler, staticHandler).map(ForgeRequestHandler::forgeRequestHandler)
+                  .onPresent(this::launchHttpServer);
     }
 
     private void launchHttpServer(ForgeRequestHandler requestHandler) {
@@ -550,36 +518,40 @@ public final class ForgeServer {
         var dashboardWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/dashboard", dashboardWsHandler);
         var eventWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/events", eventWsHandler);
         var config = HttpServerConfig.httpServerConfig("forge-dashboard",
-                                                       forgeConfig.dashboardPort())
-                                     .withMaxContentLength(MAX_CONTENT_LENGTH)
-                                     .withChunkedWrite()
-                                     .withWebSocket(wsEndpoint)
-                                     .withWebSocket(dashboardWsEndpoint)
-                                     .withWebSocket(eventWsEndpoint);
-        HttpServer.httpServer(config, requestHandler::handle)
-                  .await(TimeSpan.timeSpan(10)
-                                 .seconds())
-                  .onSuccess(server -> {
-                                 httpServer = Option.some(server);
-                                 log.info("HTTP server started on port {}",
-                                          server.port());
-                             })
-                  .onFailure(cause -> {
-                                 throw new IllegalStateException("Failed to start HTTP server: " + cause.message());
-                             });
+                                                       forgeConfig.dashboardPort()).withMaxContentLength(MAX_CONTENT_LENGTH)
+                                                      .withChunkedWrite()
+                                                      .withWebSocket(wsEndpoint)
+                                                      .withWebSocket(dashboardWsEndpoint)
+                                                      .withWebSocket(eventWsEndpoint);
+        HttpServer.httpServer(config, requestHandler::handle).await(TimeSpan.timeSpan(10).seconds())
+                             .onSuccess(server -> {
+                                            httpServer = Option.some(server);
+                                            log.info("HTTP server started on port {}",
+                                                     server.port());
+                                        })
+                             .onFailure(cause -> {
+                                            throw new IllegalStateException("Failed to start HTTP server: " + cause.message());
+                                        });
     }
 
     private void openBrowser(String url) {
-        try{
-            if (Desktop.isDesktopSupported() && Desktop.getDesktop()
-                                                       .isSupported(Desktop.Action.BROWSE)) {
-                Desktop.getDesktop()
-                       .browse(new URI(url));
+        try {
+            if ( Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+                Desktop.getDesktop().browse(new URI(url));
                 log.info("Opened browser to {}", url);
-            } else {
-                log.info("Could not open browser automatically. Please navigate to: {}", url);
-            }
-        } catch (Exception e) {
+            } else
+
+
+
+
+            {
+            log.info("Could not open browser automatically. Please navigate to: {}", url);}
+        }
+
+
+
+
+        catch (Exception e) {
             log.info("Could not open browser automatically. Please navigate to: {}", url);
         }
     }

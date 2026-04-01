@@ -33,36 +33,30 @@ public final class EmberH2Server {
 
     /// Start the H2 TCP server.
     public Promise<Unit> start() {
-        if (!config.enabled()) {
+        if ( !config.enabled()) {
             log.debug("H2 server disabled, skipping start");
             return Promise.success(Unit.unit());
         }
-        return Promise.lift(H2Error.StartFailed::new, this::startServer)
-                      .flatMap(this::initializeDatabase)
-                      .onSuccess(_ -> log.info("H2 server started on port {} ({})",
-                                               config.port(),
-                                               config.persistent()
-                                               ? "persistent"
-                                               : "in-memory"));
+        return Promise.lift(H2Error.StartFailed::new, this::startServer).flatMap(this::initializeDatabase)
+                           .onSuccess(_ -> log.info("H2 server started on port {} ({})",
+                                                    config.port(),
+                                                    config.persistent()
+                                                    ? "persistent"
+                                                    : "in-memory"));
     }
 
     private Server startServer() throws SQLException {
-        var args = new String[]{"-tcp",
-        "-tcpPort", String.valueOf(config.port()),
-        "-tcpAllowOthers",
-        "-ifNotExists"};
-        tcpServer = Server.createTcpServer(args)
-                          .start();
+        var args = new String[]{"-tcp", "-tcpPort", String.valueOf(config.port()), "-tcpAllowOthers", "-ifNotExists"};
+        tcpServer = Server.createTcpServer(args).start();
         return tcpServer;
     }
 
     private Promise<Unit> initializeDatabase(Server server) {
-        return config.initScript()
-                     .map(this::runInitScript)
-                     .or(() -> {
-                             log.debug("No init script configured, skipping database initialization");
-                             return Promise.success(Unit.unit());
-                         });
+        return config.initScript().map(this::runInitScript)
+                                .or(() -> {
+                                        log.debug("No init script configured, skipping database initialization");
+                                        return Promise.success(Unit.unit());
+                                    });
     }
 
     private Promise<Unit> runInitScript(String scriptPath) {
@@ -75,25 +69,23 @@ public final class EmberH2Server {
                                     var statement = conn.createStatement();
                                     statement.execute("RUNSCRIPT FROM '" + scriptPath + "'");
                                 }
-                            })
-                      .mapToUnit()
-                      .onSuccess(_ -> log.info("H2 init script completed"))
-                      .onFailure(cause -> log.error("H2 init script failed: {}",
-                                                    cause.message()));
+                            }).mapToUnit()
+                           .onSuccess(_ -> log.info("H2 init script completed"))
+                           .onFailure(cause -> log.error("H2 init script failed: {}",
+                                                         cause.message()));
     }
 
     /// Stop the H2 TCP server.
     public Promise<Unit> stop() {
-        if (tcpServer == null) {
-            return Promise.success(Unit.unit());
-        }
+        if ( tcpServer == null) {
+        return Promise.success(Unit.unit());}
         return Promise.lift(H2Error.StopFailed::new,
                             () -> {
                                 tcpServer.stop();
                                 tcpServer = null;
                                 log.info("H2 server stopped");
                             })
-                      .mapToUnit();
+        .mapToUnit();
     }
 
     /// Get the JDBC URL for connecting to this H2 server.
@@ -117,22 +109,19 @@ public final class EmberH2Server {
     /// H2 server errors.
     public sealed interface H2Error extends Cause {
         record StartFailed(Throwable cause) implements H2Error {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Failed to start H2 server: " + cause.getMessage();
             }
         }
 
         record StopFailed(Throwable cause) implements H2Error {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Failed to stop H2 server: " + cause.getMessage();
             }
         }
 
         record InitScriptFailed(Throwable cause) implements H2Error {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Failed to run H2 init script: " + cause.getMessage();
             }
         }

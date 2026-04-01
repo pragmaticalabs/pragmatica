@@ -11,18 +11,18 @@ import static org.pragmatica.lang.Result.success;
 
 /// Configuration for the Hetzner environment integration.
 /// Contains Hetzner API credentials and default server provisioning parameters.
-public record HetznerEnvironmentConfig(HetznerConfig hetznerConfig,
-                                       String serverType,
-                                       String image,
-                                       String region,
-                                       List<Long> sshKeyIds,
-                                       List<Long> networkIds,
-                                       List<Long> firewallIds,
-                                       String userData,
-                                       Option<HetznerLbConfig> loadBalancer,
-                                       Option<String> clusterName,
-                                       Option<Long> selfServerId,
-                                       long discoveryPollIntervalMs) {
+public record HetznerEnvironmentConfig( HetznerConfig hetznerConfig,
+                                        String serverType,
+                                        String image,
+                                        String region,
+                                        List<Long> sshKeyIds,
+                                        List<Long> networkIds,
+                                        List<Long> firewallIds,
+                                        String userData,
+                                        Option<HetznerLbConfig> loadBalancer,
+                                        Option<String> clusterName,
+                                        Option<Long> selfServerId,
+                                        long discoveryPollIntervalMs) {
     private static final long DEFAULT_POLL_INTERVAL_MS = 30_000L;
 
     /// Load balancer configuration for Hetzner environment.
@@ -82,7 +82,38 @@ public record HetznerEnvironmentConfig(HetznerConfig hetznerConfig,
 
     /// Return a copy with discovery enabled for the specified cluster name.
     @SuppressWarnings("JBCT-VO-02") // Copy-with-change builder — direct constructor is intentional
-    public HetznerEnvironmentConfig withDiscovery(String clusterLabel) {
+    public// Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    HetznerEnvironmentConfig withDiscovery(String clusterLabel) {
         return new HetznerEnvironmentConfig(hetznerConfig,
                                             serverType,
                                             image,
@@ -99,7 +130,38 @@ public record HetznerEnvironmentConfig(HetznerConfig hetznerConfig,
 
     /// Return a copy with the self server ID set.
     @SuppressWarnings("JBCT-VO-02") // Copy-with-change builder — direct constructor is intentional
-    public HetznerEnvironmentConfig withSelfServerId(long serverId) {
+    public// Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    HetznerEnvironmentConfig withSelfServerId(long serverId) {
         return new HetznerEnvironmentConfig(hetznerConfig,
                                             serverType,
                                             image,
@@ -116,7 +178,38 @@ public record HetznerEnvironmentConfig(HetznerConfig hetznerConfig,
 
     /// Return a copy with the discovery poll interval set.
     @SuppressWarnings("JBCT-VO-02") // Copy-with-change builder — direct constructor is intentional
-    public HetznerEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
+    public// Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    HetznerEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
         return new HetznerEnvironmentConfig(hetznerConfig,
                                             serverType,
                                             image,

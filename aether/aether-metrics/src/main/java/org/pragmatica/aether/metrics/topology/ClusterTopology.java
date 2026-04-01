@@ -14,13 +14,13 @@ import java.util.Map;
 /// @param leaderId      Current leader node ID
 /// @param nodes         Node information list
 /// @param slices        Slice deployment information
-public record ClusterTopology(int totalNodes,
-                              int healthyNodes,
-                              int quorumSize,
-                              boolean hasQuorum,
-                              Option<String> leaderId,
-                              List<NodeInfo> nodes,
-                              Map<String, SliceInfo> slices) {
+public record ClusterTopology( int totalNodes,
+                               int healthyNodes,
+                               int quorumSize,
+                               boolean hasQuorum,
+                               Option<String> leaderId,
+                               List<NodeInfo> nodes,
+                               Map<String, SliceInfo> slices) {
     public static final ClusterTopology EMPTY = new ClusterTopology(0, 0, 0, false, Option.empty(), List.of(), Map.of());
 
     /// Node information in the cluster.
@@ -63,18 +63,16 @@ public record ClusterTopology(int totalNodes,
         }
 
         public double availability() {
-            if (desiredInstances <= 0) {
-                return 1.0;
-            }
+            if ( desiredInstances <= 0) {
+            return 1.0;}
             return Math.min(1.0, (double) activeInstances / desiredInstances);
         }
     }
 
     /// Calculate cluster health score (0.0-1.0).
     public double healthScore() {
-        if (totalNodes == 0) {
-            return 0.0;
-        }
+        if ( totalNodes == 0) {
+        return 0.0;}
         double nodeHealth = (double) healthyNodes / totalNodes;
         double quorumHealth = hasQuorum
                               ? 1.0
@@ -82,7 +80,7 @@ public record ClusterTopology(int totalNodes,
         double leaderHealth = leaderId.isPresent()
                               ? 1.0
                               : 0.0;
-        return ( nodeHealth * 0.4 + quorumHealth * 0.4 + leaderHealth * 0.2);
+        return (nodeHealth * 0.4 + quorumHealth * 0.4 + leaderHealth * 0.2);
     }
 
     /// Check if cluster is fully healthy.

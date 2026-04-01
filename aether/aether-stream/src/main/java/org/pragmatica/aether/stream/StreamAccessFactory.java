@@ -20,32 +20,23 @@ import java.util.function.Function;
 public final class StreamAccessFactory implements ResourceFactory<StreamAccess, StreamConfig> {
     private static final Cause REQUIRES_CONTEXT = Causes.cause("StreamAccess requires ProvisioningContext with runtime extensions");
 
-    @Override
-    public Class<StreamAccess> resourceType() {
+    @Override public Class<StreamAccess> resourceType() {
         return StreamAccess.class;
     }
 
-    @Override
-    public Class<StreamConfig> configType() {
+    @Override public Class<StreamConfig> configType() {
         return StreamConfig.class;
     }
 
-    @Override
-    public Promise<StreamAccess> provision(StreamConfig config) {
+    @Override public Promise<StreamAccess> provision(StreamConfig config) {
         return REQUIRES_CONTEXT.promise();
     }
 
-    @Override
-    public Promise<StreamAccess> provision(StreamConfig config, ProvisioningContext context) {
-        return context.extension(StreamPartitionManager.class)
-                      .flatMap(manager -> context.extension(Serializer.class)
-                                                 .flatMap(serializer -> context.extension(Deserializer.class)
-                                                                               .map(deserializer -> buildAccess(manager,
-                                                                                                                serializer,
-                                                                                                                deserializer,
-                                                                                                                config,
-                                                                                                                context))))
-                      .async();
+    @Override public Promise<StreamAccess> provision(StreamConfig config, ProvisioningContext context) {
+        return context.extension(StreamPartitionManager.class).flatMap(manager -> context.extension(Serializer.class)
+        .flatMap(serializer -> context.extension(Deserializer.class)
+        .map(deserializer -> buildAccess(manager, serializer, deserializer, config, context))))
+                                .async();
     }
 
     @SuppressWarnings("unchecked")
@@ -67,7 +58,7 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static <T> Option<Function<T, Object>> extractPartitionKeyFunction(ProvisioningContext context) {
         return context.keyExtractor()
-                      .map(fn -> (Function<T, Object>) input -> ((org.pragmatica.lang.Functions.Fn1) fn).apply(input));
+        .map(fn -> (Function<T, Object>) input -> ((org.pragmatica.lang.Functions.Fn1) fn).apply(input));
     }
 
     private static void ensureStreamExists(StreamPartitionManager manager, StreamConfig config) {

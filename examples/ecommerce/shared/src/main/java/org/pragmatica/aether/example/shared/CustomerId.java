@@ -6,14 +6,15 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.IdGenerator;
-public record CustomerId(String value){
+
+public record CustomerId( String value) {
     private static final Fn1<Cause, String> INVALID_CUSTOMER_ID = Causes.forOneValue("Invalid customer ID: %s");
 
-    public static Result<CustomerId> customerId(String raw){
+    public static Result<CustomerId> customerId(String raw) {
         return Verify.ensure(raw, Verify.Is::notBlank, INVALID_CUSTOMER_ID).map(CustomerId::new);
     }
 
-    public static CustomerId generate(){
+    public static CustomerId generate() {
         return customerId(IdGenerator.generate("CUST")).expect("CustomerId.generate");
     }
 }

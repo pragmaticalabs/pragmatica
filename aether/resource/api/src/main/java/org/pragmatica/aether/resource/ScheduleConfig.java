@@ -14,10 +14,10 @@ import org.pragmatica.aether.slice.ExecutionMode;
 /// @param interval fixed-rate interval (TimeSpan format); null if cron mode
 /// @param cron standard 5-field cron expression; null if interval mode
 /// @param executionMode how the task fires across the cluster (default: SINGLE)
-public record ScheduleConfig(String interval, String cron, ExecutionMode executionMode) {
+public record ScheduleConfig( String interval, String cron, ExecutionMode executionMode) {
     public ScheduleConfig {
-        if (interval == null) interval = "";
-        if (cron == null) cron = "";
-        if (executionMode == null) executionMode = ExecutionMode.SINGLE;
+        if ( interval == null) interval = "";
+        if ( cron == null) cron = "";
+        if ( executionMode == null) executionMode = ExecutionMode.SINGLE;
     }
 }

@@ -20,10 +20,9 @@ public enum UpgradeStrategy {
     }
     /// Parse an upgrade strategy from its string representation.
     public static Result<UpgradeStrategy> upgradeStrategy(String raw) {
-        return Arrays.stream(values())
-                     .filter(us -> us.value.equals(raw))
-                     .findFirst()
-                     .map(Result::success)
-                     .orElseGet(INVALID_STRATEGY::result);
+        return Arrays.stream(values()).filter(us -> us.value.equals(raw))
+                            .findFirst()
+                            .map(Result::success)
+                            .orElseGet(INVALID_STRATEGY::result);
     }
 }

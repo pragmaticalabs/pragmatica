@@ -30,8 +30,7 @@ public sealed interface GovernorReconciliation {
                                    GovernorCleanup cleanup,
                                    DHTNode dhtNode) {
         log.info("Governor reconciliation: rebuilding index from DHT storage");
-        return cleanup.rebuildIndex(dhtNode)
-                      .flatMap(_ -> reconcileFromIndex(aliveNodes, cleanup));
+        return cleanup.rebuildIndex(dhtNode).flatMap(_ -> reconcileFromIndex(aliveNodes, cleanup));
     }
 
     /// Reconcile DHT entries against the alive member set using the existing index.
@@ -47,9 +46,8 @@ public sealed interface GovernorReconciliation {
     private static Promise<Unit> reconcileFromIndex(Set<NodeId> aliveNodes,
                                                     GovernorCleanup cleanup) {
         log.info("Governor reconciliation: checking DHT entries against {} alive nodes", aliveNodes.size());
-        return cleanup.cleanupDeadNodes(aliveNodes)
-                      .onSuccess(_ -> log.info("Governor reconciliation complete"));
+        return cleanup.cleanupDeadNodes(aliveNodes).onSuccess(_ -> log.info("Governor reconciliation complete"));
     }
 
-    record unused() implements GovernorReconciliation {}
+    record unused() implements GovernorReconciliation{}
 }

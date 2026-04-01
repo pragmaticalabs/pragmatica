@@ -16,13 +16,11 @@ import static org.pragmatica.aether.environment.hetzner.HetznerEnvironmentConfig
 
 /// ServiceLoader factory for creating HetznerEnvironmentIntegration from generic CloudConfig.
 public record HetznerEnvironmentIntegrationFactory() implements EnvironmentIntegrationFactory {
-    @Override
-    public String providerName() {
+    @Override public String providerName() {
         return "hetzner";
     }
 
-    @Override
-    public Result<EnvironmentIntegration> create(CloudConfig config) {
+    @Override public Result<EnvironmentIntegration> create(CloudConfig config) {
         return buildEnvironmentConfig(config).flatMap(HetznerEnvironmentIntegration::hetznerEnvironmentIntegration)
                                      .map(EnvironmentIntegration.class::cast);
     }
@@ -50,9 +48,8 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
                                                               Map<String, String> lbMap) {
         var lbIdStr = lbMap.getOrDefault("load_balancer_id", "");
         var portStr = lbMap.getOrDefault("destination_port", "");
-        if (lbIdStr.isEmpty() || portStr.isEmpty()) {
-            return envConfig;
-        }
+        if ( lbIdStr.isEmpty() || portStr.isEmpty()) {
+        return envConfig;}
         return hetznerLbConfig(Long.parseLong(lbIdStr),
                                Integer.parseInt(portStr)).map(lb -> withLoadBalancer(envConfig, lb))
                               .or(envConfig);
@@ -73,8 +70,39 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
 
     // --- Leaf: withLoadBalancer copy helper ---
     @SuppressWarnings("JBCT-VO-02") // Copy-with-change — direct constructor use in config builder
-    private static HetznerEnvironmentConfig withLoadBalancer(HetznerEnvironmentConfig envConfig,
-                                                             HetznerEnvironmentConfig.HetznerLbConfig lbConfig) {
+    private static// Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    HetznerEnvironmentConfig withLoadBalancer(HetznerEnvironmentConfig envConfig,
+                                              HetznerEnvironmentConfig.HetznerLbConfig lbConfig) {
         return new HetznerEnvironmentConfig(envConfig.hetznerConfig(),
                                             envConfig.serverType(),
                                             envConfig.image(),
@@ -91,13 +119,11 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
 
     // --- Leaf: parse comma-separated long list ---
     private static List<Long> parseLongList(String value) {
-        if (value.isEmpty()) {
-            return List.of();
-        }
-        return Arrays.stream(value.split(","))
-                     .map(String::trim)
-                     .filter(s -> !s.isEmpty())
-                     .map(Long::parseLong)
-                     .toList();
+        if ( value.isEmpty()) {
+        return List.of();}
+        return Arrays.stream(value.split(",")).map(String::trim)
+                            .filter(s -> !s.isEmpty())
+                            .map(Long::parseLong)
+                            .toList();
     }
 }

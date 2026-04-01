@@ -16,8 +16,7 @@ public sealed interface TransactionError extends Cause {
             return success(new NoActiveTransaction(operation));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "No active transaction for operation: " + operation;
         }
     }
@@ -28,8 +27,7 @@ public sealed interface TransactionError extends Cause {
             return success(new TransactionAlreadyActive(operation));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Transaction already active for operation: " + operation;
         }
     }
@@ -40,8 +38,7 @@ public sealed interface TransactionError extends Cause {
             return success(new TransactionTimedOut(transactionId));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Transaction timed out: " + transactionId;
         }
     }
@@ -53,8 +50,7 @@ public sealed interface TransactionError extends Cause {
             return success(new TransactionRolledBack(transactionId, cause));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Transaction rolled back: " + transactionId + cause.fold(() -> "", TransactionRolledBack::formatCause);
         }
 
@@ -69,8 +65,7 @@ public sealed interface TransactionError extends Cause {
             return success(new InvalidConfig(reason));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Invalid transaction configuration: " + reason;
         }
     }
@@ -81,8 +76,7 @@ public sealed interface TransactionError extends Cause {
             return success(new OperationFailed(operation, cause));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Transaction operation failed: " + operation + cause.fold(() -> "", OperationFailed::formatCause);
         }
 
@@ -93,47 +87,35 @@ public sealed interface TransactionError extends Cause {
 
     // Convenience factory methods
     static NoActiveTransaction noActiveTransaction(String operation) {
-        return NoActiveTransaction.noActiveTransaction(operation)
-                                  .unwrap();
+        return NoActiveTransaction.noActiveTransaction(operation).unwrap();
     }
 
     static TransactionAlreadyActive transactionAlreadyActive(String operation) {
-        return TransactionAlreadyActive.transactionAlreadyActive(operation)
-                                       .unwrap();
+        return TransactionAlreadyActive.transactionAlreadyActive(operation).unwrap();
     }
 
     static TransactionTimedOut transactionTimedOut(String transactionId) {
-        return TransactionTimedOut.transactionTimedOut(transactionId)
-                                  .unwrap();
+        return TransactionTimedOut.transactionTimedOut(transactionId).unwrap();
     }
 
     static TransactionRolledBack transactionRolledBack(String transactionId) {
-        return TransactionRolledBack.transactionRolledBack(transactionId,
-                                                           none())
-                                    .unwrap();
+        return TransactionRolledBack.transactionRolledBack(transactionId, none()).unwrap();
     }
 
     static TransactionRolledBack transactionRolledBack(String transactionId, Throwable cause) {
-        return TransactionRolledBack.transactionRolledBack(transactionId,
-                                                           option(cause))
-                                    .unwrap();
+        return TransactionRolledBack.transactionRolledBack(transactionId, option(cause)).unwrap();
     }
 
     static InvalidConfig invalidConfig(String reason) {
-        return InvalidConfig.invalidConfig(reason)
-                            .unwrap();
+        return InvalidConfig.invalidConfig(reason).unwrap();
     }
 
     static OperationFailed operationFailed(String operation) {
-        return OperationFailed.operationFailed(operation,
-                                               none())
-                              .unwrap();
+        return OperationFailed.operationFailed(operation, none()).unwrap();
     }
 
     static OperationFailed operationFailed(String operation, Throwable cause) {
-        return OperationFailed.operationFailed(operation,
-                                               option(cause))
-                              .unwrap();
+        return OperationFailed.operationFailed(operation, option(cause)).unwrap();
     }
 
     record unused() implements TransactionError {
@@ -141,8 +123,7 @@ public sealed interface TransactionError extends Cause {
             return success(new unused());
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "";
         }
     }

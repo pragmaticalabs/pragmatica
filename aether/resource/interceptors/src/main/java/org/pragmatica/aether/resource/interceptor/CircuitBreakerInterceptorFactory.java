@@ -9,28 +9,24 @@ import org.pragmatica.lang.utils.CircuitBreaker;
 /// Delegates to the core {@link CircuitBreaker} utility. When the failure threshold is reached,
 /// subsequent calls are rejected immediately until the reset timeout expires.
 public final class CircuitBreakerInterceptorFactory implements ResourceFactory<CircuitBreakerMethodInterceptor, CircuitBreakerConfig> {
-    @Override
-    public Class<CircuitBreakerMethodInterceptor> resourceType() {
+    @Override public Class<CircuitBreakerMethodInterceptor> resourceType() {
         return CircuitBreakerMethodInterceptor.class;
     }
 
-    @Override
-    public Class<CircuitBreakerConfig> configType() {
+    @Override public Class<CircuitBreakerConfig> configType() {
         return CircuitBreakerConfig.class;
     }
 
-    @Override
-    public Promise<CircuitBreakerMethodInterceptor> provision(CircuitBreakerConfig config) {
+    @Override public Promise<CircuitBreakerMethodInterceptor> provision(CircuitBreakerConfig config) {
         return Promise.success(interceptor(config));
     }
 
     private static CircuitBreakerMethodInterceptor interceptor(CircuitBreakerConfig config) {
-        var breaker = CircuitBreaker.builder()
-                                    .failureThreshold(config.failureThreshold())
-                                    .resetTimeout(config.resetTimeout())
-                                    .testAttempts(config.testAttempts())
-                                    .withDefaultShouldTrip()
-                                    .withDefaultTimeSource();
+        var breaker = CircuitBreaker.builder().failureThreshold(config.failureThreshold())
+                                            .resetTimeout(config.resetTimeout())
+                                            .testAttempts(config.testAttempts())
+                                            .withDefaultShouldTrip()
+                                            .withDefaultTimeSource();
         return new CircuitBreakerMethodInterceptor(breaker);
     }
 }
