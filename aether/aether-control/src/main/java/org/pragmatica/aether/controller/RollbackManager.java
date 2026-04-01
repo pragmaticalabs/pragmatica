@@ -213,6 +213,25 @@ public interface RollbackManager {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                 if ( !leaderChange.localNodeIsLeader() && wasLeader) {
                 log.info("Node {} is no longer leader, RollbackManager deactivated", self);}
             }

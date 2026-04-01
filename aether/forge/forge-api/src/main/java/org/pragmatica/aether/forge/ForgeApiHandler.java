@@ -129,6 +129,25 @@ public final class ForgeApiHandler {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         catch (Exception e) {
             log.error("Error handling API request: {}", e.getMessage(), e);
             sendError(response, HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());

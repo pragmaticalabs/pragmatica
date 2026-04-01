@@ -106,6 +106,25 @@ public interface WorkerMetricsAggregator {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                 catch (Exception e) {
                     LOG.error("Metrics aggregation cycle error: {}", e.getMessage(), e);
                 }

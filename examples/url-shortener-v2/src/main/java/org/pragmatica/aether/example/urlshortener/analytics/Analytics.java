@@ -83,15 +83,14 @@ import java.util.regex.Pattern;
     record analytics(AnalyticsPersistence persistence) implements Analytics {
         @Override public Promise<RecordClickResponse> recordClick(RecordClickRequest request) {
             var shortCode = request.shortCode();
-            return persistence.insertClick(shortCode)
-                              .flatMap(_ -> persistence.countByShortCode(shortCode))
-                              .map(count -> RecordClickResponse.recordClickResponse(shortCode, count));
+            return persistence.insertClick(shortCode).flatMap(_ -> persistence.countByShortCode(shortCode))
+                                          .map(count -> RecordClickResponse.recordClickResponse(shortCode, count));
         }
 
         @Override public Promise<GetStatsResponse> getStats(GetStatsRequest request) {
             var shortCode = request.shortCode();
             return persistence.countByShortCode(shortCode)
-                              .map(count -> GetStatsResponse.getStatsResponse(shortCode, count));
+            .map(count -> GetStatsResponse.getStatsResponse(shortCode, count));
         }
 
         @Override public Promise<Unit> onClickEvent(ClickEvent event) {
@@ -100,18 +99,12 @@ import java.util.regex.Pattern;
     }
 
     static Analytics noopAnalytics() {
-        return new Analytics() {
-            @Override public Promise<RecordClickResponse> recordClick(RecordClickRequest request) {
-                return Promise.success(RecordClickResponse.recordClickResponse(request.shortCode(), 0));
-            }
-
-            @Override public Promise<GetStatsResponse> getStats(GetStatsRequest request) {
-                return Promise.success(GetStatsResponse.getStatsResponse(request.shortCode(), 0));
-            }
-
-            @Override public Promise<Unit> onClickEvent(ClickEvent event) {
-                return Promise.success(Unit.unit());
-            }
-        };
+        return new Analytics() {@Override public Promise<RecordClickResponse> recordClick(RecordClickRequest request) {
+            return Promise.success(RecordClickResponse.recordClickResponse(request.shortCode(), 0));
+        }@Override public Promise<GetStatsResponse> getStats(GetStatsRequest request) {
+            return Promise.success(GetStatsResponse.getStatsResponse(request.shortCode(), 0));
+        }@Override public Promise<Unit> onClickEvent(ClickEvent event) {
+            return Promise.success(Unit.unit());
+        }};
     }
 }

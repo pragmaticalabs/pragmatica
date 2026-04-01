@@ -198,6 +198,25 @@ public sealed interface VersionPattern {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         if ( pattern.startsWith("<=")) {
             opStr = "<=";
             versionStr = pattern.substring(2).trim();

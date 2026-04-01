@@ -744,6 +744,25 @@ class SliceInvokerImpl implements SliceInvoker {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         catch (Exception e) {
             log.error("[requestId={}] Error notifying failure listener: {}", requestId, e.getMessage());
         }
@@ -881,10 +900,10 @@ class SliceInvokerImpl implements SliceInvoker {
     private Promise<Endpoint> selectEndpoint(Artifact slice, MethodName method) {
         var artifactBase = ArtifactBase.artifactBase(slice.groupId(), slice.artifactId());
         return deploymentManager.activeRouting(artifactBase).map(routing -> selectEndpointWithWeightedRouting(slice,
-                                                                                                             artifactBase,
-                                                                                                             method,
-                                                                                                             routing))
-                                                            .or(() -> endpointRegistry.selectEndpoint(slice, method)
+                                                                                                              artifactBase,
+                                                                                                              method,
+                                                                                                              routing))
+                                              .or(() -> endpointRegistry.selectEndpoint(slice, method)
         .async(NO_ENDPOINT_FOUND));
     }
 

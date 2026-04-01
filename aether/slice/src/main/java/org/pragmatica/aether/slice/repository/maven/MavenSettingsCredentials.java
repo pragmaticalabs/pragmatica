@@ -53,6 +53,25 @@ public sealed interface MavenSettingsCredentials {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         catch (Exception e) {
             log.debug("Failed to read Maven settings from {}: {}", settingsFile, e.getMessage());
             return Option.empty();

@@ -54,7 +54,7 @@ public final class DeployRoutes implements RouteSource {
                          String cleanupPolicy,
                          Map<String, Object> canary,
                          Map<String, Object> blueGreen,
-                         Map<String, Object> rolling) {}
+                         Map<String, Object> rolling){}
 
     // --- Response DTOs ---
     record DeploymentResponse(String deploymentId,
@@ -66,74 +66,72 @@ public final class DeployRoutes implements RouteSource {
                               int routingNewWeight,
                               int routingOldWeight,
                               long createdAt,
-                              long updatedAt) {}
+                              long updatedAt){}
 
-    record DeploymentListResponse(List<DeploymentResponse> deployments) {}
+    record DeploymentListResponse(List<DeploymentResponse> deployments){}
 
     // --- Route definitions ---
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(
-            Route.<DeploymentResponse>post("/api/deploy")
-                 .withBody(DeployRequest.class)
-                 .toResult(this::startDeployment)
-                 .asJson(),
-            Route.<DeploymentListResponse>get("/api/deploy")
-                 .toJson(this::listDeployments),
-            Route.<DeploymentResponse>get("/api/deploy")
-                 .withPath(aString())
-                 .toResult(this::getDeployment)
-                 .asJson(),
-            Route.<DeploymentResponse>post("/api/deploy")
-                 .withPath(aString(),
-                           spacer("promote"))
-                 .toResult(this::promoteDeployment)
-                 .asJson(),
-            Route.<DeploymentResponse>post("/api/deploy")
-                 .withPath(aString(),
-                           spacer("rollback"))
-                 .toResult(this::rollbackDeployment)
-                 .asJson(),
-            Route.<DeploymentResponse>post("/api/deploy")
-                 .withPath(aString(),
-                           spacer("complete"))
-                 .toResult(this::completeDeployment)
-                 .asJson());
+        return Stream.of(Route.<DeploymentResponse>post("/api/deploy")
+                              .withBody(DeployRequest.class)
+                              .toResult(this::startDeployment)
+                              .asJson(),
+                         Route.<DeploymentListResponse>get("/api/deploy")
+                              .toJson(this::listDeployments),
+                         Route.<DeploymentResponse>get("/api/deploy")
+                              .withPath(aString())
+                              .toResult(this::getDeployment)
+                              .asJson(),
+                         Route.<DeploymentResponse>post("/api/deploy")
+                              .withPath(aString(),
+                                        spacer("promote"))
+                              .toResult(this::promoteDeployment)
+                              .asJson(),
+                         Route.<DeploymentResponse>post("/api/deploy")
+                              .withPath(aString(),
+                                        spacer("rollback"))
+                              .toResult(this::rollbackDeployment)
+                              .asJson(),
+                         Route.<DeploymentResponse>post("/api/deploy")
+                              .withPath(aString(),
+                                        spacer("complete"))
+                              .toResult(this::completeDeployment)
+                              .asJson());
     }
 
     // --- Handlers ---
     private Result<DeploymentResponse> startDeployment(DeployRequest request) {
-        return parseDeployRequest(request)
-            .flatMap(this::executeStart)
-            .map(DeployRoutes::toResponse);
+        return parseDeployRequest(request).flatMap(this::executeStart)
+                                 .map(DeployRoutes::toResponse);
     }
 
     private DeploymentListResponse listDeployments() {
         var responses = deploymentManager().list()
-                                          .stream()
-                                          .map(DeployRoutes::toResponse)
-                                          .toList();
+                                         .stream()
+                                         .map(DeployRoutes::toResponse)
+                                         .toList();
         return new DeploymentListResponse(responses);
     }
 
     private Result<DeploymentResponse> getDeployment(String deploymentId) {
         return deploymentManager().status(deploymentId)
-                                 .toResult(NOT_FOUND)
-                                 .map(DeployRoutes::toResponse);
+                                .toResult(NOT_FOUND)
+                                .map(DeployRoutes::toResponse);
     }
 
     private Result<DeploymentResponse> promoteDeployment(String deploymentId, String spacer) {
         return deploymentManager().promote(deploymentId)
-                                 .map(DeployRoutes::toResponse);
+                                .map(DeployRoutes::toResponse);
     }
 
     private Result<DeploymentResponse> rollbackDeployment(String deploymentId, String spacer) {
         return deploymentManager().rollback(deploymentId)
-                                 .map(DeployRoutes::toResponse);
+                                .map(DeployRoutes::toResponse);
     }
 
     private Result<DeploymentResponse> completeDeployment(String deploymentId, String spacer) {
         return deploymentManager().complete(deploymentId)
-                                 .map(DeployRoutes::toResponse);
+                                .map(DeployRoutes::toResponse);
     }
 
     // --- Parsing ---
@@ -143,11 +141,10 @@ public final class DeployRoutes implements RouteSource {
                                        StrategyConfig config,
                                        HealthThresholds thresholds,
                                        CleanupPolicy cleanupPolicy,
-                                       int instances) {}
+                                       int instances){}
 
     private Result<ParsedDeployRequest> parseDeployRequest(DeployRequest request) {
-        return parseBlueprint(request)
-            .flatMap(blueprintParts -> buildParsedRequest(blueprintParts, request));
+        return parseBlueprint(request).flatMap(blueprintParts -> buildParsedRequest(blueprintParts, request));
     }
 
     private Result<ParsedDeployRequest> buildParsedRequest(String[] blueprintParts, DeployRequest request) {
@@ -155,22 +152,21 @@ public final class DeployRoutes implements RouteSource {
                           parseStrategy(request.strategy()),
                           parseThresholds(request.thresholds()),
                           parseCleanupPolicy(request.cleanupPolicy()))
-                     .flatMap((version, strategy, thresholds, cleanupPolicy) ->
-                                  parseStrategyConfig(strategy, request)
-                                      .map(config -> new ParsedDeployRequest(request.blueprint(),
-                                                                             version,
-                                                                             strategy,
-                                                                             config,
-                                                                             thresholds,
-                                                                             cleanupPolicy,
-                                                                             parseInstances(request.instances()))));
+        .flatMap((version, strategy, thresholds, cleanupPolicy) -> parseStrategyConfig(strategy, request)
+        .map(config -> new ParsedDeployRequest(request.blueprint(),
+                                               version,
+                                               strategy,
+                                               config,
+                                               thresholds,
+                                               cleanupPolicy,
+                                               parseInstances(request.instances()))));
     }
 
     private static Result<String[]> parseBlueprint(DeployRequest request) {
-        return option(request.blueprint())
-            .toResult(MISSING_BLUEPRINT)
-            .filter(MISSING_BLUEPRINT, bp -> bp.contains(":"))
-            .map(bp -> bp.split(":"));
+        return option(request.blueprint()).toResult(MISSING_BLUEPRINT)
+                     .filter(MISSING_BLUEPRINT,
+                             bp -> bp.contains(":"))
+                     .map(bp -> bp.split(":"));
     }
 
     private static Result<Version> parseVersion(String versionStr) {
@@ -178,65 +174,49 @@ public final class DeployRoutes implements RouteSource {
     }
 
     private static Result<DeploymentStrategy> parseStrategy(String raw) {
-        return option(raw)
-            .toResult(MISSING_STRATEGY)
-            .map(String::toUpperCase)
-            .flatMap(DeployRoutes::toDeploymentStrategy);
+        return option(raw).toResult(MISSING_STRATEGY)
+                     .map(String::toUpperCase)
+                     .flatMap(DeployRoutes::toDeploymentStrategy);
     }
 
     private static Result<DeploymentStrategy> toDeploymentStrategy(String name) {
-        return switch (name) {
-            case "CANARY" -> Result.success(DeploymentStrategy.CANARY);
-            case "BLUE_GREEN" -> Result.success(DeploymentStrategy.BLUE_GREEN);
-            case "ROLLING" -> Result.success(DeploymentStrategy.ROLLING);
-            default -> INVALID_STRATEGY.result();
-        };
+        return switch (name) {case "CANARY" -> Result.success(DeploymentStrategy.CANARY);case "BLUE_GREEN" -> Result.success(DeploymentStrategy.BLUE_GREEN);case "ROLLING" -> Result.success(DeploymentStrategy.ROLLING);default -> INVALID_STRATEGY.result();};
     }
 
     private static Result<HealthThresholds> parseThresholds(Map<String, Object> raw) {
-        if (raw == null || raw.isEmpty()) {
-            return Result.success(HealthThresholds.DEFAULT);
-        }
+        if ( raw == null || raw.isEmpty()) {
+        return Result.success(HealthThresholds.DEFAULT);}
         var maxErrorRate = toDouble(raw.get("maxErrorRate"), HealthThresholds.DEFAULT.maxErrorRate());
         var maxLatencyMs = toLong(raw.get("maxLatencyMs"), HealthThresholds.DEFAULT.maxLatencyMs());
         return HealthThresholds.healthThresholds(maxErrorRate, maxLatencyMs, false);
     }
 
     private static Result<CleanupPolicy> parseCleanupPolicy(String raw) {
-        if (raw == null || raw.isEmpty()) {
-            return Result.success(CleanupPolicy.GRACE_PERIOD);
-        }
-        return switch (raw.toUpperCase()) {
-            case "IMMEDIATE" -> Result.success(CleanupPolicy.IMMEDIATE);
-            case "GRACE_PERIOD" -> Result.success(CleanupPolicy.GRACE_PERIOD);
-            case "MANUAL" -> Result.success(CleanupPolicy.MANUAL);
-            default -> Result.success(CleanupPolicy.GRACE_PERIOD);
-        };
+        if ( raw == null || raw.isEmpty()) {
+        return Result.success(CleanupPolicy.GRACE_PERIOD);}
+        return switch (raw.toUpperCase()) {case "IMMEDIATE" -> Result.success(CleanupPolicy.IMMEDIATE);case "GRACE_PERIOD" -> Result.success(CleanupPolicy.GRACE_PERIOD);case "MANUAL" -> Result.success(CleanupPolicy.MANUAL);default -> Result.success(CleanupPolicy.GRACE_PERIOD);};
     }
 
     private static int parseInstances(Integer raw) {
-        return raw != null ? raw : 1;
+        return raw != null
+               ? raw
+               : 1;
     }
 
     private static Result<StrategyConfig> parseStrategyConfig(DeploymentStrategy strategy, DeployRequest request) {
-        return switch (strategy) {
-            case CANARY -> parseCanaryConfig(request.canary());
-            case BLUE_GREEN -> parseBlueGreenConfig(request.blueGreen());
-            case ROLLING -> parseRollingConfig(request.rolling());
-        };
+        return switch (strategy) {case CANARY -> parseCanaryConfig(request.canary());case BLUE_GREEN -> parseBlueGreenConfig(request.blueGreen());case ROLLING -> parseRollingConfig(request.rolling());};
     }
 
     @SuppressWarnings("unchecked")
     private static Result<StrategyConfig> parseCanaryConfig(Map<String, Object> raw) {
-        if (raw == null) {
-            return MISSING_CANARY_STAGES.result();
-        }
+        if ( raw == null) {
+        return MISSING_CANARY_STAGES.result();}
         var rawStages = (List<Map<String, Object>>) raw.get("stages");
-        if (rawStages == null || rawStages.isEmpty()) {
-            return MISSING_CANARY_STAGES.result();
-        }
-        return Result.allOf(rawStages.stream().map(DeployRoutes::parseCanaryStage).toList())
-                     .map(stages -> new CanaryConfig(stages, CanaryAnalysisConfig.DEFAULT));
+        if ( rawStages == null || rawStages.isEmpty()) {
+        return MISSING_CANARY_STAGES.result();}
+        return Result.allOf(rawStages.stream().map(DeployRoutes::parseCanaryStage)
+                                            .toList())
+        .map(stages -> new CanaryConfig(stages, CanaryAnalysisConfig.DEFAULT));
     }
 
     private static Result<CanaryStage> parseCanaryStage(Map<String, Object> raw) {
@@ -246,7 +226,9 @@ public final class DeployRoutes implements RouteSource {
     }
 
     private static Result<StrategyConfig> parseBlueGreenConfig(Map<String, Object> raw) {
-        var drainTimeoutMs = raw != null ? toLong(raw.get("drainTimeoutMs"), 30_000L) : 30_000L;
+        var drainTimeoutMs = raw != null
+                             ? toLong(raw.get("drainTimeoutMs"), 30_000L)
+                             : 30_000L;
         return Result.success(new BlueGreenConfig(drainTimeoutMs));
     }
 
@@ -282,23 +264,20 @@ public final class DeployRoutes implements RouteSource {
 
     // --- Numeric helpers ---
     private static double toDouble(Object value, double defaultValue) {
-        if (value instanceof Number n) {
-            return n.doubleValue();
-        }
+        if ( value instanceof Number n) {
+        return n.doubleValue();}
         return defaultValue;
     }
 
     private static long toLong(Object value, long defaultValue) {
-        if (value instanceof Number n) {
-            return n.longValue();
-        }
+        if ( value instanceof Number n) {
+        return n.longValue();}
         return defaultValue;
     }
 
     private static int toInt(Object value, int defaultValue) {
-        if (value instanceof Number n) {
-            return n.intValue();
-        }
+        if ( value instanceof Number n) {
+        return n.intValue();}
         return defaultValue;
     }
 

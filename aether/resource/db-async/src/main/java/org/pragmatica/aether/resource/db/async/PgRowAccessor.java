@@ -25,6 +25,25 @@ final class PgRowAccessor implements RowAccessor {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         catch (Exception e) {
             return DatabaseConnectorError.queryFailed("getString(" + column + ")", e).result();
         }
@@ -35,6 +54,25 @@ final class PgRowAccessor implements RowAccessor {
             return option(row.getInt(column))
             .toResult(DatabaseConnectorError.queryFailed("getInt(" + column + ")", "Column value was NULL"));
         }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -55,6 +93,25 @@ final class PgRowAccessor implements RowAccessor {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         catch (Exception e) {
             return DatabaseConnectorError.queryFailed("getLong(" + column + ")", e).result();
         }
@@ -65,6 +122,25 @@ final class PgRowAccessor implements RowAccessor {
             return option(row.getDouble(column))
             .toResult(DatabaseConnectorError.queryFailed("getDouble(" + column + ")", "Column value was NULL"));
         }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -85,6 +161,25 @@ final class PgRowAccessor implements RowAccessor {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         catch (Exception e) {
             return DatabaseConnectorError.queryFailed("getBoolean(" + column + ")", e).result();
         }
@@ -95,6 +190,25 @@ final class PgRowAccessor implements RowAccessor {
             var value = row.getBytes(column);
             return Result.success(option(value).or(new byte[0]));
         }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -111,6 +225,25 @@ final class PgRowAccessor implements RowAccessor {
             return option(value).toResult(DatabaseConnectorError.queryFailed("getObject(" + column + ", " + type.getSimpleName() + ")",
                                                                              "Column value was NULL"));
         }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

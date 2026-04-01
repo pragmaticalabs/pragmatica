@@ -84,6 +84,24 @@ public class EventWebSocketPublisher {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         catch (Exception e) {
             log.error("Error publishing events via WebSocket", e);
         }

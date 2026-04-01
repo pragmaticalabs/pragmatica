@@ -31,20 +31,20 @@ import java.util.List;
 /// @param newInstances target number of new version instances
 /// @param createdAt timestamp when deployment was created
 /// @param updatedAt timestamp of last state change
-public record Deployment(String deploymentId,
-                         String blueprintId,
-                         Version oldVersion,
-                         Version newVersion,
-                         DeploymentState state,
-                         DeploymentStrategy strategy,
-                         StrategyConfig strategyConfig,
-                         VersionRouting routing,
-                         HealthThresholds thresholds,
-                         CleanupPolicy cleanupPolicy,
-                         List<ArtifactBase> artifacts,
-                         int newInstances,
-                         long createdAt,
-                         long updatedAt) {
+public record Deployment( String deploymentId,
+                          String blueprintId,
+                          Version oldVersion,
+                          Version newVersion,
+                          DeploymentState state,
+                          DeploymentStrategy strategy,
+                          StrategyConfig strategyConfig,
+                          VersionRouting routing,
+                          HealthThresholds thresholds,
+                          CleanupPolicy cleanupPolicy,
+                          List<ArtifactBase> artifacts,
+                          int newInstances,
+                          long createdAt,
+                          long updatedAt) {
     private static final Fn1<Cause, String> INVALID_TRANSITION = Causes.forOneValue("Invalid deployment state transition: %s");
 
     /// Creates a new deployment in PENDING state.
@@ -83,8 +83,7 @@ public record Deployment(String deploymentId,
 
     /// Transitions to ROUTING state with updated routing.
     public Result<Deployment> route(VersionRouting newRouting) {
-        return transitionTo(DeploymentState.ROUTING)
-            .map(d -> d.withRouting(newRouting));
+        return transitionTo(DeploymentState.ROUTING).map(d -> d.withRouting(newRouting));
     }
 
     /// Transitions to PROMOTING state.
@@ -130,9 +129,8 @@ public record Deployment(String deploymentId,
     /// Transitions to the specified state, validating the transition is legal.
     @SuppressWarnings("JBCT-VO-02")
     private Result<Deployment> transitionTo(DeploymentState newState) {
-        if (!state.validTransitions().contains(newState)) {
-            return INVALID_TRANSITION.apply(state + " -> " + newState).result();
-        }
+        if ( !state.validTransitions().contains(newState)) {
+        return INVALID_TRANSITION.apply(state + " -> " + newState).result();}
         return Result.success(new Deployment(deploymentId,
                                              blueprintId,
                                              oldVersion,

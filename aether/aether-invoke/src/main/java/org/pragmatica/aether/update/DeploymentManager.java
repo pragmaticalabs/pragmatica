@@ -96,12 +96,11 @@ public interface DeploymentManager {
     Option<ActiveRouting> activeRouting(ArtifactBase artifactBase);
 
     /// Routing information for an active deployment covering a specific artifact.
-    record ActiveRouting(VersionRouting routing, Version oldVersion, Version newVersion) {}
+    record ActiveRouting(VersionRouting routing, Version oldVersion, Version newVersion){}
 
     /// Handle leader change — become active or dormant based on leadership.
     @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    void onLeaderChange(LeaderChange leaderChange);
+    @SuppressWarnings("JBCT-RET-01") void onLeaderChange(LeaderChange leaderChange);
 
     /// Factory method following JBCT naming convention.
     static DeploymentManager deploymentManager(RabiaNode<KVCommand<AetherKey>> clusterNode,

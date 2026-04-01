@@ -194,6 +194,25 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

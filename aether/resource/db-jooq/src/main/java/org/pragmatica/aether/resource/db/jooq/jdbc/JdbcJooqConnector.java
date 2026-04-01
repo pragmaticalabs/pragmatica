@@ -142,6 +142,25 @@ public final class JdbcJooqConnector implements JooqConnector {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
             catch (Exception e) {
                 rollbackSilently(conn);
                 throw e;
@@ -164,6 +183,25 @@ public final class JdbcJooqConnector implements JooqConnector {
         try {
             conn.rollback();
         }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

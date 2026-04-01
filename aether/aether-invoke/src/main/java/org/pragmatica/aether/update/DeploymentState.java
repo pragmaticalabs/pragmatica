@@ -32,28 +32,27 @@ public enum DeploymentState {
     ROLLED_BACK,
     /// Deployment failed
     FAILED;
-
     /// Returns valid transitions from this state.
     public Set<DeploymentState> validTransitions() {
-        return switch (this) {
-            case PENDING -> Set.of(DEPLOYING, FAILED);
-            case DEPLOYING -> Set.of(DEPLOYED, ROLLING_BACK, FAILED);
-            case DEPLOYED -> Set.of(ROUTING, ROLLING_BACK, FAILED);
-            case ROUTING -> Set.of(ROUTING, PROMOTING, ROLLING_BACK, FAILED);
-            case PROMOTING -> Set.of(DRAINING, ROLLING_BACK, FAILED);
-            case DRAINING -> Set.of(COMPLETED, FAILED);
-            case ROLLING_BACK -> Set.of(ROLLED_BACK, FAILED);
-            case COMPLETED, ROLLED_BACK, FAILED -> Set.of();
-        };
+        return switch (this) {case PENDING -> Set.of(DEPLOYING, FAILED);case DEPLOYING -> Set.of(DEPLOYED,
+                                                                                                 ROLLING_BACK,
+                                                                                                 FAILED);case DEPLOYED -> Set.of(ROUTING,
+                                                                                                                                 ROLLING_BACK,
+                                                                                                                                 FAILED);case ROUTING -> Set.of(ROUTING,
+                                                                                                                                                                PROMOTING,
+                                                                                                                                                                ROLLING_BACK,
+                                                                                                                                                                FAILED);case PROMOTING -> Set.of(DRAINING,
+                                                                                                                                                                                                 ROLLING_BACK,
+                                                                                                                                                                                                 FAILED);case DRAINING -> Set.of(COMPLETED,
+                                                                                                                                                                                                                                 FAILED);case ROLLING_BACK -> Set.of(ROLLED_BACK,
+                                                                                                                                                                                                                                                                     FAILED);case COMPLETED, ROLLED_BACK, FAILED -> Set.of();};
     }
-
     /// Checks if this state is terminal (no further transitions possible).
     public boolean isTerminal() {
         return this == COMPLETED || this == ROLLED_BACK || this == FAILED;
     }
-
     /// Checks if this state is active (not terminal).
     public boolean isActive() {
-        return !isTerminal();
+        return ! isTerminal();
     }
 }

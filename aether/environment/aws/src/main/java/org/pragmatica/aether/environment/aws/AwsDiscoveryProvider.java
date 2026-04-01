@@ -183,6 +183,25 @@ public final class AwsDiscoveryProvider implements DiscoveryProvider {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

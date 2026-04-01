@@ -63,23 +63,16 @@ subcommands = {DeployCommand.ListCommand.class, DeployCommand.StatusCommand.clas
     }
 
     @Override public Integer call() {
-        if (coordinates == null) {
+        if ( coordinates == null) {
             CommandLine.usage(this, System.out);
             return 0;
         }
-
-        if (canary) {
-            return deployWithStrategy("CANARY", buildCanaryBody());
-        }
-
-        if (blueGreen) {
-            return deployWithStrategy("BLUE_GREEN", buildBlueGreenBody());
-        }
-
-        if (rolling) {
-            return deployWithStrategy("ROLLING", buildRollingBody());
-        }
-
+        if ( canary) {
+        return deployWithStrategy("CANARY", buildCanaryBody());}
+        if ( blueGreen) {
+        return deployWithStrategy("BLUE_GREEN", buildBlueGreenBody());}
+        if ( rolling) {
+        return deployWithStrategy("ROLLING", buildRollingBody());}
         return deployImmediate();
     }
 

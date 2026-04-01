@@ -115,6 +115,25 @@ public final class EventLoopMetricsCollector {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         catch (Exception e) {
             log.trace("Failed to probe event loop: {}", e.getMessage());
         }

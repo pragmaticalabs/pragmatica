@@ -64,13 +64,10 @@ public sealed interface DeploymentError extends Cause {
         NOT_LEADER("Deployment operations can only be performed by the leader node"),
         NOT_ACTIVE("Deployment is not in an active state"),
         INVALID_STRATEGY_CONFIG("Strategy config does not match deployment strategy");
-
         private final String msg;
-
         General(String msg) {
             this.msg = msg;
         }
-
         @Override public String message() {
             return msg;
         }

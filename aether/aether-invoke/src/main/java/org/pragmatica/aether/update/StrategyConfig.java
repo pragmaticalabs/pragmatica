@@ -9,7 +9,6 @@ import java.util.List;
 ///   - Blue-Green: drain timeout for old environment
 ///   - Rolling: optional manual approval gate
 public sealed interface StrategyConfig {
-
     /// Canary deployment configuration with progressive traffic stages.
     ///
     /// @param stages ordered list of canary stages defining traffic progression
@@ -23,10 +22,10 @@ public sealed interface StrategyConfig {
     /// Blue-green deployment configuration with drain timeout.
     ///
     /// @param drainTimeoutMs maximum time in milliseconds to wait for old environment drain
-    record BlueGreenConfig(long drainTimeoutMs) implements StrategyConfig {}
+    record BlueGreenConfig(long drainTimeoutMs) implements StrategyConfig{}
 
     /// Rolling update configuration with optional manual approval.
     ///
     /// @param requireManualApproval if true, requires explicit approval before routing traffic
-    record RollingConfig(boolean requireManualApproval) implements StrategyConfig {}
+    record RollingConfig(boolean requireManualApproval) implements StrategyConfig{}
 }

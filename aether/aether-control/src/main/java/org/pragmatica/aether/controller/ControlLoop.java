@@ -145,6 +145,25 @@ public interface ControlLoop {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                 {
                     log.info("Node {} is no longer leader, stopping control loop", self);
                     stopEvaluation();
@@ -340,6 +359,25 @@ public interface ControlLoop {
                     recordMetricSamples(currentMetrics);
                     evaluateScalingDecisions(currentMetrics);
                 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -614,6 +652,25 @@ public interface ControlLoop {
             // BiConsumer callback
             // BiConsumer callback
             // BiConsumer callback
+            // BiConsumer callback
+            // BiConsumer callback
+            // BiConsumer callback
+            // BiConsumer callback
+            // BiConsumer callback
+            // BiConsumer callback
+            // BiConsumer callback
+            // BiConsumer callback
+            // BiConsumer callback
+            // BiConsumer callback
+            // BiConsumer callback
+            // BiConsumer callback
+            // BiConsumer callback
+            // BiConsumer callback
+            // BiConsumer callback
+            // BiConsumer callback
+            // BiConsumer callback
+            // BiConsumer callback
+            // BiConsumer callback
             void restoreCooldownEntry(ConfigKey key, ConfigValue value) {
                 if ( !key.key().startsWith(COOLDOWN_KEY_PREFIX)) {
                 return;}
@@ -634,6 +691,25 @@ public interface ControlLoop {
                 try {
                     return Long.parseLong(value);
                 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

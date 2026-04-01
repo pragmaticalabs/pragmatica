@@ -107,6 +107,25 @@ public class DashboardMetricsPublisher {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         catch (Exception e) {
             log.error("Error publishing metrics", e);
         }
@@ -672,8 +691,8 @@ public class DashboardMetricsPublisher {
         sb.append("\"deployments\":[");
         var deployments = node.deploymentManager().list();
         boolean first = true;
-        for (var deployment : deployments) {
-            if (!first) sb.append(",");
+        for ( var deployment : deployments) {
+            if ( !first) sb.append(",");
             sb.append("{\"deploymentId\":\"").append(escapeJson(deployment.deploymentId()))
                      .append("\",\"blueprintId\":\"")
                      .append(escapeJson(deployment.blueprintId()))

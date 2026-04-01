@@ -110,6 +110,25 @@ class ApiKeySecurityValidator implements SecurityValidator {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         catch (NoSuchAlgorithmException e) {
             // SHA-256 is guaranteed to be available in all JVMs
             throw new AssertionError("SHA-256 not available", e);
