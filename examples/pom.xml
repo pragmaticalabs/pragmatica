@@ -23,6 +23,7 @@
         <module>banking</module>
         <module>pricing-engine</module>
         <module>notification-hub</module>
+        <module>pg-showcase</module>
     </modules>
 
     <build>

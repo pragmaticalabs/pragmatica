@@ -66,6 +66,14 @@
             <scope>provided</scope>
         </dependency>
 
+        <!-- PG Codegen annotations (@Query, @Table) -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>pg-codegen</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
         <!-- Testing -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
@@ -94,6 +102,11 @@
                         <path>
                             <groupId>org.pragmatica-lite</groupId>
                             <artifactId>slice-processor</artifactId>
+                            <version>${project.version}</version>
+                        </path>
+                        <path>
+                            <groupId>org.pragmatica-lite.aether</groupId>
+                            <artifactId>pg-codegen</artifactId>
                             <version>${project.version}</version>
                         </path>
                     </annotationProcessorPaths>

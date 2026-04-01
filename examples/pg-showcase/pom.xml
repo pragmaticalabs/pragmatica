@@ -11,11 +11,11 @@
     </parent>
 
     <groupId>org.pragmatica.aether.example</groupId>
-    <artifactId>url-shortener-v2</artifactId>
+    <artifactId>pg-showcase</artifactId>
     <packaging>jar</packaging>
 
-    <name>UrlShortener Slice v2</name>
-    <description>Version 2 of UrlShortener slice - includes version field in responses for rolling update testing</description>
+    <name>PG Persistence Showcase</name>
+    <description>Demonstrates all @PgSql persistence patterns: @Query, CRUD auto-generation, projections, query records</description>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -112,7 +112,7 @@
                     </annotationProcessorPaths>
                     <compilerArgs>
                         <arg>-Aslice.groupId=org.pragmatica.aether.example</arg>
-                        <arg>-Aslice.artifactId=url-shortener-v2</arg>
+                        <arg>-Aslice.artifactId=pg-showcase</arg>
                     </compilerArgs>
                 </configuration>
             </plugin>

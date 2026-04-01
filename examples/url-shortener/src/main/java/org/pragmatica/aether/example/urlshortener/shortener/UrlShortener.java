@@ -1,7 +1,6 @@
 package org.pragmatica.aether.example.urlshortener.shortener;
 
-import org.pragmatica.aether.resource.db.Sql;
-import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.aether.example.urlshortener.shortener.UrlPersistence.UrlRow;
 import org.pragmatica.aether.slice.Publisher;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
@@ -98,27 +97,25 @@ import java.util.regex.Pattern;
     Promise<ShortenResponse> shorten(ShortenRequest request);
     Promise<ResolveResponse> resolve(ResolveRequest request);
 
-    static UrlShortener urlShortener(@Sql SqlConnector db, @ClickEventPublisher Publisher<ClickEvent> clickPublisher) {
-        record urlShortener( SqlConnector db, Publisher<ClickEvent> clickPublisher) implements UrlShortener {
-            private static final String SELECT_BY_URL = "SELECT short_code FROM urls WHERE original_url = ?";
-            private static final String SELECT_BY_CODE = "SELECT original_url FROM urls WHERE short_code = ?";
-            private static final String INSERT_URL = "INSERT INTO urls (short_code, original_url) VALUES (?, ?) ON CONFLICT (short_code) DO NOTHING";
-
+    static UrlShortener urlShortener(UrlPersistence persistence, @ClickEventPublisher Publisher<ClickEvent> clickPublisher) {
+        record urlShortener(UrlPersistence persistence, Publisher<ClickEvent> clickPublisher) implements UrlShortener {
             @Override public Promise<ShortenResponse> shorten(ShortenRequest request) {
                 var url = request.url();
-                return db.queryOptional(SELECT_BY_URL, row -> row.getString("short_code"), url).flatMap(existing -> existing.map(code -> Promise.success(ShortenResponse.shortenResponse(code,
-                                                                                                                                                                                         url))).or(() -> createNewShortUrl(url)));
+                return persistence.findByOriginalUrl(url)
+                                  .flatMap(existing -> existing.map(row -> Promise.success(ShortenResponse.shortenResponse(row.shortCode(), url)))
+                                                              .or(() -> createNewShortUrl(url)));
             }
 
             @Override public Promise<ResolveResponse> resolve(ResolveRequest request) {
                 var shortCode = request.shortCode();
-                return db.queryOptional(SELECT_BY_CODE, row -> row.getString("original_url"), shortCode).flatMap(maybeUrl -> maybeUrl.map(url -> publishClickAndRespond(shortCode,
-                                                                                                                                                                        url)).or(UrlError.NotFound.INSTANCE::promise));
+                return persistence.findByShortCode(shortCode)
+                                  .flatMap(maybeUrl -> maybeUrl.map(row -> publishClickAndRespond(shortCode, row.originalUrl()))
+                                                              .or(UrlError.NotFound.INSTANCE::promise));
             }
 
             private Promise<ResolveResponse> publishClickAndRespond(String shortCode, String url) {
-                return clickPublisher.publish(new ClickEvent(shortCode)).map(_ -> ResolveResponse.resolveResponse(shortCode,
-                                                                                                                  url));
+                return clickPublisher.publish(new ClickEvent(shortCode))
+                                    .map(_ -> ResolveResponse.resolveResponse(shortCode, url));
             }
 
             private Promise<ShortenResponse> createNewShortUrl(String url) {
@@ -127,7 +124,8 @@ import java.util.regex.Pattern;
             }
 
             private Promise<ShortenResponse> insertNewUrl(String url, String shortCode) {
-                return db.update(INSERT_URL, shortCode, url).map(_ -> ShortenResponse.shortenResponse(shortCode, url));
+                return persistence.insertUrl(shortCode, url)
+                                  .map(_ -> ShortenResponse.shortenResponse(shortCode, url));
             }
 
             private static Result<String> computeShortCode(String url) {
@@ -146,26 +144,25 @@ import java.util.regex.Pattern;
 
             private static String formatHashBytes(byte[] hashBytes) {
                 var sb = new StringBuilder();
-                for ( int i = 0;i <8;i++) {sb.append(String.format("%02x", hashBytes[i]));}
+                for (int i = 0; i < 8; i++) { sb.append(String.format("%02x", hashBytes[i])); }
                 return sb.toString();
             }
 
             private static String toBase62(String hexHash, int length) {
                 var value = Long.parseUnsignedLong(hexHash.substring(0, 12), 16);
                 var sb = new StringBuilder();
-                while ( value >0 && sb.length() < length) {
-                    sb.insert(0, BASE62_CHARS.charAt((int)(value % 62)));
+                while (value > 0 && sb.length() < length) {
+                    sb.insert(0, BASE62_CHARS.charAt((int) (value % 62)));
                     value /= 62;
                 }
-                while ( sb.length() < length) {sb.insert(0, '0');}
+                while (sb.length() < length) { sb.insert(0, '0'); }
                 return sb.toString();
             }
         }
-        return new urlShortener(db, clickPublisher);
+        return new urlShortener(persistence, clickPublisher);
     }
 
-    static UrlShortener urlShortener(SqlConnector db) {
-        return urlShortener(db,
-                            _ -> Promise.success(Unit.unit()));
+    static UrlShortener urlShortener(UrlPersistence persistence) {
+        return urlShortener(persistence, _ -> Promise.success(Unit.unit()));
     }
 }
