@@ -9,10 +9,10 @@ cd "$SCRIPT_DIR"
 
 echo "=== Pragmatica Build ==="
 
-# Step 1: Bootstrap jbct-maven-plugin and slice-processor
+# Step 1: Bootstrap annotation processors and Maven plugins
 echo ""
-echo "Step 1/4: Bootstrap jbct-maven-plugin and slice-processor..."
-mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor -am -q
+echo "Step 1/4: Bootstrap annotation processors and Maven plugins..."
+mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am -q
 
 # Step 2: Format and lint all non-jbct modules
 echo ""
