@@ -138,9 +138,18 @@ The "fabricated" characterization was accurate for `main` at v0.24.1. The spec w
 ### 1. In-Memory-Only State
 **Review verdict:** Critical.
 
-**Response:** Accepted. `RabiaPersistence.inMemory()` is hardcoded in AetherNode. `GitBackedPersistence` exists, is tested, and serializes to TOML + git — but is not wired into the production path. `BackupService` returns "not enabled." This is the most significant operational gap.
+**Response:** Was accurate for v0.24.1. Now resolved.
 
-**Status:** Known issue. AHSE Phase 1 includes mandatory automatic metadata snapshotting as a core requirement. The broader persistence story is being addressed through hierarchical storage rather than just wiring GitBackedPersistence, which is a stop-gap. For pre-AHSE releases, wiring GitBackedPersistence for DOCKER/KUBERNETES environments is planned.
+**Current state:** `AetherNode` wires `GitBackedPersistence` when backup config specifies a path, falling back to `inMemory()` only when no path is configured:
+```java
+config.backupConfig()
+      .filter(b -> !b.path().isBlank())
+      .map(AetherNode::createGitBackedPersistence)
+      .or(RabiaPersistence::inMemory);
+```
+Environment-aware defaults provide paths automatically (LOCAL: `./aether-backups`, DOCKER: `/data/backups`, K8S: `/var/aether/backups`). The broader persistence story is being addressed through AHSE (hierarchical storage with mandatory automatic metadata snapshotting).
+
+Note: `BackupService` (REST API for manual backup trigger/restore) remains using the `disabled()` implementation. This is the on-demand backup management layer, separate from the automatic consensus persistence which is now operational via `GitBackedPersistence`.
 
 ### 2. Leader-Dependent Control Plane
 **Review verdict:** Medium-High.
@@ -155,9 +164,9 @@ The "fabricated" characterization was accurate for `main` at v0.24.1. The spec w
 **Response:** Partially accepted. The security infrastructure is comprehensive (mTLS, RBAC, API key auth, per-route security policies). The defaults are intentionally permissive for development convenience.
 
 Specific responses:
-- **Hardcoded fallback cluster secret:** Accepted as a gap. Will be removed; startup should fail if no secret is configured in non-LOCAL environments.
-- **InsecureTrustManagerFactory:** This is development-mode only. Production environments (DOCKER, KUBERNETES) enable TLS by default with `SelfSignedCertificateProvider`. However, a startup WARNING for non-LOCAL environments using insecure trust is warranted.
-- **Management API open by default:** By design for development. API key auth activates when keys are configured in TOML. Production deployments should always configure API keys.
+- **Hardcoded fallback cluster secret:** Resolved. The hardcoded fallback has been removed. Startup requires explicit configuration via TOML `[tls]` section or `AETHER_CLUSTER_SECRET` environment variable.
+- **InsecureTrustManagerFactory:** Resolved. `Main.warnInsecureTlsInNonLocal()` now logs a WARNING on startup when insecure trust is active in non-LOCAL environments. Production environments (DOCKER, KUBERNETES) enable TLS by default with `SelfSignedCertificateProvider`.
+- **Management API open by default:** Improved. `ConfigLoader` now auto-upgrades `SecurityMode` to `API_KEY` when API keys are present in configuration, even without explicit `security-mode` setting. Without API keys configured, the default remains `NONE` for development convenience.
 - **API keys as plaintext JSON over WebSocket:** WebSocket connections are authenticated via the same API key mechanism as HTTP. TLS (QUIC-based, mandatory in production environments) encrypts the transport.
 
 ### 4. No Consensus Backpressure
@@ -242,9 +251,9 @@ That said, the point is well-made: external review against source code, not desi
 | Category | Reviewer Correct | Reviewer Incorrect | Now Resolved |
 |----------|-----------------|-------------------|-------------|
 | Innovation claims | 5 (standard patterns, streaming, cloud SDKs) | 5 (BPMN, CodecFor, TTM, rolling upgrade, topology) | 3 (schema gating, AHSE spec, feature catalog BFT) |
-| Architecture weaknesses | 3 (persistence, security defaults, backpressure) | 1 (rolling upgrade) | 1 (schema gating scope) |
+| Architecture weaknesses | 1 (backpressure) | 1 (rolling upgrade) | 3 (persistence wired, security defaults hardened, schema gating scoped) |
 | Documentation | 3 (TCP docs, test counts, BFT label) | 0 | 4 (all fixed) |
 
-The review identifies two genuinely critical gaps: **in-memory-only persistence** and **security defaults**. Both are acknowledged and have remediation paths. The remaining findings are either resolved, incorrect for the current codebase, or fair observations about positioning rather than technical deficiencies.
+The review identified two critical gaps — **in-memory-only persistence** and **security defaults** — both of which have been resolved since the review was conducted. Persistence now uses `GitBackedPersistence` when backup config is provided (environment-aware defaults). Security improvements include removal of the hardcoded fallback cluster secret, startup warning for insecure TLS in non-LOCAL environments, and automatic `SecurityMode` upgrade to `API_KEY` when keys are configured. The remaining open item is **consensus backpressure** (#68).
 
 We thank the reviewer for the rigorous analysis and the correction on Rabia's fault model classification.
