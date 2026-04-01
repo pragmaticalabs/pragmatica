@@ -107,7 +107,11 @@ public class CstPrinter {
 
     public String print(CstNode root) {
         printNode(root);
+        // Strip trailing whitespace from each line to ensure idempotent output
         return output.toString()
+                     .lines()
+                     .map(String::stripTrailing)
+                     .collect(java.util.stream.Collectors.joining("\n"))
                      .stripTrailing() + "\n";
     }
 
@@ -137,9 +141,12 @@ public class CstPrinter {
         // Handle leading trivia
         // TypeArgs/TypeParams/TypeArg: skip leading whitespace to prevent errant space inside generics
         // OrdinaryUnit: skip leading whitespace since we control file layout
+        // Member: skip leading newlines — ClassMember parent controls line breaks between modifiers and member,
+        //         but preserve space-only trivia (e.g., space between "static" and "<T>")
         var isTypeRelated = node.rule() instanceof RuleId.TypeArgs || node.rule() instanceof RuleId.TypeParams || node.rule() instanceof RuleId.TypeArg;
         var isOrdinaryUnit = node.rule() instanceof RuleId.OrdinaryUnit;
-        var effectiveMode = (isTypeRelated || isOrdinaryUnit)
+        var isMember = node.rule() instanceof RuleId.Member && hasNewlineInLeadingTrivia(node);
+        var effectiveMode = (isTypeRelated || isOrdinaryUnit || isMember)
                             ? TriviaMode.SKIP_LEADING
                             : mode;
         switch (effectiveMode) {
@@ -326,6 +333,11 @@ public class CstPrinter {
 
     /// Print a Member node. Member wraps MethodDecl/FieldDecl/RecordDecl/ConstructorDecl
     /// in the new CST shape. Detect the member kind and delegate to the appropriate handler.
+    ///
+    /// Trivia note: Member's leading trivia contains the whitespace between the last
+    /// ClassMember modifier and the first method token. This trivia is already printed
+    /// by printNode before this method is called. To prevent double-printing, the first
+    /// child's leading whitespace trivia must be skipped.
     private void printMember(CstNode.NonTerminal member) {
         var kids = children(member);
         // Check if this Member contains record components (is a record declaration)
@@ -340,9 +352,76 @@ public class CstPrinter {
             boolean hasParams = kids.stream()
                                     .anyMatch(c -> c.rule() instanceof RuleId.Params);
             if (hasBlock || hasParams) {
-                printMethodDecl(member);
+                printMethodDeclSkipFirstTrivia(member);
             } else {
-                printChildren(member);
+                printChildrenSkipFirstTrivia(member);
+            }
+        }
+    }
+
+    /// Print children of a node, skipping leading whitespace trivia on the first child
+    /// to prevent double-printing when the parent's trivia already handled spacing.
+    private void printChildrenSkipFirstTrivia(CstNode.NonTerminal nt) {
+        boolean first = true;
+        for (var child : children(nt)) {
+            if (first) {
+                printNode(child, TriviaMode.SKIP_LEADING);
+                first = false;
+            } else {
+                printNode(child);
+            }
+        }
+    }
+
+    /// Like printMethodDecl but skips the first child's leading whitespace trivia.
+    /// Used when called from printMember where the parent already handles trivia.
+    private void printMethodDeclSkipFirstTrivia(CstNode.NonTerminal methodDecl) {
+        var children = children(methodDecl);
+        // Find TypeParams index (-1 if not present)
+        int typeParamsIndex = -1;
+        for (int i = 0; i < children.size(); i++) {
+            if (children.get(i)
+                        .rule() instanceof RuleId.TypeParams) {
+                typeParamsIndex = i;
+                break;
+            }
+        }
+        if (typeParamsIndex == -1) {
+            // No type params - print children, skipping first child's leading trivia
+            printChildrenSkipFirstTrivia(methodDecl);
+            return;
+        }
+        // Print first child (TypeParams) with skipped leading trivia
+        printNode(children.get(0), TriviaMode.SKIP_LEADING);
+        for (int i = 1; i <= typeParamsIndex; i++) {
+            printNode(children.get(i));
+        }
+        // Calculate if the method signature up to opening paren fits on the current line
+        var signatureText = new StringBuilder();
+        for (int i = typeParamsIndex + 1; i < children.size(); i++) {
+            var childText = text(children.get(i), source);
+            signatureText.append(childText);
+            if (childText.contains("(")) {
+                break;
+            }
+        }
+        var signatureWidth = signatureText.toString()
+                                          .replaceAll("\\s+", " ")
+                                          .trim()
+                                          .length();
+        if (currentColumn + 1 + signatureWidth <= config.maxLineLength()) {
+            print(" ");
+        } else {
+            println();
+            printIndent();
+        }
+        // Print remaining children - first after TypeParams skips leading whitespace
+        for (int i = typeParamsIndex + 1; i < children.size(); i++) {
+            var child = children.get(i);
+            if (i == typeParamsIndex + 1) {
+                printNodeSkipAllLeadingWhitespace(child);
+            } else {
+                printNode(child);
             }
         }
     }
