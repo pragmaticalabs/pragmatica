@@ -2,6 +2,7 @@ package org.pragmatica.jbct.cli;
 
 import org.pragmatica.jbct.init.AiToolsInstaller;
 import org.pragmatica.jbct.init.GitHubVersionResolver;
+import org.pragmatica.jbct.init.PersistenceAdder;
 import org.pragmatica.jbct.init.ProjectInitializer;
 import org.pragmatica.jbct.init.SliceProjectInitializer;
 
@@ -52,6 +53,11 @@ public class InitCommand implements Callable<Integer> {
     description = "Slice name (default: HelloWorld)",
     defaultValue = "HelloWorld")
     String sliceName;
+
+    @Option(
+    names = {"--with-persistence"},
+    description = "Add PostgreSQL persistence support (pg-codegen, schema, persistence interface)")
+    boolean withPersistence;
 
     @Option(
     names = {"--ai-only"},
@@ -129,6 +135,10 @@ public class InitCommand implements Callable<Integer> {
                 return 1;
             }
             projectCreated = true;
+            // Add persistence support if requested
+            if (withPersistence && isSliceProject) {
+                addPersistenceSupport();
+            }
         }
         // Install AI tools unless --no-ai
         if (!noAi) {
@@ -189,6 +199,21 @@ public class InitCommand implements Callable<Integer> {
                           .onSuccess(this::printCreatedFiles)
                           .map(_ -> true)
                           .or(false);
+    }
+
+    private void addPersistenceSupport() {
+        PersistenceAdder.persistenceAdder(projectDir)
+                        .flatMap(PersistenceAdder::addPersistence)
+                        .onFailure(cause -> System.err.println("Warning: Failed to add persistence: " + cause.message()))
+                        .onSuccess(this::printPersistenceFiles);
+    }
+
+    private void printPersistenceFiles(java.util.List<Path> files) {
+        System.out.println();
+        System.out.println("Added persistence support:");
+        for (var file : files) {
+            System.out.println("  " + projectDir.relativize(file));
+        }
     }
 
     private void printCreatedFiles(java.util.List<Path> createdFiles) {
