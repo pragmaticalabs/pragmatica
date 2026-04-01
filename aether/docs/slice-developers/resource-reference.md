@@ -10,9 +10,25 @@ Aether ships three built-in qualifiers:
 
 | Annotation | Resource Type | Config Section |
 |------------|--------------|----------------|
+| `@PgSql` | `PgSqlConnector` | `"database"` |
 | `@Sql` | `SqlConnector` | `"database"` |
 | `@Http` | `HttpClient` | `"http"` |
 | `@Notify` | `NotificationSender` | `"notification"` |
+
+### PostgreSQL Persistence (`@PgSql`)
+
+Type-safe persistence with compile-time SQL validation. Define an interface, annotate with `@PgSql`, and the annotation processor validates queries against your schema. See the [Persistence Guide](persistence-guide.md) for full documentation.
+
+```java
+@PgSql
+public interface OrderPersistence {
+    Promise<Option<OrderRow>> findById(long id);
+    Promise<List<OrderRow>> findByStatus(String status);
+    Promise<OrderRow> save(OrderRow order);
+}
+```
+
+### Generic SQL (`@Sql`)
 
 ```java
 import org.pragmatica.aether.resource.db.Sql;
