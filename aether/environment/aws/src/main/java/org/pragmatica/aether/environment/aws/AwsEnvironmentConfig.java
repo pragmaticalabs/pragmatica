@@ -11,16 +11,16 @@ import static org.pragmatica.lang.Result.success;
 
 /// Configuration for the AWS environment integration.
 /// Contains AWS API credentials and default EC2 provisioning parameters.
-public record AwsEnvironmentConfig(AwsConfig awsConfig,
-                                   String amiId,
-                                   String instanceType,
-                                   Option<String> keyName,
-                                   List<String> securityGroupIds,
-                                   String subnetId,
-                                   String userData,
-                                   Option<AwsLbConfig> loadBalancer,
-                                   Option<String> clusterName,
-                                   long discoveryPollIntervalMs) {
+public record AwsEnvironmentConfig( AwsConfig awsConfig,
+                                    String amiId,
+                                    String instanceType,
+                                    Option<String> keyName,
+                                    List<String> securityGroupIds,
+                                    String subnetId,
+                                    String userData,
+                                    Option<AwsLbConfig> loadBalancer,
+                                    Option<String> clusterName,
+                                    long discoveryPollIntervalMs) {
     private static final long DEFAULT_POLL_INTERVAL_MS = 30_000L;
 
     /// Load balancer configuration for AWS environment.
@@ -74,7 +74,38 @@ public record AwsEnvironmentConfig(AwsConfig awsConfig,
 
     /// Return a copy with discovery enabled for the specified cluster name.
     @SuppressWarnings("JBCT-VO-02") // Copy-with-change builder — direct constructor is intentional
-    public AwsEnvironmentConfig withDiscovery(String clusterLabel) {
+    public// Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    AwsEnvironmentConfig withDiscovery(String clusterLabel) {
         return new AwsEnvironmentConfig(awsConfig,
                                         amiId,
                                         instanceType,
@@ -89,7 +120,38 @@ public record AwsEnvironmentConfig(AwsConfig awsConfig,
 
     /// Return a copy with the discovery poll interval set.
     @SuppressWarnings("JBCT-VO-02") // Copy-with-change builder — direct constructor is intentional
-    public AwsEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
+    public// Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    AwsEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
         return new AwsEnvironmentConfig(awsConfig,
                                         amiId,
                                         instanceType,

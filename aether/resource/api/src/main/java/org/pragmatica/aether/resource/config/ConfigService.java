@@ -128,18 +128,15 @@ public interface ConfigService extends Slice {
         return new InMemoryConfigService();
     }
 
-    @Override
-    default Promise<Unit> start() {
+    @Override default Promise<Unit> start() {
         return Promise.success(Unit.unit());
     }
 
-    @Override
-    default Promise<Unit> stop() {
+    @Override default Promise<Unit> stop() {
         return Promise.success(Unit.unit());
     }
 
-    @Override
-    default List<SliceMethod<?, ?>> methods() {
+    @Override default List<SliceMethod<?, ?>> methods() {
         return List.of();
     }
 }

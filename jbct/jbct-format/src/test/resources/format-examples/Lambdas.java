@@ -34,8 +34,7 @@ public class Lambdas {
 
     // Lambda in method call
     Result<String> lambdaInCall(Result<String> input) {
-        return input.map(s -> s.trim()
-                               .toUpperCase());
+        return input.map(s -> s.trim().toUpperCase());
     }
 
     // Block lambda in method call
@@ -54,24 +53,22 @@ public class Lambdas {
 
     // Lambda in stream
     List<String> streamWithLambda(List<String> items) {
-        return items.stream()
-                    .filter(s -> !s.isEmpty())
-                    .map(s -> s.trim())
-                    .toList();
+        return items.stream().filter(s -> !s.isEmpty())
+                           .map(s -> s.trim())
+                           .toList();
     }
 
     // Complex lambda in stream
     List<String> streamWithComplexLambda(List<String> items) {
-        return items.stream()
-                    .filter(s -> {
-                        var trimmed = s.trim();
-                        return ! trimmed.isEmpty() && trimmed.length() > 3;
-                    })
-                    .map(s -> {
-                        var upper = s.toUpperCase();
-                        return "[" + upper + "]";
-                    })
-                    .toList();
+        return items.stream().filter(s -> {
+                               var trimmed = s.trim();
+                               return ! trimmed.isEmpty() && trimmed.length() > 3;
+                           })
+                           .map(s -> {
+                               var upper = s.toUpperCase();
+                               return "[" + upper + "]";
+                           })
+                           .toList();
     }
 
     // Lambda as argument among other arguments

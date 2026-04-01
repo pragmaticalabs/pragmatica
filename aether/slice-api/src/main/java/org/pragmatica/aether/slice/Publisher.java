@@ -17,7 +17,6 @@ import org.pragmatica.lang.Unit;
 ///
 /// static OrderService orderService(@OrderPublisher Publisher<OrderEvent> pub) { ... }
 /// }```
-@FunctionalInterface
-public interface Publisher<T> {
+@FunctionalInterface public interface Publisher<T> {
     Promise<Unit> publish(T message);
 }

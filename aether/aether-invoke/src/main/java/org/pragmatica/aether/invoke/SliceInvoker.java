@@ -55,17 +55,13 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 public interface SliceInvoker extends SliceInvokerFacade {
     /// Implementation of SliceInvokerFacade.methodHandle for creating reusable handles.
     /// Parses artifact and method once, returns a handle for repeated invocations.
-    @Override
-    default <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
-                                                           String methodName,
-                                                           TypeToken<T> requestType,
-                                                           TypeToken<R> responseType) {
+    @Override default <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
+                                                                     String methodName,
+                                                                     TypeToken<T> requestType,
+                                                                     TypeToken<R> responseType) {
         return Artifact.artifact(sliceArtifact)
-                       .flatMap(artifact -> MethodName.methodName(methodName)
-                                                      .map(method -> createMethodHandle(artifact,
-                                                                                        method,
-                                                                                        requestType,
-                                                                                        responseType)));
+        .flatMap(artifact -> MethodName.methodName(methodName)
+        .map(method -> createMethodHandle(artifact, method, requestType, responseType)));
     }
 
     /// Create a method handle with pre-parsed artifact and method.
@@ -84,23 +80,19 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                   TypeToken<T> requestType,
                                   TypeToken<R> responseType,
                                   SliceInvoker invoker) implements MethodHandle<R, T> {
-        @Override
-        public Promise<R> invoke(T request) {
+        @Override public Promise<R> invoke(T request) {
             return invoker.invoke(artifact, methodName, request, responseType);
         }
 
-        @Override
-        public Promise<Unit> fireAndForget(T request) {
+        @Override public Promise<Unit> fireAndForget(T request) {
             return invoker.invoke(artifact, methodName, request);
         }
 
-        @Override
-        public String artifactCoordinate() {
+        @Override public String artifactCoordinate() {
             return artifact.asString();
         }
 
-        @Override
-        public Result<Unit> materialize() {
+        @Override public Result<Unit> materialize() {
             return invoker.verifyEndpointExists(artifact, methodName);
         }
     }
@@ -160,18 +152,15 @@ public interface SliceInvoker extends SliceInvokerFacade {
 
     /// Handle response from remote invocation.
     @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
-    void onInvokeResponse(InvokeResponse response);
+    @SuppressWarnings("JBCT-RET-01") void onInvokeResponse(InvokeResponse response);
 
     /// Handle node removal for immediate retry of pending invocations.
     @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
-    void onNodeRemoved(TopologyChangeNotification.NodeRemoved event);
+    @SuppressWarnings("JBCT-RET-01") void onNodeRemoved(TopologyChangeNotification.NodeRemoved event);
 
     /// Handle node down for immediate retry of pending invocations.
     @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
-    void onNodeDown(TopologyChangeNotification.NodeDown event);
+    @SuppressWarnings("JBCT-RET-01") void onNodeDown(TopologyChangeNotification.NodeDown event);
 
     /// Stop the invoker and release resources.
     ///
@@ -194,10 +183,8 @@ public interface SliceInvoker extends SliceInvokerFacade {
     long BASE_RETRY_DELAY_MS = 100;
 
     /// Listener for slice failure events.
-    @FunctionalInterface
-    interface SliceFailureListener {
-        @SuppressWarnings("JBCT-RET-01") // FunctionalInterface callback — void required
-        void onSliceFailure(SliceFailureEvent event);
+    @FunctionalInterface interface SliceFailureListener {
+        @SuppressWarnings("JBCT-RET-01") void onSliceFailure(SliceFailureEvent event);
     }
 
     /// Set the failure listener for slice failure events.
@@ -207,8 +194,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
     /// Resolves the preferred node for cache-affinity routing.
     /// Given a request, extracts the cache key and determines which node
     /// owns the DHT partition for that key.
-    @FunctionalInterface
-    interface CacheAffinityResolver {
+    @FunctionalInterface interface CacheAffinityResolver {
         /// Resolve the affinity node for the given request.
         /// Returns the NodeId of the node that should handle this request for cache locality,
         /// or empty if affinity cannot be determined.
@@ -312,7 +298,7 @@ class SliceInvokerImpl implements SliceInvoker {
                              long createdAtMs,
                              String requestId,
                              NodeId targetNode,
-                             SliceBridge senderBridge) {}
+                             SliceBridge senderBridge){}
 
     SliceInvokerImpl(NodeId self,
                      ClusterNetwork network,
@@ -340,33 +326,27 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private void cleanupStaleInvocations() {
         var staleThreshold = System.currentTimeMillis() - (timeoutMs * 2);
-        pendingInvocations.entrySet()
-                          .removeIf(entry -> isStaleAndCleanup(entry, staleThreshold));
+        pendingInvocations.entrySet().removeIf(entry -> isStaleAndCleanup(entry, staleThreshold));
     }
 
     private boolean isStaleAndCleanup(Map.Entry<String, PendingInvocation> entry, long staleThreshold) {
         var pending = entry.getValue();
-        if (pending.createdAtMs() < staleThreshold) {
+        if ( pending.createdAtMs() < staleThreshold) {
             log.warn("[requestId={}] Cleaning up stale pending invocation: {}", pending.requestId(), entry.getKey());
             removeFromNodeIndex(entry.getKey(), pending.targetNode());
-            pending.promise()
-                   .resolve(Causes.cause("Invocation timed out (cleanup)")
-                                  .result());
+            pending.promise().resolve(Causes.cause("Invocation timed out (cleanup)").result());
             return true;
         }
         return false;
     }
 
     private void cancelPendingInvocation(String id, PendingInvocation pending) {
-        pending.promise()
-               .resolve(INVOKER_STOPPED.result());
+        pending.promise().resolve(INVOKER_STOPPED.result());
     }
 
-    @Override
-    public Promise<Unit> stop() {
-        if (!stopped.compareAndSet(false, true)) {
-            return Promise.success(unit());
-        }
+    @Override public Promise<Unit> stop() {
+        if ( !stopped.compareAndSet(false, true)) {
+        return Promise.success(unit());}
         log.info("Stopping SliceInvoker with {} pending invocations", pendingInvocations.size());
         // Cancel all pending invocations
         pendingInvocations.forEach(this::cancelPendingInvocation);
@@ -375,7 +355,7 @@ class SliceInvokerImpl implements SliceInvoker {
         affinityResolvers.clear();
         // Cancel cleanup task
         var task = cleanupTask;
-        if (task != null) {
+        if ( task != null) {
             task.cancel(false);
             cleanupTask = null;
         }
@@ -383,45 +363,40 @@ class SliceInvokerImpl implements SliceInvoker {
         return Promise.success(unit());
     }
 
-    @Override
-    public int pendingCount() {
+    @Override public int pendingCount() {
         return pendingInvocations.size();
     }
 
-    @Override
-    public Promise<Unit> invoke(Artifact slice, MethodName method, Object request) {
+    @Override public Promise<Unit> invoke(Artifact slice, MethodName method, Object request) {
         return selectEndpointWithAffinity(slice, method, request)
-        .flatMap(endpoint -> endpoint.nodeId()
-                                     .equals(self)
-                             ? invokeLocalFireAndForget(slice, method, request)
-                             : sendFireAndForget(endpoint, slice, method, request));
+        .flatMap(endpoint -> endpoint.nodeId().equals(self)
+                            ? invokeLocalFireAndForget(slice, method, request)
+                            : sendFireAndForget(endpoint, slice, method, request));
     }
 
     private Promise<Unit> invokeLocalFireAndForget(Artifact slice, MethodName method, Object request) {
-        return invocationHandler.localSlice(slice)
-                                .async(SLICE_NOT_FOUND)
-                                .flatMap(bridge -> observabilityInterceptor.intercept(slice,
-                                                                                      method,
-                                                                                      InvocationContext.getOrGenerateRequestId(),
-                                                                                      InvocationContext.currentDepth() + 1,
-                                                                                      true,
-                                                                                      // local
+        return invocationHandler.localSlice(slice).async(SLICE_NOT_FOUND)
+                                           .flatMap(bridge -> observabilityInterceptor.intercept(slice,
+                                                                                                 method,
+                                                                                                 InvocationContext.getOrGenerateRequestId(),
+                                                                                                 InvocationContext.currentDepth() + 1,
+                                                                                                 true,
+                                                                                                 // local
         () -> invokeViaBridge(bridge, method, request)))
-                                .mapToUnit();
+                                           .mapToUnit();
     }
 
     private Promise<Unit> sendFireAndForget(Endpoint endpoint, Artifact slice, MethodName method, Object request) {
         var senderBridge = findSenderBridge(request);
         return senderBridge.encode(request)
-                           .flatMap(payload -> sendFireAndForgetPayload(endpoint, slice, method, payload));
+        .flatMap(payload -> sendFireAndForgetPayload(endpoint, slice, method, payload));
     }
 
     private Promise<Unit> sendFireAndForgetPayload(Endpoint endpoint,
                                                    Artifact slice,
                                                    MethodName method,
                                                    byte[] payload) {
-        var correlationId = KSUID.ksuid()
-                                 .toString();
+        var correlationId = KSUID.ksuid().toString();
         var requestId = InvocationContext.getOrGenerateRequestId();
         var invokeRequest = InvokeRequest.invokeRequest(self,
                                                         correlationId,
@@ -434,32 +409,31 @@ class SliceInvokerImpl implements SliceInvoker {
                                                         1,
                                                         InvocationContext.isSampled());
         network.send(endpoint.nodeId(), invokeRequest);
-        if (log.isDebugEnabled()) {
-            log.debug("[requestId={}] Sent fire-and-forget invocation to {}: {}.{}",
-                      requestId,
-                      endpoint.nodeId(),
-                      slice,
-                      method);
-        }
+        if ( log.isDebugEnabled()) {
+        log.debug("[requestId={}] Sent fire-and-forget invocation to {}: {}.{}",
+                  requestId,
+                  endpoint.nodeId(),
+                  slice,
+                  method);}
         return Promise.success(unit());
     }
 
-    @Override
-    public <R> Promise<R> invoke(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
-        if (stopped.get()) {
-            return INVOKER_STOPPED.promise();
-        }
+    @Override public <R> Promise<R> invoke(Artifact slice,
+                                           MethodName method,
+                                           Object request,
+                                           TypeToken<R> responseType) {
+        if ( stopped.get()) {
+        return INVOKER_STOPPED.promise();}
         return selectEndpointWithAffinity(slice, method, request)
-        .flatMap(endpoint -> endpoint.nodeId()
-                                     .equals(self)
-                             ? invokeLocal(slice, method, request, responseType)
-                             : sendRequestResponse(endpoint, slice, method, request));
+        .flatMap(endpoint -> endpoint.nodeId().equals(self)
+                            ? invokeLocal(slice, method, request, responseType)
+                            : sendRequestResponse(endpoint, slice, method, request));
     }
 
     private <R> Promise<R> sendRequestResponse(Endpoint endpoint, Artifact slice, MethodName method, Object request) {
         var senderBridge = findSenderBridge(request);
         return senderBridge.encode(request)
-                           .flatMap(payload -> sendAndAwaitResponse(endpoint, slice, method, payload, senderBridge));
+        .flatMap(payload -> sendAndAwaitResponse(endpoint, slice, method, payload, senderBridge));
     }
 
     @SuppressWarnings("unchecked")
@@ -468,8 +442,7 @@ class SliceInvokerImpl implements SliceInvoker {
                                                 MethodName method,
                                                 byte[] payload,
                                                 SliceBridge senderBridge) {
-        var correlationId = KSUID.ksuid()
-                                 .toString();
+        var correlationId = KSUID.ksuid().toString();
         return Promise.promise(pendingPromise -> setupPendingInvocation((Promise<Object>)(Promise<?>) pendingPromise,
                                                                         correlationId,
                                                                         endpoint,
@@ -494,11 +467,9 @@ class SliceInvokerImpl implements SliceInvoker {
                                             targetNode,
                                             senderBridge);
         pendingInvocations.put(correlationId, pending);
-        pendingInvocationsByNode.computeIfAbsent(targetNode,
-                                                 _ -> ConcurrentHashMap.newKeySet())
-                                .add(correlationId);
+        pendingInvocationsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet()).add(correlationId);
         pendingPromise.timeout(timeSpan(timeoutMs).millis())
-                      .onResult(_ -> removePendingInvocation(correlationId, targetNode));
+        .onResult(_ -> removePendingInvocation(correlationId, targetNode));
         var invokeRequest = InvokeRequest.invokeRequest(self,
                                                         correlationId,
                                                         requestId,
@@ -511,25 +482,22 @@ class SliceInvokerImpl implements SliceInvoker {
                                                         // hops=1 for remote
         InvocationContext.isSampled());
         network.send(targetNode, invokeRequest);
-        if (log.isDebugEnabled()) {
-            log.debug("[requestId={}] Sent InvokeRequest to {}: {}.{} [{}]",
-                      requestId,
-                      targetNode,
-                      slice,
-                      method,
-                      correlationId);
-        }
+        if ( log.isDebugEnabled()) {
+        log.debug("[requestId={}] Sent InvokeRequest to {}: {}.{} [{}]",
+                  requestId,
+                  targetNode,
+                  slice,
+                  method,
+                  correlationId);}
     }
 
-    @Override
-    public <R> Promise<R> invokeWithRetry(Artifact slice,
-                                          MethodName method,
-                                          Object request,
-                                          TypeToken<R> responseType,
-                                          int maxRetries) {
-        if (stopped.get()) {
-            return INVOKER_STOPPED.promise();
-        }
+    @Override public <R> Promise<R> invokeWithRetry(Artifact slice,
+                                                    MethodName method,
+                                                    Object request,
+                                                    TypeToken<R> responseType,
+                                                    int maxRetries) {
+        if ( stopped.get()) {
+        return INVOKER_STOPPED.promise();}
         var requestId = InvocationContext.getOrGenerateRequestId();
         var ctx = new FailoverContext<>(slice,
                                         method,
@@ -585,18 +553,17 @@ class SliceInvokerImpl implements SliceInvoker {
     private Option<Endpoint> selectEndpointWithFailover(Artifact slice,
                                                         MethodName method,
                                                         java.util.Set<NodeId> exclude) {
-        if (exclude.isEmpty()) {
+        if ( exclude.isEmpty()) {
             // First attempt - check for active deployment strategy routing
             var artifactBase = ArtifactBase.artifactBase(slice.groupId(), slice.artifactId());
             var strategyEndpoint = strategyCoordinator.getActiveStrategyWithRouting(artifactBase)
-                                                      .flatMap(strategy -> endpointRegistry.selectEndpointWithRouting(artifactBase,
-                                                                                                                      method,
-                                                                                                                      strategy.routing(),
-                                                                                                                      strategy.oldVersion(),
-                                                                                                                      strategy.newVersion()));
-            if (strategyEndpoint.isPresent()) {
-                return strategyEndpoint;
-            }
+            .flatMap(strategy -> endpointRegistry.selectEndpointWithRouting(artifactBase,
+                                                                            method,
+                                                                            strategy.routing(),
+                                                                            strategy.oldVersion(),
+                                                                            strategy.newVersion()));
+            if ( strategyEndpoint.isPresent()) {
+            return strategyEndpoint;}
             // Fall back to regular selection
             return endpointRegistry.selectEndpoint(slice, method);
         }
@@ -606,7 +573,7 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private <R> void invokeEndpointWithFailover(Promise<R> promise, FailoverContext<R> ctx, Endpoint endpoint) {
         var targetNode = endpoint.nodeId();
-        if (targetNode.equals(self)) {
+        if ( targetNode.equals(self)) {
             invokeLocalForFailover(promise, ctx);
             return;
         }
@@ -615,24 +582,26 @@ class SliceInvokerImpl implements SliceInvoker {
 
     @SuppressWarnings("unchecked")
     private <R> void invokeLocalForFailover(Promise<R> promise, FailoverContext<R> ctx) {
-        invocationHandler.localSlice(ctx.slice)
-                         .async(SLICE_NOT_FOUND)
-                         .flatMap(bridge -> observabilityInterceptor.intercept(ctx.slice,
-                                                                               ctx.method,
-                                                                               ctx.requestId,
-                                                                               InvocationContext.currentDepth() + 1,
-                                                                               true,
-                                                                               // local
+        invocationHandler.localSlice(ctx.slice).async(SLICE_NOT_FOUND)
+                                    .flatMap(bridge -> observabilityInterceptor.intercept(ctx.slice,
+                                                                                          ctx.method,
+                                                                                          ctx.requestId,
+                                                                                          InvocationContext.currentDepth() + 1,
+                                                                                          true,
+                                                                                          // local
         () -> invokeViaBridge(bridge, ctx.method, ctx.request)))
-                         .onSuccess(result -> promise.succeed((R) result))
-                         .onFailure(cause -> handleFailoverFailure(promise, ctx, self, cause));
+                                    .onSuccess(result -> promise.succeed((R) result))
+                                    .onFailure(cause -> handleFailoverFailure(promise, ctx, self, cause));
     }
 
     private <R> void invokeRemoteForFailover(Promise<R> promise, FailoverContext<R> ctx, NodeId targetNode) {
         var senderBridge = findSenderBridge(ctx.request);
-        senderBridge.encode(ctx.request)
-                    .onSuccess(payload -> sendFailoverPayload(promise, ctx, targetNode, payload, senderBridge))
-                    .onFailure(cause -> handleFailoverFailure(promise, ctx, targetNode, cause));
+        senderBridge.encode(ctx.request).onSuccess(payload -> sendFailoverPayload(promise,
+                                                                                  ctx,
+                                                                                  targetNode,
+                                                                                  payload,
+                                                                                  senderBridge))
+                           .onFailure(cause -> handleFailoverFailure(promise, ctx, targetNode, cause));
     }
 
     @SuppressWarnings("unchecked")
@@ -641,8 +610,7 @@ class SliceInvokerImpl implements SliceInvoker {
                                          NodeId targetNode,
                                          byte[] payload,
                                          SliceBridge senderBridge) {
-        var correlationId = KSUID.ksuid()
-                                 .toString();
+        var correlationId = KSUID.ksuid().toString();
         var pendingPromise = Promise.<Object>promise();
         var pending = new PendingInvocation(pendingPromise,
                                             System.currentTimeMillis(),
@@ -650,11 +618,9 @@ class SliceInvokerImpl implements SliceInvoker {
                                             targetNode,
                                             senderBridge);
         pendingInvocations.put(correlationId, pending);
-        pendingInvocationsByNode.computeIfAbsent(targetNode,
-                                                 _ -> ConcurrentHashMap.newKeySet())
-                                .add(correlationId);
+        pendingInvocationsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet()).add(correlationId);
         pendingPromise.timeout(timeSpan(timeoutMs).millis())
-                      .onResult(_ -> removePendingInvocation(correlationId, targetNode));
+        .onResult(_ -> removePendingInvocation(correlationId, targetNode));
         var invokeRequest = InvokeRequest.invokeRequest(self,
                                                         correlationId,
                                                         ctx.requestId,
@@ -666,41 +632,39 @@ class SliceInvokerImpl implements SliceInvoker {
                                                         1,
                                                         InvocationContext.isSampled());
         network.send(targetNode, invokeRequest);
-        if (log.isDebugEnabled()) {
-            log.debug("[requestId={}] Sent failover invocation to {}: {}.{} [{}] (attempt {})",
-                      ctx.requestId,
-                      targetNode,
-                      ctx.slice,
-                      ctx.method,
-                      correlationId,
-                      ctx.attemptCount() + 1);
-        }
+        if ( log.isDebugEnabled()) {
+        log.debug("[requestId={}] Sent failover invocation to {}: {}.{} [{}] (attempt {})",
+                  ctx.requestId,
+                  targetNode,
+                  ctx.slice,
+                  ctx.method,
+                  correlationId,
+                  ctx.attemptCount() + 1);}
         pendingPromise.onSuccess(result -> promise.succeed((R) result))
-                      .onFailure(cause -> handleFailoverFailure(promise, ctx, targetNode, cause));
+        .onFailure(cause -> handleFailoverFailure(promise, ctx, targetNode, cause));
     }
 
     private <R> void handleFailoverFailure(Promise<R> promise, FailoverContext<R> ctx, NodeId failedNode, Cause cause) {
-        if (stopped.get()) {
+        if ( stopped.get()) {
             promise.fail(INVOKER_STOPPED);
             return;
         }
         var newCtx = ctx.withFailure(failedNode, cause);
         // Check if we've exceeded max retries
-        if (newCtx.attemptCount() > ctx.maxRetries) {
+        if ( newCtx.attemptCount() > ctx.maxRetries) {
             handleMaxRetriesExceeded(promise, newCtx);
             return;
         }
         // Schedule retry with different endpoint
         var delayMs = BASE_RETRY_DELAY_MS * (1L<< (newCtx.attemptCount() - 1));
-        if (log.isDebugEnabled()) {
-            log.debug("[requestId={}] Endpoint {} failed, scheduling failover retry in {}ms: {}.{} - {}",
-                      ctx.requestId,
-                      failedNode,
-                      delayMs,
-                      ctx.slice,
-                      ctx.method,
-                      cause.message());
-        }
+        if ( log.isDebugEnabled()) {
+        log.debug("[requestId={}] Endpoint {} failed, scheduling failover retry in {}ms: {}.{} - {}",
+                  ctx.requestId,
+                  failedNode,
+                  delayMs,
+                  ctx.slice,
+                  ctx.method,
+                  cause.message());}
         SharedScheduler.schedule(() -> executeWithFailover(promise, newCtx), timeSpan(delayMs).millis());
     }
 
@@ -730,8 +694,7 @@ class SliceInvokerImpl implements SliceInvoker {
                  ctx.method,
                  ctx.attemptCount());
         // Also emit event since max retries exhausted indicates serious problem
-        if (ctx.attemptCount() >= endpointRegistry.findEndpoints(ctx.slice, ctx.method)
-                                                  .size()) {
+        if ( ctx.attemptCount() >= endpointRegistry.findEndpoints(ctx.slice, ctx.method).size()) {
             var event = SliceFailureEvent.AllInstancesFailed.allInstancesFailed(ctx.requestId,
                                                                                 ctx.slice,
                                                                                 ctx.method,
@@ -742,20 +705,19 @@ class SliceInvokerImpl implements SliceInvoker {
         promise.fail(ctx.lastError.or(Causes.cause("Max retries exceeded with no error recorded")));
     }
 
-    @Override
-    public Unit setFailureListener(SliceFailureListener listener) {
+    @Override public Unit setFailureListener(SliceFailureListener listener) {
         this.failureListener = Option.some(listener);
         return unit();
     }
 
-    @Override
-    public Unit registerAffinityResolver(Artifact artifact, MethodName method, CacheAffinityResolver resolver) {
+    @Override public Unit registerAffinityResolver(Artifact artifact,
+                                                   MethodName method,
+                                                   CacheAffinityResolver resolver) {
         affinityResolvers.put(affinityLookupKey(artifact, method), resolver);
         return unit();
     }
 
-    @Override
-    public Unit unregisterAffinityResolver(Artifact artifact, MethodName method) {
+    @Override public Unit unregisterAffinityResolver(Artifact artifact, MethodName method) {
         affinityResolvers.remove(affinityLookupKey(artifact, method));
         return unit();
     }
@@ -771,56 +733,56 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private String extractRequestId(SliceFailureEvent event) {
-        return switch (event) {
-            case SliceFailureEvent.AllInstancesFailed failed -> failed.requestId();
-        };
+        return switch (event) {case SliceFailureEvent.AllInstancesFailed failed -> failed.requestId();};
     }
 
     private void safeNotifyFailureListener(SliceFailureListener listener, SliceFailureEvent event, String requestId) {
-        try{
+        try {
             listener.onSliceFailure(event);
-        } catch (Exception e) {
+        }
+
+
+
+
+        catch (Exception e) {
             log.error("[requestId={}] Error notifying failure listener: {}", requestId, e.getMessage());
         }
     }
 
-    @Override
-    public <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
-        return invocationHandler.localSlice(slice)
-                                .async(SLICE_NOT_FOUND)
-                                .flatMap(bridge -> observabilityInterceptor.intercept(slice,
-                                                                                      method,
-                                                                                      InvocationContext.getOrGenerateRequestId(),
-                                                                                      InvocationContext.currentDepth() + 1,
-                                                                                      true,
-                                                                                      // local
+    @Override public <R> Promise<R> invokeLocal(Artifact slice,
+                                                MethodName method,
+                                                Object request,
+                                                TypeToken<R> responseType) {
+        return invocationHandler.localSlice(slice).async(SLICE_NOT_FOUND)
+                                           .flatMap(bridge -> observabilityInterceptor.intercept(slice,
+                                                                                                 method,
+                                                                                                 InvocationContext.getOrGenerateRequestId(),
+                                                                                                 InvocationContext.currentDepth() + 1,
+                                                                                                 true,
+                                                                                                 // local
         () -> invokeViaBridge(bridge, method, request)));
     }
 
     @SuppressWarnings("unchecked")
     private <R> Promise<R> invokeViaBridge(SliceBridge targetBridge, MethodName method, Object request) {
         var senderBridge = findSenderBridge(request);
-        return senderBridge.encode(request)
-                           .flatMap(inputBytes -> targetBridge.invoke(method.name(),
-                                                                      inputBytes))
-                           .flatMap(responseBytes -> senderBridge.decode(responseBytes))
-                           .map(result -> (R) result);
+        return senderBridge.encode(request).flatMap(inputBytes -> targetBridge.invoke(method.name(),
+                                                                                      inputBytes))
+                                  .flatMap(responseBytes -> senderBridge.decode(responseBytes))
+                                  .map(result -> (R) result);
     }
 
     private SliceBridge findSenderBridge(Object request) {
-        return invocationHandler.findBridgeByClassLoader(request.getClass()
-                                                                .getClassLoader())
-                                .unwrap();
+        return invocationHandler.findBridgeByClassLoader(request.getClass().getClassLoader()).unwrap();
     }
 
     @Override
     @SuppressWarnings({"JBCT-RET-01"})
     public void onInvokeResponse(InvokeResponse response) {
-        Option.option(pendingInvocations.remove(response.correlationId()))
-              .onEmpty(() -> log.warn("[requestId={}] Received response for unknown correlationId: {}",
-                                      response.requestId(),
-                                      response.correlationId()))
-              .onPresent(pending -> processReceivedResponse(pending, response));
+        Option.option(pendingInvocations.remove(response.correlationId())).onEmpty(() -> log.warn("[requestId={}] Received response for unknown correlationId: {}",
+                                                                                                  response.requestId(),
+                                                                                                  response.correlationId()))
+                     .onPresent(pending -> processReceivedResponse(pending, response));
     }
 
     private void processReceivedResponse(PendingInvocation pending, InvokeResponse response) {
@@ -841,34 +803,29 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private void handleNodeDeparture(NodeId departedNode) {
-        Option.option(pendingInvocationsByNode.remove(departedNode))
-              .filter(ids -> !ids.isEmpty())
-              .onPresent(correlationIds -> retryPendingForDepartedNode(departedNode, correlationIds));
+        Option.option(pendingInvocationsByNode.remove(departedNode)).filter(ids -> !ids.isEmpty())
+                     .onPresent(correlationIds -> retryPendingForDepartedNode(departedNode, correlationIds));
     }
 
     private void retryPendingForDepartedNode(NodeId departedNode, Set<String> correlationIds) {
-        var affectedRequestIds = correlationIds.stream()
-                                               .map(pendingInvocations::get)
-                                               .flatMap(p -> Option.option(p)
-                                                                   .stream())
-                                               .map(PendingInvocation::requestId)
-                                               .limit(5)
-                                               .toList();
+        var affectedRequestIds = correlationIds.stream().map(pendingInvocations::get)
+                                                      .flatMap(p -> Option.option(p).stream())
+                                                      .map(PendingInvocation::requestId)
+                                                      .limit(5)
+                                                      .toList();
         log.debug("Node {} departed, triggering immediate retry for {} pending invocations, requestIds={}",
                   departedNode,
                   correlationIds.size(),
                   affectedRequestIds);
-        for (var correlationId : correlationIds) {
-            Option.option(pendingInvocations.remove(correlationId))
-                  .onPresent(pending -> retryDepartedInvocation(pending, departedNode));
-        }
+        for ( var correlationId : correlationIds) {
+        Option.option(pendingInvocations.remove(correlationId))
+        .onPresent(pending -> retryDepartedInvocation(pending, departedNode));}
     }
 
     private void retryDepartedInvocation(PendingInvocation pending, NodeId departedNode) {
         log.debug("Triggering retry for request [{}] due to node {} departure", pending.requestId(), departedNode);
         // Fail the promise to trigger onFailure callback which handles retry
-        pending.promise()
-               .fail(Causes.cause("Target node " + departedNode + " departed"));
+        pending.promise().fail(Causes.cause("Target node " + departedNode + " departed"));
     }
 
     private void removePendingInvocation(String correlationId, NodeId targetNode) {
@@ -878,46 +835,42 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private void removeFromNodeIndex(String correlationId, NodeId targetNode) {
         Option.option(pendingInvocationsByNode.get(targetNode))
-              .onPresent(nodeCorrelations -> {
-                             nodeCorrelations.remove(correlationId);
-                             // Clean up empty sets
-        if (nodeCorrelations.isEmpty()) {
-                                 pendingInvocationsByNode.remove(targetNode, nodeCorrelations);
-                             }
-                         });
+        .onPresent(nodeCorrelations -> {
+                       nodeCorrelations.remove(correlationId);
+                       // Clean up empty sets
+        if ( nodeCorrelations.isEmpty()) {
+        pendingInvocationsByNode.remove(targetNode, nodeCorrelations);}
+                   });
     }
 
     private void handlePendingResponse(PendingInvocation pending, InvokeResponse response) {
         var promise = pending.promise();
         var requestId = pending.requestId();
-        if (response.success()) {
-            pending.senderBridge()
-                   .decode(response.payload())
-                   .onSuccess(result -> handleDecodeSuccess(promise,
-                                                            result,
-                                                            requestId,
-                                                            response.correlationId()))
-                   .onFailure(cause -> handleDecodeFailure(promise,
-                                                           cause,
-                                                           requestId,
-                                                           response.correlationId()));
-        } else {
+        if ( response.success()) {
+        pending.senderBridge().decode(response.payload())
+                            .onSuccess(result -> handleDecodeSuccess(promise,
+                                                                     result,
+                                                                     requestId,
+                                                                     response.correlationId()))
+                            .onFailure(cause -> handleDecodeFailure(promise,
+                                                                    cause,
+                                                                    requestId,
+                                                                    response.correlationId()));} else
+        {
             var errorMessage = new String(response.payload());
             promise.resolve(new SliceInvokerError.RemoteInvocationError(errorMessage).result());
-            if (log.isDebugEnabled()) {
-                log.debug("[requestId={}] Failed to complete invocation [{}]: {}",
-                          requestId,
-                          response.correlationId(),
-                          errorMessage);
-            }
+            if ( log.isDebugEnabled()) {
+            log.debug("[requestId={}] Failed to complete invocation [{}]: {}",
+                      requestId,
+                      response.correlationId(),
+                      errorMessage);}
         }
     }
 
     private void handleDecodeSuccess(Promise<Object> promise, Object result, String requestId, String correlationId) {
         promise.resolve(Result.success(result));
-        if (log.isDebugEnabled()) {
-            log.debug("[requestId={}] Completed invocation [{}]", requestId, correlationId);
-        }
+        if ( log.isDebugEnabled()) {
+        log.debug("[requestId={}] Completed invocation [{}]", requestId, correlationId);}
     }
 
     private void handleDecodeFailure(Promise<Object> promise, Cause cause, String requestId, String correlationId) {
@@ -927,22 +880,20 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private Promise<Endpoint> selectEndpoint(Artifact slice, MethodName method) {
         var artifactBase = ArtifactBase.artifactBase(slice.groupId(), slice.artifactId());
-        return strategyCoordinator.getActiveStrategyWithRouting(artifactBase)
-                                  .map(strategy -> selectEndpointWithWeightedRouting(slice,
-                                                                                     artifactBase,
-                                                                                     method,
-                                                                                     strategy))
-                                  .or(() -> endpointRegistry.selectEndpoint(slice, method)
-                                                            .async(NO_ENDPOINT_FOUND));
+        return strategyCoordinator.getActiveStrategyWithRouting(artifactBase).map(strategy -> selectEndpointWithWeightedRouting(slice,
+                                                                                                                                artifactBase,
+                                                                                                                                method,
+                                                                                                                                strategy))
+                                                               .or(() -> endpointRegistry.selectEndpoint(slice, method)
+        .async(NO_ENDPOINT_FOUND));
     }
 
     private Promise<Endpoint> selectEndpointWithAffinity(Artifact slice, MethodName method, Object request) {
         var resolver = Option.option(affinityResolvers.get(affinityLookupKey(slice, method)));
         var affinityEndpoint = resolver.flatMap(r -> r.resolveAffinityNode(request))
-                                       .flatMap(node -> endpointRegistry.selectEndpointByAffinity(slice, method, node));
-        if (affinityEndpoint.isPresent()) {
-            return affinityEndpoint.async(NO_ENDPOINT_FOUND);
-        }
+        .flatMap(node -> endpointRegistry.selectEndpointByAffinity(slice, method, node));
+        if ( affinityEndpoint.isPresent()) {
+        return affinityEndpoint.async(NO_ENDPOINT_FOUND);}
         return selectEndpoint(slice, method);
     }
 
@@ -950,27 +901,23 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                 ArtifactBase artifactBase,
                                                                 MethodName method,
                                                                 DeploymentStrategy strategy) {
-        if (log.isDebugEnabled()) {
-            log.debug("[requestId={}] Using weighted routing for {} during deployment strategy {}",
-                      InvocationContext.getOrGenerateRequestId(),
-                      slice,
-                      strategy.strategyId());
-        }
+        if ( log.isDebugEnabled()) {
+        log.debug("[requestId={}] Using weighted routing for {} during deployment strategy {}",
+                  InvocationContext.getOrGenerateRequestId(),
+                  slice,
+                  strategy.strategyId());}
         return endpointRegistry.selectEndpointWithRouting(artifactBase,
                                                           method,
                                                           strategy.routing(),
                                                           strategy.oldVersion(),
                                                           strategy.newVersion())
-                               .async(NO_ENDPOINT_FOUND);
+        .async(NO_ENDPOINT_FOUND);
     }
 
-    @Override
-    public Result<Unit> verifyEndpointExists(Artifact artifact, MethodName method) {
+    @Override public Result<Unit> verifyEndpointExists(Artifact artifact, MethodName method) {
         var endpoints = endpointRegistry.findEndpoints(artifact, method);
-        if (endpoints.isEmpty()) {
-            return Causes.cause("No endpoint found for " + artifact.asString() + "/" + method.name())
-                         .result();
-        }
+        if ( endpoints.isEmpty()) {
+        return Causes.cause("No endpoint found for " + artifact.asString() + "/" + method.name()).result();}
         return Result.unitResult();
     }
 }

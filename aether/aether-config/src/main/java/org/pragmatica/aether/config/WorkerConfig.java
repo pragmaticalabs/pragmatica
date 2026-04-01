@@ -22,18 +22,18 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param advertiseAddress              Address to advertise for cross-host communication (empty = auto-detect)
 /// @param metricsAggregation            Metrics aggregation interval
 @SuppressWarnings({"JBCT-ZONE-02", "JBCT-ZONE-03"})
-public record WorkerConfig(List<String> coreNodes,
-                           int clusterPort,
-                           int swimPort,
-                           SwimSettings swimSettings,
-                           SliceConfig sliceConfig,
-                           String groupName,
-                           String zone,
-                           int maxGroupSize,
-                           TimeSpan heartbeatInterval,
-                           TimeSpan heartbeatTimeout,
-                           String advertiseAddress,
-                           TimeSpan metricsAggregation) {
+public record WorkerConfig( List<String> coreNodes,
+                            int clusterPort,
+                            int swimPort,
+                            SwimSettings swimSettings,
+                            SliceConfig sliceConfig,
+                            String groupName,
+                            String zone,
+                            int maxGroupSize,
+                            TimeSpan heartbeatInterval,
+                            TimeSpan heartbeatTimeout,
+                            String advertiseAddress,
+                            TimeSpan metricsAggregation) {
     public static final int DEFAULT_CLUSTER_PORT = 7100;
     public static final int DEFAULT_SWIM_PORT = 7200;
     public static final String DEFAULT_GROUP_NAME = "default";
@@ -46,27 +46,20 @@ public record WorkerConfig(List<String> coreNodes,
 
     /// Compact constructor to normalize null/blank/invalid values to defaults.
     public WorkerConfig {
-        if (groupName == null || groupName.isBlank()) {
-            groupName = DEFAULT_GROUP_NAME;
-        }
-        if (zone == null || zone.isBlank()) {
-            zone = DEFAULT_ZONE;
-        }
-        if (maxGroupSize < 2) {
-            maxGroupSize = DEFAULT_MAX_GROUP_SIZE;
-        }
-        if (heartbeatInterval.millis() <= 0) {
-            heartbeatInterval = DEFAULT_HEARTBEAT_INTERVAL;
-        }
-        if (heartbeatTimeout.millis() <= 0) {
-            heartbeatTimeout = DEFAULT_HEARTBEAT_TIMEOUT;
-        }
-        if (advertiseAddress == null) {
-            advertiseAddress = DEFAULT_ADVERTISE_ADDRESS;
-        }
-        if (metricsAggregation.millis() <= 0) {
-            metricsAggregation = DEFAULT_METRICS_AGGREGATION;
-        }
+        if ( groupName == null || groupName.isBlank()) {
+        groupName = DEFAULT_GROUP_NAME;}
+        if ( zone == null || zone.isBlank()) {
+        zone = DEFAULT_ZONE;}
+        if ( maxGroupSize < 2) {
+        maxGroupSize = DEFAULT_MAX_GROUP_SIZE;}
+        if ( heartbeatInterval.millis() <= 0) {
+        heartbeatInterval = DEFAULT_HEARTBEAT_INTERVAL;}
+        if ( heartbeatTimeout.millis() <= 0) {
+        heartbeatTimeout = DEFAULT_HEARTBEAT_TIMEOUT;}
+        if ( advertiseAddress == null) {
+        advertiseAddress = DEFAULT_ADVERTISE_ADDRESS;}
+        if ( metricsAggregation.millis() <= 0) {
+        metricsAggregation = DEFAULT_METRICS_AGGREGATION;}
     }
 
     /// Factory method with validation for all fields following JBCT naming convention.
@@ -173,8 +166,7 @@ public record WorkerConfig(List<String> coreNodes,
     private static Result<Integer> checkPort(String name, int port) {
         return port >= 1 && port <= 65535
                ? success(port)
-               : WorkerConfigError.invalidWorkerConfig(name + " must be 1-65535, got: " + port)
-                                  .result();
+               : WorkerConfigError.invalidWorkerConfig(name + " must be 1-65535, got: " + port).result();
     }
 
     private static Result<String> checkNotBlank(String name, String value) {
@@ -185,8 +177,7 @@ public record WorkerConfig(List<String> coreNodes,
     private static Result<Integer> checkMinValue(String name, int value, int min) {
         return value >= min
                ? success(value)
-               : WorkerConfigError.invalidWorkerConfig(name + " must be >= " + min + ", got: " + value)
-                                  .result();
+               : WorkerConfigError.invalidWorkerConfig(name + " must be >= " + min + ", got: " + value).result();
     }
 
     /// SWIM protocol tuning settings.
@@ -208,11 +199,42 @@ public record WorkerConfig(List<String> coreNodes,
         public static final int DEFAULT_MAX_PIGGYBACK = 8;
 
         @SuppressWarnings("JBCT-VO-02") // Bootstrap default — factory delegates here
-        private static final SwimSettings DEFAULT = new SwimSettings(DEFAULT_PERIOD,
-                                                                     DEFAULT_PROBE_TIMEOUT,
-                                                                     DEFAULT_INDIRECT_PROBES,
-                                                                     DEFAULT_SUSPECT_TIMEOUT,
-                                                                     DEFAULT_MAX_PIGGYBACK);
+        private static final// Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        // Bootstrap default — factory delegates here
+        SwimSettings DEFAULT = new SwimSettings(DEFAULT_PERIOD,
+                                                DEFAULT_PROBE_TIMEOUT,
+                                                DEFAULT_INDIRECT_PROBES,
+                                                DEFAULT_SUSPECT_TIMEOUT,
+                                                DEFAULT_MAX_PIGGYBACK);
 
         /// Default SWIM settings.
         public static SwimSettings swimSettings() {
@@ -241,22 +263,20 @@ public record WorkerConfig(List<String> coreNodes,
             return value.millis() > 0
                    ? success(value)
                    : WorkerConfigError.invalidWorkerConfig(name + " must be positive, got: " + value.millis() + "ms")
-                                      .result();
+            .result();
         }
 
         private static Result<Integer> checkPositiveInt(String name, int value) {
             return value > 0
                    ? success(value)
-                   : WorkerConfigError.invalidWorkerConfig(name + " must be positive, got: " + value)
-                                      .result();
+                   : WorkerConfigError.invalidWorkerConfig(name + " must be positive, got: " + value).result();
         }
     }
 
     /// Error hierarchy for worker configuration failures.
     public sealed interface WorkerConfigError extends Cause {
         record unused() implements WorkerConfigError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "unused";
             }
         }
@@ -272,8 +292,7 @@ public record WorkerConfig(List<String> coreNodes,
                 return invalidWorkerConfig(detail, true).unwrap();
             }
 
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Invalid worker configuration: " + detail;
             }
         }

@@ -29,7 +29,7 @@ public sealed interface DhtNodeCleanup {
     static Promise<Unit> cleanupDeadNodeEndpoints(NodeId deadNode,
                                                   ReplicatedMap<EndpointKey, EndpointValue> endpointMap,
                                                   List<EndpointKey> endpointKeysForNode) {
-        if (endpointKeysForNode.isEmpty()) {
+        if ( endpointKeysForNode.isEmpty()) {
             log.debug("No endpoints to clean up for dead node {}", deadNode);
             return Promise.unitPromise();
         }
@@ -41,14 +41,12 @@ public sealed interface DhtNodeCleanup {
                                                              ReplicatedMap<EndpointKey, EndpointValue> endpointMap,
                                                              List<EndpointKey> keys) {
         var result = Promise.unitPromise();
-        for (var key : keys) {
-            result = result.flatMap(_ -> endpointMap.remove(key)
-                                                    .mapToUnit());
-        }
+        for ( var key : keys) {
+        result = result.flatMap(_ -> endpointMap.remove(key).mapToUnit());}
         return result.onSuccess(_ -> log.info("Completed cleanup of {} endpoints for dead node {}",
                                               keys.size(),
                                               deadNode));
     }
 
-    record unused() implements DhtNodeCleanup {}
+    record unused() implements DhtNodeCleanup{}
 }

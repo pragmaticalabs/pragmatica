@@ -1,5 +1,4 @@
 package org.pragmatica.aether.config;
-/// Placement policy for slice deployment — determines where slices run.
 public enum PlacementPolicy {
     /// Slices run only on core consensus nodes (default, backward-compatible).
     CORE_ONLY,

@@ -17,12 +17,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param confidenceThreshold  Minimum confidence for applying predictions (0.0-1.0, default: 0.7)
 /// @param enabled              Whether TTM is enabled (default: false)
 @SuppressWarnings({"JBCT-ZONE-02", "JBCT-SEQ-01"})
-public record TtmConfig(String modelPath,
-                        int inputWindowMinutes,
-                        int predictionHorizon,
-                        TimeSpan evaluationInterval,
-                        double confidenceThreshold,
-                        boolean enabled) {
+public record TtmConfig( String modelPath,
+                         int inputWindowMinutes,
+                         int predictionHorizon,
+                         TimeSpan evaluationInterval,
+                         double confidenceThreshold,
+                         boolean enabled) {
     private static final TtmConfig DEFAULT = ttmConfig("models/ttm-aether.onnx",
                                                        60,
                                                        1,
@@ -114,7 +114,7 @@ public record TtmConfig(String modelPath,
         return ! enabled || isNotBlank(modelPath)
                ? success(modelPath)
                : TtmConfigError.InvalidTtmConfig.invalidTtmConfig("modelPath cannot be blank when TTM is enabled")
-                               .result();
+        .result();
     }
 
     private static boolean isNotBlank(String value) {
@@ -126,15 +126,13 @@ public record TtmConfig(String modelPath,
     private static Result<Integer> checkWindow(int inputWindowMinutes) {
         return inputWindowMinutes >= 1 && inputWindowMinutes <= 120
                ? success(inputWindowMinutes)
-               : TtmConfigError.InvalidTtmConfig.invalidTtmConfig("inputWindowMinutes must be 1-120")
-                               .result();
+               : TtmConfigError.InvalidTtmConfig.invalidTtmConfig("inputWindowMinutes must be 1-120").result();
     }
 
     private static Result<Integer> checkHorizon(int predictionHorizon) {
         return predictionHorizon >= 1 && predictionHorizon <= 10
                ? success(predictionHorizon)
-               : TtmConfigError.InvalidTtmConfig.invalidTtmConfig("predictionHorizon must be 1-10")
-                               .result();
+               : TtmConfigError.InvalidTtmConfig.invalidTtmConfig("predictionHorizon must be 1-10").result();
     }
 
     private static Result<Double> checkIntervalAndConfidence(TimeSpan evaluationInterval, double confidenceThreshold) {
@@ -145,22 +143,19 @@ public record TtmConfig(String modelPath,
         var millis = evaluationInterval.millis();
         return millis >= 10_000L && millis <= 300_000L
                ? success(evaluationInterval)
-               : TtmConfigError.InvalidTtmConfig.invalidTtmConfig("evaluationInterval must be 10s-300s")
-                               .result();
+               : TtmConfigError.InvalidTtmConfig.invalidTtmConfig("evaluationInterval must be 10s-300s").result();
     }
 
     private static Result<Double> checkConfidence(double confidenceThreshold) {
         return confidenceThreshold >= 0.0 && confidenceThreshold <= 1.0
                ? success(confidenceThreshold)
-               : TtmConfigError.InvalidTtmConfig.invalidTtmConfig("confidenceThreshold must be 0.0-1.0")
-                               .result();
+               : TtmConfigError.InvalidTtmConfig.invalidTtmConfig("confidenceThreshold must be 0.0-1.0").result();
     }
 
     /// Error hierarchy for TTM configuration failures.
     public sealed interface TtmConfigError extends Cause {
         record unused() implements TtmConfigError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "unused";
             }
         }
@@ -176,8 +171,7 @@ public record TtmConfig(String modelPath,
                 return invalidTtmConfig(detail, true).unwrap();
             }
 
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Invalid TTM configuration: " + detail;
             }
         }

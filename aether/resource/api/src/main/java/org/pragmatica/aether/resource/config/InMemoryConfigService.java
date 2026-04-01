@@ -29,75 +29,57 @@ final class InMemoryConfigService implements ConfigService {
         documents.put(ConfigScope.SLICE, TomlDocument.EMPTY);
     }
 
-    @Override
-    public Promise<Option<String>> getString(String section, String key) {
+    @Override public Promise<Option<String>> getString(String section, String key) {
         return Promise.success(getHierarchical(section, key, TomlDocument::getString));
     }
 
-    @Override
-    public Promise<Option<String>> getString(ConfigScope scope, String section, String key) {
-        return Promise.success(documents.get(scope)
-                                        .getString(section, key));
+    @Override public Promise<Option<String>> getString(ConfigScope scope, String section, String key) {
+        return Promise.success(documents.get(scope).getString(section, key));
     }
 
-    @Override
-    public Promise<Option<Integer>> getInt(String section, String key) {
+    @Override public Promise<Option<Integer>> getInt(String section, String key) {
         return Promise.success(getHierarchical(section, key, TomlDocument::getInt));
     }
 
-    @Override
-    public Promise<Option<Integer>> getInt(ConfigScope scope, String section, String key) {
-        return Promise.success(documents.get(scope)
-                                        .getInt(section, key));
+    @Override public Promise<Option<Integer>> getInt(ConfigScope scope, String section, String key) {
+        return Promise.success(documents.get(scope).getInt(section, key));
     }
 
-    @Override
-    public Promise<Option<Boolean>> getBoolean(String section, String key) {
+    @Override public Promise<Option<Boolean>> getBoolean(String section, String key) {
         return Promise.success(getHierarchical(section, key, TomlDocument::getBoolean));
     }
 
-    @Override
-    public Promise<Option<Boolean>> getBoolean(ConfigScope scope, String section, String key) {
-        return Promise.success(documents.get(scope)
-                                        .getBoolean(section, key));
+    @Override public Promise<Option<Boolean>> getBoolean(ConfigScope scope, String section, String key) {
+        return Promise.success(documents.get(scope).getBoolean(section, key));
     }
 
-    @Override
-    public Promise<Option<Double>> getDouble(String section, String key) {
+    @Override public Promise<Option<Double>> getDouble(String section, String key) {
         return Promise.success(getHierarchical(section, key, TomlDocument::getDouble));
     }
 
-    @Override
-    public Promise<Option<Double>> getDouble(ConfigScope scope, String section, String key) {
-        return Promise.success(documents.get(scope)
-                                        .getDouble(section, key));
+    @Override public Promise<Option<Double>> getDouble(ConfigScope scope, String section, String key) {
+        return Promise.success(documents.get(scope).getDouble(section, key));
     }
 
-    @Override
-    public Promise<Option<List<String>>> getStringList(String section, String key) {
+    @Override public Promise<Option<List<String>>> getStringList(String section, String key) {
         return Promise.success(getHierarchical(section, key, TomlDocument::getStringList));
     }
 
-    @Override
-    public Promise<Option<List<String>>> getStringList(ConfigScope scope, String section, String key) {
-        return Promise.success(documents.get(scope)
-                                        .getStringList(section, key));
+    @Override public Promise<Option<List<String>>> getStringList(ConfigScope scope, String section, String key) {
+        return Promise.success(documents.get(scope).getStringList(section, key));
     }
 
-    @Override
-    public Promise<Unit> set(ConfigScope scope, String section, String key, Object value) {
+    @Override public Promise<Unit> set(ConfigScope scope, String section, String key, Object value) {
         var current = documents.get(scope);
         documents.put(scope, current.with(section, key, value));
         notifyWatchers(section, key);
         return Promise.success(unit());
     }
 
-    @Override
-    public Result<Unit> loadToml(ConfigScope scope, String content) {
-        return TomlParser.parse(content)
-                         .map(doc -> storeDocument(scope, doc))
-                         .mapError(cause -> new ConfigError.ParseFailed("string",
-                                                                        cause.message()));
+    @Override public Result<Unit> loadToml(ConfigScope scope, String content) {
+        return TomlParser.parse(content).map(doc -> storeDocument(scope, doc))
+                               .mapError(cause -> new ConfigError.ParseFailed("string",
+                                                                              cause.message()));
     }
 
     private Unit storeDocument(ConfigScope scope, TomlDocument doc) {
@@ -105,30 +87,24 @@ final class InMemoryConfigService implements ConfigService {
         return unit();
     }
 
-    @Override
-    public TomlDocument getDocument(ConfigScope scope) {
+    @Override public TomlDocument getDocument(ConfigScope scope) {
         return documents.get(scope);
     }
 
-    @Override
-    public Promise<ConfigSubscription> watch(String section, String key, Fn1<Unit, Option<String>> callback) {
+    @Override public Promise<ConfigSubscription> watch(String section, String key, Fn1<Unit, Option<String>> callback) {
         var watchKey = watchKey(section, key);
         var entry = new WatchEntry(callback);
-        watchers.computeIfAbsent(watchKey,
-                                 k -> new CopyOnWriteArrayList<>())
-                .add(entry);
+        watchers.computeIfAbsent(watchKey, k -> new CopyOnWriteArrayList<>()).add(entry);
         return Promise.success(new WatchSubscription(watchKey, entry));
     }
 
     private <T> Option<T> getHierarchical(String section, String key, ValueGetter<T> getter) {
         var sliceValue = getter.get(documents.get(ConfigScope.SLICE), section, key);
-        if (sliceValue.isPresent()) {
-            return sliceValue;
-        }
+        if ( sliceValue.isPresent()) {
+        return sliceValue;}
         var nodeValue = getter.get(documents.get(ConfigScope.NODE), section, key);
-        if (nodeValue.isPresent()) {
-            return nodeValue;
-        }
+        if ( nodeValue.isPresent()) {
+        return nodeValue;}
         return getter.get(documents.get(ConfigScope.GLOBAL), section, key);
     }
 
@@ -139,22 +115,19 @@ final class InMemoryConfigService implements ConfigService {
 
     private void notifyEntries(List<WatchEntry> entries, String section, String key) {
         var currentValue = getHierarchical(section, key, TomlDocument::getString);
-        entries.stream()
-               .filter(WatchEntry::isActive)
-               .forEach(entry -> invokeCallback(entry, currentValue));
+        entries.stream().filter(WatchEntry::isActive)
+                      .forEach(entry -> invokeCallback(entry, currentValue));
     }
 
     private static void invokeCallback(WatchEntry entry, Option<String> value) {
-        entry.callback()
-             .apply(value);
+        entry.callback().apply(value);
     }
 
     private static String watchKey(String section, String key) {
         return section + "." + key;
     }
 
-    @FunctionalInterface
-    private interface ValueGetter<T> {
+    @FunctionalInterface private interface ValueGetter<T> {
         Option<T> get(TomlDocument doc, String section, String key);
     }
 
@@ -182,18 +155,15 @@ final class InMemoryConfigService implements ConfigService {
             this.entry = entry;
         }
 
-        @Override
-        public Result<Unit> cancel() {
-            return entry.cancel()
-                        .onSuccess(_ -> removeEntry());
+        @Override public Result<Unit> cancel() {
+            return entry.cancel().onSuccess(_ -> removeEntry());
         }
 
         private void removeEntry() {
             option(watchers.get(watchKey)).onPresent(entries -> entries.remove(entry));
         }
 
-        @Override
-        public boolean isActive() {
+        @Override public boolean isActive() {
             return entry.isActive();
         }
     }

@@ -46,23 +46,23 @@ import java.util.List;
 /// @param artifacts list of artifacts involved in this deployment
 /// @param createdAt timestamp when deployment was created
 /// @param updatedAt timestamp of last state change
-public record CanaryDeployment(String canaryId,
-                               ArtifactBase artifactBase,
-                               Version oldVersion,
-                               Version newVersion,
-                               CanaryState state,
-                               List<CanaryStage> stages,
-                               int currentStageIndex,
-                               long stageEnteredAt,
-                               HealthThresholds thresholds,
-                               CanaryAnalysisConfig analysisConfig,
-                               int newInstances,
-                               CleanupPolicy cleanupPolicy,
-                               VersionRouting routing,
-                               Option<String> blueprintId,
-                               List<ArtifactBase> artifacts,
-                               long createdAt,
-                               long updatedAt) implements DeploymentStrategy {
+public record CanaryDeployment( String canaryId,
+                                ArtifactBase artifactBase,
+                                Version oldVersion,
+                                Version newVersion,
+                                CanaryState state,
+                                List<CanaryStage> stages,
+                                int currentStageIndex,
+                                long stageEnteredAt,
+                                HealthThresholds thresholds,
+                                CanaryAnalysisConfig analysisConfig,
+                                int newInstances,
+                                CleanupPolicy cleanupPolicy,
+                                VersionRouting routing,
+                                Option<String> blueprintId,
+                                List<ArtifactBase> artifacts,
+                                long createdAt,
+                                long updatedAt) implements DeploymentStrategy {
     private static final Fn1<Cause, String> INVALID_TRANSITION = Causes.forOneValue("Invalid state transition: %s");
     private static final Cause NO_MORE_STAGES = Causes.cause("No more stages to advance to");
 
@@ -79,15 +79,46 @@ public record CanaryDeployment(String canaryId,
     /// @param cleanupPolicy cleanup policy
     /// @return new canary deployment
     @SuppressWarnings("JBCT-VO-02") // Factory method — validated construction
-    public static CanaryDeployment canaryDeployment(String canaryId,
-                                                    ArtifactBase artifactBase,
-                                                    Version oldVersion,
-                                                    Version newVersion,
-                                                    int newInstances,
-                                                    List<CanaryStage> stages,
-                                                    HealthThresholds thresholds,
-                                                    CanaryAnalysisConfig analysisConfig,
-                                                    CleanupPolicy cleanupPolicy) {
+    public static// Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    // Factory method — validated construction
+    CanaryDeployment canaryDeployment(String canaryId,
+                                      ArtifactBase artifactBase,
+                                      Version oldVersion,
+                                      Version newVersion,
+                                      int newInstances,
+                                      List<CanaryStage> stages,
+                                      HealthThresholds thresholds,
+                                      CanaryAnalysisConfig analysisConfig,
+                                      CleanupPolicy cleanupPolicy) {
         var now = System.currentTimeMillis();
         return new CanaryDeployment(canaryId,
                                     artifactBase,
@@ -113,12 +144,40 @@ public record CanaryDeployment(String canaryId,
     /// @param newState the new state
     /// @return updated canary deployment, or failure if transition is invalid
     @SuppressWarnings("JBCT-VO-02") // Record copy method with validated state transition
-    public Result<CanaryDeployment> transitionTo(CanaryState newState) {
-        if (!state.validTransitions()
-                  .contains(newState)) {
-            return INVALID_TRANSITION.apply(state + " -> " + newState)
-                                     .result();
-        }
+    public// Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    Result<CanaryDeployment> transitionTo(CanaryState newState) {
+        if ( !state.validTransitions().contains(newState)) {
+        return INVALID_TRANSITION.apply(state + " -> " + newState).result();}
         return Result.success(new CanaryDeployment(canaryId,
                                                    artifactBase,
                                                    oldVersion,
@@ -143,7 +202,38 @@ public record CanaryDeployment(String canaryId,
     /// @param newRouting the new routing configuration
     /// @return updated canary deployment
     @SuppressWarnings("JBCT-VO-02") // Record copy method with known-valid fields
-    public CanaryDeployment withRouting(VersionRouting newRouting) {
+    public// Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    CanaryDeployment withRouting(VersionRouting newRouting) {
         return new CanaryDeployment(canaryId,
                                     artifactBase,
                                     oldVersion,
@@ -167,13 +257,42 @@ public record CanaryDeployment(String canaryId,
     ///
     /// @return updated canary deployment at the next stage, or failure if no more stages
     @SuppressWarnings("JBCT-VO-02") // Record copy method with validated stage advancement
-    public Result<CanaryDeployment> advanceStage() {
-        if (isLastStage()) {
-            return NO_MORE_STAGES.result();
-        }
+    public// Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    // Record copy method with validated stage advancement
+    Result<CanaryDeployment> advanceStage() {
+        if ( isLastStage()) {
+        return NO_MORE_STAGES.result();}
         var nextIndex = currentStageIndex + 1;
-        var nextRouting = stages.get(nextIndex)
-                                .toRouting();
+        var nextRouting = stages.get(nextIndex).toRouting();
         return Result.success(new CanaryDeployment(canaryId,
                                                    artifactBase,
                                                    oldVersion,
@@ -195,26 +314,22 @@ public record CanaryDeployment(String canaryId,
 
     /// Returns the current canary stage, if the index is valid.
     public Option<CanaryStage> currentStage() {
-        if (currentStageIndex >= 0 && currentStageIndex < stages.size()) {
-            return Option.some(stages.get(currentStageIndex));
-        }
+        if ( currentStageIndex >= 0 && currentStageIndex < stages.size()) {
+        return Option.some(stages.get(currentStageIndex));}
         return Option.none();
     }
 
-    @Override
-    public String strategyId() {
+    @Override public String strategyId() {
         return canaryId;
     }
 
     /// Checks if this deployment is in a terminal state.
-    @Override
-    public boolean isTerminal() {
+    @Override public boolean isTerminal() {
         return state.isTerminal();
     }
 
     /// Checks if this deployment is active (not terminal).
-    @Override
-    public boolean isActive() {
+    @Override public boolean isActive() {
         return ! isTerminal();
     }
 
@@ -245,7 +360,38 @@ public record CanaryDeployment(String canaryId,
     /// @param newArtifacts the artifacts involved in this deployment
     /// @return updated canary deployment with blueprint context
     @SuppressWarnings("JBCT-VO-02") // Record copy method with known-valid fields
-    public CanaryDeployment withBlueprintContext(String newBlueprintId, List<ArtifactBase> newArtifacts) {
+    public// Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    CanaryDeployment withBlueprintContext(String newBlueprintId, List<ArtifactBase> newArtifacts) {
         return new CanaryDeployment(canaryId,
                                     artifactBase,
                                     oldVersion,

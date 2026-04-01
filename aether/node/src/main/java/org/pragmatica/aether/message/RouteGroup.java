@@ -31,7 +31,7 @@ import java.util.function.Consumer;
 ///
 /// @param name Short descriptive name for this route group (for logging/debugging)
 /// @param entries Accumulated route entries
-public record RouteGroup(String name, List<MessageRouter.Entry<?>> entries) {
+public record RouteGroup( String name, List<MessageRouter.Entry<?>> entries) {
     /// Factory method to create a new route group builder.
     ///
     /// @param name Descriptive name for this group
@@ -71,11 +71,9 @@ public record RouteGroup(String name, List<MessageRouter.Entry<?>> entries) {
         /// @param type Message class
         /// @param handlers Handlers that will all receive the message
         /// @return This builder for chaining
-        @SafeVarargs
-        public final <M extends Message> Builder fanOut(Class<M> type, Consumer<M>... handlers) {
-            for (var handler : handlers) {
-                entries.add(MessageRouter.Entry.route(type, handler));
-            }
+        @SafeVarargs public final <M extends Message> Builder fanOut(Class<M> type, Consumer<M>... handlers) {
+            for ( var handler : handlers) {
+            entries.add(MessageRouter.Entry.route(type, handler));}
             return this;
         }
 

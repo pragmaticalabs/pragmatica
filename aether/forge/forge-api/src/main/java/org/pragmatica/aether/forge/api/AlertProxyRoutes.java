@@ -19,15 +19,15 @@ import static org.pragmatica.http.routing.Route.in;
 public sealed interface AlertProxyRoutes {
     Duration HTTP_TIMEOUT = Duration.ofSeconds(10);
 
-    record AlertListResponse(String body) {}
+    record AlertListResponse(String body){}
 
-    record AlertClearResponse(boolean success, String body) {}
+    record AlertClearResponse(boolean success, String body){}
 
-    record ThresholdListResponse(String body) {}
+    record ThresholdListResponse(String body){}
 
-    record ThresholdSetResponse(boolean success, String body) {}
+    record ThresholdSetResponse(boolean success, String body){}
 
-    record ThresholdDeleteResponse(boolean success, String body) {}
+    record ThresholdDeleteResponse(boolean success, String body){}
 
     static RouteSource alertProxyRoutes(EmberCluster cluster) {
         var http = JdkHttpOperations.jdkHttpOperations();
@@ -42,51 +42,49 @@ public sealed interface AlertProxyRoutes {
 
     private static Route<AlertListResponse> activeAlertsRoute(EmberCluster cluster,
                                                               JdkHttpOperations http) {
-        return Route.<AlertListResponse> get("/active")
+        return Route.<AlertListResponse>get("/active")
                     .to(_ -> proxyGet(cluster, http, "/api/alerts/active"))
                     .asJson();
     }
 
     private static Route<AlertListResponse> alertHistoryRoute(EmberCluster cluster,
                                                               JdkHttpOperations http) {
-        return Route.<AlertListResponse> get("/history")
+        return Route.<AlertListResponse>get("/history")
                     .to(_ -> proxyGet(cluster, http, "/api/alerts/history"))
                     .asJson();
     }
 
     private static Route<AlertClearResponse> clearAlertsRoute(EmberCluster cluster,
                                                               JdkHttpOperations http) {
-        return Route.<AlertClearResponse> post("/clear")
+        return Route.<AlertClearResponse>post("/clear")
                     .toJson(_ -> proxyClear(cluster, http));
     }
 
     private static Promise<AlertListResponse> proxyGet(EmberCluster cluster,
                                                        JdkHttpOperations http,
                                                        String path) {
-        return cluster.getLeaderManagementPort()
-                      .async(LeaderNotAvailable.INSTANCE)
-                      .flatMap(port -> sendGet(http, port, path))
-                      .map(AlertListResponse::new);
+        return cluster.getLeaderManagementPort().async(LeaderNotAvailable.INSTANCE)
+                                              .flatMap(port -> sendGet(http, port, path))
+                                              .map(AlertListResponse::new);
     }
 
     private static Promise<AlertClearResponse> proxyClear(EmberCluster cluster,
                                                           JdkHttpOperations http) {
-        return cluster.getLeaderManagementPort()
-                      .async(LeaderNotAvailable.INSTANCE)
-                      .flatMap(port -> sendPost(http, port, "/api/alerts/clear"))
-                      .map(body -> new AlertClearResponse(true, body));
+        return cluster.getLeaderManagementPort().async(LeaderNotAvailable.INSTANCE)
+                                              .flatMap(port -> sendPost(http, port, "/api/alerts/clear"))
+                                              .map(body -> new AlertClearResponse(true, body));
     }
 
     private static Route<ThresholdListResponse> thresholdsGetRoute(EmberCluster cluster,
                                                                    JdkHttpOperations http) {
-        return Route.<ThresholdListResponse> get("/thresholds")
+        return Route.<ThresholdListResponse>get("/thresholds")
                     .to(_ -> proxyGetThresholds(cluster, http))
                     .asJson();
     }
 
     private static Route<ThresholdSetResponse> thresholdsSetRoute(EmberCluster cluster,
                                                                   JdkHttpOperations http) {
-        return Route.<ThresholdSetResponse> post("/thresholds")
+        return Route.<ThresholdSetResponse>post("/thresholds")
                     .to(request -> proxySetThreshold(cluster,
                                                      http,
                                                      request.bodyAsString()))
@@ -95,7 +93,7 @@ public sealed interface AlertProxyRoutes {
 
     private static Route<ThresholdDeleteResponse> thresholdsDeleteRoute(EmberCluster cluster,
                                                                         JdkHttpOperations http) {
-        return Route.<ThresholdDeleteResponse> delete("/thresholds")
+        return Route.<ThresholdDeleteResponse>delete("/thresholds")
                     .withPath(aString())
                     .to(metric -> proxyDeleteThreshold(cluster, http, metric))
                     .asJson();
@@ -103,85 +101,69 @@ public sealed interface AlertProxyRoutes {
 
     private static Promise<ThresholdListResponse> proxyGetThresholds(EmberCluster cluster,
                                                                      JdkHttpOperations http) {
-        return cluster.getLeaderManagementPort()
-                      .async(LeaderNotAvailable.INSTANCE)
-                      .flatMap(port -> sendGet(http, port, "/api/thresholds"))
-                      .map(ThresholdListResponse::new);
+        return cluster.getLeaderManagementPort().async(LeaderNotAvailable.INSTANCE)
+                                              .flatMap(port -> sendGet(http, port, "/api/thresholds"))
+                                              .map(ThresholdListResponse::new);
     }
 
     private static Promise<ThresholdSetResponse> proxySetThreshold(EmberCluster cluster,
                                                                    JdkHttpOperations http,
                                                                    String body) {
-        return cluster.getLeaderManagementPort()
-                      .async(LeaderNotAvailable.INSTANCE)
-                      .flatMap(port -> sendPostWithBody(http, port, "/api/thresholds", body))
-                      .map(resp -> new ThresholdSetResponse(true, resp));
+        return cluster.getLeaderManagementPort().async(LeaderNotAvailable.INSTANCE)
+                                              .flatMap(port -> sendPostWithBody(http, port, "/api/thresholds", body))
+                                              .map(resp -> new ThresholdSetResponse(true, resp));
     }
 
     private static Promise<ThresholdDeleteResponse> proxyDeleteThreshold(EmberCluster cluster,
                                                                          JdkHttpOperations http,
                                                                          String metric) {
-        return cluster.getLeaderManagementPort()
-                      .async(LeaderNotAvailable.INSTANCE)
-                      .flatMap(port -> sendDelete(http, port, "/api/thresholds/" + metric))
-                      .map(resp -> new ThresholdDeleteResponse(true, resp));
+        return cluster.getLeaderManagementPort().async(LeaderNotAvailable.INSTANCE)
+                                              .flatMap(port -> sendDelete(http, port, "/api/thresholds/" + metric))
+                                              .map(resp -> new ThresholdDeleteResponse(true, resp));
     }
 
     private static Promise<String> sendGet(JdkHttpOperations http, int port, String path) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .GET()
-                                 .timeout(HTTP_TIMEOUT)
-                                 .build();
-        return http.sendString(request)
-                   .flatMap(result -> result.toResult()
-                                            .async());
+        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path))
+                                            .GET()
+                                            .timeout(HTTP_TIMEOUT)
+                                            .build();
+        return http.sendString(request).flatMap(result -> result.toResult().async());
     }
 
     private static Promise<String> sendPost(JdkHttpOperations http, int port, String path) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .header("Content-Type", "application/json")
-                                 .POST(HttpRequest.BodyPublishers.noBody())
-                                 .timeout(HTTP_TIMEOUT)
-                                 .build();
-        return http.sendString(request)
-                   .flatMap(result -> result.toResult()
-                                            .async());
+        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path))
+                                            .header("Content-Type", "application/json")
+                                            .POST(HttpRequest.BodyPublishers.noBody())
+                                            .timeout(HTTP_TIMEOUT)
+                                            .build();
+        return http.sendString(request).flatMap(result -> result.toResult().async());
     }
 
     private static Promise<String> sendPostWithBody(JdkHttpOperations http, int port, String path, String body) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .header("Content-Type", "application/json")
-                                 .POST(HttpRequest.BodyPublishers.ofString(body != null
-                                                                           ? body
-                                                                           : ""))
-                                 .timeout(HTTP_TIMEOUT)
-                                 .build();
-        return http.sendString(request)
-                   .flatMap(result -> result.toResult()
-                                            .async());
+        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path))
+                                            .header("Content-Type", "application/json")
+                                            .POST(HttpRequest.BodyPublishers.ofString(body != null
+                                                                                      ? body
+                                                                                      : ""))
+                                            .timeout(HTTP_TIMEOUT)
+                                            .build();
+        return http.sendString(request).flatMap(result -> result.toResult().async());
     }
 
     private static Promise<String> sendDelete(JdkHttpOperations http, int port, String path) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .DELETE()
-                                 .timeout(HTTP_TIMEOUT)
-                                 .build();
-        return http.sendString(request)
-                   .flatMap(result -> result.toResult()
-                                            .async());
+        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path))
+                                            .DELETE()
+                                            .timeout(HTTP_TIMEOUT)
+                                            .build();
+        return http.sendString(request).flatMap(result -> result.toResult().async());
     }
 
     enum LeaderNotAvailable implements Cause {
         INSTANCE;
-        @Override
-        public String message() {
+        @Override public String message() {
             return "No leader node available for alert proxy";
         }
     }
 
-    record unused() implements AlertProxyRoutes {}
+    record unused() implements AlertProxyRoutes{}
 }

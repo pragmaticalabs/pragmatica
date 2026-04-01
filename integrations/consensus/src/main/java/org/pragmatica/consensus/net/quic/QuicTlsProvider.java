@@ -27,6 +27,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Provides QUIC TLS context for cluster transport.
 ///
 /// QUIC mandates TLS 1.3 — there is no plaintext mode. When no TLS configuration
@@ -60,11 +61,13 @@ public sealed interface QuicTlsProvider {
     }
 
     /// Self-signed server context with cluster ALPN protocol.
+    /// Uses RSA keys to avoid Java 25 EC named-parameter compatibility issues
+    /// with netty-quiche's BoringSSL native layer.
     @SuppressWarnings({"deprecation", "JBCT-UTIL-01"}) // SelfSignedCertificate is for dev/testing
     private static Result<QuicSslContext> createSelfSignedServer() {
         try {
-            var ssc = new SelfSignedCertificate();
-            var context = QuicSslContextBuilder.forServer(ssc.privateKey(), null, ssc.certificate())
+            var ssc = new SelfSignedCertificate("localhost", "RSA", 2048);
+            var context = QuicSslContextBuilder.forServer(ssc.key(), null, ssc.cert())
                                                .applicationProtocols(CLUSTER_PROTOCOL)
                                                .build();
             return Result.success(context);

@@ -84,17 +84,14 @@ public interface BlueGreenDeploymentManager {
 
     /// Handle leader change (restore state on becoming leader).
     @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    void onLeaderChange(LeaderChange leaderChange);
+    @SuppressWarnings("JBCT-RET-01") void onLeaderChange(LeaderChange leaderChange);
 
     /// Handle deployment failure for auto-rollback.
     @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    void onDeploymentFailed(DeploymentEvent.DeploymentFailed event);
+    @SuppressWarnings("JBCT-RET-01") void onDeploymentFailed(DeploymentEvent.DeploymentFailed event);
 
     /// Default KV operation timeout.
-    TimeSpan DEFAULT_KV_OPERATION_TIMEOUT = TimeSpan.timeSpan(30)
-                                                   .seconds();
+    TimeSpan DEFAULT_KV_OPERATION_TIMEOUT = TimeSpan.timeSpan(30).seconds();
 
     /// Default terminal retention (1 hour).
     long DEFAULT_TERMINAL_RETENTION_MS = TimeUnit.HOURS.toMillis(1);
@@ -117,39 +114,45 @@ public interface BlueGreenDeploymentManager {
                                                                  InvocationMetricsCollector metricsCollector,
                                                                  TimeSpan kvOperationTimeout,
                                                                  long terminalRetentionMs) {
-        record blueGreenDeploymentManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                          KVStore<AetherKey, AetherValue> kvStore,
-                                          InvocationMetricsCollector metricsCollector,
-                                          TimeSpan kvOperationTimeout,
-                                          long terminalRetentionMs,
-                                          Map<String, BlueGreenDeployment> deployments) implements BlueGreenDeploymentManager {
+        record blueGreenDeploymentManager( RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                           KVStore<AetherKey, AetherValue> kvStore,
+                                           InvocationMetricsCollector metricsCollector,
+                                           TimeSpan kvOperationTimeout,
+                                           long terminalRetentionMs,
+                                           Map<String, BlueGreenDeployment> deployments) implements BlueGreenDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(BlueGreenDeploymentManager.class);
 
             @Override
             @SuppressWarnings("JBCT-RET-01")
             public void onLeaderChange(LeaderChange leaderChange) {
-                if (leaderChange.localNodeIsLeader()) {
+                if ( leaderChange.localNodeIsLeader()) {
                     log.info("Blue-green deployment manager active (leader)");
                     restoreState();
-                } else {
-                    log.info("Blue-green deployment manager passive (follower)");
-                }
+                } else
+
+
+
+
+                {
+                log.info("Blue-green deployment manager passive (follower)");}
             }
 
             @Override
             @SuppressWarnings("JBCT-RET-01")
             public void onDeploymentFailed(DeploymentEvent.DeploymentFailed event) {
-                var artifactBase = event.artifact()
-                                        .base();
-                getActiveDeployment(artifactBase).filter(dep -> dep.greenVersion()
-                                                                   .equals(event.artifact()
-                                                                                .version()))
+                var artifactBase = event.artifact().base();
+                getActiveDeployment(artifactBase).filter(dep -> dep.greenVersion().equals(event.artifact().version()))
                                    .filter(BlueGreenDeployment::isActive)
                                    .onPresent(dep -> triggerAutoRollback(dep, event));
             }
 
             @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
-            private void triggerAutoRollback(BlueGreenDeployment deployment, DeploymentEvent.DeploymentFailed event) {
+            private// Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            void triggerAutoRollback(BlueGreenDeployment deployment, DeploymentEvent.DeploymentFailed event) {
                 log.warn("Auto-rollback triggered for blue-green {} — green version {} failed on node {}: {}",
                          deployment.deploymentId(),
                          event.artifact(),
@@ -163,19 +166,28 @@ public interface BlueGreenDeploymentManager {
 
             // --- State restoration ---
             @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
-            private void restoreState() {
+            private// Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            void restoreState() {
                 int beforeCount = deployments.size();
                 kvStore.forEach(BlueGreenDeploymentKey.class,
                                 BlueGreenDeploymentValue.class,
                                 (key, value) -> restoreDeployment(value));
                 int restoredCount = deployments.size() - beforeCount;
-                if (restoredCount > 0) {
-                    log.info("Restored {} blue-green deployments from KV-Store", restoredCount);
-                }
+                if ( restoredCount > 0) {
+                log.info("Restored {} blue-green deployments from KV-Store", restoredCount);}
             }
 
             @SuppressWarnings({"JBCT-VO-02", "JBCT-RET-01"}) // Side-effect helper — void inherent
-            private void restoreDeployment(BlueGreenDeploymentValue bgv) {
+            private// Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            void restoreDeployment(BlueGreenDeploymentValue bgv) {
                 var state = BlueGreenState.valueOf(bgv.state());
                 var activeEnv = BlueGreenDeployment.ActiveEnvironment.valueOf(bgv.activeEnvironment());
                 var routing = new VersionRouting(bgv.newWeight(), bgv.oldWeight());
@@ -183,8 +195,7 @@ public interface BlueGreenDeploymentManager {
                                                       bgv.maxLatencyMs(),
                                                       bgv.requireManualApproval());
                 var cleanupPolicy = CleanupPolicy.valueOf(bgv.cleanupPolicy());
-                var blueprintId = bgv.blueprintId()
-                                     .isEmpty()
+                var blueprintId = bgv.blueprintId().isEmpty()
                                   ? Option.<String>none()
                                   : Option.some(bgv.blueprintId());
                 var artifacts = deserializeArtifacts(bgv.artifactsJson());
@@ -208,13 +219,12 @@ public interface BlueGreenDeploymentManager {
             }
 
             // --- Core operations ---
-            @Override
-            public Promise<BlueGreenDeployment> deployGreen(ArtifactBase artifactBase,
-                                                            Version greenVersion,
-                                                            int instances,
-                                                            HealthThresholds thresholds,
-                                                            long drainTimeoutMs,
-                                                            CleanupPolicy cleanupPolicy) {
+            @Override public Promise<BlueGreenDeployment> deployGreen(ArtifactBase artifactBase,
+                                                                      Version greenVersion,
+                                                                      int instances,
+                                                                      HealthThresholds thresholds,
+                                                                      long drainTimeoutMs,
+                                                                      CleanupPolicy cleanupPolicy) {
                 return requireLeader().flatMap(_ -> checkNoActiveDeployment(artifactBase))
                                     .flatMap(_ -> findCurrentVersion(artifactBase))
                                     .flatMap(blueVersion -> createAndDeployGreen(artifactBase,
@@ -226,85 +236,70 @@ public interface BlueGreenDeploymentManager {
                                                                                  cleanupPolicy));
             }
 
-            @Override
-            public Promise<BlueGreenDeployment> switchToGreen(String deploymentId) {
+            @Override public Promise<BlueGreenDeployment> switchToGreen(String deploymentId) {
                 return requireLeader().flatMap(_ -> findDeployment(deploymentId))
                                     .flatMap(this::validateAndSwitchToGreen);
             }
 
-            @Override
-            public Promise<BlueGreenDeployment> switchBack(String deploymentId) {
+            @Override public Promise<BlueGreenDeployment> switchBack(String deploymentId) {
                 return requireLeader().flatMap(_ -> findDeployment(deploymentId))
                                     .flatMap(this::validateAndSwitchBack);
             }
 
-            @Override
-            public Promise<BlueGreenDeployment> completeDeployment(String deploymentId) {
+            @Override public Promise<BlueGreenDeployment> completeDeployment(String deploymentId) {
                 return requireLeader().flatMap(_ -> findDeployment(deploymentId))
                                     .flatMap(this::validateAndComplete);
             }
 
-            @Override
-            public Promise<BlueGreenDeployment> rollback(String deploymentId) {
+            @Override public Promise<BlueGreenDeployment> rollback(String deploymentId) {
                 return requireLeader().flatMap(_ -> findDeployment(deploymentId))
                                     .flatMap(this::validateAndRollback);
             }
 
-            @Override
-            public Option<BlueGreenDeployment> getDeployment(String deploymentId) {
+            @Override public Option<BlueGreenDeployment> getDeployment(String deploymentId) {
                 return Option.option(deployments.get(deploymentId));
             }
 
-            @Override
-            public Option<BlueGreenDeployment> getActiveDeployment(ArtifactBase artifactBase) {
-                return Option.from(deployments.values()
-                                              .stream()
-                                              .filter(d -> d.artifactBase()
-                                                            .equals(artifactBase) && d.isActive())
-                                              .findFirst());
+            @Override public Option<BlueGreenDeployment> getActiveDeployment(ArtifactBase artifactBase) {
+                return Option.from(deployments.values().stream()
+                                                     .filter(d -> d.artifactBase().equals(artifactBase) && d.isActive())
+                                                     .findFirst());
             }
 
-            @Override
-            public List<BlueGreenDeployment> activeDeployments() {
-                return deployments.values()
-                                  .stream()
-                                  .filter(BlueGreenDeployment::isActive)
-                                  .toList();
+            @Override public List<BlueGreenDeployment> activeDeployments() {
+                return deployments.values().stream()
+                                         .filter(BlueGreenDeployment::isActive)
+                                         .toList();
             }
 
-            @Override
-            public List<BlueGreenDeployment> allDeployments() {
+            @Override public List<BlueGreenDeployment> allDeployments() {
                 return List.copyOf(deployments.values());
             }
 
             // --- Private helpers ---
             private Promise<Unit> requireLeader() {
-                if (!clusterNode.leaderManager()
-                                .isLeader()) {
-                    return BlueGreenDeploymentError.NotLeader.INSTANCE.promise();
-                }
+                if ( !clusterNode.leaderManager().isLeader()) {
+                return BlueGreenDeploymentError.NotLeader.INSTANCE.promise();}
                 return Promise.success(Unit.unit());
             }
 
             private Promise<Unit> checkNoActiveDeployment(ArtifactBase artifactBase) {
                 return getActiveDeployment(artifactBase).isPresent()
                        ? BlueGreenDeploymentError.DeploymentAlreadyExists.deploymentAlreadyExists(artifactBase)
-                                                 .promise()
+                .promise()
                        : Promise.success(Unit.unit());
             }
 
             private Promise<BlueGreenDeployment> findDeployment(String deploymentId) {
-                return Option.option(deployments.get(deploymentId))
-                             .toResult(BlueGreenDeploymentError.DeploymentNotFound.deploymentNotFound(deploymentId))
-                             .async();
+                return Option.option(deployments.get(deploymentId)).toResult(BlueGreenDeploymentError.DeploymentNotFound.deploymentNotFound(deploymentId))
+                                    .async();
             }
 
             private Promise<Version> findCurrentVersion(ArtifactBase artifactBase) {
                 var key = SliceTargetKey.sliceTargetKey(artifactBase);
-                return kvStore.get(key)
-                              .map(value -> ((SliceTargetValue) value).currentVersion())
-                              .toResult(BlueGreenDeploymentError.InitialDeployment.initialDeployment(artifactBase))
-                              .async();
+                return kvStore.get(key).map(value -> ((SliceTargetValue) value).currentVersion())
+                                  .toResult(BlueGreenDeploymentError.InitialDeployment.initialDeployment(artifactBase))
+                                  .async();
             }
 
             private Promise<BlueGreenDeployment> createAndDeployGreen(ArtifactBase artifactBase,
@@ -314,8 +309,7 @@ public interface BlueGreenDeploymentManager {
                                                                       long drainTimeoutMs,
                                                                       HealthThresholds thresholds,
                                                                       CleanupPolicy cleanupPolicy) {
-                var deploymentId = KSUID.ksuid()
-                                        .encoded();
+                var deploymentId = KSUID.ksuid().encoded();
                 var blueInstances = resolveBlueInstances(artifactBase);
                 var deployment = BlueGreenDeployment.blueGreenDeployment(deploymentId,
                                                                          artifactBase,
@@ -338,10 +332,9 @@ public interface BlueGreenDeploymentManager {
 
             private int resolveBlueInstances(ArtifactBase artifactBase) {
                 var key = SliceTargetKey.sliceTargetKey(artifactBase);
-                return kvStore.get(key)
-                              .filter(v -> v instanceof SliceTargetValue)
-                              .map(v -> ((SliceTargetValue) v).targetInstances())
-                              .or(1);
+                return kvStore.get(key).filter(v -> v instanceof SliceTargetValue)
+                                  .map(v -> ((SliceTargetValue) v).targetInstances())
+                                  .or(1);
             }
 
             @SuppressWarnings("unchecked")
@@ -350,17 +343,14 @@ public interface BlueGreenDeploymentManager {
                 var routingKey = new AetherKey.VersionRoutingKey(artifactBase);
                 var routingValue = new AetherValue.VersionRoutingValue(deployment.blueVersion(),
                                                                        deployment.greenVersion(),
-                                                                       deployment.routing()
-                                                                                 .newWeight(),
-                                                                       deployment.routing()
-                                                                                 .oldWeight(),
+                                                                       deployment.routing().newWeight(),
+                                                                       deployment.routing().oldWeight(),
                                                                        System.currentTimeMillis());
                 var routingCmd = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(routingKey, routingValue);
                 var targetKey = SliceTargetKey.sliceTargetKey(artifactBase);
-                var existingMinInstances = kvStore.get(targetKey)
-                                                  .filter(v -> v instanceof SliceTargetValue)
-                                                  .map(v -> ((SliceTargetValue) v).effectiveMinInstances())
-                                                  .or(instances);
+                var existingMinInstances = kvStore.get(targetKey).filter(v -> v instanceof SliceTargetValue)
+                                                      .map(v -> ((SliceTargetValue) v).effectiveMinInstances())
+                                                      .or(instances);
                 var targetValue = new SliceTargetValue(deployment.greenVersion(),
                                                        instances,
                                                        existingMinInstances,
@@ -372,62 +362,55 @@ public interface BlueGreenDeploymentManager {
                          instances,
                          artifactBase,
                          deployment.greenVersion());
-                return clusterNode.<Unit> apply(List.of(routingCmd, targetCmd))
+                return clusterNode.<Unit>apply(List.of(routingCmd, targetCmd))
                                   .timeout(kvOperationTimeout)
                                   .flatMap(_ -> persistAndTransition(deployment, BlueGreenState.GREEN_READY));
             }
 
             private Promise<BlueGreenDeployment> validateAndSwitchToGreen(BlueGreenDeployment deployment) {
-                if (deployment.state() != BlueGreenState.GREEN_READY) {
-                    return BlueGreenDeploymentError.InvalidDeploymentState.invalidDeploymentState(deployment.state(),
-                                                                                                  BlueGreenState.SWITCHED)
-                                                   .promise();
-                }
+                if ( deployment.state() != BlueGreenState.GREEN_READY) {
+                return BlueGreenDeploymentError.InvalidDeploymentState.invalidDeploymentState(deployment.state(),
+                                                                                              BlueGreenState.SWITCHED)
+                .promise();}
                 log.info("Switching traffic to green for deployment {}", deployment.deploymentId());
                 var switched = deployment.switchToGreen();
-                return switched.transitionTo(BlueGreenState.SWITCHED)
-                               .async()
-                               .flatMap(this::cacheAndPersistDeployment)
-                               .flatMap(this::persistRouting);
+                return switched.transitionTo(BlueGreenState.SWITCHED).async()
+                                            .flatMap(this::cacheAndPersistDeployment)
+                                            .flatMap(this::persistRouting);
             }
 
             private Promise<BlueGreenDeployment> validateAndSwitchBack(BlueGreenDeployment deployment) {
-                if (deployment.state() != BlueGreenState.SWITCHED) {
-                    return BlueGreenDeploymentError.InvalidDeploymentState.invalidDeploymentState(deployment.state(),
-                                                                                                  BlueGreenState.SWITCH_BACK)
-                                                   .promise();
-                }
+                if ( deployment.state() != BlueGreenState.SWITCHED) {
+                return BlueGreenDeploymentError.InvalidDeploymentState.invalidDeploymentState(deployment.state(),
+                                                                                              BlueGreenState.SWITCH_BACK)
+                .promise();}
                 log.info("Switching traffic back to blue for deployment {}", deployment.deploymentId());
                 var switchedBack = deployment.switchBack();
-                return switchedBack.transitionTo(BlueGreenState.SWITCH_BACK)
-                                   .async()
-                                   .flatMap(this::cacheAndPersistDeployment)
-                                   .flatMap(this::persistRouting)
-                                   .flatMap(this::removeNewVersion);
+                return switchedBack.transitionTo(BlueGreenState.SWITCH_BACK).async()
+                                                .flatMap(this::cacheAndPersistDeployment)
+                                                .flatMap(this::persistRouting)
+                                                .flatMap(this::removeNewVersion);
             }
 
             private Promise<BlueGreenDeployment> validateAndComplete(BlueGreenDeployment deployment) {
-                if (deployment.state() != BlueGreenState.SWITCHED) {
-                    return BlueGreenDeploymentError.InvalidDeploymentState.invalidDeploymentState(deployment.state(),
-                                                                                                  BlueGreenState.DRAINING)
-                                                   .promise();
-                }
+                if ( deployment.state() != BlueGreenState.SWITCHED) {
+                return BlueGreenDeploymentError.InvalidDeploymentState.invalidDeploymentState(deployment.state(),
+                                                                                              BlueGreenState.DRAINING)
+                .promise();}
                 log.info("Completing blue-green deployment {} — draining blue environment", deployment.deploymentId());
                 return persistAndTransition(deployment, BlueGreenState.DRAINING).flatMap(this::cleanupBlueEnvironment);
             }
 
             private Promise<BlueGreenDeployment> validateAndRollback(BlueGreenDeployment deployment) {
-                if (deployment.isTerminal()) {
-                    return BlueGreenDeploymentError.InvalidDeploymentState.invalidDeploymentState(deployment.state(),
-                                                                                                  BlueGreenState.ROLLING_BACK)
-                                                   .promise();
-                }
+                if ( deployment.isTerminal()) {
+                return BlueGreenDeploymentError.InvalidDeploymentState.invalidDeploymentState(deployment.state(),
+                                                                                              BlueGreenState.ROLLING_BACK)
+                .promise();}
                 log.info("Rolling back blue-green deployment {}", deployment.deploymentId());
                 var withOldRouting = deployment.switchBack();
-                return withOldRouting.transitionTo(BlueGreenState.ROLLING_BACK)
-                                     .async()
-                                     .flatMap(this::cacheAndPersistDeployment)
-                                     .flatMap(this::removeNewVersion);
+                return withOldRouting.transitionTo(BlueGreenState.ROLLING_BACK).async()
+                                                  .flatMap(this::cacheAndPersistDeployment)
+                                                  .flatMap(this::removeNewVersion);
             }
 
             private Promise<BlueGreenDeployment> cleanupBlueEnvironment(BlueGreenDeployment deployment) {
@@ -444,27 +427,31 @@ public interface BlueGreenDeploymentManager {
                          deployment.blueVersion());
                 return updateSliceTargetVersion(deployment.artifactBase(),
                                                 deployment.blueVersion()).flatMap(_ -> removeRoutingKey(deployment))
+                                               .recover(cause -> {
+                                                            log.warn("Rollback cleanup partially failed for {}: {}",
+                                                                     deployment.deploymentId(),
+                                                                     cause.message());
+                                                            return Unit.unit();
+                                                        })
                                                .flatMap(_ -> persistAndTransition(deployment, BlueGreenState.ROLLED_BACK));
             }
 
             // --- Persistence ---
             private Promise<BlueGreenDeployment> persistAndTransition(BlueGreenDeployment deployment,
                                                                       BlueGreenState newState) {
-                return deployment.transitionTo(newState)
-                                 .async()
-                                 .flatMap(this::cacheAndPersistDeployment);
+                return deployment.transitionTo(newState).async()
+                                              .flatMap(this::cacheAndPersistDeployment);
             }
 
             @SuppressWarnings("unchecked")
             private Promise<BlueGreenDeployment> cacheAndPersistDeployment(BlueGreenDeployment deployment) {
                 deployments.put(deployment.deploymentId(), deployment);
-                if (deployment.isTerminal()) {
-                    pruneTerminalDeployments();
-                }
+                if ( deployment.isTerminal()) {
+                pruneTerminalDeployments();}
                 var key = new AetherKey.BlueGreenDeploymentKey(deployment.deploymentId());
                 var value = buildDeploymentValue(deployment);
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
-                return clusterNode.<Unit> apply(List.of(command))
+                return clusterNode.<Unit>apply(List.of(command))
                                   .timeout(kvOperationTimeout)
                                   .map(_ -> deployment);
             }
@@ -474,27 +461,19 @@ public interface BlueGreenDeploymentManager {
                                                                          deployment.artifactBase(),
                                                                          deployment.blueVersion(),
                                                                          deployment.greenVersion(),
-                                                                         deployment.state()
-                                                                                   .name(),
-                                                                         deployment.activeEnvironment()
-                                                                                   .name(),
+                                                                         deployment.state().name(),
+                                                                         deployment.activeEnvironment().name(),
                                                                          deployment.blueInstances(),
                                                                          deployment.greenInstances(),
                                                                          deployment.drainTimeoutMs(),
+                                                                         deployment.healthThresholds().maxErrorRate(),
+                                                                         deployment.healthThresholds().maxLatencyMs(),
                                                                          deployment.healthThresholds()
-                                                                                   .maxErrorRate(),
-                                                                         deployment.healthThresholds()
-                                                                                   .maxLatencyMs(),
-                                                                         deployment.healthThresholds()
-                                                                                   .requireManualApproval(),
-                                                                         deployment.cleanupPolicy()
-                                                                                   .name(),
-                                                                         deployment.routing()
-                                                                                   .newWeight(),
-                                                                         deployment.routing()
-                                                                                   .oldWeight(),
-                                                                         deployment.blueprintId()
-                                                                                   .or(""),
+                .requireManualApproval(),
+                                                                         deployment.cleanupPolicy().name(),
+                                                                         deployment.routing().newWeight(),
+                                                                         deployment.routing().oldWeight(),
+                                                                         deployment.blueprintId().or(""),
                                                                          serializeArtifacts(deployment.artifacts()),
                                                                          deployment.createdAt(),
                                                                          System.currentTimeMillis());
@@ -505,13 +484,11 @@ public interface BlueGreenDeploymentManager {
                 var key = new AetherKey.VersionRoutingKey(deployment.artifactBase());
                 var value = new AetherValue.VersionRoutingValue(deployment.blueVersion(),
                                                                 deployment.greenVersion(),
-                                                                deployment.routing()
-                                                                          .newWeight(),
-                                                                deployment.routing()
-                                                                          .oldWeight(),
+                                                                deployment.routing().newWeight(),
+                                                                deployment.routing().oldWeight(),
                                                                 System.currentTimeMillis());
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
-                return clusterNode.<Unit> apply(List.of(command))
+                return clusterNode.<Unit>apply(List.of(command))
                                   .timeout(kvOperationTimeout)
                                   .map(_ -> deployment);
             }
@@ -519,13 +496,10 @@ public interface BlueGreenDeploymentManager {
             @SuppressWarnings("unchecked")
             private Promise<Unit> updateSliceTargetVersion(ArtifactBase artifactBase, Version version) {
                 var key = SliceTargetKey.sliceTargetKey(artifactBase);
-                var existing = kvStore.get(key)
-                                      .filter(v -> v instanceof SliceTargetValue)
-                                      .map(v -> (SliceTargetValue) v);
-                var instances = existing.map(SliceTargetValue::targetInstances)
-                                        .or(1);
-                var minInstances = existing.map(SliceTargetValue::effectiveMinInstances)
-                                           .or(instances);
+                var existing = kvStore.get(key).filter(v -> v instanceof SliceTargetValue)
+                                          .map(v -> (SliceTargetValue) v);
+                var instances = existing.map(SliceTargetValue::targetInstances).or(1);
+                var minInstances = existing.map(SliceTargetValue::effectiveMinInstances).or(instances);
                 var value = new SliceTargetValue(version,
                                                  instances,
                                                  minInstances,
@@ -533,7 +507,7 @@ public interface BlueGreenDeploymentManager {
                                                  "CORE_ONLY",
                                                  System.currentTimeMillis());
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
-                return clusterNode.<Unit> apply(List.of(command))
+                return clusterNode.<Unit>apply(List.of(command))
                                   .timeout(kvOperationTimeout)
                                   .mapToUnit();
             }
@@ -542,41 +516,39 @@ public interface BlueGreenDeploymentManager {
             private Promise<Unit> removeRoutingKey(BlueGreenDeployment deployment) {
                 var routingKey = new AetherKey.VersionRoutingKey(deployment.artifactBase());
                 var routingCmd = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(routingKey);
-                return clusterNode.<Unit> apply(List.of(routingCmd))
+                return clusterNode.<Unit>apply(List.of(routingCmd))
                                   .timeout(kvOperationTimeout)
                                   .mapToUnit();
             }
 
             // --- Housekeeping ---
             @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
-            private void pruneTerminalDeployments() {
+            private// Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            void pruneTerminalDeployments() {
                 var cutoff = System.currentTimeMillis() - terminalRetentionMs;
                 var pruned = deployments.entrySet()
-                                        .removeIf(entry -> entry.getValue()
-                                                                .isTerminal() && entry.getValue()
-                                                                                      .updatedAt() < cutoff);
-                if (pruned) {
-                    log.debug("Pruned terminal blue-green deployments older than retention period");
-                }
+                .removeIf(entry -> entry.getValue().isTerminal() && entry.getValue().updatedAt() < cutoff);
+                if ( pruned) {
+                log.debug("Pruned terminal blue-green deployments older than retention period");}
             }
 
             // --- Serialization helpers ---
             private static String serializeArtifacts(List<ArtifactBase> artifacts) {
-                return artifacts.stream()
-                                .map(ArtifactBase::asString)
-                                .collect(Collectors.joining(","));
+                return artifacts.stream().map(ArtifactBase::asString)
+                                       .collect(Collectors.joining(","));
             }
 
             private static List<ArtifactBase> deserializeArtifacts(String artifactsJson) {
                 // Serializer guarantees non-null (writes "" for empty)
-                if (artifactsJson.isEmpty()) {
-                    return List.of();
-                }
-                return Arrays.stream(artifactsJson.split(","))
-                             .map(ArtifactBase::artifactBase)
-                             .flatMap(result -> result.option()
-                                                      .stream())
-                             .toList();
+                if ( artifactsJson.isEmpty()) {
+                return List.of();}
+                return Arrays.stream(artifactsJson.split(",")).map(ArtifactBase::artifactBase)
+                                    .flatMap(result -> result.option().stream())
+                                    .toList();
             }
         }
         return new blueGreenDeploymentManager(clusterNode,

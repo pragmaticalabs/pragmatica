@@ -12,12 +12,11 @@ final class DhtBackedMapFactory implements ReplicatedMapFactory {
         this.client = client;
     }
 
-    @Override
-    public <K, V> ReplicatedMap<K, V> create(String name,
-                                             Function<K, byte[]> keySerializer,
-                                             Function<byte[], K> keyDeserializer,
-                                             Function<V, byte[]> valueSerializer,
-                                             Function<byte[], V> valueDeserializer) {
+    @Override public <K, V> ReplicatedMap<K, V> create(String name,
+                                                       Function<K, byte[]> keySerializer,
+                                                       Function<byte[], K> keyDeserializer,
+                                                       Function<V, byte[]> valueSerializer,
+                                                       Function<byte[], V> valueDeserializer) {
         return new NamespacedReplicatedMap<>(name,
                                              client,
                                              keySerializer,

@@ -1,30 +1,49 @@
 #!/bin/sh
+# Install Aether from pre-built distribution archives.
+#
+# Self-contained archives (recommended, no JDK required):
+#   curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/aether/install.sh | sh
+#
+# Fallback: if platform-specific archives are not available, downloads JARs
+# and creates wrapper scripts that require a local JDK 25+ installation.
+#
+# Options:
+#   --version VERSION    Install specific version (default: latest)
+#   --jar-only           Force JAR-only install (skip archive detection)
+#
+# Environment:
+#   AETHER_HOME          Install directory (default: ~/.aether)
+#   VERSION              Version to install (alternative to --version flag)
+
 set -e
 
 REPO="pragmaticalabs/pragmatica"
 INSTALL_DIR="${AETHER_HOME:-$HOME/.aether}"
+JAR_ONLY=0
 
 main() {
-    check_java
     detect_platform
     get_latest_version
-    download_and_install
-    setup_path
-    print_success
-}
-
-check_java() {
-    if ! command -v java >/dev/null 2>&1; then
-        echo "Error: Java is not installed. Please install JDK 25+ first."
-        exit 1
+    if [ "$JAR_ONLY" = "0" ] && try_archive_install; then
+        setup_path
+        install_completions
+        print_success
+    else
+        check_java
+        jar_install
+        setup_path
+        install_completions
+        print_success
     fi
 }
 
 detect_platform() {
     OS="$(uname -s)"
+    ARCH="$(uname -m)"
+
     case "$OS" in
-        Linux*)  PLATFORM="linux" ;;
-        Darwin*) PLATFORM="macos" ;;
+        Linux*)  PLATFORM_OS="linux" ;;
+        Darwin*) PLATFORM_OS="darwin" ;;
         MINGW*|MSYS*|CYGWIN*)
             echo "Windows detected. Aether requires WSL2 for Windows."
             echo "Install WSL2: https://learn.microsoft.com/en-us/windows/wsl/install"
@@ -32,10 +51,26 @@ detect_platform() {
             ;;
         *)       echo "Unsupported OS: $OS"; exit 1 ;;
     esac
+
+    case "$ARCH" in
+        x86_64|amd64)  PLATFORM_ARCH="amd64" ;;
+        aarch64|arm64) PLATFORM_ARCH="arm64" ;;
+        *)             echo "Unsupported architecture: $ARCH"; exit 1 ;;
+    esac
+
+    PLATFORM="${PLATFORM_OS}-${PLATFORM_ARCH}"
+}
+
+check_java() {
+    if ! command -v java >/dev/null 2>&1; then
+        echo "Error: Java is not installed and no platform archive available."
+        echo "Either install JDK 25+ or use a platform-specific distribution archive."
+        exit 1
+    fi
 }
 
 get_latest_version() {
-    if [ -n "$VERSION" ]; then
+    if [ -n "${VERSION:-}" ]; then
         echo "Using specified version: $VERSION"
         return
     fi
@@ -52,10 +87,84 @@ get_latest_version() {
     echo "Latest version: $VERSION"
 }
 
-download_and_install() {
+# --- Self-contained archive install (includes bundled JRE) ---
+
+try_archive_install() {
     BASE_URL="https://github.com/$REPO/releases/download/v$VERSION"
 
-    echo "Downloading Aether $VERSION..."
+    # Check if platform archives exist for this release
+    echo "Checking for self-contained archives ($PLATFORM)..."
+
+    NODE_ARCHIVE="aether-node-${VERSION}-${PLATFORM}.tar.gz"
+    CLI_ARCHIVE="aether-cli-${VERSION}-${PLATFORM}.tar.gz"
+    FORGE_ARCHIVE="aether-forge-${VERSION}-${PLATFORM}.tar.gz"
+
+    # Test if the node archive exists (HEAD request)
+    if ! curl -fsSL --head "$BASE_URL/$NODE_ARCHIVE" >/dev/null 2>&1; then
+        echo "  Platform archives not available. Falling back to JAR install."
+        return 1
+    fi
+
+    echo "  Found platform archives. Downloading..."
+    TEMP_DIR=$(mktemp -d)
+
+    # Download and verify checksums
+    curl -fsSL "$BASE_URL/SHA256SUMS" -o "$TEMP_DIR/SHA256SUMS" 2>/dev/null || true
+
+    for archive in "$NODE_ARCHIVE" "$CLI_ARCHIVE" "$FORGE_ARCHIVE"; do
+        echo "  Downloading $archive..."
+        if ! curl -fsSL "$BASE_URL/$archive" -o "$TEMP_DIR/$archive"; then
+            echo "  Warning: Failed to download $archive, skipping."
+            continue
+        fi
+
+        # Verify checksum if available
+        if [ -f "$TEMP_DIR/SHA256SUMS" ]; then
+            expected=$(grep "$archive" "$TEMP_DIR/SHA256SUMS" | awk '{print $1}')
+            if [ -n "$expected" ]; then
+                actual=$(sha256sum "$TEMP_DIR/$archive" 2>/dev/null || shasum -a 256 "$TEMP_DIR/$archive" 2>/dev/null)
+                actual=$(echo "$actual" | awk '{print $1}')
+                if [ "$expected" != "$actual" ]; then
+                    echo "  Error: Checksum mismatch for $archive"
+                    rm -rf "$TEMP_DIR"
+                    exit 1
+                fi
+            fi
+        fi
+    done
+
+    echo "  Extracting..."
+    rm -rf "$INSTALL_DIR"
+    mkdir -p "$INSTALL_DIR/bin"
+
+    # Extract each archive and symlink launchers into a unified bin/
+    for archive in "$NODE_ARCHIVE" "$CLI_ARCHIVE" "$FORGE_ARCHIVE"; do
+        if [ -f "$TEMP_DIR/$archive" ]; then
+            tar -xzf "$TEMP_DIR/$archive" -C "$INSTALL_DIR"
+        fi
+    done
+
+    # Create unified bin/ with symlinks
+    NODE_DIR="$INSTALL_DIR/aether-node-${VERSION}"
+    CLI_DIR="$INSTALL_DIR/aether-cli-${VERSION}"
+    FORGE_DIR="$INSTALL_DIR/aether-forge-${VERSION}"
+
+    [ -x "$NODE_DIR/bin/aether-node" ]  && ln -sf "$NODE_DIR/bin/aether-node" "$INSTALL_DIR/bin/aether-node"
+    [ -x "$CLI_DIR/bin/aether" ]        && ln -sf "$CLI_DIR/bin/aether" "$INSTALL_DIR/bin/aether"
+    [ -x "$FORGE_DIR/bin/aether-forge" ] && ln -sf "$FORGE_DIR/bin/aether-forge" "$INSTALL_DIR/bin/aether-forge"
+
+    INSTALL_MODE="archive"
+    rm -rf "$TEMP_DIR"
+    echo "  Checksums verified."
+    return 0
+}
+
+# --- JAR-only install (requires local JDK) ---
+
+jar_install() {
+    BASE_URL="https://github.com/$REPO/releases/download/v$VERSION"
+
+    echo "Downloading Aether $VERSION (JAR-only, requires JDK)..."
     mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/bin"
 
     # Download all three JARs
@@ -73,7 +182,6 @@ download_and_install() {
     if curl -fsSL "$BASE_URL/SHA256SUMS" -o "$INSTALL_DIR/lib/SHA256SUMS" 2>/dev/null; then
         echo "  Verifying checksums..."
         cd "$INSTALL_DIR/lib"
-        # Extract only relevant entries and verify
         for jar in aether.jar aether-node.jar aether-forge.jar; do
             expected=$(grep "$jar" SHA256SUMS | awk '{print $1}')
             if [ -n "$expected" ]; then
@@ -102,24 +210,66 @@ WRAPPER
 
     cat > "$INSTALL_DIR/bin/aether-node" << WRAPPER
 #!/bin/sh
-exec java -jar "$INSTALL_DIR/lib/aether-node.jar" "\$@"
+exec java -XX:+UseZGC \${AETHER_JAVA_OPTS:-} -jar "$INSTALL_DIR/lib/aether-node.jar" "\$@"
 WRAPPER
 
     cat > "$INSTALL_DIR/bin/aether-forge" << WRAPPER
 #!/bin/sh
-exec java -jar "$INSTALL_DIR/lib/aether-forge.jar" "\$@"
+exec java -XX:+UseZGC \${AETHER_JAVA_OPTS:-} -jar "$INSTALL_DIR/lib/aether-forge.jar" "\$@"
 WRAPPER
 
     chmod +x "$INSTALL_DIR/bin/aether"
     chmod +x "$INSTALL_DIR/bin/aether-node"
     chmod +x "$INSTALL_DIR/bin/aether-forge"
+
+    INSTALL_MODE="jar"
+}
+
+install_completions() {
+    mkdir -p "$INSTALL_DIR/completions"
+
+    # Bash completions
+    if [ -n "${BASH_VERSION:-}" ] || [ "${SHELL:-}" = "/bin/bash" ] || [ -f "$HOME/.bashrc" ]; then
+        "$INSTALL_DIR/bin/aether" generate-completion > "$INSTALL_DIR/completions/aether.bash" 2>/dev/null || true
+        if [ -f "$INSTALL_DIR/completions/aether.bash" ]; then
+            COMPLETION_LINE="source \"$INSTALL_DIR/completions/aether.bash\""
+            for rc in "$HOME/.bashrc" "$HOME/.bash_profile"; do
+                if [ -f "$rc" ] && ! grep -q "aether.bash" "$rc" 2>/dev/null; then
+                    echo "" >> "$rc"
+                    echo "# Aether shell completions" >> "$rc"
+                    echo "$COMPLETION_LINE" >> "$rc"
+                    break
+                fi
+            done
+        fi
+    fi
+
+    # Zsh completions
+    if [ -n "${ZSH_VERSION:-}" ] || [ "${SHELL:-}" = "/bin/zsh" ] || [ -f "$HOME/.zshrc" ]; then
+        "$INSTALL_DIR/bin/aether" generate-completion > "$INSTALL_DIR/completions/_aether" 2>/dev/null || true
+        if [ -f "$INSTALL_DIR/completions/_aether" ] && [ -f "$HOME/.zshrc" ]; then
+            FPATH_LINE="fpath=($INSTALL_DIR/completions \$fpath)"
+            if ! grep -q "aether/completions" "$HOME/.zshrc" 2>/dev/null; then
+                echo "" >> "$HOME/.zshrc"
+                echo "# Aether shell completions" >> "$HOME/.zshrc"
+                echo "$FPATH_LINE" >> "$HOME/.zshrc"
+                echo "autoload -Uz compinit && compinit" >> "$HOME/.zshrc"
+            fi
+        fi
+    fi
+
+    # Fish completions
+    if [ "${SHELL:-}" = "/usr/bin/fish" ] || [ -d "$HOME/.config/fish" ]; then
+        mkdir -p "$HOME/.config/fish/completions"
+        "$INSTALL_DIR/bin/aether" generate-completion > "$HOME/.config/fish/completions/aether.fish" 2>/dev/null || true
+    fi
 }
 
 setup_path() {
     BIN_DIR="$INSTALL_DIR/bin"
 
     # Detect shell config file
-    if [ -n "$ZSH_VERSION" ] || [ -f "$HOME/.zshrc" ]; then
+    if [ -n "${ZSH_VERSION:-}" ] || [ -f "$HOME/.zshrc" ]; then
         SHELL_RC="$HOME/.zshrc"
     elif [ -f "$HOME/.bashrc" ]; then
         SHELL_RC="$HOME/.bashrc"
@@ -148,6 +298,13 @@ setup_path() {
 print_success() {
     echo ""
     echo "Aether $VERSION installed to $INSTALL_DIR"
+
+    if [ "${INSTALL_MODE:-jar}" = "archive" ]; then
+        echo "  (self-contained — no JDK required)"
+    else
+        echo "  (JAR-only — requires JDK 25+)"
+    fi
+
     echo ""
     echo "Installed tools:"
     echo "  aether        - Cluster management CLI"
@@ -182,11 +339,16 @@ while [ $# -gt 0 ]; do
             VERSION="${1#*=}"
             shift
             ;;
+        --jar-only)
+            JAR_ONLY=1
+            shift
+            ;;
         --help|-h)
-            echo "Usage: install.sh [--version VERSION]"
+            echo "Usage: install.sh [--version VERSION] [--jar-only]"
             echo ""
             echo "Options:"
             echo "  --version VERSION  Install specific version (default: latest)"
+            echo "  --jar-only         Skip archive detection, download JARs only (requires JDK)"
             echo ""
             echo "Environment:"
             echo "  AETHER_HOME        Install directory (default: ~/.aether)"

@@ -198,4 +198,130 @@ public final class CstNodes {
                         .map(qn -> text(qn, source))
                         .or("");
     }
+
+    // --- Ordered-choice wrappers (java-peglib 0.2.1+) ---
+    // TypeKind wraps ClassDecl/InterfaceDecl/EnumDecl/RecordDecl/AnnotationDecl
+    // Member wraps ConstructorDecl/TypeKind/MethodDecl/FieldDecl
+
+    /// Check if node has a direct child matching a rule type.
+    public static boolean hasChildOfRule(CstNode node, Class<? extends RuleId> ruleClass) {
+        return children(node).stream()
+                             .anyMatch(child -> isRule(child, ruleClass));
+    }
+
+    /// Check if a Member node represents a method declaration.
+    /// Methods have: [TypeParams?] Type Identifier '(' ...
+    public static boolean isMethodMember(CstNode node) {
+        if (!isRule(node, RuleId.Member.class)) {
+            return false;
+        }
+
+        var kids = children(node);
+
+        return kids.size() >= 4
+               && hasChildOfRule(node, RuleId.Type.class)
+               && hasChildOfRule(node, RuleId.Identifier.class)
+               && kids.stream().anyMatch(k -> isLiteral(k, "("));
+    }
+
+    /// Find all method-like Member nodes.
+    public static List<CstNode> findAllMethods(CstNode root) {
+        return findAll(root, RuleId.Member.class).stream()
+                      .filter(CstNodes::isMethodMember)
+                      .toList();
+    }
+
+    /// Find first method-like Member node.
+    public static Option<CstNode> findFirstMethod(CstNode root) {
+        return findFirst(root, node -> isRule(node, RuleId.Member.class) && isMethodMember(node));
+    }
+
+    /// Check if node contains a method Member descendant.
+    public static boolean containsMethod(CstNode root) {
+        return findFirstMethod(root).isPresent();
+    }
+
+    /// Count method Member descendants.
+    public static int countMethods(CstNode root) {
+        return findAllMethods(root).size();
+    }
+
+    /// Find all class TypeKind nodes (containing ClassKW).
+    public static List<CstNode> findAllClasses(CstNode root) {
+        return findAll(root, RuleId.TypeKind.class).stream()
+                      .filter(tk -> hasChildOfRule(tk, RuleId.ClassKW.class))
+                      .toList();
+    }
+
+    /// Find first class TypeKind node.
+    public static Option<CstNode> findFirstClass(CstNode root) {
+        return findFirst(root, node -> isRule(node, RuleId.TypeKind.class) && hasChildOfRule(node, RuleId.ClassKW.class));
+    }
+
+    /// Check if node contains a class TypeKind descendant.
+    public static boolean containsClass(CstNode root) {
+        return findFirstClass(root).isPresent();
+    }
+
+    /// Find all interface TypeKind nodes (containing InterfaceKW).
+    public static List<CstNode> findAllInterfaces(CstNode root) {
+        return findAll(root, RuleId.TypeKind.class).stream()
+                      .filter(tk -> hasChildOfRule(tk, RuleId.InterfaceKW.class))
+                      .toList();
+    }
+
+    /// Find first interface TypeKind node.
+    public static Option<CstNode> findFirstInterface(CstNode root) {
+        return findFirst(root, node -> isRule(node, RuleId.TypeKind.class) && hasChildOfRule(node, RuleId.InterfaceKW.class));
+    }
+
+    /// Check if node contains an interface TypeKind descendant.
+    public static boolean containsInterface(CstNode root) {
+        return findFirstInterface(root).isPresent();
+    }
+
+    /// Find all record TypeKind nodes (containing RecordKW).
+    public static List<CstNode> findAllRecords(CstNode root) {
+        return findAll(root, RuleId.TypeKind.class).stream()
+                      .filter(tk -> hasChildOfRule(tk, RuleId.RecordKW.class))
+                      .toList();
+    }
+
+    /// Find first record TypeKind node.
+    public static Option<CstNode> findFirstRecord(CstNode root) {
+        return findFirst(root, node -> isRule(node, RuleId.TypeKind.class) && hasChildOfRule(node, RuleId.RecordKW.class));
+    }
+
+    /// Find all enum TypeKind nodes (containing EnumKW).
+    public static List<CstNode> findAllEnums(CstNode root) {
+        return findAll(root, RuleId.TypeKind.class).stream()
+                      .filter(tk -> hasChildOfRule(tk, RuleId.EnumKW.class))
+                      .toList();
+    }
+
+    // --- BlockStmt wraps Stmt (ordered choice: LocalVar / LocalTypeDecl / Stmt) ---
+
+    /// Find all statement-like BlockStmt nodes (Stmt alternatives are now wrapped in BlockStmt).
+    public static List<CstNode> findAllStatements(CstNode root) {
+        return findAll(root, RuleId.BlockStmt.class);
+    }
+
+    // --- Primary wraps Lambda (ordered choice) ---
+
+    /// Check if a Primary node represents a lambda expression.
+    /// Lambdas have a LambdaParams child.
+    public static boolean isLambdaPrimary(CstNode node) {
+        if (!isRule(node, RuleId.Primary.class)) {
+            return false;
+        }
+
+        return hasChildOfRule(node, RuleId.LambdaParams.class);
+    }
+
+    /// Find all lambda-like Primary nodes.
+    public static List<CstNode> findAllLambdas(CstNode root) {
+        return findAll(root, RuleId.Primary.class).stream()
+                      .filter(CstNodes::isLambdaPrimary)
+                      .toList();
+    }
 }

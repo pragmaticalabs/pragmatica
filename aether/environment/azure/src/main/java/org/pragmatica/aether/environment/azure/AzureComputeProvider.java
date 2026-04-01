@@ -40,58 +40,44 @@ import static org.pragmatica.lang.Result.success;
 /// Azure Cloud implementation of the ComputeProvider SPI.
 /// Delegates to AzureClient for VM lifecycle management and maps
 /// Azure VM models to the environment integration domain types.
-public record AzureComputeProvider(AzureClient client,
-                                   AzureEnvironmentConfig config) implements ComputeProvider {
+public record AzureComputeProvider( AzureClient client,
+                                    AzureEnvironmentConfig config) implements ComputeProvider {
     /// Factory method for creating an AzureComputeProvider.
     public static Result<AzureComputeProvider> azureComputeProvider(AzureClient client,
                                                                     AzureEnvironmentConfig config) {
         return success(new AzureComputeProvider(client, config));
     }
 
-    @Override
-    public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        return client.createVm(buildCreateRequest())
-                     .map(AzureComputeProvider::toInstanceInfo)
-                     .mapError(AzureComputeProvider::toProvisionError);
+    @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
+        return client.createVm(buildCreateRequest()).map(AzureComputeProvider::toInstanceInfo)
+                              .mapError(AzureComputeProvider::toProvisionError);
     }
 
-    @Override
-    public Promise<Unit> terminate(InstanceId instanceId) {
-        return client.deleteVm(instanceId.value())
-                     .mapError(cause -> toTerminateError(instanceId, cause));
+    @Override public Promise<Unit> terminate(InstanceId instanceId) {
+        return client.deleteVm(instanceId.value()).mapError(cause -> toTerminateError(instanceId, cause));
     }
 
-    @Override
-    public Promise<List<InstanceInfo>> listInstances() {
-        return client.listVms()
-                     .map(AzureComputeProvider::toInstanceInfoList)
-                     .mapError(AzureComputeProvider::toListInstancesError);
+    @Override public Promise<List<InstanceInfo>> listInstances() {
+        return client.listVms().map(AzureComputeProvider::toInstanceInfoList)
+                             .mapError(AzureComputeProvider::toListInstancesError);
     }
 
-    @Override
-    public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
-        return client.getVm(instanceId.value())
-                     .map(AzureComputeProvider::toInstanceInfo)
-                     .mapError(AzureComputeProvider::toProvisionError);
+    @Override public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
+        return client.getVm(instanceId.value()).map(AzureComputeProvider::toInstanceInfo)
+                           .mapError(AzureComputeProvider::toProvisionError);
     }
 
-    @Override
-    public Promise<Unit> restart(InstanceId id) {
+    @Override public Promise<Unit> restart(InstanceId id) {
         return client.restartVm(id.value());
     }
 
-    @Override
-    public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
-        return client.updateTags(id.value(),
-                                 tags)
-                     .mapToUnit();
+    @Override public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
+        return client.updateTags(id.value(), tags).mapToUnit();
     }
 
-    @Override
-    public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
-        return client.queryResources(buildTagFilterQuery(tagFilter))
-                     .map(AzureComputeProvider::toInstanceInfoListFromRows)
-                     .mapError(AzureComputeProvider::toListInstancesError);
+    @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
+        return client.queryResources(buildTagFilterQuery(tagFilter)).map(AzureComputeProvider::toInstanceInfoListFromRows)
+                                    .mapError(AzureComputeProvider::toListInstancesError);
     }
 
     // --- Leaf: build VM creation request ---
@@ -107,17 +93,15 @@ public record AzureComputeProvider(AzureClient client,
         var properties = new VmRequestProperties(hardware, storage, os, network);
         var tags = Map.of("aether-managed", "true");
         return CreateVmRequest.createVmRequest(name,
-                                               config.azureConfig()
-                                                     .location(),
+                                               config.azureConfig().location(),
                                                tags,
                                                properties);
     }
 
     // --- Leaf: generate a unique VM name ---
     private static String generateVmName() {
-        return "aether-" + UUID.randomUUID()
-                              .toString()
-                              .substring(0, 8);
+        return "aether-" + UUID.randomUUID().toString()
+                                          .substring(0, 8);
     }
 
     // --- Leaf: parse image URN (publisher:offer:sku:version) ---
@@ -168,10 +152,9 @@ public record AzureComputeProvider(AzureClient client,
     // --- Leaf: convert tag filter map to Azure Resource Graph KQL query ---
     static String buildTagFilterQuery(Map<String, String> tagFilter) {
         var baseQuery = "Resources | where type == \"microsoft.compute/virtualmachines\"";
-        var tagClauses = tagFilter.entrySet()
-                                  .stream()
-                                  .map(AzureComputeProvider::toTagClause)
-                                  .collect(Collectors.joining(" "));
+        var tagClauses = tagFilter.entrySet().stream()
+                                           .map(AzureComputeProvider::toTagClause)
+                                           .collect(Collectors.joining(" "));
         return baseQuery + tagClauses;
     }
 
@@ -182,16 +165,14 @@ public record AzureComputeProvider(AzureClient client,
 
     // --- Leaf: map list of VMs ---
     private static List<InstanceInfo> toInstanceInfoList(List<VirtualMachine> vms) {
-        return vms.stream()
-                  .map(AzureComputeProvider::toInstanceInfo)
-                  .toList();
+        return vms.stream().map(AzureComputeProvider::toInstanceInfo)
+                         .toList();
     }
 
     // --- Leaf: map list of resource rows ---
     private static List<InstanceInfo> toInstanceInfoListFromRows(List<ResourceRow> rows) {
-        return rows.stream()
-                   .map(AzureComputeProvider::toInstanceInfoFromRow)
-                   .toList();
+        return rows.stream().map(AzureComputeProvider::toInstanceInfoFromRow)
+                          .toList();
     }
 
     // --- Leaf: map Azure VM status to InstanceStatus ---
@@ -209,10 +190,9 @@ public record AzureComputeProvider(AzureClient client,
 
     // --- Leaf: find the PowerState code in status list ---
     private static Option<String> findPowerStateCode(List<Status> statuses) {
-        return Option.from(statuses.stream()
-                                   .filter(AzureComputeProvider::isPowerState)
-                                   .map(Status::code)
-                                   .findFirst());
+        return Option.from(statuses.stream().filter(AzureComputeProvider::isPowerState)
+                                          .map(Status::code)
+                                          .findFirst());
     }
 
     // --- Leaf: check if status is a power state ---
@@ -223,25 +203,14 @@ public record AzureComputeProvider(AzureClient client,
 
     // --- Leaf: map power state code to InstanceStatus ---
     private static InstanceStatus powerStateToStatus(String code) {
-        return switch (code) {
-            case "PowerState/running" -> InstanceStatus.RUNNING;
-            case "PowerState/deallocated", "PowerState/stopped" -> InstanceStatus.STOPPING;
-            case "PowerState/starting" -> InstanceStatus.PROVISIONING;
-            case "PowerState/deallocating", "PowerState/stopping" -> InstanceStatus.STOPPING;
-            default -> InstanceStatus.TERMINATED;
-        };
+        return switch (code) {case "PowerState/running" -> InstanceStatus.RUNNING;case "PowerState/deallocated", "PowerState/stopped" -> InstanceStatus.STOPPING;case "PowerState/starting" -> InstanceStatus.PROVISIONING;case "PowerState/deallocating", "PowerState/stopping" -> InstanceStatus.STOPPING;default -> InstanceStatus.TERMINATED;};
     }
 
     // --- Leaf: map provisioning state to InstanceStatus as fallback ---
     private static InstanceStatus provisioningStateToStatus(VirtualMachine vm) {
         var state = option(vm.properties()).map(VirtualMachine.VmProperties::provisioningState)
                           .or("Unknown");
-        return switch (state) {
-            case "Succeeded" -> InstanceStatus.RUNNING;
-            case "Creating", "Updating" -> InstanceStatus.PROVISIONING;
-            case "Deleting", "Failed" -> InstanceStatus.STOPPING;
-            default -> InstanceStatus.TERMINATED;
-        };
+        return switch (state) {case "Succeeded" -> InstanceStatus.RUNNING;case "Creating", "Updating" -> InstanceStatus.PROVISIONING;case "Deleting", "Failed" -> InstanceStatus.STOPPING;default -> InstanceStatus.TERMINATED;};
     }
 
     // --- Leaf: map cause to provision error ---

@@ -75,76 +75,89 @@ public interface ObservabilityRegistry {
     }
 
     record PrometheusObservabilityRegistry(PrometheusMeterRegistry prometheusRegistry) implements ObservabilityRegistry {
-        @Override
-        public MeterRegistry registry() {
+        @Override public MeterRegistry registry() {
             return prometheusRegistry;
         }
 
-        @Override
-        public String scrape() {
+        @Override public String scrape() {
             return prometheusRegistry.scrape();
         }
 
-        @Override
-        public PromiseMetrics timer(String name, String... tags) {
-            return PromiseMetrics.timer(name)
-                                 .registry(prometheusRegistry)
-                                 .tags(tags)
-                                 .build();
+        @Override public PromiseMetrics timer(String name, String... tags) {
+            return PromiseMetrics.timer(name).registry(prometheusRegistry)
+                                       .tags(tags)
+                                       .build();
         }
 
-        @Override
-        public PromiseMetrics combined(String name, String... tags) {
-            return PromiseMetrics.combined(name)
-                                 .registry(prometheusRegistry)
-                                 .tags(tags)
-                                 .build();
+        @Override public PromiseMetrics combined(String name, String... tags) {
+            return PromiseMetrics.combined(name).registry(prometheusRegistry)
+                                          .tags(tags)
+                                          .build();
         }
 
-        @Override
-        public <T extends Number> Gauge gauge(String name, T number, String... tags) {
-            return Gauge.builder(name, number, Number::doubleValue)
-                        .tags(tags)
-                        .register(prometheusRegistry);
+        @Override public <T extends Number> Gauge gauge(String name, T number, String... tags) {
+            return Gauge.builder(name, number, Number::doubleValue).tags(tags)
+                                .register(prometheusRegistry);
         }
 
-        @Override
-        public Gauge gauge(String name, Supplier<Number> supplier, String... tags) {
+        @Override public Gauge gauge(String name, Supplier<Number> supplier, String... tags) {
             return Gauge.builder(name,
-                                 () -> supplier.get()
-                                               .doubleValue())
-                        .tags(tags)
-                        .register(prometheusRegistry);
+                                 () -> supplier.get().doubleValue()).tags(tags)
+                                .register(prometheusRegistry);
         }
 
-        @Override
-        public Counter counter(String name, String... tags) {
+        @Override public Counter counter(String name, String... tags) {
             return prometheusRegistry.counter(name, tags);
         }
 
-        @Override
-        public Result<Unit> registerNodeCount(Supplier<Number> nodeCountSupplier) {
+        @Override public Result<Unit> registerNodeCount(Supplier<Number> nodeCountSupplier) {
             Gauge.builder("aether.cluster.nodes",
-                          () -> nodeCountSupplier.get()
-                                                 .doubleValue())
-                 .description("Number of nodes in the cluster")
-                 .register(prometheusRegistry);
+                          () -> nodeCountSupplier.get().doubleValue()).description("Number of nodes in the cluster")
+                         .register(prometheusRegistry);
             return unitResult();
         }
 
-        @Override
-        public Result<Unit> registerSliceCount(Supplier<Number> sliceCountSupplier) {
+        @Override public Result<Unit> registerSliceCount(Supplier<Number> sliceCountSupplier) {
             Gauge.builder("aether.slices.active",
-                          () -> sliceCountSupplier.get()
-                                                  .doubleValue())
-                 .description("Number of active slice instances")
-                 .register(prometheusRegistry);
+                          () -> sliceCountSupplier.get().doubleValue()).description("Number of active slice instances")
+                         .register(prometheusRegistry);
             return unitResult();
         }
 
         @Override
         @SuppressWarnings("JBCT-PAT-01") // Registration of multiple gauges from a metrics map
-        public Result<Unit> registerTransportMetrics(Supplier<java.util.Map<String, Number>> metricsSupplier) {
+        public// Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        // Registration of multiple gauges from a metrics map
+        Result<Unit> registerTransportMetrics(Supplier<java.util.Map<String, Number>> metricsSupplier) {
             registerTransportGauge("quic_active_connections", "Active QUIC peer connections", metricsSupplier);
             registerTransportGauge("quic_handshake_total", "Total QUIC handshakes completed", metricsSupplier);
             registerTransportGauge("quic_handshake_failures_total", "Failed QUIC handshakes", metricsSupplier);
@@ -159,11 +172,9 @@ public interface ObservabilityRegistry {
                                             String description,
                                             Supplier<java.util.Map<String, Number>> metricsSupplier) {
             Gauge.builder(name,
-                          () -> metricsSupplier.get()
-                                               .getOrDefault(name, 0)
-                                               .doubleValue())
-                 .description(description)
-                 .register(prometheusRegistry);
+                          () -> metricsSupplier.get().getOrDefault(name, 0)
+                                                   .doubleValue()).description(description)
+                         .register(prometheusRegistry);
         }
     }
 }

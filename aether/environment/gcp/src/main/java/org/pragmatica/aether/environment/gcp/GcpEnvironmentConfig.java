@@ -9,16 +9,16 @@ import static org.pragmatica.lang.Result.success;
 
 /// Configuration for the GCP environment integration.
 /// Contains GCP API credentials and default instance provisioning parameters.
-public record GcpEnvironmentConfig(GcpConfig gcpConfig,
-                                   String machineType,
-                                   String sourceImage,
-                                   String network,
-                                   String subnetwork,
-                                   String userData,
-                                   Option<GcpNegConfig> networkEndpointGroup,
-                                   Option<String> clusterName,
-                                   Option<String> selfInstanceName,
-                                   long discoveryPollIntervalMs) {
+public record GcpEnvironmentConfig( GcpConfig gcpConfig,
+                                    String machineType,
+                                    String sourceImage,
+                                    String network,
+                                    String subnetwork,
+                                    String userData,
+                                    Option<GcpNegConfig> networkEndpointGroup,
+                                    Option<String> clusterName,
+                                    Option<String> selfInstanceName,
+                                    long discoveryPollIntervalMs) {
     private static final long DEFAULT_POLL_INTERVAL_MS = 30_000L;
 
     /// NEG (Network Endpoint Group) configuration for GCP load balancing.
@@ -70,7 +70,38 @@ public record GcpEnvironmentConfig(GcpConfig gcpConfig,
 
     /// Return a copy with discovery enabled for the specified cluster name.
     @SuppressWarnings("JBCT-VO-02") // Copy-with-change builder — direct constructor is intentional
-    public GcpEnvironmentConfig withDiscovery(String clusterLabel) {
+    public// Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    GcpEnvironmentConfig withDiscovery(String clusterLabel) {
         return new GcpEnvironmentConfig(gcpConfig,
                                         machineType,
                                         sourceImage,
@@ -85,7 +116,38 @@ public record GcpEnvironmentConfig(GcpConfig gcpConfig,
 
     /// Return a copy with the self instance name set.
     @SuppressWarnings("JBCT-VO-02") // Copy-with-change builder — direct constructor is intentional
-    public GcpEnvironmentConfig withSelfInstanceName(String instanceName) {
+    public// Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    GcpEnvironmentConfig withSelfInstanceName(String instanceName) {
         return new GcpEnvironmentConfig(gcpConfig,
                                         machineType,
                                         sourceImage,
@@ -100,7 +162,38 @@ public record GcpEnvironmentConfig(GcpConfig gcpConfig,
 
     /// Return a copy with the discovery poll interval set.
     @SuppressWarnings("JBCT-VO-02") // Copy-with-change builder — direct constructor is intentional
-    public GcpEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
+    public// Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    // Copy-with-change builder — direct constructor is intentional
+    GcpEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
         return new GcpEnvironmentConfig(gcpConfig,
                                         machineType,
                                         sourceImage,

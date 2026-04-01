@@ -13,7 +13,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///
 /// @param maxAttempts     Maximum number of retry attempts
 /// @param backoffStrategy Strategy for calculating delays between retries
-public record RetryConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
+public record RetryConfig( int maxAttempts, BackoffStrategy backoffStrategy) {
     /// Create retry configuration with exponential backoff defaults.
     ///
     /// @param maxAttempts Maximum retry attempts
@@ -44,18 +44,16 @@ public record RetryConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
 
     @SuppressWarnings({"JBCT-VO-02", "JBCT-NAM-01"})
     private static RetryConfig withExponentialBackoff(int attempts) {
-        var strategy = BackoffStrategy.exponential()
-                                      .initialDelay(timeSpan(100).millis())
-                                      .maxDelay(timeSpan(10).seconds())
-                                      .factor(2.0)
-                                      .withoutJitter();
+        var strategy = BackoffStrategy.exponential().initialDelay(timeSpan(100).millis())
+                                                  .maxDelay(timeSpan(10).seconds())
+                                                  .factor(2.0)
+                                                  .withoutJitter();
         return new RetryConfig(attempts, strategy);
     }
 
     @SuppressWarnings({"JBCT-VO-02", "JBCT-NAM-01"})
     private static RetryConfig withFixedBackoff(int attempts, TimeSpan interval) {
         return new RetryConfig(attempts,
-                               BackoffStrategy.fixed()
-                                              .interval(interval));
+                               BackoffStrategy.fixed().interval(interval));
     }
 }

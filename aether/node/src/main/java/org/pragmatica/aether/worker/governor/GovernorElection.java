@@ -23,8 +23,7 @@ public interface GovernorElection {
                                           List<SwimMember> members,
                                           Option<NodeId> currentGovernor) {
         var incumbentAlive = currentGovernor.filter(gov -> isAlive(gov, members));
-        return incumbentAlive.map(gov -> stateForNode(selfId, gov))
-                             .or(() -> electLowest(selfId, members));
+        return incumbentAlive.map(gov -> stateForNode(selfId, gov)).or(() -> electLowest(selfId, members));
     }
 
     private static GovernorState electLowest(NodeId selfId, List<SwimMember> members) {
@@ -39,16 +38,13 @@ public interface GovernorElection {
     }
 
     private static boolean isAlive(NodeId nodeId, List<SwimMember> members) {
-        return members.stream()
-                      .anyMatch(m -> m.nodeId()
-                                      .equals(nodeId) && m.state() == MemberState.ALIVE);
+        return members.stream().anyMatch(m -> m.nodeId().equals(nodeId) && m.state() == MemberState.ALIVE);
     }
 
     private static Option<NodeId> findLowestAlive(List<SwimMember> members) {
-        return Option.from(members.stream()
-                                  .filter(m -> m.state() == MemberState.ALIVE)
-                                  .map(SwimMember::nodeId)
-                                  .sorted()
-                                  .findFirst());
+        return Option.from(members.stream().filter(m -> m.state() == MemberState.ALIVE)
+                                         .map(SwimMember::nodeId)
+                                         .sorted()
+                                         .findFirst());
     }
 }

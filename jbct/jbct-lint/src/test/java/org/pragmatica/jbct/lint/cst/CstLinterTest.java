@@ -2147,6 +2147,33 @@ class CstLinterTest {
                 """);
             assertNoRule(diagnostics, "JBCT-RET-01");
         }
+
+        @Test
+        void recordScopedSuppressionCoversAllMethods() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                @SuppressWarnings("JBCT-RET-01")
+                public record Test(String name) {
+                    public void methodOne() {}
+                    public void methodTwo() {}
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-01");
+        }
+
+        @Test
+        void recordScopedSuppressionCoversPrivateMethods() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                @SuppressWarnings("JBCT-RET-01")
+                public record Test(String config) {
+                    private void helperOne() {}
+                    private void helperTwo() {}
+                    private void helperThree() {}
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-01");
+        }
     }
 
     // ========== @Contract Annotation Support ==========
@@ -2202,6 +2229,36 @@ class CstLinterTest {
                 }
                 """);
             assertNoRule(diagnostics, "JBCT-RET-01");
+        }
+
+        @Test
+        void contractWithOverride_suppressesVoidWarning() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                public class Test {
+                    @Override
+                    @Contract
+                    public void channelActive(Object ctx) {
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-01");
+        }
+
+        @Test
+        void contractWithOverrideAndThrows_suppressesVoidWarning() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                public class Test {
+                    @Override
+                    @Contract
+                    @SuppressWarnings("JBCT-EX-01")
+                    public void channelActive(Object ctx) throws Exception {
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-01");
+            assertNoRule(diagnostics, "JBCT-EX-01");
         }
     }
 }

@@ -9,12 +9,12 @@ import static org.pragmatica.lang.Result.success;
 
 /// Detailed provisioning specification for compute instances.
 /// Extends the basic InstanceType-based provisioning with pool, size, tags, and optional image/userData.
-public record ProvisionSpec(InstanceType instanceType,
-                            String instanceSize,
-                            String pool,
-                            Map<String, String> tags,
-                            Option<String> imageId,
-                            Option<String> userData) {
+public record ProvisionSpec( InstanceType instanceType,
+                             String instanceSize,
+                             String pool,
+                             Map<String, String> tags,
+                             Option<String> imageId,
+                             Option<String> userData) {
     public static Result<ProvisionSpec> provisionSpec(InstanceType instanceType,
                                                       String instanceSize,
                                                       String pool,

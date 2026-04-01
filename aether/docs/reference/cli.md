@@ -95,7 +95,7 @@ authorization_role = "VIEWER"
 |------|-----------|
 | **ADMIN** | All commands |
 | **OPERATOR** | Status, scaling, drain, deploy from artifact, schema, updates, backup, config, alerts |
-| **VIEWER** | Read-only commands: `status`, `nodes`, `slices`, `metrics`, `events`, `health` |
+| **VIEWER** | Read-only commands: `status`, `nodes`, `slices`, `node-slices`, `routes`, `node-routes`, `metrics`, `events`, `health` |
 
 When `authorization_role` is omitted, the key defaults to `ADMIN`. See [Management API - Authorization](management-api.md#authorization-rbac) for the full permission mapping.
 
@@ -135,7 +135,7 @@ Nodes:
 
 #### slices
 
-List deployed slices:
+Show all slices across the cluster with per-node instances, target counts, and version:
 
 ```bash
 aether slices
@@ -143,9 +143,59 @@ aether slices
 
 Output:
 ```
-Slices:
-  org.example:order-processor:1.0.0    3 instances  ACTIVE
-  org.example:inventory:1.0.0          2 instances  ACTIVE
+Slices (cluster-wide):
+  org.example:order-processor:1.0.0    target: 3  min: 1  version: 1.0.0
+    node-1  ACTIVE
+    node-2  ACTIVE
+    node-3  ACTIVE
+  org.example:inventory:1.0.0          target: 2  min: 1  version: 1.0.0
+    node-1  ACTIVE
+    node-2  ACTIVE
+```
+
+#### node-slices
+
+Show slices loaded on the connected node (flat list of artifact names):
+
+```bash
+aether node-slices
+```
+
+Output:
+```
+Slices (node):
+  org.example:order-processor:1.0.0
+  org.example:inventory:1.0.0
+```
+
+#### routes
+
+Show HTTP routes across the cluster:
+
+```bash
+aether routes
+```
+
+Output:
+```
+Routes (cluster-wide):
+  GET  /orders   [node-1, node-2]  security: none
+  POST /orders   [node-1, node-2]  security: api-key
+```
+
+#### node-routes
+
+Show HTTP routes on the connected node:
+
+```bash
+aether node-routes
+```
+
+Output:
+```
+Routes (node):
+  GET  /orders   [node-1, node-2]  security: none
+  POST /orders   [node-1, node-2]  security: api-key
 ```
 
 #### metrics
@@ -232,7 +282,7 @@ Artifact repository operations:
 # Deploy JAR to repository
 aether artifact deploy <jar-path> -g <groupId> -a <artifactId> -v <version>
 
-# Push artifact from local Maven repository to cluster
+# Push blueprint and all its slices from local Maven repository to cluster
 aether artifact push <group:artifact:version>
 
 # List artifacts
@@ -251,13 +301,25 @@ aether artifact delete <group:artifact:version>
 aether artifact metrics
 ```
 
+The `push` command takes blueprint coordinates and automatically pushes the blueprint JAR
+along with all referenced slice JARs. It reads `META-INF/blueprint.toml` from the blueprint
+JAR (located at `~/.m2/repository/{group}/{artifact}/{version}/{artifact}-{version}-blueprint.jar`)
+to discover slice references, then pushes each artifact to the cluster repository.
+
 Examples:
 ```bash
 # Deploy a JAR file directly
 aether artifact deploy target/my-slice.jar -g com.example -a my-slice -v 1.0.0
 
-# Push from local Maven repository (~/.m2/repository)
-aether artifact push com.example:my-slice:1.0.0
+# Push blueprint + all slices from local Maven repository
+aether artifact push org.pragmatica.aether.example:url-shortener:0.25.0
+
+# Example output:
+# Pushing url-shortener blueprint (3 artifacts):
+#   + org.pragmatica.aether.example:url-shortener:0.25.0:blueprint (65KB)
+#   + org.pragmatica.aether.example:url-shortener-url-shortener:0.25.0 (34KB)
+#   + org.pragmatica.aether.example:url-shortener-analytics:0.25.0 (32KB)
+# All artifacts pushed successfully.
 
 # View artifact details
 aether artifact info com.example:my-slice:1.0.0
@@ -1136,6 +1198,67 @@ aether stream status user-events
 
 # Publish a message
 aether stream publish user-events "order_created:12345"
+```
+
+---
+
+## Cluster Management
+
+### `aether cluster scale`
+
+Scale the cluster core node count. Validates quorum safety on the CLI side before sending.
+
+```bash
+aether cluster scale --core <N>
+```
+
+| Option | Description |
+|--------|-------------|
+| `--core` | Target core node count (minimum 3, must be odd) |
+| `--json` | Output raw JSON |
+
+Example:
+```bash
+# Scale to 7 core nodes
+aether cluster scale --core 7
+
+# Output:
+# Scale successful.
+# Core nodes: 5 -> 7
+# Config version: 8
+```
+
+Scaling down displays a warning:
+```
+Warning: scaling down from 7 to 5 nodes. Excess nodes will be drained.
+```
+
+### `aether cluster upgrade`
+
+Initiate a cluster version upgrade.
+
+```bash
+aether cluster upgrade --version <X.Y.Z>
+```
+
+| Option | Description |
+|--------|-------------|
+| `--version` | Target version in X.Y.Z format |
+| `--json` | Output raw JSON |
+
+Example:
+```bash
+# Upgrade cluster to 0.26.0
+aether cluster upgrade --version 0.26.0
+
+# Output:
+# Upgrade initiated.
+# Version: 0.25.0 -> 0.26.0
+```
+
+If the cluster is already at the target version:
+```
+Already at version 0.26.0. No upgrade needed.
 ```
 
 ---

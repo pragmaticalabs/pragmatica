@@ -24,12 +24,12 @@ import static org.pragmatica.lang.Result.success;
 /// @param duration How long to run (null or Duration.ZERO = continuous)
 /// @param pathVars Pattern templates for path variables
 /// @param body     Body template with pattern placeholders
-public record LoadTarget(Option<String> name,
-                         String target,
-                         Rate rate,
-                         Option<Duration> duration,
-                         Map<String, String> pathVars,
-                         Option<String> body) {
+public record LoadTarget( Option<String> name,
+                          String target,
+                          Rate rate,
+                          Option<Duration> duration,
+                          Map<String, String> pathVars,
+                          Option<String> body) {
     private static final Fn1<Cause, String> INVALID_TARGET = Causes.forOneValue("Invalid target: %s");
 
     private static final Fn1<Cause, String> INVALID_RATE = Causes.forOneValue("Invalid rate format: %s");
@@ -56,19 +56,10 @@ public record LoadTarget(Option<String> name,
                 this.secondsMultiplier = secondsMultiplier;
             }
             public static Option<TimeUnit> fromSymbol(String symbol) {
-                return switch (symbol) {
-                    case "s" -> some(SECOND);
-                    case "m" -> some(MINUTE);
-                    case "h" -> some(HOUR);
-                    default -> none();
-                };
+                return switch (symbol) {case "s" -> some(SECOND);case "m" -> some(MINUTE);case "h" -> some(HOUR);default -> none();};
             }
             public int toRequestsPerSecond(int value) {
-                return switch (this) {
-                    case SECOND -> value;
-                    case MINUTE -> value / 60;
-                    case HOUR -> value / 3600;
-                };
+                return switch (this) {case SECOND -> value;case MINUTE -> value / 60;case HOUR -> value / 3600;};
             }
         }
 
@@ -78,15 +69,12 @@ public record LoadTarget(Option<String> name,
         /// @return Result containing valid Rate or error
         public static Result<Rate> rate(String rateStr) {
             var matcher = RATE_PATTERN.matcher(rateStr.trim());
-            if (!matcher.matches()) {
-                return INVALID_RATE.apply(rateStr)
-                                   .result();
-            }
-            return Number.parseInt(matcher.group(1))
-                         .flatMap(Rate::ensurePositive)
-                         .flatMap(val -> rate(val,
-                                              matcher.group(2),
-                                              rateStr));
+            if ( !matcher.matches()) {
+            return INVALID_RATE.apply(rateStr).result();}
+            return Number.parseInt(matcher.group(1)).flatMap(Rate::ensurePositive)
+                                  .flatMap(val -> rate(val,
+                                                       matcher.group(2),
+                                                       rateStr));
         }
 
         private static Result<Integer> ensurePositive(int value) {
@@ -100,9 +88,8 @@ public record LoadTarget(Option<String> name,
         }
 
         private static Result<Rate> rate(int value, String unitSymbol, String rateStr) {
-            return TimeUnit.fromSymbol(unitSymbol)
-                           .toResult(INVALID_RATE.apply(rateStr))
-                           .flatMap(unit -> rate(value, unit));
+            return TimeUnit.fromSymbol(unitSymbol).toResult(INVALID_RATE.apply(rateStr))
+                                      .flatMap(unit -> rate(value, unit));
         }
 
         public int requestsPerSecond() {
@@ -124,7 +111,7 @@ public record LoadTarget(Option<String> name,
         var validTarget = option(target).filter(s -> !s.isBlank())
                                 .toResult(INVALID_TARGET.apply("target is required"));
         return validTarget.flatMap(_ -> Rate.rate(rateStr))
-                          .flatMap(rate -> loadTarget(name, target, rate, duration, pathVars, body));
+        .flatMap(rate -> loadTarget(name, target, rate, duration, pathVars, body));
     }
 
     private static Result<LoadTarget> loadTarget(Option<String> name,
@@ -143,8 +130,7 @@ public record LoadTarget(Option<String> name,
 
     /// Returns true if target is an HTTP path (starts with / or HTTP method).
     public boolean isHttpPath() {
-        return target.startsWith("/") || HTTP_METHOD_PREFIX.matcher(target)
-                                                           .find();
+        return target.startsWith("/") || HTTP_METHOD_PREFIX.matcher(target).find();
     }
 
     /// Extracts the HTTP method from target if present.
@@ -157,14 +143,12 @@ public record LoadTarget(Option<String> name,
 
     /// Extracts the path from target, stripping HTTP method prefix if present.
     public String httpPath() {
-        return HTTP_METHOD_PREFIX.matcher(target)
-                                 .replaceFirst("");
+        return HTTP_METHOD_PREFIX.matcher(target).replaceFirst("");
     }
 
     /// Derives a name from target, using path up to first variable or method name.
     private static String deriveNameFromTarget(String target) {
-        var path = HTTP_METHOD_PREFIX.matcher(target)
-                                     .replaceFirst("");
+        var path = HTTP_METHOD_PREFIX.matcher(target).replaceFirst("");
         return path.startsWith("/")
                ? deriveFromHttpPath(path)
                : path;
@@ -181,8 +165,7 @@ public record LoadTarget(Option<String> name,
 
     /// Returns true if this target should run continuously.
     public boolean isContinuous() {
-        return duration.map(Duration::isZero)
-                       .or(true);
+        return duration.map(Duration::isZero).or(true);
     }
 
     /// Creates a new LoadTarget with the rate scaled by the given multiplier.
@@ -198,6 +181,6 @@ public record LoadTarget(Option<String> name,
                                                  Map<String, String> pathVars,
                                                  Option<String> body) {
         return Rate.rate(scaledValue, Rate.TimeUnit.SECOND)
-                   .flatMap(r -> success(new LoadTarget(name, target, r, duration, pathVars, body)));
+        .flatMap(r -> success(new LoadTarget(name, target, r, duration, pathVars, body)));
     }
 }

@@ -14,13 +14,11 @@ import static org.pragmatica.aether.environment.azure.AzureEnvironmentConfig.azu
 
 /// ServiceLoader factory for creating AzureEnvironmentIntegration from generic CloudConfig.
 public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegrationFactory {
-    @Override
-    public String providerName() {
+    @Override public String providerName() {
         return "azure";
     }
 
-    @Override
-    public Result<EnvironmentIntegration> create(CloudConfig config) {
+    @Override public Result<EnvironmentIntegration> create(CloudConfig config) {
         return buildEnvironmentConfig(config).flatMap(AzureEnvironmentIntegration::azureEnvironmentIntegration)
                                      .map(EnvironmentIntegration.class::cast);
     }
@@ -53,9 +51,8 @@ public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegra
         var lbName = lbMap.getOrDefault("load_balancer_name", "");
         var poolName = lbMap.getOrDefault("backend_pool_name", "");
         var vnetId = lbMap.getOrDefault("vnet_id", "");
-        if (lbName.isEmpty() || poolName.isEmpty() || vnetId.isEmpty()) {
-            return envConfig;
-        }
+        if ( lbName.isEmpty() || poolName.isEmpty() || vnetId.isEmpty()) {
+        return envConfig;}
         return azureLbConfig(lbName, poolName, vnetId).map(lb -> withLoadBalancer(envConfig, lb))
                             .or(envConfig);
     }
@@ -75,8 +72,39 @@ public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegra
 
     // --- Leaf: withLoadBalancer copy helper ---
     @SuppressWarnings("JBCT-VO-02") // Copy-with-change — direct constructor use in config builder
-    private static AzureEnvironmentConfig withLoadBalancer(AzureEnvironmentConfig envConfig,
-                                                           AzureEnvironmentConfig.AzureLbConfig lbConfig) {
+    private static// Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    AzureEnvironmentConfig withLoadBalancer(AzureEnvironmentConfig envConfig,
+                                            AzureEnvironmentConfig.AzureLbConfig lbConfig) {
         return new AzureEnvironmentConfig(envConfig.azureConfig(),
                                           envConfig.vmSize(),
                                           envConfig.image(),

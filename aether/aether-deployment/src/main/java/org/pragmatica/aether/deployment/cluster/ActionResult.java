@@ -23,14 +23,14 @@ import org.pragmatica.consensus.NodeId;
 /// Sealed hierarchy of outcomes from NodeLifecycleManager actions.
 public sealed interface ActionResult {
     /// A new cloud instance was provisioned and is starting.
-    record NodeStarted(InstanceInfo instance) implements ActionResult {}
+    record NodeStarted(InstanceInfo instance) implements ActionResult{}
 
     /// The cloud instance for the given node was terminated.
-    record NodeStopped(NodeId nodeId) implements ActionResult {}
+    record NodeStopped(NodeId nodeId) implements ActionResult{}
 
     /// The cloud instance for the given node was restarted.
-    record NodeRestarted(NodeId nodeId) implements ActionResult {}
+    record NodeRestarted(NodeId nodeId) implements ActionResult{}
 
     /// Slices were migrated from the source node.
-    record SlicesMigrated(NodeId source, int sliceCount) implements ActionResult {}
+    record SlicesMigrated(NodeId source, int sliceCount) implements ActionResult{}
 }

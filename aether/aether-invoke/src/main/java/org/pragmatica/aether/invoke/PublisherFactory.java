@@ -17,28 +17,23 @@ import org.pragmatica.lang.utils.Causes;
 public final class PublisherFactory implements ResourceFactory<Publisher, TopicConfig> {
     private static final Cause REQUIRES_CONTEXT = Causes.cause("Publisher requires ProvisioningContext with runtime extensions");
 
-    @Override
-    public Class<Publisher> resourceType() {
+    @Override public Class<Publisher> resourceType() {
         return Publisher.class;
     }
 
-    @Override
-    public Class<TopicConfig> configType() {
+    @Override public Class<TopicConfig> configType() {
         return TopicConfig.class;
     }
 
-    @Override
-    public Promise<Publisher> provision(TopicConfig config) {
+    @Override public Promise<Publisher> provision(TopicConfig config) {
         return REQUIRES_CONTEXT.promise();
     }
 
-    @Override
-    public Promise<Publisher> provision(TopicConfig config, ProvisioningContext context) {
-        return context.extension(TopicSubscriptionRegistry.class)
-                      .flatMap(registry -> context.extension(SliceInvoker.class)
-                                                  .map(invoker -> (Publisher) new TopicPublisher<>(config.topicName(),
-                                                                                                   registry,
-                                                                                                   invoker)))
-                      .async();
+    @Override public Promise<Publisher> provision(TopicConfig config, ProvisioningContext context) {
+        return context.extension(TopicSubscriptionRegistry.class).flatMap(registry -> context.extension(SliceInvoker.class)
+        .map(invoker -> (Publisher) new TopicPublisher<>(config.topicName(),
+                                                         registry,
+                                                         invoker)))
+                                .async();
     }
 }

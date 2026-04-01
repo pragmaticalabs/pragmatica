@@ -1,5 +1,6 @@
 package org.pragmatica.aether.dht;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -23,8 +24,7 @@ public interface ReplicationCooldown {
     Promise<Unit> start();
 
     /// Stop the cooldown (e.g., on node shutdown).
-    @SuppressWarnings("JBCT-RET-01") // Lifecycle shutdown — void required
-    void stop();
+    @Contract void stop();
 
     /// Whether cooldown has completed (RF upgrade ready).
     boolean isComplete();
@@ -57,24 +57,18 @@ final class DefaultReplicationCooldown implements ReplicationCooldown {
         this.ratePerSecond = ratePerSecond;
     }
 
-    @Override
-    public Promise<Unit> start() {
+    @Override public Promise<Unit> start() {
         var promise = Promise.<Unit>promise();
         scheduledTask.set(Option.some(SharedScheduler.schedule(() -> completeWarmup(promise),
-                                                               TimeSpan.timeSpan(cooldownDelayMs)
-                                                                       .millis())));
+                                                               TimeSpan.timeSpan(cooldownDelayMs).millis())));
         return promise;
     }
 
-    @Override
-    @SuppressWarnings("JBCT-RET-01") // Lifecycle shutdown — void required
-    public void stop() {
-        scheduledTask.getAndSet(Option.none())
-                     .onPresent(task -> task.cancel(false));
+    @Contract @Override public void stop() {
+        scheduledTask.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
     }
 
-    @Override
-    public boolean isComplete() {
+    @Override public boolean isComplete() {
         return complete.get();
     }
 

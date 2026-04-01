@@ -34,18 +34,18 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// @param jdbcUrl        Override JDBC URL (optional, overrides host/port/database)
 /// @param r2dbcUrl       Override R2DBC URL (optional, overrides host/port/database)
 /// @param asyncUrl       Override async URL (optional, selects postgres-async transport)
-public record DatabaseConnectorConfig(Option<String> name,
-                                      Option<DatabaseType> type,
-                                      Option<String> host,
-                                      Option<Integer> port,
-                                      Option<String> database,
-                                      Option<String> username,
-                                      Option<String> password,
-                                      PoolConfig poolConfig,
-                                      Map<String, String> properties,
-                                      Option<String> jdbcUrl,
-                                      Option<String> r2dbcUrl,
-                                      Option<String> asyncUrl) {
+public record DatabaseConnectorConfig( Option<String> name,
+                                       Option<DatabaseType> type,
+                                       Option<String> host,
+                                       Option<Integer> port,
+                                       Option<String> database,
+                                       Option<String> username,
+                                       Option<String> password,
+                                       PoolConfig poolConfig,
+                                       Map<String, String> properties,
+                                       Option<String> jdbcUrl,
+                                       Option<String> r2dbcUrl,
+                                       Option<String> asyncUrl) {
     private static final Pattern URL_PATTERN = Pattern.compile("(?:\\w+:)*(?://)?(?:[^@]+@)?([^/:]+)(?::(\\d+))?/(.+?)(?:\\?.*)?$");
     private static final Pattern CREDENTIALS_PATTERN = Pattern.compile("://([^:]+):([^@]+)@");
 
@@ -53,22 +53,16 @@ public record DatabaseConnectorConfig(Option<String> name,
     ///
     /// @return Connector name string
     public String effectiveName() {
-        return name.orElse(() -> firstUrlDatabase(jdbcUrl, r2dbcUrl, asyncUrl))
-                   .or("default");
+        return name.orElse(() -> firstUrlDatabase(jdbcUrl, r2dbcUrl, asyncUrl)).or("default");
     }
 
     /// Override toString() to mask password for security.
-    @Override
-    public String toString() {
-        return "DatabaseConnectorConfig[name=" + effectiveName() + ", type=" + type + ", host=" + host + ", port=" + port
-               + ", database=" + database + ", username=[REDACTED]" + ", password=[REDACTED]" + ", poolConfig=" + poolConfig
-               + ", properties=" + properties + ", jdbcUrl=" + sanitizeUrl(jdbcUrl) + ", r2dbcUrl=" + sanitizeUrl(r2dbcUrl)
-               + ", asyncUrl=" + sanitizeUrl(asyncUrl) + "]";
+    @Override public String toString() {
+        return "DatabaseConnectorConfig[name=" + effectiveName() + ", type=" + type + ", host=" + host + ", port=" + port + ", database=" + database + ", username=[REDACTED]" + ", password=[REDACTED]" + ", poolConfig=" + poolConfig + ", properties=" + properties + ", jdbcUrl=" + sanitizeUrl(jdbcUrl) + ", r2dbcUrl=" + sanitizeUrl(r2dbcUrl) + ", asyncUrl=" + sanitizeUrl(asyncUrl) + "]";
     }
 
     private static String sanitizeUrl(Option<String> url) {
-        return url.map(DatabaseConnectorConfig::maskCredentialsInUrl)
-                  .or("none");
+        return url.map(DatabaseConnectorConfig::maskCredentialsInUrl).or("none");
     }
 
     private static String maskCredentialsInUrl(String url) {
@@ -124,8 +118,7 @@ public record DatabaseConnectorConfig(Option<String> name,
     }
 
     private static Option<Integer> parseInteger(String value) {
-        return Number.parseInt(value)
-                     .option();
+        return Number.parseInt(value).option();
     }
 
     // --- Factory methods ---
@@ -255,16 +248,14 @@ public record DatabaseConnectorConfig(Option<String> name,
     ///
     /// @return DatabaseType, defaulting to POSTGRESQL if not determinable
     public DatabaseType effectiveType() {
-        return type.orElse(() -> DatabaseType.fromAnyUrl(jdbcUrl, r2dbcUrl, asyncUrl))
-                   .or(DatabaseType.POSTGRESQL);
+        return type.orElse(() -> DatabaseType.fromAnyUrl(jdbcUrl, r2dbcUrl, asyncUrl)).or(DatabaseType.POSTGRESQL);
     }
 
     /// Returns the effective host, from explicit config or parsed from any available URL.
     ///
     /// @return Host string, defaulting to "localhost" if not determinable
     public String effectiveHost() {
-        return host.orElse(() -> firstUrlHost(jdbcUrl, r2dbcUrl, asyncUrl))
-                   .or("localhost");
+        return host.orElse(() -> firstUrlHost(jdbcUrl, r2dbcUrl, asyncUrl)).or("localhost");
     }
 
     /// Returns the effective port, from explicit config or parsed from any available URL.
@@ -272,20 +263,19 @@ public record DatabaseConnectorConfig(Option<String> name,
     /// @return Port number, using database type default if not determinable
     public int effectivePort() {
         return port.filter(p -> p > 0)
-                   .or(() -> {
-                           var urlPort = firstUrlPort(jdbcUrl, r2dbcUrl, asyncUrl);
-                           return urlPort > 0
-                                  ? urlPort
-                                  : effectiveType().defaultPort();
-                       });
+        .or(() -> {
+                var urlPort = firstUrlPort(jdbcUrl, r2dbcUrl, asyncUrl);
+                return urlPort > 0
+                       ? urlPort
+                       : effectiveType().defaultPort();
+            });
     }
 
     /// Returns the effective database name, from explicit config or parsed from any available URL.
     ///
     /// @return Database name string
     public String effectiveDatabase() {
-        return database.orElse(() -> firstUrlDatabase(jdbcUrl, r2dbcUrl, asyncUrl))
-                       .or("");
+        return database.orElse(() -> firstUrlDatabase(jdbcUrl, r2dbcUrl, asyncUrl)).or("");
     }
 
     /// Returns the effective JDBC URL, either from override or constructed from components.
@@ -359,10 +349,8 @@ public record DatabaseConnectorConfig(Option<String> name,
     /// @return Properties object with user/password and additional properties
     public Properties toJdbcProperties() {
         var props = new Properties();
-        username.filter(u -> !u.isBlank())
-                .onPresent(u -> props.setProperty("user", u));
-        password.filter(p -> !p.isBlank())
-                .onPresent(p -> props.setProperty("password", p));
+        username.filter(u -> !u.isBlank()).onPresent(u -> props.setProperty("user", u));
+        password.filter(p -> !p.isBlank()).onPresent(p -> props.setProperty("password", p));
         properties.forEach(props::setProperty);
         return props;
     }
@@ -386,11 +374,9 @@ public record DatabaseConnectorConfig(Option<String> name,
     private static Result<Unit> validateUrlBased(Option<String> jdbcUrl,
                                                  Option<String> r2dbcUrl,
                                                  Option<String> asyncUrl) {
-        var anyValid = jdbcUrl.filter(u -> !u.isBlank())
-                              .orElse(() -> r2dbcUrl.filter(u -> !u.isBlank()))
-                              .orElse(() -> asyncUrl.filter(u -> !u.isBlank()));
-        return anyValid.toResult(cause("At least one non-blank URL is required"))
-                       .map(_ -> Unit.unit());
+        var anyValid = jdbcUrl.filter(u -> !u.isBlank()).orElse(() -> r2dbcUrl.filter(u -> !u.isBlank()))
+                                     .orElse(() -> asyncUrl.filter(u -> !u.isBlank()));
+        return anyValid.toResult(cause("At least one non-blank URL is required")).map(_ -> Unit.unit());
     }
 
     private static Result<Unit> validateComponentBased(Option<DatabaseType> type,
@@ -407,8 +393,7 @@ public record DatabaseConnectorConfig(Option<String> name,
     }
 
     private static Result<String> ensureOptionNonBlank(Option<String> opt, String message) {
-        return opt.filter(s -> !s.isBlank())
-                  .toResult(cause(message));
+        return opt.filter(s -> !s.isBlank()).toResult(cause(message));
     }
 
     private static Result<Unit> ensureRequired(DatabaseType type, String host, String database) {
@@ -424,43 +409,36 @@ public record DatabaseConnectorConfig(Option<String> name,
     private static Option<String> firstUrlHost(Option<String> jdbcUrl,
                                                Option<String> r2dbcUrl,
                                                Option<String> asyncUrl) {
-        return jdbcUrl.flatMap(DatabaseConnectorConfig::parseHostFromUrl)
-                      .orElse(() -> r2dbcUrl.flatMap(DatabaseConnectorConfig::parseHostFromUrl))
-                      .orElse(() -> asyncUrl.flatMap(DatabaseConnectorConfig::parseHostFromUrl));
+        return jdbcUrl.flatMap(DatabaseConnectorConfig::parseHostFromUrl).orElse(() -> r2dbcUrl.flatMap(DatabaseConnectorConfig::parseHostFromUrl))
+                              .orElse(() -> asyncUrl.flatMap(DatabaseConnectorConfig::parseHostFromUrl));
     }
 
     private static int firstUrlPort(Option<String> jdbcUrl, Option<String> r2dbcUrl, Option<String> asyncUrl) {
-        return jdbcUrl.map(DatabaseConnectorConfig::parsePortFromUrl)
-                      .filter(p -> p > 0)
-                      .orElse(() -> r2dbcUrl.map(DatabaseConnectorConfig::parsePortFromUrl)
-                                            .filter(p -> p > 0))
-                      .orElse(() -> asyncUrl.map(DatabaseConnectorConfig::parsePortFromUrl)
-                                            .filter(p -> p > 0))
-                      .or(0);
+        return jdbcUrl.map(DatabaseConnectorConfig::parsePortFromUrl).filter(p -> p > 0)
+                          .orElse(() -> r2dbcUrl.map(DatabaseConnectorConfig::parsePortFromUrl).filter(p -> p > 0))
+                          .orElse(() -> asyncUrl.map(DatabaseConnectorConfig::parsePortFromUrl).filter(p -> p > 0))
+                          .or(0);
     }
 
     private static Option<String> firstUrlDatabase(Option<String> jdbcUrl,
                                                    Option<String> r2dbcUrl,
                                                    Option<String> asyncUrl) {
-        return jdbcUrl.flatMap(DatabaseConnectorConfig::parseDatabaseFromUrl)
-                      .orElse(() -> r2dbcUrl.flatMap(DatabaseConnectorConfig::parseDatabaseFromUrl))
-                      .orElse(() -> asyncUrl.flatMap(DatabaseConnectorConfig::parseDatabaseFromUrl));
+        return jdbcUrl.flatMap(DatabaseConnectorConfig::parseDatabaseFromUrl).orElse(() -> r2dbcUrl.flatMap(DatabaseConnectorConfig::parseDatabaseFromUrl))
+                              .orElse(() -> asyncUrl.flatMap(DatabaseConnectorConfig::parseDatabaseFromUrl));
     }
 
     private static Option<String> firstUrlUsername(Option<String> jdbcUrl,
                                                    Option<String> r2dbcUrl,
                                                    Option<String> asyncUrl) {
-        return jdbcUrl.flatMap(DatabaseConnectorConfig::parseUsernameFromUrl)
-                      .orElse(() -> r2dbcUrl.flatMap(DatabaseConnectorConfig::parseUsernameFromUrl))
-                      .orElse(() -> asyncUrl.flatMap(DatabaseConnectorConfig::parseUsernameFromUrl));
+        return jdbcUrl.flatMap(DatabaseConnectorConfig::parseUsernameFromUrl).orElse(() -> r2dbcUrl.flatMap(DatabaseConnectorConfig::parseUsernameFromUrl))
+                              .orElse(() -> asyncUrl.flatMap(DatabaseConnectorConfig::parseUsernameFromUrl));
     }
 
     private static Option<String> firstUrlPassword(Option<String> jdbcUrl,
                                                    Option<String> r2dbcUrl,
                                                    Option<String> asyncUrl) {
-        return jdbcUrl.flatMap(DatabaseConnectorConfig::parsePasswordFromUrl)
-                      .orElse(() -> r2dbcUrl.flatMap(DatabaseConnectorConfig::parsePasswordFromUrl))
-                      .orElse(() -> asyncUrl.flatMap(DatabaseConnectorConfig::parsePasswordFromUrl));
+        return jdbcUrl.flatMap(DatabaseConnectorConfig::parsePasswordFromUrl).orElse(() -> r2dbcUrl.flatMap(DatabaseConnectorConfig::parsePasswordFromUrl))
+                              .orElse(() -> asyncUrl.flatMap(DatabaseConnectorConfig::parsePasswordFromUrl));
     }
 
     /// Builder for DatabaseConnectorConfig.

@@ -58,12 +58,11 @@ public final class SchemaRoutes implements RouteSource {
             return new SchemaStatusResponse(v.datasourceName(),
                                             v.currentVersion(),
                                             v.lastMigration(),
-                                            v.status()
-                                             .name());
+                                            v.status().name());
         }
     }
 
-    record SchemaStatusListResponse(List<SchemaStatusResponse> datasources) {}
+    record SchemaStatusListResponse(List<SchemaStatusResponse> datasources){}
 
     record SchemaMigrateResponse(boolean success, String message) {
         static SchemaMigrateResponse schemaMigrateResponse(boolean success, String message) {
@@ -71,33 +70,32 @@ public final class SchemaRoutes implements RouteSource {
         }
     }
 
-    @Override
-    public Stream<Route<?>> routes() {
-        return Stream.of(Route.<SchemaStatusListResponse> get("/api/schema/status")
+    @Override public Stream<Route<?>> routes() {
+        return Stream.of(Route.<SchemaStatusListResponse>get("/api/schema/status")
                               .toJson(this::allSchemaStatuses),
-                         Route.<SchemaStatusResponse> get("/api/schema/status")
+                         Route.<SchemaStatusResponse>get("/api/schema/status")
                               .withPath(aString())
                               .to(this::singleSchemaStatus)
                               .asJson(),
-                         Route.<SchemaStatusResponse> get("/api/schema/history")
+                         Route.<SchemaStatusResponse>get("/api/schema/history")
                               .withPath(aString())
                               .to(this::schemaHistory)
                               .asJson(),
-                         Route.<SchemaMigrateResponse> post("/api/schema/migrate")
+                         Route.<SchemaMigrateResponse>post("/api/schema/migrate")
                               .withPath(aString())
                               .to(this::triggerMigration)
                               .asJson(),
-                         Route.<SchemaMigrateResponse> post("/api/schema/undo")
+                         Route.<SchemaMigrateResponse>post("/api/schema/undo")
                               .withPath(aString())
                               .withQuery(QueryParameter.aString("targetVersion"))
                               .to(this::undoMigration)
                               .asJson(),
-                         Route.<SchemaMigrateResponse> post("/api/schema/baseline")
+                         Route.<SchemaMigrateResponse>post("/api/schema/baseline")
                               .withPath(aString())
                               .withQuery(QueryParameter.aString("version"))
                               .to(this::baselineDatasource)
                               .asJson(),
-                         Route.<SchemaMigrateResponse> post("/api/schema/retry")
+                         Route.<SchemaMigrateResponse>post("/api/schema/retry")
                               .withPath(aString())
                               .to(this::retryMigration)
                               .asJson());
@@ -105,11 +103,10 @@ public final class SchemaRoutes implements RouteSource {
 
     private SchemaStatusListResponse allSchemaStatuses() {
         var entries = new ArrayList<SchemaStatusResponse>();
-        nodeSupplier.get()
-                    .kvStore()
-                    .forEach(SchemaVersionKey.class,
-                             SchemaVersionValue.class,
-                             (_, value) -> entries.add(SchemaStatusResponse.schemaStatusResponse(value)));
+        nodeSupplier.get().kvStore()
+                        .forEach(SchemaVersionKey.class,
+                                 SchemaVersionValue.class,
+                                 (_, value) -> entries.add(SchemaStatusResponse.schemaStatusResponse(value)));
         return new SchemaStatusListResponse(entries);
     }
 
@@ -127,25 +124,22 @@ public final class SchemaRoutes implements RouteSource {
     }
 
     private Promise<SchemaMigrateResponse> undoMigration(String datasource, Option<String> targetVersionOpt) {
-        var targetVersion = targetVersionOpt.map(SchemaRoutes::parseIntSafe)
-                                            .or(0);
+        var targetVersion = targetVersionOpt.map(SchemaRoutes::parseIntSafe).or(0);
         return lookupSchemaVersion(datasource).flatMap(current -> writeUndoStatus(current, datasource, targetVersion));
     }
 
     private Promise<SchemaMigrateResponse> baselineDatasource(String datasource, Option<String> versionOpt) {
-        var version = versionOpt.map(SchemaRoutes::parseIntSafe)
-                                .or(1);
+        var version = versionOpt.map(SchemaRoutes::parseIntSafe).or(1);
         return writeBaselineStatus(datasource, version);
     }
 
     private Promise<SchemaVersionValue> lookupSchemaVersion(String datasource) {
         var key = SchemaVersionKey.schemaVersionKey(datasource);
-        return nodeSupplier.get()
-                           .kvStore()
-                           .get(key)
-                           .filter(v -> v instanceof SchemaVersionValue)
-                           .map(v -> (SchemaVersionValue) v)
-                           .async(SCHEMA_NOT_FOUND);
+        return nodeSupplier.get().kvStore()
+                               .get(key)
+                               .filter(v -> v instanceof SchemaVersionValue)
+                               .map(v -> (SchemaVersionValue) v)
+                               .async(SCHEMA_NOT_FOUND);
     }
 
     private Promise<SchemaMigrateResponse> writeMigratingStatus(SchemaVersionValue current, String datasource) {
@@ -183,8 +177,7 @@ public final class SchemaRoutes implements RouteSource {
     private Promise<List<Long>> applySchemaUpdate(String datasource, SchemaVersionValue value) {
         var key = SchemaVersionKey.schemaVersionKey(datasource);
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
-        return nodeSupplier.get()
-                           .apply(List.of(command));
+        return nodeSupplier.get().apply(List.of(command));
     }
 
     private Promise<SchemaMigrateResponse> retryMigration(String datasource) {
@@ -193,9 +186,8 @@ public final class SchemaRoutes implements RouteSource {
     }
 
     private Promise<SchemaMigrateResponse> writeRetryStatus(SchemaVersionValue current, String datasource) {
-        if (current.status() != SchemaStatus.FAILED) {
-            return SCHEMA_NOT_FAILED.promise();
-        }
+        if ( current.status() != SchemaStatus.FAILED) {
+        return SCHEMA_NOT_FAILED.promise();}
         var updated = SchemaVersionValue.schemaVersionValue(datasource,
                                                             current.currentVersion(),
                                                             current.lastMigration(),

@@ -13,7 +13,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param maxRequests Maximum requests allowed in the window
 /// @param window      Time window for rate limiting
 /// @param burst       Additional burst capacity above the base rate
-public record RateLimitConfig(int maxRequests, TimeSpan window, int burst) {
+public record RateLimitConfig( int maxRequests, TimeSpan window, int burst) {
     /// Create rate limit configuration with no burst capacity.
     ///
     /// @param maxRequests Maximum requests per window

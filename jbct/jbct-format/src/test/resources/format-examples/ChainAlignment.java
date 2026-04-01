@@ -7,54 +7,46 @@ import org.pragmatica.lang.Result;
 public class ChainAlignment {
     // Short chain - fits on one line
     Result<String> shortChain(Result<String> input) {
-        return input.map(String::trim)
-                    .map(String::toUpperCase);
+        return input.map(String::trim).map(String::toUpperCase);
     }
 
     // Medium chain - each call on new line
     Result<String> mediumChain(Result<String> input) {
-        return input.map(String::trim)
-                    .map(String::toUpperCase)
-                    .filter(s -> !s.isEmpty());
+        return input.map(String::trim).map(String::toUpperCase)
+                        .filter(s -> !s.isEmpty());
     }
 
     // Chain starting with method call
     Result<String> chainFromMethodCall(Request request) {
-        return ValidRequest.validRequest(request)
-                           .map(ValidRequest::email)
-                           .map(Email::value);
+        return ValidRequest.validRequest(request).map(ValidRequest::email)
+                                        .map(Email::value);
     }
 
     // Chain starting with static method
     Result<String> chainFromStaticMethod(String value) {
-        return Result.success(value)
-                     .map(String::trim)
-                     .filter(s -> !s.isEmpty());
+        return Result.success(value).map(String::trim)
+                             .filter(s -> !s.isEmpty());
     }
 
     // Chain with flatMap sequence (Sequencer pattern)
     Promise<Response> sequencerChain(Request request) {
-        return ValidRequest.validRequest(request)
-                           .async()
-                           .flatMap(checkCredentials::apply)
-                           .flatMap(checkAccountStatus::apply)
-                           .flatMap(generateToken::apply);
+        return ValidRequest.validRequest(request).async()
+                                        .flatMap(checkCredentials::apply)
+                                        .flatMap(checkAccountStatus::apply)
+                                        .flatMap(generateToken::apply);
     }
 
     // Chain with mixed operations
     Result<String> mixedChain(Result<String> input) {
-        return input.map(String::trim)
-                    .flatMap(this::validate)
-                    .onSuccess(this::log)
-                    .onFailure(this::logError)
-                    .map(String::toUpperCase);
+        return input.map(String::trim).flatMap(this::validate)
+                        .onSuccess(this::log)
+                        .onFailure(this::logError)
+                        .map(String::toUpperCase);
     }
 
     // Nested chains in arguments
     Result<Response> nestedChains(Result<User> user, Result<Account> account) {
-        return Result.all(user.map(User::id),
-                          account.map(Account::status))
-                     .flatMap(this::createResponse);
+        return Result.all(user.map(User::id), account.map(Account::status)).flatMap(this::createResponse);
     }
 
     // Chain with Result.all (Fork-Join pattern)
@@ -62,14 +54,13 @@ public class ChainAlignment {
         return Result.all(Email.email(raw.email()),
                           Password.password(raw.password()),
                           ReferralCode.referralCode(raw.referral()))
-                     .flatMap(ValidRequest::validRequest);
+        .flatMap(ValidRequest::validRequest);
     }
 
     // Chain broken at specific points
     Result<String> brokenChain(Result<String> input) {
-        return input.map(String::trim)
-                    .flatMap(this::expensiveValidation)
-                    .map(String::toUpperCase);
+        return input.map(String::trim).flatMap(this::expensiveValidation)
+                        .map(String::toUpperCase);
     }
 
     // Deep nested flatMap chain

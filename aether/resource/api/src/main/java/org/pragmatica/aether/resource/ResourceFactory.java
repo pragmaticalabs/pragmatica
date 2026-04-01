@@ -101,16 +101,22 @@ public interface ResourceFactory<T, C> {
     /// @param resource The resource instance to close
     /// @return Promise completing when the resource is closed
     default Promise<Unit> close(T resource) {
-        if (resource instanceof AutoCloseable closeable) {
-            return Promise.promise(promise -> {
-                                       try{
-                                           closeable.close();
-                                           promise.succeed(Unit.unit());
-                                       } catch (Exception e) {
-                                           promise.succeed(Unit.unit());
-                                       }
-                                   });
-        }
+        if ( resource instanceof AutoCloseable closeable) {
+        return Promise.promise(promise -> {
+                                   try {
+                                       closeable.close();
+                                       promise.succeed(Unit.unit());
+                                   }
+
+
+
+
+
+
+        catch (Exception e) {
+                                       promise.succeed(Unit.unit());
+                                   }
+                               });}
         return Promise.unitPromise();
     }
 }

@@ -11,6 +11,7 @@ import javax.lang.model.element.TypeElement;
 import javax.tools.Diagnostic;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -56,34 +57,51 @@ public class CodecProcessor extends AbstractProcessor {
             return;
         }
 
+        // Two-pass: register ALL @CodecFor types as known before processing any records.
+        // This ensures record field validation sees sibling types (e.g., Url record's URI field
+        // is recognized when both Url and InetSocketAddress are in the same @CodecFor list).
+        var resolvedTypes = new ArrayList<Map.Entry<Element, List<Map.Entry<TypeElement, String>>>>();
+
         for (var element : roundEnv.getElementsAnnotatedWith(codecForType)) {
-            processCodecForElement(element, packageToCodecNames, packageToRequiredTypes);
-        }
-    }
+            var externalTypes = extractCodecForTypes(element);
+            var resolved = new ArrayList<Map.Entry<TypeElement, String>>();
 
-    private void processCodecForElement(Element element,
-                                         Map<String, List<String>> packageToCodecNames,
-                                         Map<String, Set<String>> packageToRequiredTypes) {
-        var externalTypes = extractCodecForTypes(element);
+            for (var typeMirror : externalTypes) {
+                var typeElement = (TypeElement) processingEnv.getTypeUtils().asElement(typeMirror);
 
-        for (var typeMirror : externalTypes) {
-            var typeElement = (TypeElement) processingEnv.getTypeUtils().asElement(typeMirror);
+                if (typeElement == null) {
+                    continue;
+                }
 
-            if (typeElement == null) {
-                continue;
+                var qualifiedName = typeElement.getQualifiedName().toString();
+                generator.addKnownCodecType(qualifiedName);
+                resolved.add(Map.entry(typeElement, qualifiedName));
             }
 
-            var qualifiedName = typeElement.getQualifiedName().toString();
-            generator.addKnownCodecType(qualifiedName);
+            resolvedTypes.add(Map.entry(element, resolved));
+        }
 
-            var packageName = processingEnv.getElementUtils()
-                                            .getPackageOf(element)
-                                            .getQualifiedName()
-                                            .toString();
-            packageToRequiredTypes.computeIfAbsent(packageName, _ -> new java.util.LinkedHashSet<>())
-                                  .add(qualifiedName);
-            // No codec generation — @CodecFor types require manual codecs.
-            // Runtime validation (REQUIRED_TYPES) catches missing implementations at startup.
+        // Pass 2: generate codecs for records/enums, register non-generatable types
+        for (var entry : resolvedTypes) {
+            var element = entry.getKey();
+
+            for (var typeEntry : entry.getValue()) {
+                var typeElement = typeEntry.getKey();
+                var externalKind = typeElement.getKind();
+
+                if (externalKind == ElementKind.RECORD) {
+                    processRecord(typeElement, packageToCodecNames);
+                } else if (externalKind == ElementKind.ENUM) {
+                    processEnum(typeElement, packageToCodecNames);
+                } else {
+                    var packageName = processingEnv.getElementUtils()
+                                                    .getPackageOf(element)
+                                                    .getQualifiedName()
+                                                    .toString();
+                    packageToRequiredTypes.computeIfAbsent(packageName, _ -> new LinkedHashSet<>())
+                                          .add(typeEntry.getValue());
+                }
+            }
         }
     }
 
@@ -137,7 +155,25 @@ public class CodecProcessor extends AbstractProcessor {
             note(element, "Generated codec: " + element.getSimpleName() + "Codec");
         }
     }
+    /// Tries to auto-generate a record codec. Returns true if successful, false if field validation fails.
+    /// Unlike processRecord, does NOT emit errors on validation failure — the caller handles fallback.
+    private boolean tryProcessRecord(TypeElement element, Map<String, List<String>> packageToCodecNames) {
+        var unregistered = generator.validateRecordFields(element);
 
+        if (!unregistered.isEmpty()) {
+            return false;
+        }
+
+        var tag = extractTag(element);
+        var result = generator.generateRecordCodec(element, tag);
+
+        if (result) {
+            registerCodec(element, packageToCodecNames);
+            note(element, "Generated codec: " + element.getSimpleName() + "Codec");
+        }
+
+        return result;
+    }
     private boolean validateRecordFields(TypeElement element) {
         var unregistered = generator.validateRecordFields(element);
         var recordName = element.getQualifiedName().toString();

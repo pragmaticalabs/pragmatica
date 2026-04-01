@@ -21,14 +21,14 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param securityMode       authentication mode for app HTTP endpoints (NONE, API_KEY, JWT)
 /// @param jwtConfig          JWT configuration (present only when securityMode is JWT)
 /// @param httpProtocol       HTTP protocol mode (H1, H3, BOTH) — default H1
-public record AppHttpConfig(boolean enabled,
-                            int port,
-                            Map<String, ApiKeyEntry> apiKeys,
-                            TimeSpan forwardTimeout,
-                            int maxRequestSize,
-                            SecurityMode securityMode,
-                            Option<JwtConfig> jwtConfig,
-                            HttpProtocol httpProtocol) {
+public record AppHttpConfig( boolean enabled,
+                             int port,
+                             Map<String, ApiKeyEntry> apiKeys,
+                             TimeSpan forwardTimeout,
+                             int maxRequestSize,
+                             SecurityMode securityMode,
+                             Option<JwtConfig> jwtConfig,
+                             HttpProtocol httpProtocol) {
     public static final int DEFAULT_APP_HTTP_PORT = 8070;
     public static final TimeSpan DEFAULT_FORWARD_TIMEOUT = timeSpan(5).seconds();
     public static final int DEFAULT_MAX_REQUEST_SIZE = 10 * 1024 * 1024;

@@ -16,7 +16,7 @@ class StreamPartitionManagerTest {
 
     @BeforeEach
     void setUp() {
-        manager = streamPartitionManager();
+        manager = streamPartitionManager(Long.MAX_VALUE);
     }
 
     @AfterEach
@@ -281,6 +281,92 @@ class StreamPartitionManagerTest {
             var streams = manager.listStreams();
             assertThat(streams).hasSize(1);
             assertThat(streams.getFirst().totalEvents()).isEqualTo(3L);
+        }
+    }
+
+    @Nested
+    class MemoryCapTests {
+
+        @Test
+        void createStream_failure_exceedsMemoryCap() {
+            // Use a very small cap so even a minimal stream exceeds it
+            var cappedManager = StreamPartitionManager.streamPartitionManager(1024);
+            var config = StreamConfig.streamConfig("big-stream");
+
+            cappedManager.createStream(config)
+                         .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
+                         .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.STREAM_MEMORY_EXCEEDED));
+
+            cappedManager.close();
+        }
+
+        @Test
+        void createStream_success_withinMemoryCap() {
+            // 512MB cap should fit a small stream
+            var cappedManager = StreamPartitionManager.streamPartitionManager(512 * 1024 * 1024L);
+            var retention = RetentionPolicy.retentionPolicy(100, 4096, 60_000);
+            var config = StreamConfig.streamConfig("small", 1, retention, "latest");
+
+            cappedManager.createStream(config)
+                         .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"));
+
+            assertThat(cappedManager.totalAllocatedBytes()).isGreaterThan(0L);
+            cappedManager.close();
+        }
+
+        @Test
+        void destroyStream_releasesTrackedMemory() {
+            var cappedManager = StreamPartitionManager.streamPartitionManager(512 * 1024 * 1024L);
+            var retention = RetentionPolicy.retentionPolicy(100, 4096, 60_000);
+            var config = StreamConfig.streamConfig("temp", 1, retention, "latest");
+
+            cappedManager.createStream(config);
+            var allocated = cappedManager.totalAllocatedBytes();
+            assertThat(allocated).isGreaterThan(0L);
+
+            cappedManager.destroyStream("temp");
+            assertThat(cappedManager.totalAllocatedBytes()).isEqualTo(0L);
+
+            cappedManager.close();
+        }
+
+        @Test
+        void createStream_success_afterDestroyFreesMemory() {
+            var retention = RetentionPolicy.retentionPolicy(100, 4096, 60_000);
+            var streamBytes = (64 + (24 * 100L) + 4096) * 1;
+            // Cap allows exactly one stream
+            var cappedManager = StreamPartitionManager.streamPartitionManager(streamBytes + 1);
+
+            var config1 = StreamConfig.streamConfig("first", 1, retention, "latest");
+            var config2 = StreamConfig.streamConfig("second", 1, retention, "latest");
+
+            cappedManager.createStream(config1)
+                         .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"));
+
+            // Second stream should fail — no room
+            cappedManager.createStream(config2)
+                         .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
+                         .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.STREAM_MEMORY_EXCEEDED));
+
+            // Destroy first, then second should succeed
+            cappedManager.destroyStream("first");
+
+            cappedManager.createStream(config2)
+                         .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success after destroy"));
+
+            cappedManager.close();
+        }
+
+        @Test
+        void close_resetsTrackedMemory() {
+            var cappedManager = StreamPartitionManager.streamPartitionManager(512 * 1024 * 1024L);
+            var retention = RetentionPolicy.retentionPolicy(100, 4096, 60_000);
+            cappedManager.createStream(StreamConfig.streamConfig("s1", 1, retention, "latest"));
+
+            assertThat(cappedManager.totalAllocatedBytes()).isGreaterThan(0L);
+
+            cappedManager.close();
+            assertThat(cappedManager.totalAllocatedBytes()).isEqualTo(0L);
         }
     }
 

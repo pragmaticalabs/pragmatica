@@ -159,10 +159,28 @@ Provides the programming model and core runtime. Consumer groups, CDC, persisten
 
 ---
 
+## PRE-GA: Case Study Preparation
+
+**Source:** `../jbct-loan/CASE-STUDY-PLAN.md`
+
+Loan Processing Application — same spec implemented in JBCT slice and Spring Boot. Controlled comparison for evaluators.
+
+| Task | When | Notes |
+|------|------|-------|
+| Update JBCT slice to current Aether (DB provisioning, schema migrations, blueprints) | Pre-alpha | Must be fully functional, not stubs |
+| Verify Spring Boot implementation | Pre-alpha | All endpoints functional, tests passing |
+| Set up dedicated repository structure | Pre-GA | Both projects build, CI validates |
+| Write comparison documents (code, metrics, operations, AI generation, spec methodology) | Pre-GA | 6 documents, agent task |
+| Create case-study.html for pragmaticalabs.io | GA day | Publish with release |
+| Performance comparison in real cloud (EKS vs Aether cluster) | Post-GA, post-first-customer | Requires cloud budget |
+
+---
+
 ## POST-V1 (tracked, not blocking)
 
 | Item | Priority | Notes |
 |------|----------|-------|
+| Case study: cloud performance comparison (Phase 5) | High | EKS vs Aether, same hardware, same k6 scripts |
 | Streaming Phase 2: replication + failover | High | Durability without persistence |
 | Streaming Phase 3: PostgreSQL + exactly-once | High | Production streaming |
 | Secret rotation provider implementations | High | watchRotation SPI exists, zero providers implement it |

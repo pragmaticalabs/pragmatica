@@ -10,10 +10,10 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-PEGLIB_DIR="${PEGLIB_DIR:-$PROJECT_DIR/../java-peglib}"
+PEGLIB_DIR="${PEGLIB_DIR:-$PROJECT_DIR/../../java-peglib}"
 
-GRAMMAR_FILE="$PROJECT_DIR/jbct-core/src/main/resources/grammars/java25.peg"
-OUTPUT_DIR="$PROJECT_DIR/jbct-core/src/main/java/org/pragmatica/jbct/parser"
+GRAMMAR_FILE="$PROJECT_DIR/jbct-parser/src/main/resources/grammars/java25.peg"
+OUTPUT_DIR="$PROJECT_DIR/jbct-parser/src/main/java/org/pragmatica/jbct/parser"
 OUTPUT_FILE="$OUTPUT_DIR/Java25Parser.java"
 
 PACKAGE_NAME="org.pragmatica.jbct.parser"
@@ -91,8 +91,8 @@ public class GenerateParser {
 GENERATOR_CODE
 
 # Compile and run generator
-PEGLIB_JAR="$HOME/.m2/repository/org/pragmatica-lite/peglib/0.1.8/peglib-0.1.8.jar"
-CORE_JAR="$HOME/.m2/repository/org/pragmatica-lite/core/0.9.4/core-0.9.4.jar"
+PEGLIB_JAR="$HOME/.m2/repository/org/pragmatica-lite/peglib/0.2.1/peglib-0.2.1.jar"
+CORE_JAR="$HOME/.m2/repository/org/pragmatica-lite/core/0.25.0/core-0.25.0.jar"
 CLASSPATH="$PEGLIB_JAR:$CORE_JAR"
 
 echo "Compiling generator..."

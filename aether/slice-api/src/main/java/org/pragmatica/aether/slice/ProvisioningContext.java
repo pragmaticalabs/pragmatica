@@ -30,9 +30,9 @@ import static org.pragmatica.lang.Option.some;
 ///
 /// ctx.resources().provide(EventStore.class, "events.orders", context);
 /// }```
-public record ProvisioningContext(List<TypeToken<?>> typeTokens,
-                                  Option<Fn1<?, ?>> keyExtractor,
-                                  Map<Class<?>, Object> extensions) {
+public record ProvisioningContext( List<TypeToken<?>> typeTokens,
+                                   Option<Fn1<?, ?>> keyExtractor,
+                                   Map<Class<?>, Object> extensions) {
     private static final Fn1<Cause, String> MISSING_EXTENSION = Causes.forOneValue("Context does not contain %s");
 
     /// Create an empty provisioning context.
@@ -65,7 +65,7 @@ public record ProvisioningContext(List<TypeToken<?>> typeTokens,
     /// @param type Extension class key
     /// @return Option containing the extension value, or none if absent
     @SuppressWarnings("unchecked")
-    public <T> Result<T> extension(Class<T> type) {
+    public<T> Result<T> extension(Class<T> type) {
         return option((T) extensions.get(type)).toResult(MISSING_EXTENSION.apply(type.getSimpleName()));
     }
 

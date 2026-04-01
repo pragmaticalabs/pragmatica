@@ -95,8 +95,7 @@ public interface SliceBridge {
         BridgeError(String message) {
             this.message = message;
         }
-        @Override
-        public String message() {
+        @Override public String message() {
             return message;
         }
     }

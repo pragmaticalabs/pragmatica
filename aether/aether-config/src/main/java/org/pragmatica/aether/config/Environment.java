@@ -55,12 +55,7 @@ public enum Environment {
                            Environment::fromNormalized);
     }
     private static Result<Environment> fromNormalized(String value) {
-        return switch (value.toLowerCase()) {
-            case "local" -> success(LOCAL);
-            case "docker" -> success(DOCKER);
-            case "kubernetes", "k8s" -> success(KUBERNETES);
-            default -> UNKNOWN_ENVIRONMENT.apply(value)
-                                          .result();
-        };
+        return switch (value.toLowerCase()) {case "local" -> success(LOCAL);case "docker" -> success(DOCKER);case "kubernetes", "k8s" -> success(KUBERNETES);default -> UNKNOWN_ENVIRONMENT.apply(value)
+        .result();};
     }
 }

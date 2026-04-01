@@ -17,10 +17,9 @@ public enum HttpProtocol {
     /// @param value the string value (e.g. "h1", "h3", "both")
     /// @return Option containing the parsed HttpProtocol, or empty for unrecognized values
     public static Option<HttpProtocol> httpProtocol(String value) {
-        return Option.option(value)
-                     .map(String::trim)
-                     .map(String::toLowerCase)
-                     .flatMap(HttpProtocol::fromNormalized);
+        return Option.option(value).map(String::trim)
+                            .map(String::toLowerCase)
+                            .flatMap(HttpProtocol::fromNormalized);
     }
     /// Whether this protocol mode includes HTTP/1.1.
     public boolean includesH1() {
@@ -35,11 +34,6 @@ public enum HttpProtocol {
         return this == H3 || this == BOTH;
     }
     private static Option<HttpProtocol> fromNormalized(String normalized) {
-        return switch (normalized) {
-            case "h1", "http1", "http/1.1" -> Option.some(H1);
-            case "h3", "http3", "http/3" -> Option.some(H3);
-            case "both", "dual" -> Option.some(BOTH);
-            default -> Option.empty();
-        };
+        return switch (normalized) {case "h1", "http1", "http/1.1" -> Option.some(H1);case "h3", "http3", "http/3" -> Option.some(H3);case "both", "dual" -> Option.some(BOTH);default -> Option.empty();};
     }
 }

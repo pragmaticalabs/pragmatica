@@ -14,26 +14,30 @@ import com.zaxxer.hikari.HikariDataSource;
 /// Creates JdbcSqlConnector with HikariCP connection pooling.
 /// Register via META-INF/services/org.pragmatica.aether.resource.ResourceFactory
 public final class JdbcSqlConnectorFactory implements ResourceFactory<SqlConnector, DatabaseConnectorConfig> {
-    @Override
-    public Class<SqlConnector> resourceType() {
+    @Override public Class<SqlConnector> resourceType() {
         return SqlConnector.class;
     }
 
-    @Override
-    public Class<DatabaseConnectorConfig> configType() {
+    @Override public Class<DatabaseConnectorConfig> configType() {
         return DatabaseConnectorConfig.class;
     }
 
-    @Override
-    public Promise<SqlConnector> provision(DatabaseConnectorConfig config) {
+    @Override public Promise<SqlConnector> provision(DatabaseConnectorConfig config) {
         return Promise.lift(DatabaseConnectorError::databaseFailure, () -> connector(config));
     }
 
+    @SuppressWarnings("JBCT-EX-01")
     private static SqlConnector connector(DatabaseConnectorConfig config) {
         var dataSource = hikariDataSource(config);
-        try{
+        try {
             return JdbcSqlConnector.jdbcSqlConnector(config, dataSource);
-        } catch (Exception e) {
+        }
+
+
+
+
+
+        catch (Exception e) {
             dataSource.close();
             throw e;
         }
@@ -42,23 +46,16 @@ public final class JdbcSqlConnectorFactory implements ResourceFactory<SqlConnect
     private static HikariDataSource hikariDataSource(DatabaseConnectorConfig config) {
         var hikariConfig = new HikariConfig();
         hikariConfig.setJdbcUrl(config.effectiveJdbcUrl());
-        config.effectiveUsername()
-              .onPresent(hikariConfig::setUsername);
-        config.effectivePassword()
-              .onPresent(hikariConfig::setPassword);
-        hikariConfig.setConnectionTimeout(config.poolConfig()
-                                                .connectionTimeout()
-                                                .toMillis());
-        hikariConfig.setIdleTimeout(config.poolConfig()
-                                          .idleTimeout()
-                                          .toMillis());
-        hikariConfig.setMaxLifetime(config.poolConfig()
-                                          .maxLifetime()
-                                          .toMillis());
-        hikariConfig.setMinimumIdle(config.poolConfig()
-                                          .minConnections());
-        hikariConfig.setMaximumPoolSize(config.poolConfig()
-                                              .maxConnections());
+        config.effectiveUsername().onPresent(hikariConfig::setUsername);
+        config.effectivePassword().onPresent(hikariConfig::setPassword);
+        hikariConfig.setConnectionTimeout(config.poolConfig().connectionTimeout()
+                                                           .toMillis());
+        hikariConfig.setIdleTimeout(config.poolConfig().idleTimeout()
+                                                     .toMillis());
+        hikariConfig.setMaxLifetime(config.poolConfig().maxLifetime()
+                                                     .toMillis());
+        hikariConfig.setMinimumIdle(config.poolConfig().minConnections());
+        hikariConfig.setMaximumPoolSize(config.poolConfig().maxConnections());
         return new HikariDataSource(hikariConfig);
     }
 }

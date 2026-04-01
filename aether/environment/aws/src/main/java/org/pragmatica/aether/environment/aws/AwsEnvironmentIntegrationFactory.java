@@ -17,13 +17,11 @@ import static org.pragmatica.lang.Option.option;
 
 /// ServiceLoader factory for creating AwsEnvironmentIntegration from generic CloudConfig.
 public record AwsEnvironmentIntegrationFactory() implements EnvironmentIntegrationFactory {
-    @Override
-    public String providerName() {
+    @Override public String providerName() {
         return "aws";
     }
 
-    @Override
-    public Result<EnvironmentIntegration> create(CloudConfig config) {
+    @Override public Result<EnvironmentIntegration> create(CloudConfig config) {
         return buildEnvironmentConfig(config).flatMap(AwsEnvironmentIntegration::awsEnvironmentIntegration)
                                      .map(EnvironmentIntegration.class::cast);
     }
@@ -51,9 +49,8 @@ public record AwsEnvironmentIntegrationFactory() implements EnvironmentIntegrati
     private static AwsEnvironmentConfig applyLoadBalancer(AwsEnvironmentConfig envConfig,
                                                           Map<String, String> lbMap) {
         var targetGroupArn = lbMap.getOrDefault("target_group_arn", "");
-        if (targetGroupArn.isEmpty()) {
-            return envConfig;
-        }
+        if ( targetGroupArn.isEmpty()) {
+        return envConfig;}
         return awsLbConfig(targetGroupArn).map(lb -> withLoadBalancer(envConfig, lb))
                           .or(envConfig);
     }
@@ -73,8 +70,39 @@ public record AwsEnvironmentIntegrationFactory() implements EnvironmentIntegrati
 
     // --- Leaf: withLoadBalancer copy helper ---
     @SuppressWarnings("JBCT-VO-02") // Copy-with-change — direct constructor use in config builder
-    private static AwsEnvironmentConfig withLoadBalancer(AwsEnvironmentConfig envConfig,
-                                                         AwsEnvironmentConfig.AwsLbConfig lbConfig) {
+    private static// Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    AwsEnvironmentConfig withLoadBalancer(AwsEnvironmentConfig envConfig,
+                                          AwsEnvironmentConfig.AwsLbConfig lbConfig) {
         return new AwsEnvironmentConfig(envConfig.awsConfig(),
                                         envConfig.amiId(),
                                         envConfig.instanceType(),
@@ -89,12 +117,10 @@ public record AwsEnvironmentIntegrationFactory() implements EnvironmentIntegrati
 
     // --- Leaf: parse comma-separated string list ---
     private static List<String> parseStringList(String value) {
-        if (value.isEmpty()) {
-            return List.of();
-        }
-        return Arrays.stream(value.split(","))
-                     .map(String::trim)
-                     .filter(s -> !s.isEmpty())
-                     .toList();
+        if ( value.isEmpty()) {
+        return List.of();}
+        return Arrays.stream(value.split(",")).map(String::trim)
+                            .filter(s -> !s.isEmpty())
+                            .toList();
     }
 }

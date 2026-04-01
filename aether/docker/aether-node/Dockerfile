@@ -1,7 +1,7 @@
 # Aether Node Container Image
 # Distributed runtime node for the Aether cluster
 
-FROM eclipse-temurin:25-alpine
+FROM eclipse-temurin:25-noble
 
 LABEL org.opencontainers.image.title="Aether Node"
 LABEL org.opencontainers.image.description="Aether distributed runtime node"
@@ -10,11 +10,11 @@ LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.source="https://github.com/pragmaticalabs/pragmatica"
 
 # Install iptables for network partition testing (E2E tests)
-RUN apk add --no-cache iptables
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends iptables wget && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user for security
-RUN addgroup -g 1000 aether && \
-    adduser -u 1000 -G aether -s /bin/sh -D aether
+# Rename existing ubuntu user (uid 1000) to aether
+RUN usermod -l aether -d /home/aether -m ubuntu && \
+    groupmod -n aether ubuntu
 
 # Create directories for app, data, and config
 RUN mkdir -p /app /data /config && \
@@ -39,7 +39,7 @@ ENV CLUSTER_PORT="8090"
 ENV MANAGEMENT_PORT="8080"
 ENV PEERS=""
 ENV CORE_MAX=""
-ENV JAVA_OPTS="-Xmx512m -XX:+UseZGC -XX:+ZGenerational -Djava.net.preferIPv4Stack=true"
+ENV JAVA_OPTS="-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
 
 # Expose ports
 # 8090/udp - Cluster communication (QUIC: consensus, inter-node messaging)

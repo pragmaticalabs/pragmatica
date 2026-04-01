@@ -15,7 +15,7 @@ import static org.pragmatica.aether.worker.group.WorkerGroupId.workerGroupId;
 /// Same inputs always produce the same outputs. The caller handles hysteresis for merge decisions.
 @SuppressWarnings("JBCT-UTIL-02") // Utility interface -- static methods only
 public sealed interface GroupAssignment {
-    record unused() implements GroupAssignment {}
+    record unused() implements GroupAssignment{}
 
     /// Compute zone-aware worker groups from the given members.
     ///
@@ -43,7 +43,7 @@ public sealed interface GroupAssignment {
                                          String groupName,
                                          String zone,
                                          int maxGroupSize) {
-        if (members.size() <= maxGroupSize) {
+        if ( members.size() <= maxGroupSize) {
             result.put(workerGroupId(groupName, zone), members);
             return;
         }
@@ -57,16 +57,12 @@ public sealed interface GroupAssignment {
                                            int maxGroupSize) {
         var subgroupCount = (members.size() + maxGroupSize - 1) / maxGroupSize;
         var subgroups = new ArrayList<List<NodeId>>(subgroupCount);
-        for (var i = 0; i < subgroupCount; i++) {
-            subgroups.add(new ArrayList<>());
-        }
-        for (var i = 0; i < members.size(); i++) {
-            subgroups.get(i % subgroupCount)
-                     .add(members.get(i));
-        }
-        for (var i = 0; i < subgroupCount; i++) {
-            result.put(workerGroupId(groupName + "-" + i, zone), subgroups.get(i));
-        }
+        for ( var i = 0; i < subgroupCount; i++) {
+        subgroups.add(new ArrayList<>());}
+        for ( var i = 0; i < members.size(); i++) {
+        subgroups.get(i % subgroupCount).add(members.get(i));}
+        for ( var i = 0; i < subgroupCount; i++) {
+        result.put(workerGroupId(groupName + "-" + i, zone), subgroups.get(i));}
     }
 
     private static String extractZone(NodeId nodeId) {
@@ -78,10 +74,9 @@ public sealed interface GroupAssignment {
     }
 
     private static Map<String, List<NodeId>> groupByZone(List<NodeId> members) {
-        return members.stream()
-                      .sorted()
-                      .collect(Collectors.groupingBy(GroupAssignment::extractZone,
-                                                     TreeMap::new,
-                                                     Collectors.toList()));
+        return members.stream().sorted()
+                             .collect(Collectors.groupingBy(GroupAssignment::extractZone,
+                                                            TreeMap::new,
+                                                            Collectors.toList()));
     }
 }

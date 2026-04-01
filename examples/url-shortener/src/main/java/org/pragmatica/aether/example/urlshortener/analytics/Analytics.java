@@ -12,13 +12,7 @@ import org.pragmatica.lang.Verify;
 
 import java.util.regex.Pattern;
 
-/// Analytics slice - tracks URL access statistics.
-///
-/// Uses database storage with clicks table to track click counts per short code.
-/// Subscribes to click events published by UrlShortener via pub-sub.
-@Slice
-public interface Analytics {
-    // === Requests ===
+@Slice public interface Analytics {
     record RecordClickRequest(String shortCode) {
         private static final Pattern CODE_PATTERN = Pattern.compile("^[A-Za-z0-9]{6,8}$");
 
@@ -26,12 +20,11 @@ public interface Analytics {
         private static final Cause INVALID_CODE_FORMAT = AnalyticsError.invalidCode("Invalid short code format");
 
         public static Result<RecordClickRequest> recordClickRequest(String shortCode) {
-            return Verify.ensure(shortCode, Verify.Is::notNull, EMPTY_CODE)
-                         .filter(c -> EMPTY_CODE, Verify.Is::notBlank)
-                         .map(String::trim)
-                         .filter(c -> INVALID_CODE_FORMAT,
-                                 CODE_PATTERN.asMatchPredicate())
-                         .map(RecordClickRequest::new);
+            return Verify.ensure(shortCode, Verify.Is::notNull, EMPTY_CODE).filter(c -> EMPTY_CODE, Verify.Is::notBlank)
+                                .map(String::trim)
+                                .filter(c -> INVALID_CODE_FORMAT,
+                                        CODE_PATTERN.asMatchPredicate())
+                                .map(RecordClickRequest::new);
         }
     }
 
@@ -42,16 +35,14 @@ public interface Analytics {
         private static final Cause INVALID_CODE_FORMAT = AnalyticsError.invalidCode("Invalid short code format");
 
         public static Result<GetStatsRequest> getStatsRequest(String shortCode) {
-            return Verify.ensure(shortCode, Verify.Is::notNull, EMPTY_CODE)
-                         .filter(c -> EMPTY_CODE, Verify.Is::notBlank)
-                         .map(String::trim)
-                         .filter(c -> INVALID_CODE_FORMAT,
-                                 CODE_PATTERN.asMatchPredicate())
-                         .map(GetStatsRequest::new);
+            return Verify.ensure(shortCode, Verify.Is::notNull, EMPTY_CODE).filter(c -> EMPTY_CODE, Verify.Is::notBlank)
+                                .map(String::trim)
+                                .filter(c -> INVALID_CODE_FORMAT,
+                                        CODE_PATTERN.asMatchPredicate())
+                                .map(GetStatsRequest::new);
         }
     }
 
-    // === Responses ===
     record RecordClickResponse(String shortCode, long totalClicks) {
         public static RecordClickResponse recordClickResponse(String shortCode, long totalClicks) {
             return new RecordClickResponse(shortCode, totalClicks);
@@ -64,18 +55,15 @@ public interface Analytics {
         }
     }
 
-    // === Errors ===
     sealed interface AnalyticsError extends Cause {
         record InvalidCode(String reason) implements AnalyticsError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Invalid short code: " + reason;
             }
         }
 
         record StorageError(String operation, Throwable cause) implements AnalyticsError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Analytics storage error during " + operation + ": " + cause.getMessage();
             }
         }
@@ -85,15 +73,10 @@ public interface Analytics {
         }
     }
 
-    // === Operations ===
     Promise<RecordClickResponse> recordClick(RecordClickRequest request);
-
     Promise<GetStatsResponse> getStats(GetStatsRequest request);
+    @ClickEventSubscription Promise<Unit> onClickEvent(ClickEvent event);
 
-    @ClickEventSubscription
-    Promise<Unit> onClickEvent(ClickEvent event);
-
-    // === Factory ===
     static Analytics analytics(@Sql SqlConnector db) {
         return new analytics(db);
     }
@@ -102,25 +85,19 @@ public interface Analytics {
         private static final String INSERT_CLICK = "INSERT INTO clicks (short_code) VALUES (?)";
         private static final String COUNT_CLICKS = "SELECT COUNT(*) as click_count FROM clicks WHERE short_code = ?";
 
-        @Override
-        public Promise<RecordClickResponse> recordClick(RecordClickRequest request) {
+        @Override public Promise<RecordClickResponse> recordClick(RecordClickRequest request) {
             var shortCode = request.shortCode();
-            return db.update(INSERT_CLICK, shortCode)
-                     .flatMap(_ -> getClickCount(shortCode))
-                     .map(count -> RecordClickResponse.recordClickResponse(shortCode, count));
+            return db.update(INSERT_CLICK, shortCode).flatMap(_ -> getClickCount(shortCode))
+                            .map(count -> RecordClickResponse.recordClickResponse(shortCode, count));
         }
 
-        @Override
-        public Promise<GetStatsResponse> getStats(GetStatsRequest request) {
+        @Override public Promise<GetStatsResponse> getStats(GetStatsRequest request) {
             var shortCode = request.shortCode();
             return getClickCount(shortCode).map(count -> GetStatsResponse.getStatsResponse(shortCode, count));
         }
 
-        @Override
-        public Promise<Unit> onClickEvent(ClickEvent event) {
-            return db.update(INSERT_CLICK,
-                             event.shortCode())
-                     .mapToUnit();
+        @Override public Promise<Unit> onClickEvent(ClickEvent event) {
+            return db.update(INSERT_CLICK, event.shortCode()).mapToUnit();
         }
 
         private Promise<Long> getClickCount(String shortCode) {
@@ -128,23 +105,13 @@ public interface Analytics {
         }
     }
 
-    // === No-op analytics for testing ===
     static Analytics noopAnalytics() {
-        return new Analytics() {
-            @Override
-            public Promise<RecordClickResponse> recordClick(RecordClickRequest request) {
-                return Promise.success(RecordClickResponse.recordClickResponse(request.shortCode(), 0));
-            }
-
-            @Override
-            public Promise<GetStatsResponse> getStats(GetStatsRequest request) {
-                return Promise.success(GetStatsResponse.getStatsResponse(request.shortCode(), 0));
-            }
-
-            @Override
-            public Promise<Unit> onClickEvent(ClickEvent event) {
-                return Promise.success(Unit.unit());
-            }
-        };
+        return new Analytics() {@Override public Promise<RecordClickResponse> recordClick(RecordClickRequest request) {
+            return Promise.success(RecordClickResponse.recordClickResponse(request.shortCode(), 0));
+        }@Override public Promise<GetStatsResponse> getStats(GetStatsRequest request) {
+            return Promise.success(GetStatsResponse.getStatsResponse(request.shortCode(), 0));
+        }@Override public Promise<Unit> onClickEvent(ClickEvent event) {
+            return Promise.success(Unit.unit());
+        }};
     }
 }

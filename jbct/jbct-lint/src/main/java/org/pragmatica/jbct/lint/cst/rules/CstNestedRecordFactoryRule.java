@@ -32,14 +32,14 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
         return findAll(root, RuleId.ClassMember.class).stream()
                       .filter(member -> isStaticMember(member, source))
                       .filter(member -> !isMultiMethodInterface(root, member, source))
-                      .flatMap(member -> findFirst(member, RuleId.MethodDecl.class).stream())
+                      .flatMap(member -> findFirstMethod(member).stream())
                       .filter(method -> containsSimpleLocalRecord(method, source))
                       .map(method -> createDiagnostic(method, source, ctx));
     }
 
     private boolean isMultiMethodInterface(CstNode root, CstNode member, String source) {
         return findAncestor(root, member, RuleId.TypeDecl.class)
-                          .flatMap(td -> findFirst(td, RuleId.InterfaceDecl.class))
+                          .flatMap(td -> findFirstInterface(td))
                           .map(iface -> countAbstractMethods(iface, source) > 1)
                           .or(false);
     }
@@ -49,7 +49,7 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
         return childByRule(iface, RuleId.ClassBody.class)
                           .map(body -> (int) childrenByRule(body, RuleId.ClassMember.class).stream()
                                                     .filter(member -> !contains(member, RuleId.TypeKind.class))
-                                                    .filter(member -> contains(member, RuleId.MethodDecl.class))
+                                                    .filter(member -> containsMethod(member))
                                                     .filter(member -> isAbstractMethod(member, source))
                                                     .count())
                           .or(0);
@@ -67,7 +67,7 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
 
     private boolean containsSimpleLocalRecord(CstNode method, String source) {
         // Find local records implementing an interface
-        return findAll(method, RuleId.RecordDecl.class).stream()
+        return findAllRecords(method).stream()
                       .filter(record -> hasImplementsClause(record))
                       .anyMatch(record -> isSimpleImplementation(record));
     }
@@ -79,7 +79,7 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
     private boolean isSimpleImplementation(CstNode record) {
         // A simple record has at most 1 method — can be replaced by a lambda.
         // Complex records (with helper methods) justify the nested record pattern.
-        return count(record, RuleId.MethodDecl.class) <= 1;
+        return countMethods(record) <= 1;
     }
 
     private Diagnostic createDiagnostic(CstNode method, String source, LintContext ctx) {

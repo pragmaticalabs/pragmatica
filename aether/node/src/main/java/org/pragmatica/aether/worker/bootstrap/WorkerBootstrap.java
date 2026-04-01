@@ -51,50 +51,42 @@ public interface WorkerBootstrap {
 
     /// Factory method.
     static WorkerBootstrap workerBootstrap(NodeId selfId, DelegateRouter delegateRouter, KVStore<?, ?> kvStore) {
-        record workerBootstrap(NodeId selfId,
-                               DelegateRouter delegateRouter,
-                               KVStore<?, ?> kvStore,
-                               AtomicBoolean bootstrapped,
-                               AtomicLong snapshotSequenceHolder,
-                               AtomicInteger retryCounter) implements WorkerBootstrap {
-            @Override
-            public long snapshotSequence() {
+        record workerBootstrap( NodeId selfId,
+                                DelegateRouter delegateRouter,
+                                KVStore<?, ?> kvStore,
+                                AtomicBoolean bootstrapped,
+                                AtomicLong snapshotSequenceHolder,
+                                AtomicInteger retryCounter) implements WorkerBootstrap {
+            @Override public long snapshotSequence() {
                 return snapshotSequenceHolder.get();
             }
 
-            @Override
-            public void requestSnapshot(Option<NodeId> source) {
+            @Override public void requestSnapshot(Option<NodeId> source) {
                 source.onPresent(this::sendSnapshotRequest)
-                      .onEmpty(() -> LOG.warn("No snapshot source available for bootstrap"));
+                .onEmpty(() -> LOG.warn("No snapshot source available for bootstrap"));
             }
 
-            @Override
-            public Promise<Unit> onSnapshotReceived(SnapshotResponse response) {
+            @Override public Promise<Unit> onSnapshotReceived(SnapshotResponse response) {
                 return Promise.lift(WorkerError.NetworkFailure::new, () -> applySnapshot(response));
             }
 
-            @Override
-            public void onSnapshotRequest(SnapshotRequest request, byte[] kvState, long sequenceNumber) {
+            @Override public void onSnapshotRequest(SnapshotRequest request, byte[] kvState, long sequenceNumber) {
                 var response = SnapshotResponse.snapshotResponse(kvState, sequenceNumber);
                 delegateRouter.route(new NetworkServiceMessage.Send(request.requester(), response));
                 LOG.info("Sent snapshot to {} at sequence {}",
-                         request.requester()
-                                .id(),
+                         request.requester().id(),
                          sequenceNumber);
             }
 
-            @Override
-            public boolean isBootstrapped() {
+            @Override public boolean isBootstrapped() {
                 return bootstrapped.get();
             }
 
-            @Override
-            public void markBootstrapped() {
+            @Override public void markBootstrapped() {
                 bootstrapped.set(true);
             }
 
-            @Override
-            public int incrementRetry() {
+            @Override public int incrementRetry() {
                 return retryCounter.incrementAndGet();
             }
 
@@ -108,9 +100,8 @@ public interface WorkerBootstrap {
                 LOG.info("Applying snapshot at sequence {}, size={} bytes",
                          response.sequenceNumber(),
                          response.kvState().length);
-                kvStore.restoreSnapshot(response.kvState())
-                       .onSuccess(_ -> markSnapshotApplied(response.sequenceNumber()))
-                       .onFailure(cause -> LOG.error("Failed to apply snapshot: {}", cause));
+                kvStore.restoreSnapshot(response.kvState()).onSuccess(_ -> markSnapshotApplied(response.sequenceNumber()))
+                                       .onFailure(cause -> LOG.error("Failed to apply snapshot: {}", cause));
             }
 
             private void markSnapshotApplied(long sequenceNumber) {

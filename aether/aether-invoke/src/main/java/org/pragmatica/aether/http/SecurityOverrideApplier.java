@@ -23,44 +23,36 @@ public interface SecurityOverrideApplier {
     /// Apply security overrides to a list of route definitions.
     /// Returns new list with overrides applied subject to the policy.
     static List<HttpRouteDefinition> applyOverrides(List<HttpRouteDefinition> routes, SecurityOverrides overrides) {
-        if (overrides.isEmpty()) {
-            return routes;
-        }
-        return routes.stream()
-                     .map(route -> applyOverrideToRoute(route, overrides))
-                     .toList();
+        if ( overrides.isEmpty()) {
+        return routes;}
+        return routes.stream().map(route -> applyOverrideToRoute(route, overrides))
+                            .toList();
     }
 
     private static HttpRouteDefinition applyOverrideToRoute(HttpRouteDefinition route, SecurityOverrides overrides) {
         return overrides.findMatch(route.httpMethod(),
-                                   route.pathPrefix())
-                        .map(SecurityPolicy::fromBlueprintString)
-                        .map(newPolicy -> applyWithPolicy(route,
-                                                          newPolicy,
-                                                          overrides.policy()))
-                        .or(route);
+                                   route.pathPrefix()).map(SecurityPolicy::fromBlueprintString)
+                                  .map(newPolicy -> applyWithPolicy(route,
+                                                                    newPolicy,
+                                                                    overrides.policy()))
+                                  .or(route);
     }
 
     private static HttpRouteDefinition applyWithPolicy(HttpRouteDefinition route,
                                                        SecurityPolicy newPolicy,
                                                        SecurityOverridePolicy policy) {
-        return switch (policy) {
-            case FULL -> applyAndLog(route, newPolicy);
-            case STRENGTHEN_ONLY -> applyIfStronger(route, newPolicy);
-            case NONE -> rejectOverride(route, newPolicy);
-        };
+        return switch (policy) {case FULL -> applyAndLog(route, newPolicy);case STRENGTHEN_ONLY -> applyIfStronger(route,
+                                                                                                                   newPolicy);case NONE -> rejectOverride(route,
+                                                                                                                                                          newPolicy);};
     }
 
     private static HttpRouteDefinition applyIfStronger(HttpRouteDefinition route, SecurityPolicy newPolicy) {
-        if (newPolicy.strength() >= route.security()
-                                         .strength()) {
-            return applyAndLog(route, newPolicy);
-        }
+        if ( newPolicy.strength() >= route.security().strength()) {
+        return applyAndLog(route, newPolicy);}
         LOG.warn("Security override rejected (STRENGTHEN_ONLY): {} {} would weaken from {} to {}",
                  route.httpMethod(),
                  route.pathPrefix(),
-                 route.security()
-                      .asString(),
+                 route.security().asString(),
                  newPolicy.asString());
         return route;
     }
@@ -69,8 +61,7 @@ public interface SecurityOverrideApplier {
         LOG.info("Security override applied: {} {} changed from {} to {}",
                  route.httpMethod(),
                  route.pathPrefix(),
-                 route.security()
-                      .asString(),
+                 route.security().asString(),
                  newPolicy.asString());
         return HttpRouteDefinition.httpRouteDefinition(route.httpMethod(),
                                                        route.pathPrefix(),

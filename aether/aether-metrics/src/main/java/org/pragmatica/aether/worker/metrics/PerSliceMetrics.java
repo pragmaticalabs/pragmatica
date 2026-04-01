@@ -10,12 +10,11 @@ import org.pragmatica.serialization.Codec;
 /// @param p95LatencyMs      P95 latency in milliseconds
 /// @param errorRate         error rate (0.0-1.0)
 /// @param totalCalls        total calls observed
-@Codec
-public record PerSliceMetrics(Artifact artifact,
-                              long activeInvocations,
-                              double p95LatencyMs,
-                              double errorRate,
-                              long totalCalls) {
+@Codec public record PerSliceMetrics( Artifact artifact,
+                                      long activeInvocations,
+                                      double p95LatencyMs,
+                                      double errorRate,
+                                      long totalCalls) {
     /// Factory following JBCT naming convention.
     public static PerSliceMetrics perSliceMetrics(Artifact artifact,
                                                   long activeInvocations,

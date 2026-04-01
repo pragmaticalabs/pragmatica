@@ -17,20 +17,11 @@ final class JwtSignatureVerifier {
 
     /// Verify the JWT signature against the provided public key.
     static Result<JwtTokenParser.ParsedJwt> verify(JwtTokenParser.ParsedJwt jwt, PublicKey key) {
-        return resolveAlgorithm(jwt.header()
-                                   .alg()).flatMap(jdkAlg -> performVerification(jwt, key, jdkAlg));
+        return resolveAlgorithm(jwt.header().alg()).flatMap(jdkAlg -> performVerification(jwt, key, jdkAlg));
     }
 
     private static Result<String> resolveAlgorithm(String jwtAlg) {
-        return switch (jwtAlg) {
-            case "RS256" -> success("SHA256withRSA");
-            case "RS384" -> success("SHA384withRSA");
-            case "RS512" -> success("SHA512withRSA");
-            case "ES256" -> success("SHA256withECDSA");
-            case "ES384" -> success("SHA384withECDSA");
-            case "ES512" -> success("SHA512withECDSA");
-            default -> new SecurityError.InvalidCredentials("Unsupported algorithm: " + jwtAlg).result();
-        };
+        return switch (jwtAlg) {case "RS256" -> success("SHA256withRSA");case "RS384" -> success("SHA384withRSA");case "RS512" -> success("SHA512withRSA");case "ES256" -> success("SHA256withECDSA");case "ES384" -> success("SHA384withECDSA");case "ES512" -> success("SHA512withECDSA");default -> new SecurityError.InvalidCredentials("Unsupported algorithm: " + jwtAlg).result();};
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -46,12 +37,10 @@ final class JwtSignatureVerifier {
                                                                String jdkAlg) throws Exception {
         var sig = Signature.getInstance(jdkAlg);
         sig.initVerify(key);
-        sig.update(jwt.signedContent()
-                      .getBytes(StandardCharsets.US_ASCII));
+        sig.update(jwt.signedContent().getBytes(StandardCharsets.US_ASCII));
         var signatureBytes = maybeConvertEcSignature(jwt.signature(), jdkAlg);
-        if (!sig.verify(signatureBytes)) {
-            throw new SecurityException("Signature verification failed");
-        }
+        if ( !sig.verify(signatureBytes)) {
+        throw new SecurityException("Signature verification failed");}
         return jwt;
     }
 
@@ -63,9 +52,8 @@ final class JwtSignatureVerifier {
     /// JWTs use raw R||S concatenation, but Java's Signature API expects DER-encoded.
     @SuppressWarnings("JBCT-PAT-01")
     private static byte[] maybeConvertEcSignature(byte[] signature, String jdkAlg) {
-        if (!jdkAlg.contains("ECDSA")) {
-            return signature;
-        }
+        if ( !jdkAlg.contains("ECDSA")) {
+        return signature;}
         return convertRawToDer(signature);
     }
 
@@ -96,18 +84,16 @@ final class JwtSignatureVerifier {
         der[pos++] = 0x02;
         // INTEGER tag
         der[pos++] = (byte) fieldLen;
-        if (fieldLen > value.length) {
-            der[pos++] = 0x00;
-        }
+        if ( fieldLen > value.length) {
+        der[pos++] = 0x00;}
         System.arraycopy(value, 0, der, pos, value.length);
         return pos + value.length;
     }
 
     private static byte[] trimLeadingZeros(byte[] data, int start, int end) {
         var idx = start;
-        while (idx < end - 1 && data[idx] == 0) {
-            idx++;
-        }
+        while ( idx < end - 1 && data[idx] == 0) {
+        idx++;}
         var result = new byte[end - idx];
         System.arraycopy(data, idx, result, 0, result.length);
         return result;

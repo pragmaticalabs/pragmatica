@@ -10,10 +10,10 @@ import static org.pragmatica.lang.Result.success;
 /// @param cpuLimit      CPU limit (e.g., "2")
 /// @param memoryRequest Memory request (e.g., "1Gi")
 /// @param memoryLimit   Memory limit (e.g., "2Gi")
-public record ResourcesConfig(String cpuRequest,
-                              String cpuLimit,
-                              String memoryRequest,
-                              String memoryLimit) {
+public record ResourcesConfig( String cpuRequest,
+                               String cpuLimit,
+                               String memoryRequest,
+                               String memoryLimit) {
     /// Factory method following JBCT naming convention.
     public static Result<ResourcesConfig> resourcesConfig(String cpuRequest,
                                                           String cpuLimit,

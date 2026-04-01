@@ -50,70 +50,58 @@ public final class ClusterEventAggregator {
 
     /// Get events that occurred after the given timestamp.
     public List<ClusterEvent> eventsSince(Instant since) {
-        return buffer.filter(e -> e.timestamp()
-                                   .isAfter(since));
+        return buffer.filter(e -> e.timestamp().isAfter(since));
     }
 
     // --- Message handlers ---
     public void onNodeAdded(TopologyChangeNotification.NodeAdded event) {
-        nodeJoinTimes.put(event.nodeId()
-                               .id(),
+        nodeJoinTimes.put(event.nodeId().id(),
                           System.currentTimeMillis());
         buffer.add(ClusterEvent.clusterEvent(EventType.NODE_JOINED,
                                              Severity.INFO,
-                                             "Node " + event.nodeId()
-                                                            .id() + " joined cluster (now " + event.topology()
-                                                                                                   .size() + " nodes)",
+                                             "Node " + event.nodeId().id() + " joined cluster (now " + event.topology()
+        .size() + " nodes)",
                                              Map.of("nodeId",
-                                                    event.nodeId()
-                                                         .id(),
+                                                    event.nodeId().id(),
                                                     "clusterSize",
-                                                    String.valueOf(event.topology()
-                                                                        .size()))));
+                                                    String.valueOf(event.topology().size()))));
     }
 
     public void onNodeRemoved(TopologyChangeNotification.NodeRemoved event) {
         buffer.add(ClusterEvent.clusterEvent(EventType.NODE_LEFT,
                                              Severity.INFO,
-                                             "Node " + event.nodeId()
-                                                            .id() + " left cluster (now " + event.topology()
-                                                                                                 .size() + " nodes)",
+                                             "Node " + event.nodeId().id() + " left cluster (now " + event.topology()
+        .size() + " nodes)",
                                              Map.of("nodeId",
-                                                    event.nodeId()
-                                                         .id(),
+                                                    event.nodeId().id(),
                                                     "clusterSize",
-                                                    String.valueOf(event.topology()
-                                                                        .size()))));
+                                                    String.valueOf(event.topology().size()))));
     }
 
     public void onNodeDown(TopologyChangeNotification.NodeDown event) {
         buffer.add(ClusterEvent.clusterEvent(EventType.NODE_FAILED,
                                              Severity.CRITICAL,
-                                             "Node " + event.nodeId()
-                                                           .id() + " failed",
+                                             "Node " + event.nodeId().id() + " failed",
                                              Map.of("nodeId",
-                                                    event.nodeId()
-                                                         .id())));
+                                                    event.nodeId().id())));
     }
 
     public void onLeaderChange(LeaderNotification.LeaderChange event) {
-        event.leaderId()
-             .onPresent(leaderId -> buffer.add(ClusterEvent.clusterEvent(EventType.LEADER_ELECTED,
-                                                                         Severity.INFO,
-                                                                         "Node " + leaderId.id() + " elected as leader",
-                                                                         Map.of("leaderId",
-                                                                                leaderId.id()))))
-             .onEmpty(() -> buffer.add(ClusterEvent.clusterEvent(EventType.LEADER_LOST,
-                                                                 Severity.WARNING,
-                                                                 "Leadership lost, election in progress",
-                                                                 Map.of())));
+        event.leaderId().onPresent(leaderId -> buffer.add(ClusterEvent.clusterEvent(EventType.LEADER_ELECTED,
+                                                                                    Severity.INFO,
+                                                                                    "Node " + leaderId.id() + " elected as leader",
+                                                                                    Map.of("leaderId",
+                                                                                           leaderId.id()))))
+                      .onEmpty(() -> buffer.add(ClusterEvent.clusterEvent(EventType.LEADER_LOST,
+                                                                          Severity.WARNING,
+                                                                          "Leadership lost, election in progress",
+                                                                          Map.of())));
     }
 
     public void onQuorumStateChange(QuorumStateNotification event) {
-        if (!event.advanceSequence(quorumSequence)) {
-            return;
-        }
-        switch (event.state()) {
+        if ( !event.advanceSequence(quorumSequence)) {
+        return;}
+        switch ( event.state()) {
             case ESTABLISHED ->
             buffer.add(ClusterEvent.clusterEvent(EventType.QUORUM_ESTABLISHED,
                                                  Severity.INFO,
@@ -127,17 +115,13 @@ public final class ClusterEventAggregator {
     /// Derive deployment events from NodeArtifactKey state transitions in KV-Store.
     /// This is the authoritative source — visible on ALL nodes via consensus.
     public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> event) {
-        var key = event.cause()
-                       .key();
-        var value = event.cause()
-                         .value();
-        var artifact = key.artifact()
-                          .asString();
-        var nodeId = key.nodeId()
-                        .id();
+        var key = event.cause().key();
+        var value = event.cause().value();
+        var artifact = key.artifact().asString();
+        var nodeId = key.nodeId().id();
         var state = value.state();
         var trackingKey = artifact + ":" + nodeId;
-        switch (state) {
+        switch ( state) {
             case LOAD -> handleDeploymentStarted(trackingKey, artifact, nodeId);
             case ACTIVE -> handleDeploymentCompleted(trackingKey, artifact, nodeId);
             case FAILED -> handleDeploymentFailed(trackingKey, artifact, nodeId, value);
@@ -155,8 +139,7 @@ public final class ClusterEventAggregator {
 
     private void handleDeploymentCompleted(String trackingKey, String artifact, String nodeId) {
         var durationMs = computeAndRemoveDuration(trackingKey);
-        var durationSuffix = durationMs.map(ms -> " in " + formatDuration(ms))
-                                       .or("");
+        var durationSuffix = durationMs.map(ms -> " in " + formatDuration(ms)).or("");
         var nodeReadySuffix = buildNodeReadySuffix(nodeId);
         buffer.add(ClusterEvent.clusterEvent(EventType.DEPLOYMENT_COMPLETED,
                                              Severity.INFO,
@@ -169,43 +152,33 @@ public final class ClusterEventAggregator {
                                         String nodeId,
                                         NodeArtifactValue value) {
         var durationMs = computeAndRemoveDuration(trackingKey);
-        var durationSuffix = durationMs.map(ms -> " after " + formatDuration(ms))
-                                       .or("");
-        var reason = value.failureReason()
-                          .or("unknown");
+        var durationSuffix = durationMs.map(ms -> " after " + formatDuration(ms)).or("");
+        var reason = value.failureReason().or("unknown");
         buffer.add(ClusterEvent.clusterEvent(EventType.DEPLOYMENT_FAILED,
                                              Severity.WARNING,
-                                             "Deployment of " + artifact + " failed on " + nodeId + durationSuffix
-                                             + ": " + reason,
+                                             "Deployment of " + artifact + " failed on " + nodeId + durationSuffix + ": " + reason,
                                              buildFailedMetadata(artifact, nodeId, reason, durationMs)));
     }
 
     public void onSliceFailure(SliceFailureEvent.AllInstancesFailed event) {
         buffer.add(ClusterEvent.clusterEvent(EventType.SLICE_FAILURE,
                                              Severity.CRITICAL,
-                                             "All instances of " + event.artifact()
-                                                                        .asString() + ":" + event.method()
-                                                                                                 .name() + " failed",
+                                             "All instances of " + event.artifact().asString() + ":" + event.method()
+        .name() + " failed",
                                              Map.of("artifact",
-                                                    event.artifact()
-                                                         .asString(),
+                                                    event.artifact().asString(),
                                                     "method",
-                                                    event.method()
-                                                         .name(),
+                                                    event.method().name(),
                                                     "attemptedNodes",
-                                                    String.valueOf(event.attemptedNodes()
-                                                                        .size()))));
+                                                    String.valueOf(event.attemptedNodes().size()))));
     }
 
     public void onScaledUp(ScalingEvent.ScaledUp event) {
         buffer.add(ClusterEvent.clusterEvent(EventType.SCALE_UP,
                                              Severity.INFO,
-                                             event.artifact()
-                                                  .asString() + " scaled up from " + event.previousInstances() + " to " + event.newInstances()
-                                             + " instances",
+                                             event.artifact().asString() + " scaled up from " + event.previousInstances() + " to " + event.newInstances() + " instances",
                                              Map.of("artifact",
-                                                    event.artifact()
-                                                         .asString(),
+                                                    event.artifact().asString(),
                                                     "previousInstances",
                                                     String.valueOf(event.previousInstances()),
                                                     "newInstances",
@@ -215,12 +188,9 @@ public final class ClusterEventAggregator {
     public void onScaledDown(ScalingEvent.ScaledDown event) {
         buffer.add(ClusterEvent.clusterEvent(EventType.SCALE_DOWN,
                                              Severity.INFO,
-                                             event.artifact()
-                                                  .asString() + " scaled down from " + event.previousInstances()
-                                             + " to " + event.newInstances() + " instances",
+                                             event.artifact().asString() + " scaled down from " + event.previousInstances() + " to " + event.newInstances() + " instances",
                                              Map.of("artifact",
-                                                    event.artifact()
-                                                         .asString(),
+                                                    event.artifact().asString(),
                                                     "previousInstances",
                                                     String.valueOf(event.previousInstances()),
                                                     "newInstances",
@@ -236,12 +206,9 @@ public final class ClusterEventAggregator {
                         : EventType.SCALE_DOWN;
         buffer.add(ClusterEvent.clusterEvent(eventType,
                                              Severity.INFO,
-                                             "Reconciliation: " + event.artifact()
-                                                                       .asString() + " adjusted " + direction + " from " + event.currentInstances()
-                                             + " to " + event.desiredInstances() + " instances",
+                                             "Reconciliation: " + event.artifact().asString() + " adjusted " + direction + " from " + event.currentInstances() + " to " + event.desiredInstances() + " instances",
                                              Map.of("artifact",
-                                                    event.artifact()
-                                                         .asString(),
+                                                    event.artifact().asString(),
                                                     "previousInstances",
                                                     String.valueOf(event.currentInstances()),
                                                     "desiredInstances",
@@ -253,11 +220,9 @@ public final class ClusterEventAggregator {
     public void onConnectionEstablished(NetworkServiceMessage.ConnectionEstablished event) {
         buffer.add(ClusterEvent.clusterEvent(EventType.CONNECTION_ESTABLISHED,
                                              Severity.INFO,
-                                             "Connected to node " + event.nodeId()
-                                                                        .id(),
+                                             "Connected to node " + event.nodeId().id(),
                                              Map.of("nodeId",
-                                                    event.nodeId()
-                                                         .id())));
+                                                    event.nodeId().id())));
     }
 
     // --- Operational event handlers ---
@@ -292,8 +257,7 @@ public final class ClusterEventAggregator {
     public void onConfigChanged(OperationalEvent.ConfigChanged event) {
         buffer.add(ClusterEvent.clusterEvent(EventType.CONFIG_CHANGED,
                                              Severity.INFO,
-                                             "Config " + event.action() + ": " + event.key() + " (" + event.scope()
-                                             + ")",
+                                             "Config " + event.action() + ": " + event.key() + " (" + event.scope() + ")",
                                              Map.of("key",
                                                     event.key(),
                                                     "scope",
@@ -338,39 +302,30 @@ public final class ClusterEventAggregator {
     public void onConnectionFailed(NetworkServiceMessage.ConnectionFailed event) {
         buffer.add(ClusterEvent.clusterEvent(EventType.CONNECTION_FAILED,
                                              Severity.WARNING,
-                                             "Connection to node " + event.nodeId()
-                                                                          .id() + " failed: " + event.cause()
-                                                                                                     .message(),
+                                             "Connection to node " + event.nodeId().id() + " failed: " + event.cause()
+        .message(),
                                              Map.of("nodeId",
-                                                    event.nodeId()
-                                                         .id(),
+                                                    event.nodeId().id(),
                                                     "cause",
-                                                    event.cause()
-                                                         .message())));
+                                                    event.cause().message())));
     }
 
     private Option<Long> computeAndRemoveDuration(String trackingKey) {
         return Option.option(deploymentStartTimes.remove(trackingKey))
-                     .map(startTime -> System.currentTimeMillis() - startTime);
+        .map(startTime -> System.currentTimeMillis() - startTime);
     }
 
     private String buildNodeReadySuffix(String nodeId) {
         var nodeJoinTime = nodeJoinTimes.remove(nodeId);
-        if (nodeJoinTime == null) {
-            return "";
-        }
+        if ( nodeJoinTime == null) {
+        return "";}
         var joinToDeployMs = System.currentTimeMillis() - nodeJoinTime;
         return " (node ready in " + formatDuration(joinToDeployMs) + ")";
     }
 
     private static Map<String, String> buildCompletedMetadata(String artifact, String nodeId, Option<Long> durationMs) {
-        return durationMs.map(ms -> Map.of("artifact",
-                                           artifact,
-                                           "nodeId",
-                                           nodeId,
-                                           "durationMs",
-                                           String.valueOf(ms)))
-                         .or(Map.of("artifact", artifact, "nodeId", nodeId));
+        return durationMs.map(ms -> Map.of("artifact", artifact, "nodeId", nodeId, "durationMs", String.valueOf(ms)))
+        .or(Map.of("artifact", artifact, "nodeId", nodeId));
     }
 
     private static Map<String, String> buildFailedMetadata(String artifact,
@@ -380,17 +335,15 @@ public final class ClusterEventAggregator {
         var base = Map.of("artifact", artifact, "nodeId", nodeId, "reason", reason);
         return durationMs.map(ms -> {
                                   var metadata = new java.util.HashMap<>(base);
-                                  metadata.put("durationMs",
-                                               String.valueOf(ms));
+                                  metadata.put("durationMs", String.valueOf(ms));
                                   return Map.copyOf(metadata);
                               })
-                         .or(base);
+        .or(base);
     }
 
     private static String formatDuration(long durationMs) {
-        if (durationMs < 1000) {
-            return durationMs + "ms";
-        }
+        if ( durationMs < 1000) {
+        return durationMs + "ms";}
         return String.format("%.1fs", durationMs / 1000.0);
     }
 }

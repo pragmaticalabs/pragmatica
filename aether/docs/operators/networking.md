@@ -63,6 +63,10 @@ QUIC mandates TLS 1.3 -- there is no plaintext mode. When no TLS configuration i
 provided (development/Forge), ephemeral self-signed certificates are generated
 automatically for zero-config startup.
 
+For comprehensive TLS certificate management -- including auto-generated certificates,
+manual certificate files, rotation lifecycle, gossip encryption, and troubleshooting --
+see [TLS Certificate Management](tls-certificates.md).
+
 ### Connection Model
 
 Each pair of nodes maintains exactly one QUIC connection. The node with the lower

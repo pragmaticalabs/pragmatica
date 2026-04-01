@@ -1,7 +1,4 @@
 package org.pragmatica.aether.resource.aspect;
-/// Transaction propagation behavior.
-/// Defines how transactions should behave when a transactional method
-/// is called within the context of an existing transaction.
 public enum TransactionPropagation {
     /// Support a current transaction, create a new one if none exists.
     /// This is the default behavior.

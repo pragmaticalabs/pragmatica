@@ -33,25 +33,25 @@ import java.util.Map;
 /// @param failedInvocations    Failed method invocations
 /// @param avgLatencyMs         Average invocation latency in milliseconds
 /// @param custom               Custom metrics from slices
-public record ComprehensiveSnapshot(long timestamp,
-                                    // JVM
+public record ComprehensiveSnapshot( long timestamp,
+                                     // JVM
 double cpuUsage,
-                                    long heapUsed,
-                                    long heapMax,
-                                    // GC
+                                     long heapUsed,
+                                     long heapMax,
+                                     // GC
 GCMetrics gc,
-                                    // Event Loop
+                                     // Event Loop
 EventLoopMetrics eventLoop,
-                                    // Network
+                                     // Network
 NetworkMetrics network,
-                                    // Consensus
+                                     // Consensus
 RabiaMetrics consensus,
-                                    // Invocation summary
+                                     // Invocation summary
 long totalInvocations,
-                                    long successfulInvocations,
-                                    long failedInvocations,
-                                    double avgLatencyMs,
-                                    // Custom
+                                     long successfulInvocations,
+                                     long failedInvocations,
+                                     double avgLatencyMs,
+                                     // Custom
 Map<String, Double> custom) {
     public static final ComprehensiveSnapshot EMPTY = new ComprehensiveSnapshot(0,
                                                                                 0.0,
@@ -69,25 +69,22 @@ Map<String, Double> custom) {
 
     /// Heap usage as ratio (0.0-1.0).
     public double heapUsage() {
-        if (heapMax <= 0) {
-            return 0.0;
-        }
+        if ( heapMax <= 0) {
+        return 0.0;}
         return (double) heapUsed / heapMax;
     }
 
     /// Success rate as ratio (0.0-1.0).
     public double successRate() {
-        if (totalInvocations <= 0) {
-            return 1.0;
-        }
+        if ( totalInvocations <= 0) {
+        return 1.0;}
         return (double) successfulInvocations / totalInvocations;
     }
 
     /// Error rate as ratio (0.0-1.0).
     public double errorRate() {
-        if (totalInvocations <= 0) {
-            return 0.0;
-        }
+        if ( totalInvocations <= 0) {
+        return 0.0;}
         return (double) failedInvocations / totalInvocations;
     }
 

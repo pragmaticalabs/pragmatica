@@ -31,14 +31,13 @@ public enum AbTestState {
     FAILED;
     /// Returns valid transitions from this state.
     public Set<AbTestState> validTransitions() {
-        return switch (this) {
-            case PENDING -> Set.of(DEPLOYING_VARIANTS, FAILED);
-            case DEPLOYING_VARIANTS -> Set.of(ACTIVE, ROLLING_BACK, FAILED);
-            case ACTIVE -> Set.of(CONCLUDING, ROLLING_BACK, FAILED);
-            case CONCLUDING -> Set.of(COMPLETED, FAILED);
-            case ROLLING_BACK -> Set.of(ROLLED_BACK, FAILED);
-            case COMPLETED, ROLLED_BACK, FAILED -> Set.of();
-        };
+        return switch (this) {case PENDING -> Set.of(DEPLOYING_VARIANTS, FAILED);case DEPLOYING_VARIANTS -> Set.of(ACTIVE,
+                                                                                                                   ROLLING_BACK,
+                                                                                                                   FAILED);case ACTIVE -> Set.of(CONCLUDING,
+                                                                                                                                                 ROLLING_BACK,
+                                                                                                                                                 FAILED);case CONCLUDING -> Set.of(COMPLETED,
+                                                                                                                                                                                   FAILED);case ROLLING_BACK -> Set.of(ROLLED_BACK,
+                                                                                                                                                                                                                       FAILED);case COMPLETED, ROLLED_BACK, FAILED -> Set.of();};
     }
     /// Checks if this state is a terminal state.
     public boolean isTerminal() {

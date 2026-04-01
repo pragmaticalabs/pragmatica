@@ -7,28 +7,25 @@ import org.pragmatica.lang.Cause;
 /// API module stays Jackson-free.
 public sealed interface HttpClientError extends Cause {
     /// JSON serialization of request body failed.
-    record SerializationFailed(String message) implements HttpClientError {}
+    record SerializationFailed(String message) implements HttpClientError{}
 
     /// JSON deserialization of response body failed.
     record DeserializationFailed(String detail, String responseBody) implements HttpClientError {
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Deserialization failed: " + detail;
         }
     }
 
     /// HTTP request returned non-2xx status code.
     record RequestFailed(int statusCode, String responseBody) implements HttpClientError {
-        @Override
-        public String message() {
+        @Override public String message() {
             return "HTTP " + statusCode + ": " + responseBody;
         }
     }
 
     /// HTTP request returned non-2xx status code with a parseable error body.
     record RequestFailedWithBody(int statusCode, Object parsedError, String rawBody) implements HttpClientError {
-        @Override
-        public String message() {
+        @Override public String message() {
             return "HTTP " + statusCode + ": " + parsedError;
         }
     }

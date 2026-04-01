@@ -10,14 +10,13 @@ import static org.pragmatica.lang.Result.success;
 
 /// Azure Key Vault implementation of the SecretsProvider SPI.
 /// Resolves secrets from Azure Key Vault using path format: `{vaultName}/{secretName}`.
-public record AzureSecretsProvider(AzureClient client) implements SecretsProvider {
+public record AzureSecretsProvider( AzureClient client) implements SecretsProvider {
     /// Factory method for creating an AzureSecretsProvider.
     public static Result<AzureSecretsProvider> azureSecretsProvider(AzureClient client) {
         return success(new AzureSecretsProvider(client));
     }
 
-    @Override
-    public Promise<String> resolveSecret(String secretPath) {
+    @Override public Promise<String> resolveSecret(String secretPath) {
         return splitPath(secretPath).async()
                         .flatMap(this::fetchSecret)
                         .mapError(cause -> EnvironmentError.secretResolutionFailed(secretPath,
@@ -27,11 +26,10 @@ public record AzureSecretsProvider(AzureClient client) implements SecretsProvide
     // --- Leaf: split secret path into vault name and secret name ---
     static Result<VaultAndSecret> splitPath(String path) {
         var slashIndex = path.indexOf('/');
-        if (slashIndex <= 0 || slashIndex >= path.length() - 1) {
-            return EnvironmentError.secretResolutionFailed(path,
-                                                           new IllegalArgumentException("Path must be in format: vaultName/secretName"))
-                                   .result();
-        }
+        if ( slashIndex <= 0 || slashIndex >= path.length() - 1) {
+        return EnvironmentError.secretResolutionFailed(path,
+                                                       new IllegalArgumentException("Path must be in format: vaultName/secretName"))
+        .result();}
         return success(new VaultAndSecret(path.substring(0, slashIndex), path.substring(slashIndex + 1)));
     }
 
@@ -41,5 +39,5 @@ public record AzureSecretsProvider(AzureClient client) implements SecretsProvide
     }
 
     /// Internal pair of vault name and secret name.
-    record VaultAndSecret(String vaultName, String secretName) {}
+    record VaultAndSecret(String vaultName, String secretName){}
 }

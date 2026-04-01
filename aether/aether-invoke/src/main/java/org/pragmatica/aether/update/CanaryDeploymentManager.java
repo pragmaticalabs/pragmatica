@@ -22,12 +22,12 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.utility.KSUID;
+import org.pragmatica.lang.concurrent.CancellableTask;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
@@ -89,21 +89,17 @@ public interface CanaryDeploymentManager {
 
     /// Handle leader change (start/stop evaluation loop).
     @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    void onLeaderChange(LeaderChange leaderChange);
+    @SuppressWarnings("JBCT-RET-01") void onLeaderChange(LeaderChange leaderChange);
 
     /// Handle deployment failure for auto-rollback.
     @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    void onDeploymentFailed(DeploymentEvent.DeploymentFailed event);
+    @SuppressWarnings("JBCT-RET-01") void onDeploymentFailed(DeploymentEvent.DeploymentFailed event);
 
     /// Default evaluation interval (30 seconds).
-    TimeSpan DEFAULT_EVALUATION_INTERVAL = TimeSpan.timeSpan(30)
-                                                  .seconds();
+    TimeSpan DEFAULT_EVALUATION_INTERVAL = TimeSpan.timeSpan(30).seconds();
 
     /// Default KV operation timeout.
-    TimeSpan DEFAULT_KV_OPERATION_TIMEOUT = TimeSpan.timeSpan(30)
-                                                   .seconds();
+    TimeSpan DEFAULT_KV_OPERATION_TIMEOUT = TimeSpan.timeSpan(30).seconds();
 
     /// Default terminal retention (1 hour).
     long DEFAULT_TERMINAL_RETENTION_MS = TimeUnit.HOURS.toMillis(1);
@@ -128,24 +124,29 @@ public interface CanaryDeploymentManager {
                                                            TimeSpan kvOperationTimeout,
                                                            long terminalRetentionMs,
                                                            TimeSpan evaluationInterval) {
-        record canaryDeploymentManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                       KVStore<AetherKey, AetherValue> kvStore,
-                                       InvocationMetricsCollector metricsCollector,
-                                       TimeSpan kvOperationTimeout,
-                                       long terminalRetentionMs,
-                                       TimeSpan evaluationInterval,
-                                       Map<String, CanaryDeployment> canaries,
-                                       AtomicReference<ScheduledFuture<?>> evaluationFuture) implements CanaryDeploymentManager {
+        record canaryDeploymentManager( RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                        KVStore<AetherKey, AetherValue> kvStore,
+                                        InvocationMetricsCollector metricsCollector,
+                                        TimeSpan kvOperationTimeout,
+                                        long terminalRetentionMs,
+                                        TimeSpan evaluationInterval,
+                                        Map<String, CanaryDeployment> canaries,
+                                        CancellableTask evaluationFuture) implements CanaryDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(CanaryDeploymentManager.class);
 
             @Override
             @SuppressWarnings("JBCT-RET-01")
             public void onLeaderChange(LeaderChange leaderChange) {
-                if (leaderChange.localNodeIsLeader()) {
+                if ( leaderChange.localNodeIsLeader()) {
                     log.info("Canary deployment manager active (leader)");
                     restoreState();
                     startEvaluationLoop();
-                } else {
+                } else
+
+
+
+
+                {
                     log.info("Canary deployment manager passive (follower)");
                     stopEvaluationLoop();
                 }
@@ -154,17 +155,19 @@ public interface CanaryDeploymentManager {
             @Override
             @SuppressWarnings("JBCT-RET-01")
             public void onDeploymentFailed(DeploymentEvent.DeploymentFailed event) {
-                var artifactBase = event.artifact()
-                                        .base();
-                getActiveCanary(artifactBase).filter(canary -> canary.newVersion()
-                                                                     .equals(event.artifact()
-                                                                                  .version()))
+                var artifactBase = event.artifact().base();
+                getActiveCanary(artifactBase).filter(canary -> canary.newVersion().equals(event.artifact().version()))
                                .filter(CanaryDeployment::isActive)
                                .onPresent(canary -> triggerAutoRollback(canary, event));
             }
 
             @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
-            private void triggerAutoRollback(CanaryDeployment canary, DeploymentEvent.DeploymentFailed event) {
+            private// Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            void triggerAutoRollback(CanaryDeployment canary, DeploymentEvent.DeploymentFailed event) {
                 log.warn("Auto-rollback triggered for canary {} — new version {} failed on node {}: {}",
                          canary.canaryId(),
                          event.artifact(),
@@ -176,75 +179,79 @@ public interface CanaryDeploymentManager {
                                               cause.message()));
             }
 
-            // --- Evaluation loop (SharedScheduler + ScheduledFuture pattern from ControlLoop) ---
+            // --- Evaluation loop (SharedScheduler + CancellableTask pattern from ControlLoop) ---
             @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
-            private void startEvaluationLoop() {
-                stopEvaluationLoop();
-                var task = SharedScheduler.scheduleAtFixedRate(this::evaluateCanaries, evaluationInterval);
-                evaluationFuture.set(task);
+            private// Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            void startEvaluationLoop() {
+                evaluationFuture.set(SharedScheduler.scheduleAtFixedRate(this::evaluateCanaries, evaluationInterval));
                 log.info("Canary evaluation loop started (interval: {}ms)", evaluationInterval.millis());
             }
 
             @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
-            private void stopEvaluationLoop() {
-                Option.option(evaluationFuture.getAndSet(null))
-                      .onPresent(existing -> existing.cancel(false));
+            private// Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            void stopEvaluationLoop() {
+                evaluationFuture.cancel();
             }
 
             @SuppressWarnings("JBCT-RET-01")
             private void evaluateCanaries() {
-                canaries.values()
-                        .stream()
-                        .filter(c -> c.state() == CanaryState.CANARY_ACTIVE)
-                        .forEach(this::evaluateSingleCanary);
+                canaries.values().stream()
+                               .filter(c -> c.state() == CanaryState.CANARY_ACTIVE)
+                               .forEach(this::evaluateSingleCanary);
             }
 
             @SuppressWarnings("JBCT-RET-01")
             private void evaluateSingleCanary(CanaryDeployment canary) {
                 var comparison = collectHealthComparison(canary);
                 logEvaluation(canary, comparison);
-                if (comparison.shouldRollback()) {
+                if ( comparison.shouldRollback()) {
                     handleAutoRollback(canary, comparison);
                     return;
                 }
-                if (comparison.verdict() == CanaryHealthComparison.Verdict.HEALTHY && canary.hasExceededObservation()) {
-                    handleStageAdvancement(canary);
-                }
+                if ( comparison.verdict() == CanaryHealthComparison.Verdict.HEALTHY && canary.hasExceededObservation()) {
+                handleStageAdvancement(canary);}
             }
 
             @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
-            private void logEvaluation(CanaryDeployment canary, CanaryHealthComparison comparison) {
+            private// Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            void logEvaluation(CanaryDeployment canary, CanaryHealthComparison comparison) {
                 log.debug("Canary {} stage {}/{} verdict={} (canary: err={} p99={}ms, baseline: err={} p99={}ms)",
                           canary.canaryId(),
                           canary.currentStageIndex() + 1,
-                          canary.stages()
-                                .size(),
+                          canary.stages().size(),
                           comparison.verdict(),
-                          comparison.canaryMetrics()
-                                    .errorRate(),
-                          comparison.canaryMetrics()
-                                    .p99LatencyMs(),
-                          comparison.baselineMetrics()
-                                    .errorRate(),
-                          comparison.baselineMetrics()
-                                    .p99LatencyMs());
+                          comparison.canaryMetrics().errorRate(),
+                          comparison.canaryMetrics().p99LatencyMs(),
+                          comparison.baselineMetrics().errorRate(),
+                          comparison.baselineMetrics().p99LatencyMs());
             }
 
             @SuppressWarnings("JBCT-RET-01")
             private void handleAutoRollback(CanaryDeployment canary, CanaryHealthComparison comparison) {
                 log.warn("Auto-rollback for canary {} — verdict: {}", canary.canaryId(), comparison.verdict());
-                canary.transitionTo(CanaryState.AUTO_ROLLBACK)
-                      .async()
-                      .flatMap(this::cacheAndPersistCanary)
-                      .flatMap(this::removeNewVersion)
-                      .onFailure(cause -> log.error("Auto-rollback failed for canary {}: {}",
-                                                    canary.canaryId(),
-                                                    cause.message()));
+                canary.transitionTo(CanaryState.AUTO_ROLLBACK).async()
+                                   .flatMap(this::cacheAndPersistCanary)
+                                   .flatMap(this::removeNewVersion)
+                                   .onFailure(cause -> log.error("Auto-rollback failed for canary {}: {}",
+                                                                 canary.canaryId(),
+                                                                 cause.message()));
             }
 
             @SuppressWarnings("JBCT-RET-01")
             private void handleStageAdvancement(CanaryDeployment canary) {
-                if (canary.isLastStage()) {
+                if ( canary.isLastStage()) {
                     handlePromotion(canary);
                     return;
                 }
@@ -254,42 +261,37 @@ public interface CanaryDeploymentManager {
             @SuppressWarnings("JBCT-RET-01")
             private void handlePromotion(CanaryDeployment canary) {
                 log.info("Canary {} passed final stage — promoting", canary.canaryId());
-                canary.transitionTo(CanaryState.PROMOTING)
-                      .async()
-                      .flatMap(this::cacheAndPersistCanary)
-                      .flatMap(this::completePromotion)
-                      .onFailure(cause -> log.error("Promotion failed for canary {}: {}",
-                                                    canary.canaryId(),
-                                                    cause.message()));
+                canary.transitionTo(CanaryState.PROMOTING).async()
+                                   .flatMap(this::cacheAndPersistCanary)
+                                   .flatMap(this::completePromotion)
+                                   .onFailure(cause -> log.error("Promotion failed for canary {}: {}",
+                                                                 canary.canaryId(),
+                                                                 cause.message()));
             }
 
             @SuppressWarnings("JBCT-RET-01")
             private void advanceCanaryStage(CanaryDeployment canary) {
-                canary.advanceStage()
-                      .async()
-                      .flatMap(this::cacheAndPersistCanary)
-                      .flatMap(this::persistRouting)
-                      .onSuccess(advanced -> log.info("Canary {} advanced to stage {}/{} ({}% traffic)",
-                                                      advanced.canaryId(),
-                                                      advanced.currentStageIndex() + 1,
-                                                      advanced.stages()
-                                                              .size(),
-                                                      advanced.routing()
-                                                              .newVersionPercentage()))
-                      .onFailure(cause -> log.error("Stage advancement failed for canary {}: {}",
-                                                    canary.canaryId(),
-                                                    cause.message()));
+                canary.advanceStage().async()
+                                   .flatMap(this::cacheAndPersistCanary)
+                                   .flatMap(this::persistRouting)
+                                   .onSuccess(advanced -> log.info("Canary {} advanced to stage {}/{} ({}% traffic)",
+                                                                   advanced.canaryId(),
+                                                                   advanced.currentStageIndex() + 1,
+                                                                   advanced.stages().size(),
+                                                                   advanced.routing().newVersionPercentage()))
+                                   .onFailure(cause -> log.error("Stage advancement failed for canary {}: {}",
+                                                                 canary.canaryId(),
+                                                                 cause.message()));
             }
 
             // --- Core operations ---
-            @Override
-            public Promise<CanaryDeployment> startCanary(ArtifactBase artifactBase,
-                                                         Version newVersion,
-                                                         int instances,
-                                                         List<CanaryStage> stages,
-                                                         HealthThresholds thresholds,
-                                                         CanaryAnalysisConfig analysisConfig,
-                                                         CleanupPolicy cleanupPolicy) {
+            @Override public Promise<CanaryDeployment> startCanary(ArtifactBase artifactBase,
+                                                                   Version newVersion,
+                                                                   int instances,
+                                                                   List<CanaryStage> stages,
+                                                                   HealthThresholds thresholds,
+                                                                   CanaryAnalysisConfig analysisConfig,
+                                                                   CleanupPolicy cleanupPolicy) {
                 return requireLeader().flatMap(_ -> checkNoActiveCanary(artifactBase))
                                     .flatMap(_ -> findCurrentVersion(artifactBase))
                                     .flatMap(oldVersion -> createAndDeployCanary(artifactBase,
@@ -302,87 +304,70 @@ public interface CanaryDeploymentManager {
                                                                                  cleanupPolicy));
             }
 
-            @Override
-            public Promise<CanaryDeployment> promoteCanary(String canaryId) {
+            @Override public Promise<CanaryDeployment> promoteCanary(String canaryId) {
                 return requireLeader().flatMap(_ -> findCanary(canaryId))
                                     .flatMap(this::validateAndPromote);
             }
 
-            @Override
-            public Promise<CanaryDeployment> promoteCanaryFull(String canaryId) {
+            @Override public Promise<CanaryDeployment> promoteCanaryFull(String canaryId) {
                 return requireLeader().flatMap(_ -> findCanary(canaryId))
                                     .flatMap(this::validateAndPromoteFull);
             }
 
-            @Override
-            public Promise<CanaryDeployment> rollbackCanary(String canaryId) {
+            @Override public Promise<CanaryDeployment> rollbackCanary(String canaryId) {
                 return requireLeader().flatMap(_ -> findCanary(canaryId))
                                     .flatMap(this::validateAndRollback);
             }
 
-            @Override
-            public Option<CanaryDeployment> getCanary(String canaryId) {
+            @Override public Option<CanaryDeployment> getCanary(String canaryId) {
                 return Option.option(canaries.get(canaryId));
             }
 
-            @Override
-            public Option<CanaryDeployment> getActiveCanary(ArtifactBase artifactBase) {
-                return Option.from(canaries.values()
-                                           .stream()
-                                           .filter(c -> c.artifactBase()
-                                                         .equals(artifactBase) && c.isActive())
-                                           .findFirst());
+            @Override public Option<CanaryDeployment> getActiveCanary(ArtifactBase artifactBase) {
+                return Option.from(canaries.values().stream()
+                                                  .filter(c -> c.artifactBase().equals(artifactBase) && c.isActive())
+                                                  .findFirst());
             }
 
-            @Override
-            public List<CanaryDeployment> activeCanaries() {
-                return canaries.values()
-                               .stream()
-                               .filter(CanaryDeployment::isActive)
-                               .toList();
+            @Override public List<CanaryDeployment> activeCanaries() {
+                return canaries.values().stream()
+                                      .filter(CanaryDeployment::isActive)
+                                      .toList();
             }
 
-            @Override
-            public List<CanaryDeployment> allCanaries() {
+            @Override public List<CanaryDeployment> allCanaries() {
                 return List.copyOf(canaries.values());
             }
 
-            @Override
-            public Promise<CanaryHealthComparison> getHealthComparison(String canaryId) {
-                return Option.option(canaries.get(canaryId))
-                             .toResult(CanaryDeploymentError.CanaryNotFound.canaryNotFound(canaryId))
-                             .async()
-                             .map(this::collectHealthComparison);
+            @Override public Promise<CanaryHealthComparison> getHealthComparison(String canaryId) {
+                return Option.option(canaries.get(canaryId)).toResult(CanaryDeploymentError.CanaryNotFound.canaryNotFound(canaryId))
+                                    .async()
+                                    .map(this::collectHealthComparison);
             }
 
             // --- Private helpers ---
             private Promise<Unit> requireLeader() {
-                if (!clusterNode.leaderManager()
-                                .isLeader()) {
-                    return CanaryDeploymentError.NotLeader.INSTANCE.promise();
-                }
+                if ( !clusterNode.leaderManager().isLeader()) {
+                return CanaryDeploymentError.NotLeader.INSTANCE.promise();}
                 return Promise.success(Unit.unit());
             }
 
             private Promise<Unit> checkNoActiveCanary(ArtifactBase artifactBase) {
                 return getActiveCanary(artifactBase).isPresent()
-                       ? CanaryDeploymentError.CanaryAlreadyExists.canaryAlreadyExists(artifactBase)
-                                              .promise()
+                       ? CanaryDeploymentError.CanaryAlreadyExists.canaryAlreadyExists(artifactBase).promise()
                        : Promise.success(Unit.unit());
             }
 
             private Promise<CanaryDeployment> findCanary(String canaryId) {
-                return Option.option(canaries.get(canaryId))
-                             .toResult(CanaryDeploymentError.CanaryNotFound.canaryNotFound(canaryId))
-                             .async();
+                return Option.option(canaries.get(canaryId)).toResult(CanaryDeploymentError.CanaryNotFound.canaryNotFound(canaryId))
+                                    .async();
             }
 
             private Promise<Version> findCurrentVersion(ArtifactBase artifactBase) {
                 var key = SliceTargetKey.sliceTargetKey(artifactBase);
-                return kvStore.get(key)
-                              .map(value -> ((SliceTargetValue) value).currentVersion())
-                              .toResult(CanaryDeploymentError.InitialDeployment.initialDeployment(artifactBase))
-                              .async();
+                return kvStore.get(key).map(value -> ((SliceTargetValue) value).currentVersion())
+                                  .toResult(CanaryDeploymentError.InitialDeployment.initialDeployment(artifactBase))
+                                  .async();
             }
 
             private Promise<CanaryDeployment> createAndDeployCanary(ArtifactBase artifactBase,
@@ -393,8 +378,7 @@ public interface CanaryDeploymentManager {
                                                                     HealthThresholds thresholds,
                                                                     CanaryAnalysisConfig analysisConfig,
                                                                     CleanupPolicy cleanupPolicy) {
-                var canaryId = KSUID.ksuid()
-                                    .encoded();
+                var canaryId = KSUID.ksuid().encoded();
                 var canary = CanaryDeployment.canaryDeployment(canaryId,
                                                                artifactBase,
                                                                oldVersion,
@@ -421,17 +405,14 @@ public interface CanaryDeploymentManager {
                 var routingKey = new AetherKey.VersionRoutingKey(artifactBase);
                 var routingValue = new AetherValue.VersionRoutingValue(canary.oldVersion(),
                                                                        canary.newVersion(),
-                                                                       canary.routing()
-                                                                             .newWeight(),
-                                                                       canary.routing()
-                                                                             .oldWeight(),
+                                                                       canary.routing().newWeight(),
+                                                                       canary.routing().oldWeight(),
                                                                        System.currentTimeMillis());
                 var routingCmd = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(routingKey, routingValue);
                 var targetKey = SliceTargetKey.sliceTargetKey(artifactBase);
-                var existingMinInstances = kvStore.get(targetKey)
-                                                  .filter(v -> v instanceof SliceTargetValue)
-                                                  .map(v -> ((SliceTargetValue) v).effectiveMinInstances())
-                                                  .or(instances);
+                var existingMinInstances = kvStore.get(targetKey).filter(v -> v instanceof SliceTargetValue)
+                                                      .map(v -> ((SliceTargetValue) v).effectiveMinInstances())
+                                                      .or(instances);
                 var targetValue = new SliceTargetValue(canary.newVersion(),
                                                        instances,
                                                        existingMinInstances,
@@ -443,7 +424,7 @@ public interface CanaryDeploymentManager {
                          instances,
                          artifactBase,
                          canary.newVersion());
-                return clusterNode.<Unit> apply(List.of(routingCmd, targetCmd))
+                return clusterNode.<Unit>apply(List.of(routingCmd, targetCmd))
                                   .timeout(kvOperationTimeout)
                                   .flatMap(_ -> transitionToCanaryActive(canary));
             }
@@ -453,39 +434,32 @@ public interface CanaryDeploymentManager {
             }
 
             private Promise<CanaryDeployment> applyFirstStageRouting(CanaryDeployment canary) {
-                var firstStageRouting = canary.stages()
-                                              .getFirst()
-                                              .toRouting();
+                var firstStageRouting = canary.stages().getFirst()
+                                                     .toRouting();
                 var withRouting = canary.withRouting(firstStageRouting);
                 canaries.put(canary.canaryId(), withRouting);
                 return persistRouting(withRouting);
             }
 
             private Promise<CanaryDeployment> validateAndPromote(CanaryDeployment canary) {
-                if (canary.state() != CanaryState.CANARY_ACTIVE) {
-                    return CanaryDeploymentError.InvalidCanaryState.invalidCanaryState(canary.state(),
-                                                                                       CanaryState.PROMOTING)
-                                                .promise();
-                }
+                if ( canary.state() != CanaryState.CANARY_ACTIVE) {
+                return CanaryDeploymentError.InvalidCanaryState.invalidCanaryState(canary.state(), CanaryState.PROMOTING)
+                .promise();}
                 log.info("Manual promotion for canary {}", canary.canaryId());
-                return canary.transitionTo(CanaryState.PROMOTING)
-                             .async()
-                             .flatMap(this::cacheAndPersistCanary)
-                             .flatMap(this::completePromotion);
+                return canary.transitionTo(CanaryState.PROMOTING).async()
+                                          .flatMap(this::cacheAndPersistCanary)
+                                          .flatMap(this::completePromotion);
             }
 
             private Promise<CanaryDeployment> validateAndPromoteFull(CanaryDeployment canary) {
-                if (canary.state() != CanaryState.CANARY_ACTIVE) {
-                    return CanaryDeploymentError.InvalidCanaryState.invalidCanaryState(canary.state(),
-                                                                                       CanaryState.PROMOTING)
-                                                .promise();
-                }
+                if ( canary.state() != CanaryState.CANARY_ACTIVE) {
+                return CanaryDeploymentError.InvalidCanaryState.invalidCanaryState(canary.state(), CanaryState.PROMOTING)
+                .promise();}
                 log.info("Full promotion for canary {}", canary.canaryId());
                 var withFullRouting = canary.withRouting(VersionRouting.ALL_NEW);
-                return withFullRouting.transitionTo(CanaryState.PROMOTING)
-                                      .async()
-                                      .flatMap(this::cacheAndPersistCanary)
-                                      .flatMap(this::completePromotion);
+                return withFullRouting.transitionTo(CanaryState.PROMOTING).async()
+                                                   .flatMap(this::cacheAndPersistCanary)
+                                                   .flatMap(this::completePromotion);
             }
 
             private Promise<CanaryDeployment> completePromotion(CanaryDeployment canary) {
@@ -502,17 +476,15 @@ public interface CanaryDeploymentManager {
             }
 
             private Promise<CanaryDeployment> validateAndRollback(CanaryDeployment canary) {
-                if (canary.isTerminal()) {
-                    return CanaryDeploymentError.InvalidCanaryState.invalidCanaryState(canary.state(),
-                                                                                       CanaryState.ROLLING_BACK)
-                                                .promise();
-                }
+                if ( canary.isTerminal()) {
+                return CanaryDeploymentError.InvalidCanaryState.invalidCanaryState(canary.state(),
+                                                                                   CanaryState.ROLLING_BACK)
+                .promise();}
                 log.info("Rolling back canary {}", canary.canaryId());
                 var withOldRouting = canary.withRouting(VersionRouting.ALL_OLD);
-                return withOldRouting.transitionTo(CanaryState.ROLLING_BACK)
-                                     .async()
-                                     .flatMap(this::cacheAndPersistCanary)
-                                     .flatMap(this::removeNewVersion);
+                return withOldRouting.transitionTo(CanaryState.ROLLING_BACK).async()
+                                                  .flatMap(this::cacheAndPersistCanary)
+                                                  .flatMap(this::removeNewVersion);
             }
 
             private Promise<CanaryDeployment> removeNewVersion(CanaryDeployment canary) {
@@ -524,21 +496,19 @@ public interface CanaryDeploymentManager {
 
             // --- Persistence ---
             private Promise<CanaryDeployment> persistAndTransition(CanaryDeployment canary, CanaryState newState) {
-                return canary.transitionTo(newState)
-                             .async()
-                             .flatMap(this::cacheAndPersistCanary);
+                return canary.transitionTo(newState).async()
+                                          .flatMap(this::cacheAndPersistCanary);
             }
 
             @SuppressWarnings("unchecked")
             private Promise<CanaryDeployment> cacheAndPersistCanary(CanaryDeployment canary) {
                 canaries.put(canary.canaryId(), canary);
-                if (canary.isTerminal()) {
-                    pruneTerminalCanaries();
-                }
+                if ( canary.isTerminal()) {
+                pruneTerminalCanaries();}
                 var key = new AetherKey.CanaryDeploymentKey(canary.canaryId());
                 var value = buildCanaryValue(canary);
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
-                return clusterNode.<Unit> apply(List.of(command))
+                return clusterNode.<Unit>apply(List.of(command))
                                   .timeout(kvOperationTimeout)
                                   .map(_ -> canary);
             }
@@ -548,31 +518,21 @@ public interface CanaryDeploymentManager {
                                                  canary.artifactBase(),
                                                  canary.oldVersion(),
                                                  canary.newVersion(),
-                                                 canary.state()
-                                                       .name(),
+                                                 canary.state().name(),
                                                  serializeStages(canary.stages()),
                                                  canary.currentStageIndex(),
                                                  canary.stageEnteredAt(),
-                                                 canary.routing()
-                                                       .newWeight(),
-                                                 canary.routing()
-                                                       .oldWeight(),
+                                                 canary.routing().newWeight(),
+                                                 canary.routing().oldWeight(),
                                                  canary.newInstances(),
-                                                 canary.thresholds()
-                                                       .maxErrorRate(),
-                                                 canary.thresholds()
-                                                       .maxLatencyMs(),
-                                                 canary.thresholds()
-                                                       .requireManualApproval(),
-                                                 canary.analysisConfig()
-                                                       .mode()
-                                                       .name(),
-                                                 canary.analysisConfig()
-                                                       .relativeThresholdPercent(),
-                                                 canary.cleanupPolicy()
-                                                       .name(),
-                                                 canary.blueprintId()
-                                                       .or(""),
+                                                 canary.thresholds().maxErrorRate(),
+                                                 canary.thresholds().maxLatencyMs(),
+                                                 canary.thresholds().requireManualApproval(),
+                                                 canary.analysisConfig().mode()
+                                                                      .name(),
+                                                 canary.analysisConfig().relativeThresholdPercent(),
+                                                 canary.cleanupPolicy().name(),
+                                                 canary.blueprintId().or(""),
                                                  serializeArtifacts(canary.artifacts()),
                                                  canary.createdAt(),
                                                  System.currentTimeMillis());
@@ -583,13 +543,11 @@ public interface CanaryDeploymentManager {
                 var key = new AetherKey.VersionRoutingKey(canary.artifactBase());
                 var value = new AetherValue.VersionRoutingValue(canary.oldVersion(),
                                                                 canary.newVersion(),
-                                                                canary.routing()
-                                                                      .newWeight(),
-                                                                canary.routing()
-                                                                      .oldWeight(),
+                                                                canary.routing().newWeight(),
+                                                                canary.routing().oldWeight(),
                                                                 System.currentTimeMillis());
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
-                return clusterNode.<Unit> apply(List.of(command))
+                return clusterNode.<Unit>apply(List.of(command))
                                   .timeout(kvOperationTimeout)
                                   .map(_ -> canary);
             }
@@ -597,13 +555,10 @@ public interface CanaryDeploymentManager {
             @SuppressWarnings("unchecked")
             private Promise<Unit> updateSliceTargetVersion(ArtifactBase artifactBase, Version version) {
                 var key = SliceTargetKey.sliceTargetKey(artifactBase);
-                var existing = kvStore.get(key)
-                                      .filter(v -> v instanceof SliceTargetValue)
-                                      .map(v -> (SliceTargetValue) v);
-                var instances = existing.map(SliceTargetValue::targetInstances)
-                                        .or(1);
-                var minInstances = existing.map(SliceTargetValue::effectiveMinInstances)
-                                           .or(instances);
+                var existing = kvStore.get(key).filter(v -> v instanceof SliceTargetValue)
+                                          .map(v -> (SliceTargetValue) v);
+                var instances = existing.map(SliceTargetValue::targetInstances).or(1);
+                var minInstances = existing.map(SliceTargetValue::effectiveMinInstances).or(instances);
                 var value = new SliceTargetValue(version,
                                                  instances,
                                                  minInstances,
@@ -611,7 +566,7 @@ public interface CanaryDeploymentManager {
                                                  "CORE_ONLY",
                                                  System.currentTimeMillis());
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
-                return clusterNode.<Unit> apply(List.of(command))
+                return clusterNode.<Unit>apply(List.of(command))
                                   .timeout(kvOperationTimeout)
                                   .mapToUnit();
             }
@@ -620,26 +575,35 @@ public interface CanaryDeploymentManager {
             private Promise<Unit> removeRoutingKey(CanaryDeployment canary) {
                 var routingKey = new AetherKey.VersionRoutingKey(canary.artifactBase());
                 var routingCmd = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(routingKey);
-                return clusterNode.<Unit> apply(List.of(routingCmd))
+                return clusterNode.<Unit>apply(List.of(routingCmd))
                                   .timeout(kvOperationTimeout)
                                   .mapToUnit();
             }
 
             // --- State restoration ---
             @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
-            private void restoreState() {
+            private// Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            void restoreState() {
                 int beforeCount = canaries.size();
                 kvStore.forEach(CanaryDeploymentKey.class,
                                 CanaryDeploymentValue.class,
                                 (key, value) -> restoreCanary(value));
                 int restoredCount = canaries.size() - beforeCount;
-                if (restoredCount > 0) {
-                    log.info("Restored {} canary deployments from KV-Store", restoredCount);
-                }
+                if ( restoredCount > 0) {
+                log.info("Restored {} canary deployments from KV-Store", restoredCount);}
             }
 
             @SuppressWarnings({"JBCT-VO-02", "JBCT-RET-01"}) // Side-effect helper — void inherent
-            private void restoreCanary(CanaryDeploymentValue cdv) {
+            private// Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            void restoreCanary(CanaryDeploymentValue cdv) {
                 var state = CanaryState.valueOf(cdv.state());
                 var routing = new VersionRouting(cdv.newWeight(), cdv.oldWeight());
                 var thresholds = new HealthThresholds(cdv.maxErrorRate(),
@@ -649,8 +613,7 @@ public interface CanaryDeploymentManager {
                 var analysisConfig = new CanaryAnalysisConfig(analysisMode, cdv.relativeThresholdPercent());
                 var cleanupPolicy = CleanupPolicy.valueOf(cdv.cleanupPolicy());
                 var stages = deserializeStages(cdv.stagesJson());
-                var blueprintId = cdv.blueprintId()
-                                     .isEmpty()
+                var blueprintId = cdv.blueprintId().isEmpty()
                                   ? Option.<String>none()
                                   : Option.some(cdv.blueprintId());
                 var artifacts = deserializeArtifacts(cdv.artifactsJson());
@@ -677,10 +640,8 @@ public interface CanaryDeploymentManager {
             // --- Metrics collection ---
             private CanaryHealthComparison collectHealthComparison(CanaryDeployment canary) {
                 var snapshots = metricsCollector.snapshot();
-                var oldArtifact = canary.artifactBase()
-                                        .withVersion(canary.oldVersion());
-                var newArtifact = canary.artifactBase()
-                                        .withVersion(canary.newVersion());
+                var oldArtifact = canary.artifactBase().withVersion(canary.oldVersion());
+                var newArtifact = canary.artifactBase().withVersion(canary.newVersion());
                 var baselineMetrics = accumulateMetricsFor(snapshots, oldArtifact)
                 .toVersionMetrics(canary.oldVersion());
                 var canaryMetrics = accumulateMetricsFor(snapshots, newArtifact).toVersionMetrics(canary.newVersion());
@@ -695,60 +656,53 @@ public interface CanaryDeploymentManager {
 
             private AccumulatedMetrics accumulateMetricsFor(List<InvocationMetricsCollector.MethodSnapshot> snapshots,
                                                             Artifact artifact) {
-                return snapshots.stream()
-                                .filter(snapshot -> snapshot.artifact()
-                                                            .equals(artifact))
-                                .reduce(AccumulatedMetrics.empty(),
-                                        AccumulatedMetrics::accumulate,
-                                        (a, _) -> a);
+                return snapshots.stream().filter(snapshot -> snapshot.artifact().equals(artifact))
+                                       .reduce(AccumulatedMetrics.empty(),
+                                               AccumulatedMetrics::accumulate,
+                                               (a, _) -> a);
             }
 
             // --- Housekeeping ---
             @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
-            private void pruneTerminalCanaries() {
+            private// Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            void pruneTerminalCanaries() {
                 var cutoff = System.currentTimeMillis() - terminalRetentionMs;
                 var pruned = canaries.entrySet()
-                                     .removeIf(entry -> entry.getValue()
-                                                             .isTerminal() && entry.getValue()
-                                                                                   .updatedAt() < cutoff);
-                if (pruned) {
-                    log.debug("Pruned terminal canary deployments older than retention period");
-                }
+                .removeIf(entry -> entry.getValue().isTerminal() && entry.getValue().updatedAt() < cutoff);
+                if ( pruned) {
+                log.debug("Pruned terminal canary deployments older than retention period");}
             }
 
             // --- Serialization helpers ---
             private static String serializeStages(List<CanaryStage> stages) {
-                return stages.stream()
-                             .map(s -> s.trafficPercent() + ":" + s.observationMinutes())
-                             .collect(Collectors.joining(","));
+                return stages.stream().map(s -> s.trafficPercent() + ":" + s.observationMinutes())
+                                    .collect(Collectors.joining(","));
             }
 
             private static List<CanaryStage> deserializeStages(String stagesJson) {
                 // Serializer guarantees non-null (writes "" for empty)
-                if (stagesJson.isEmpty()) {
-                    return List.of();
-                }
-                return Arrays.stream(stagesJson.split(","))
-                             .map(CanaryDeploymentManager::parseStageEntry)
-                             .toList();
+                if ( stagesJson.isEmpty()) {
+                return List.of();}
+                return Arrays.stream(stagesJson.split(",")).map(CanaryDeploymentManager::parseStageEntry)
+                                    .toList();
             }
 
             private static String serializeArtifacts(List<ArtifactBase> artifacts) {
-                return artifacts.stream()
-                                .map(ArtifactBase::asString)
-                                .collect(Collectors.joining(","));
+                return artifacts.stream().map(ArtifactBase::asString)
+                                       .collect(Collectors.joining(","));
             }
 
             private static List<ArtifactBase> deserializeArtifacts(String artifactsJson) {
                 // Serializer guarantees non-null (writes "" for empty)
-                if (artifactsJson.isEmpty()) {
-                    return List.of();
-                }
-                return Arrays.stream(artifactsJson.split(","))
-                             .map(ArtifactBase::artifactBase)
-                             .flatMap(result -> result.option()
-                                                      .stream())
-                             .toList();
+                if ( artifactsJson.isEmpty()) {
+                return List.of();}
+                return Arrays.stream(artifactsJson.split(",")).map(ArtifactBase::artifactBase)
+                                    .flatMap(result -> result.option().stream())
+                                    .toList();
             }
         }
         return new canaryDeploymentManager(clusterNode,
@@ -758,7 +712,7 @@ public interface CanaryDeploymentManager {
                                            terminalRetentionMs,
                                            evaluationInterval,
                                            new ConcurrentHashMap<>(),
-                                           new AtomicReference<>());
+                                           CancellableTask.cancellableTask());
     }
 
     /// Parse a single stage entry from serialized format.

@@ -25,9 +25,8 @@ public final class InvocationTimingContext {
 
     private InvocationTimingContext(boolean active) {
         this.active = active;
-        if (active) {
-            this.startNs = System.nanoTime();
-        }
+        if ( active) {
+        this.startNs = System.nanoTime();}
     }
 
     /// Factory: returns a real context if trace logging is enabled, otherwise NOOP.
@@ -38,49 +37,47 @@ public final class InvocationTimingContext {
     }
 
     public void routeResolved() {
-        if (active) routeResolvedNs = System.nanoTime();
+        if ( active) routeResolvedNs = System.nanoTime();
     }
 
     public void serialized() {
-        if (active) serializedNs = System.nanoTime();
+        if ( active) serializedNs = System.nanoTime();
     }
 
     public void endpointSelected() {
-        if (active) endpointSelectedNs = System.nanoTime();
+        if ( active) endpointSelectedNs = System.nanoTime();
     }
 
     public void networkSent() {
-        if (active) networkSentNs = System.nanoTime();
+        if ( active) networkSentNs = System.nanoTime();
     }
 
     public void handlerReceived() {
-        if (active) handlerReceivedNs = System.nanoTime();
+        if ( active) handlerReceivedNs = System.nanoTime();
     }
 
     public void bridgeInvoked() {
-        if (active) bridgeInvokedNs = System.nanoTime();
+        if ( active) bridgeInvokedNs = System.nanoTime();
     }
 
     public void responseSerialized() {
-        if (active) responseSerializedNs = System.nanoTime();
+        if ( active) responseSerializedNs = System.nanoTime();
     }
 
     public void networkResponse() {
-        if (active) networkResponseNs = System.nanoTime();
+        if ( active) networkResponseNs = System.nanoTime();
     }
 
     public void deserialized() {
-        if (active) deserializedNs = System.nanoTime();
+        if ( active) deserializedNs = System.nanoTime();
     }
 
     /// Complete timing and emit structured log.
     public void complete(String artifact, String method) {
-        if (!active) {
-            return;
-        }
+        if ( !active) {
+        return;}
         completedNs = System.nanoTime();
-        log.trace("Invocation timing [{}::{}] total={}us route={}us ser={}us endpoint={}us net_send={}us "
-                  + "handler={}us bridge={}us resp_ser={}us net_resp={}us deser={}us",
+        log.trace("Invocation timing [{}::{}] total={}us route={}us ser={}us endpoint={}us net_send={}us " + "handler={}us bridge={}us resp_ser={}us net_resp={}us deser={}us",
                   artifact,
                   method,
                   deltaUs(startNs, completedNs),

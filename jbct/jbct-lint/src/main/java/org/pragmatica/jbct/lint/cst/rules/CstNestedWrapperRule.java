@@ -39,7 +39,7 @@ public class CstNestedWrapperRule implements CstLintRule {
         if (!ctx.shouldLint(packageName)) {
             return Stream.empty();
         }
-        return findAll(root, RuleId.MethodDecl.class).stream()
+        return findAllMethods(root).stream()
                       .flatMap(method -> checkMethod(method, source, ctx));
     }
 

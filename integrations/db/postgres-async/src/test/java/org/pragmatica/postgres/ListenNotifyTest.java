@@ -43,7 +43,7 @@ public class ListenNotifyTest {
 
         Connection conn = block(pool.getConnection());
         try {
-            var subscription = block(conn.subscribe("example", result::offer));
+            var subscription = block(conn.subscribe("example", (String payload) -> result.offer(payload)));
             try {
                 TimeUnit.SECONDS.sleep(2);
 

@@ -158,21 +158,18 @@ public interface RollingUpdateManager {
                           long errorCount,
                           double errorRate,
                           long p99LatencyMs,
-                          long avgLatencyMs) {}
+                          long avgLatencyMs){}
 
     /// Handle leader change notifications.
     @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
-    void onLeaderChange(LeaderChange leaderChange);
+    @SuppressWarnings("JBCT-RET-01") void onLeaderChange(LeaderChange leaderChange);
 
     /// Handle deployment failure events for auto-rollback during rolling updates.
     @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
-    void onDeploymentFailed(DeploymentEvent.DeploymentFailed event);
+    @SuppressWarnings("JBCT-RET-01") void onDeploymentFailed(DeploymentEvent.DeploymentFailed event);
 
     /// Default KV operation timeout (30 seconds).
-    TimeSpan DEFAULT_KV_OPERATION_TIMEOUT = TimeSpan.timeSpan(30)
-                                                   .seconds();
+    TimeSpan DEFAULT_KV_OPERATION_TIMEOUT = TimeSpan.timeSpan(30).seconds();
 
     /// Default retention period for terminal-state updates (1 hour).
     long DEFAULT_terminalRetentionMs = TimeUnit.HOURS.toMillis(1);
@@ -194,33 +191,34 @@ public interface RollingUpdateManager {
                                                      InvocationMetricsCollector metricsCollector,
                                                      TimeSpan kvOperationTimeout,
                                                      long terminalRetentionMs) {
-        record rollingUpdateManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                    KVStore<AetherKey, AetherValue> kvStore,
-                                    InvocationMetricsCollector metricsCollector,
-                                    TimeSpan kvOperationTimeout,
-                                    long terminalRetentionMs,
-                                    Map<String, RollingUpdate> updates) implements RollingUpdateManager {
+        record rollingUpdateManager( RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                     KVStore<AetherKey, AetherValue> kvStore,
+                                     InvocationMetricsCollector metricsCollector,
+                                     TimeSpan kvOperationTimeout,
+                                     long terminalRetentionMs,
+                                     Map<String, RollingUpdate> updates) implements RollingUpdateManager {
             private static final Logger log = LoggerFactory.getLogger(RollingUpdateManager.class);
 
             @Override
             @SuppressWarnings("JBCT-RET-01")
             public void onLeaderChange(LeaderChange leaderChange) {
-                if (leaderChange.localNodeIsLeader()) {
+                if ( leaderChange.localNodeIsLeader()) {
                     log.info("Rolling update manager active (leader)");
                     restoreState();
-                } else {
-                    log.info("Rolling update manager passive (follower)");
-                }
+                } else
+
+
+
+
+                {
+                log.info("Rolling update manager passive (follower)");}
             }
 
             @Override
             @SuppressWarnings("JBCT-RET-01")
             public void onDeploymentFailed(DeploymentEvent.DeploymentFailed event) {
-                var artifactBase = event.artifact()
-                                        .base();
-                getActiveUpdate(artifactBase).filter(update -> update.newVersion()
-                                                                     .equals(event.artifact()
-                                                                                  .version()))
+                var artifactBase = event.artifact().base();
+                getActiveUpdate(artifactBase).filter(update -> update.newVersion().equals(event.artifact().version()))
                                .filter(RollingUpdate::isActive)
                                .onPresent(update -> triggerAutoRollback(update, event));
             }
@@ -241,13 +239,17 @@ public interface RollingUpdateManager {
                 int beforeCount = updates.size();
                 kvStore.forEach(RollingUpdateKey.class, RollingUpdateValue.class, (key, value) -> restoreUpdate(value));
                 int restoredCount = updates.size() - beforeCount;
-                if (restoredCount > 0) {
-                    log.info("Restored {} rolling updates from KV-Store", restoredCount);
-                }
+                if ( restoredCount > 0) {
+                log.info("Restored {} rolling updates from KV-Store", restoredCount);}
             }
 
             @SuppressWarnings("JBCT-VO-02") // Restoring trusted KV-Store data
-            private void restoreUpdate(RollingUpdateValue ruv) {
+            private// Restoring trusted KV-Store data
+            // Restoring trusted KV-Store data
+            // Restoring trusted KV-Store data
+            // Restoring trusted KV-Store data
+            // Restoring trusted KV-Store data
+            void restoreUpdate(RollingUpdateValue ruv) {
                 var state = RollingUpdateState.valueOf(ruv.state());
                 var routing = new VersionRouting(ruv.newWeight(), ruv.oldWeight());
                 var thresholds = new HealthThresholds(ruv.maxErrorRate(),
@@ -270,19 +272,16 @@ public interface RollingUpdateManager {
 
             private Promise<Unit> requireLeader() {
                 // Query LeaderManager directly to avoid race condition with callback-based state
-                if (!clusterNode.leaderManager()
-                                .isLeader()) {
-                    return RollingUpdateError.NotLeader.INSTANCE.promise();
-                }
+                if ( !clusterNode.leaderManager().isLeader()) {
+                return RollingUpdateError.NotLeader.INSTANCE.promise();}
                 return Promise.success(Unit.unit());
             }
 
-            @Override
-            public Promise<RollingUpdate> startUpdate(ArtifactBase artifactBase,
-                                                      Version newVersion,
-                                                      int instances,
-                                                      HealthThresholds thresholds,
-                                                      CleanupPolicy cleanupPolicy) {
+            @Override public Promise<RollingUpdate> startUpdate(ArtifactBase artifactBase,
+                                                                Version newVersion,
+                                                                int instances,
+                                                                HealthThresholds thresholds,
+                                                                CleanupPolicy cleanupPolicy) {
                 return requireLeader().flatMap(_ -> checkNoActiveUpdate(artifactBase))
                                     .flatMap(_ -> findCurrentVersion(artifactBase))
                                     .flatMap(oldVersion -> createAndDeployUpdate(artifactBase,
@@ -295,8 +294,7 @@ public interface RollingUpdateManager {
 
             private Promise<Unit> checkNoActiveUpdate(ArtifactBase artifactBase) {
                 return getActiveUpdate(artifactBase).isPresent()
-                       ? RollingUpdateError.UpdateAlreadyExists.updateAlreadyExists(artifactBase)
-                                           .promise()
+                       ? RollingUpdateError.UpdateAlreadyExists.updateAlreadyExists(artifactBase).promise()
                        : Promise.success(Unit.unit());
             }
 
@@ -306,8 +304,7 @@ public interface RollingUpdateManager {
                                                                  int instances,
                                                                  HealthThresholds thresholds,
                                                                  CleanupPolicy cleanupPolicy) {
-                var updateId = KSUID.ksuid()
-                                    .encoded();
+                var updateId = KSUID.ksuid().encoded();
                 var update = RollingUpdate.rollingUpdate(updateId,
                                                          artifactBase,
                                                          oldVersion,
@@ -325,42 +322,36 @@ public interface RollingUpdateManager {
                                                                                                                 instances));
             }
 
-            @Override
-            public Promise<RollingUpdate> adjustRouting(String updateId, VersionRouting newRouting) {
+            @Override public Promise<RollingUpdate> adjustRouting(String updateId, VersionRouting newRouting) {
                 return requireLeader().flatMap(_ -> findUpdate(updateId))
                                     .flatMap(update -> validateRoutingAdjustment(update, newRouting));
             }
 
             private Promise<RollingUpdate> findUpdate(String updateId) {
-                return Option.option(updates.get(updateId))
-                             .toResult(RollingUpdateError.UpdateNotFound.updateNotFound(updateId))
-                             .async();
+                return Option.option(updates.get(updateId)).toResult(RollingUpdateError.UpdateNotFound.updateNotFound(updateId))
+                                    .async();
             }
 
             private Promise<RollingUpdate> validateRoutingAdjustment(RollingUpdate update, VersionRouting newRouting) {
-                if (!update.state()
-                           .allowsNewVersionTraffic() && update.state() != RollingUpdateState.DEPLOYED) {
-                    return RollingUpdateError.InvalidStateTransition.invalidStateTransition(update.state(),
-                                                                                            RollingUpdateState.ROUTING)
-                                             .promise();
-                }
+                if ( !update.state().allowsNewVersionTraffic() && update.state() != RollingUpdateState.DEPLOYED) {
+                return RollingUpdateError.InvalidStateTransition.invalidStateTransition(update.state(),
+                                                                                        RollingUpdateState.ROUTING)
+                .promise();}
                 log.info("Adjusting routing for {} to {}", update.updateId(), newRouting);
                 return applyRoutingChange(update, newRouting);
             }
 
             private Promise<RollingUpdate> applyRoutingChange(RollingUpdate update, VersionRouting newRouting) {
                 var withRouting = update.withRouting(newRouting);
-                if (update.state() == RollingUpdateState.DEPLOYED) {
-                    return transitionToRouting(withRouting);
-                }
+                if ( update.state() == RollingUpdateState.DEPLOYED) {
+                return transitionToRouting(withRouting);}
                 updates.put(update.updateId(), withRouting);
                 return persistRouting(withRouting).map(_ -> withRouting);
             }
 
             private Promise<RollingUpdate> transitionToRouting(RollingUpdate update) {
-                return update.transitionTo(RollingUpdateState.ROUTING)
-                             .async()
-                             .flatMap(this::cacheAndPersistRouting);
+                return update.transitionTo(RollingUpdateState.ROUTING).async()
+                                          .flatMap(this::cacheAndPersistRouting);
             }
 
             private Promise<RollingUpdate> cacheAndPersistRouting(RollingUpdate transitioned) {
@@ -368,80 +359,64 @@ public interface RollingUpdateManager {
                 return persistRouting(transitioned).map(_ -> transitioned);
             }
 
-            @Override
-            public Promise<RollingUpdate> completeUpdate(String updateId) {
+            @Override public Promise<RollingUpdate> completeUpdate(String updateId) {
                 return requireLeader().flatMap(_ -> findUpdate(updateId))
                                     .flatMap(this::validateAndComplete);
             }
 
             private Promise<RollingUpdate> validateAndComplete(RollingUpdate update) {
-                if (!update.routing()
-                           .isAllNew()) {
-                    return RollingUpdateError.InvalidStateTransition.invalidStateTransition(update.state(),
-                                                                                            RollingUpdateState.COMPLETING)
-                                             .promise();
-                }
+                if ( !update.routing().isAllNew()) {
+                return RollingUpdateError.InvalidStateTransition.invalidStateTransition(update.state(),
+                                                                                        RollingUpdateState.COMPLETING)
+                .promise();}
                 log.info("Completing rolling update {}", update.updateId());
                 return persistAndTransition(update, RollingUpdateState.COMPLETING).flatMap(this::cleanupOldVersion);
             }
 
-            @Override
-            public Promise<RollingUpdate> rollback(String updateId) {
+            @Override public Promise<RollingUpdate> rollback(String updateId) {
                 return requireLeader().flatMap(_ -> findUpdate(updateId))
                                     .flatMap(this::validateAndRollback);
             }
 
             private Promise<RollingUpdate> validateAndRollback(RollingUpdate update) {
-                if (update.isTerminal()) {
-                    return RollingUpdateError.InvalidStateTransition.invalidStateTransition(update.state(),
-                                                                                            RollingUpdateState.ROLLING_BACK)
-                                             .promise();
-                }
+                if ( update.isTerminal()) {
+                return RollingUpdateError.InvalidStateTransition.invalidStateTransition(update.state(),
+                                                                                        RollingUpdateState.ROLLING_BACK)
+                .promise();}
                 log.info("Rolling back update {}", update.updateId());
                 return persistAndTransition(update, RollingUpdateState.ROLLING_BACK).flatMap(this::removeNewVersion);
             }
 
-            @Override
-            public Option<RollingUpdate> getUpdate(String updateId) {
+            @Override public Option<RollingUpdate> getUpdate(String updateId) {
                 return Option.option(updates.get(updateId));
             }
 
-            @Override
-            public Option<RollingUpdate> getActiveUpdate(ArtifactBase artifactBase) {
-                return Option.from(updates.values()
-                                          .stream()
-                                          .filter(u -> u.artifactBase()
-                                                        .equals(artifactBase) && u.isActive())
-                                          .findFirst());
+            @Override public Option<RollingUpdate> getActiveUpdate(ArtifactBase artifactBase) {
+                return Option.from(updates.values().stream()
+                                                 .filter(u -> u.artifactBase().equals(artifactBase) && u.isActive())
+                                                 .findFirst());
             }
 
-            @Override
-            public List<RollingUpdate> activeUpdates() {
-                return updates.values()
-                              .stream()
-                              .filter(RollingUpdate::isActive)
-                              .toList();
+            @Override public List<RollingUpdate> activeUpdates() {
+                return updates.values().stream()
+                                     .filter(RollingUpdate::isActive)
+                                     .toList();
             }
 
-            @Override
-            public List<RollingUpdate> allUpdates() {
+            @Override public List<RollingUpdate> allUpdates() {
                 return List.copyOf(updates.values());
             }
 
-            @Override
-            public Promise<VersionHealthMetrics> getHealthMetrics(String updateId) {
-                return Option.option(updates.get(updateId))
-                             .toResult(RollingUpdateError.UpdateNotFound.updateNotFound(updateId))
-                             .async()
-                             .map(this::collectHealthMetrics);
+            @Override public Promise<VersionHealthMetrics> getHealthMetrics(String updateId) {
+                return Option.option(updates.get(updateId)).toResult(RollingUpdateError.UpdateNotFound.updateNotFound(updateId))
+                                    .async()
+                                    .map(this::collectHealthMetrics);
             }
 
             private VersionHealthMetrics collectHealthMetrics(RollingUpdate update) {
                 var snapshots = metricsCollector.snapshot();
-                var oldArtifact = update.artifactBase()
-                                        .withVersion(update.oldVersion());
-                var newArtifact = update.artifactBase()
-                                        .withVersion(update.newVersion());
+                var oldArtifact = update.artifactBase().withVersion(update.oldVersion());
+                var newArtifact = update.artifactBase().withVersion(update.newVersion());
                 var oldAccumulated = accumulateMetricsFor(snapshots, oldArtifact);
                 var newAccumulated = accumulateMetricsFor(snapshots, newArtifact);
                 return new VersionHealthMetrics(update.updateId(),
@@ -452,60 +427,48 @@ public interface RollingUpdateManager {
 
             private AccumulatedMetrics accumulateMetricsFor(List<InvocationMetricsCollector.MethodSnapshot> snapshots,
                                                             Artifact artifact) {
-                return snapshots.stream()
-                                .filter(snapshot -> snapshot.artifact()
-                                                            .equals(artifact))
-                                .reduce(AccumulatedMetrics.empty(),
-                                        AccumulatedMetrics::accumulate,
-                                        (a, _) -> a);
+                return snapshots.stream().filter(snapshot -> snapshot.artifact().equals(artifact))
+                                       .reduce(AccumulatedMetrics.empty(),
+                                               AccumulatedMetrics::accumulate,
+                                               (a, _) -> a);
             }
 
             private Promise<Version> findCurrentVersion(ArtifactBase artifactBase) {
                 var key = SliceTargetKey.sliceTargetKey(artifactBase);
-                return kvStore.get(key)
-                              .map(value -> ((SliceTargetValue) value).currentVersion())
-                              .toResult(RollingUpdateError.InitialDeployment.initialDeployment(artifactBase))
-                              .async();
+                return kvStore.get(key).map(value -> ((SliceTargetValue) value).currentVersion())
+                                  .toResult(RollingUpdateError.InitialDeployment.initialDeployment(artifactBase))
+                                  .async();
             }
 
             private Promise<RollingUpdate> persistAndTransition(RollingUpdate update, RollingUpdateState newState) {
-                return update.transitionTo(newState)
-                             .async()
-                             .flatMap(transitioned -> cacheAndPersistUpdate(update.updateId(),
-                                                                            transitioned));
+                return update.transitionTo(newState).async()
+                                          .flatMap(transitioned -> cacheAndPersistUpdate(update.updateId(),
+                                                                                         transitioned));
             }
 
             @SuppressWarnings("unchecked")
             private Promise<RollingUpdate> cacheAndPersistUpdate(String updateId, RollingUpdate transitioned) {
                 updates.put(updateId, transitioned);
                 // Prune terminal-state updates older than retention period
-                if (transitioned.isTerminal()) {
-                    pruneTerminalUpdates();
-                }
+                if ( transitioned.isTerminal()) {
+                pruneTerminalUpdates();}
                 var key = new AetherKey.RollingUpdateKey(updateId);
                 var value = new AetherValue.RollingUpdateValue(transitioned.updateId(),
                                                                transitioned.artifactBase(),
                                                                transitioned.oldVersion(),
                                                                transitioned.newVersion(),
-                                                               transitioned.state()
-                                                                           .name(),
-                                                               transitioned.routing()
-                                                                           .newWeight(),
-                                                               transitioned.routing()
-                                                                           .oldWeight(),
+                                                               transitioned.state().name(),
+                                                               transitioned.routing().newWeight(),
+                                                               transitioned.routing().oldWeight(),
                                                                transitioned.newInstances(),
-                                                               transitioned.thresholds()
-                                                                           .maxErrorRate(),
-                                                               transitioned.thresholds()
-                                                                           .maxLatencyMs(),
-                                                               transitioned.thresholds()
-                                                                           .requireManualApproval(),
-                                                               transitioned.cleanupPolicy()
-                                                                           .name(),
+                                                               transitioned.thresholds().maxErrorRate(),
+                                                               transitioned.thresholds().maxLatencyMs(),
+                                                               transitioned.thresholds().requireManualApproval(),
+                                                               transitioned.cleanupPolicy().name(),
                                                                transitioned.createdAt(),
                                                                System.currentTimeMillis());
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
-                return clusterNode.<Unit> apply(List.of(command))
+                return clusterNode.<Unit>apply(List.of(command))
                                   .timeout(kvOperationTimeout)
                                   .map(_ -> transitioned);
             }
@@ -515,13 +478,12 @@ public interface RollingUpdateManager {
             private void pruneTerminalUpdates() {
                 var cutoff = System.currentTimeMillis() - terminalRetentionMs;
                 var pruned = updates.entrySet()
-                                    .removeIf(entry -> {
-                                                  var update = entry.getValue();
-                                                  return update.isTerminal() && update.updatedAt() < cutoff;
-                                              });
-                if (pruned) {
-                    log.debug("Pruned terminal rolling updates older than retention period");
-                }
+                .removeIf(entry -> {
+                              var update = entry.getValue();
+                              return update.isTerminal() && update.updatedAt() < cutoff;
+                          });
+                if ( pruned) {
+                log.debug("Pruned terminal rolling updates older than retention period");}
             }
 
             @SuppressWarnings("unchecked")
@@ -529,13 +491,11 @@ public interface RollingUpdateManager {
                 var key = new AetherKey.VersionRoutingKey(update.artifactBase());
                 var value = new AetherValue.VersionRoutingValue(update.oldVersion(),
                                                                 update.newVersion(),
-                                                                update.routing()
-                                                                      .newWeight(),
-                                                                update.routing()
-                                                                      .oldWeight(),
+                                                                update.routing().newWeight(),
+                                                                update.routing().oldWeight(),
                                                                 System.currentTimeMillis());
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
-                return clusterNode.<Unit> apply(List.of(command))
+                return clusterNode.<Unit>apply(List.of(command))
                                   .timeout(kvOperationTimeout)
                                   .map(_ -> update);
             }
@@ -547,18 +507,15 @@ public interface RollingUpdateManager {
                 var routingKey = new AetherKey.VersionRoutingKey(update.artifactBase());
                 var routingValue = new AetherValue.VersionRoutingValue(update.oldVersion(),
                                                                        update.newVersion(),
-                                                                       update.routing()
-                                                                             .newWeight(),
-                                                                       update.routing()
-                                                                             .oldWeight(),
+                                                                       update.routing().newWeight(),
+                                                                       update.routing().oldWeight(),
                                                                        System.currentTimeMillis());
                 var routingCmd = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(routingKey, routingValue);
                 // Build target command
                 var targetKey = AetherKey.SliceTargetKey.sliceTargetKey(artifactBase);
-                var existingMinInstances = kvStore.get(targetKey)
-                                                  .filter(v -> v instanceof SliceTargetValue)
-                                                  .map(v -> ((SliceTargetValue) v).effectiveMinInstances())
-                                                  .or(instances);
+                var existingMinInstances = kvStore.get(targetKey).filter(v -> v instanceof SliceTargetValue)
+                                                      .map(v -> ((SliceTargetValue) v).effectiveMinInstances())
+                                                      .or(instances);
                 var targetValue = new SliceTargetValue(update.newVersion(),
                                                        instances,
                                                        existingMinInstances,
@@ -569,23 +526,20 @@ public interface RollingUpdateManager {
                 log.info("Deploying {} instances of {} (version {})", instances, artifactBase, update.newVersion());
                 // Send routing AND target in single batch to ensure atomic processing
                 // Routing must be applied before target so old version is preserved
-                return clusterNode.<Unit> apply(List.of(routingCmd, targetCmd))
+                return clusterNode.<Unit>apply(List.of(routingCmd, targetCmd))
                                   .timeout(kvOperationTimeout)
                                   .flatMap(_ -> persistAndTransition(update, RollingUpdateState.DEPLOYED));
             }
 
             private Promise<RollingUpdate> cleanupOldVersion(RollingUpdate update) {
-                if (update.cleanupPolicy()
-                          .isManual()) {
-                    return cleanupManualPolicy(update);
-                }
+                if ( update.cleanupPolicy().isManual()) {
+                return cleanupManualPolicy(update);}
                 return cleanupAutomaticPolicy(update);
             }
 
             private Promise<RollingUpdate> cleanupManualPolicy(RollingUpdate update) {
                 log.info("Manual cleanup policy - old version {} kept for manual removal",
-                         update.artifactBase()
-                               .withVersion(update.oldVersion()));
+                         update.artifactBase().withVersion(update.oldVersion()));
                 return removeRoutingKey(update).flatMap(_ -> persistAndTransition(update, RollingUpdateState.COMPLETED));
             }
 
@@ -606,13 +560,10 @@ public interface RollingUpdateManager {
             @SuppressWarnings("unchecked")
             private Promise<Unit> updateSliceTargetVersion(ArtifactBase artifactBase, Version version) {
                 var key = SliceTargetKey.sliceTargetKey(artifactBase);
-                var existing = kvStore.get(key)
-                                      .filter(v -> v instanceof SliceTargetValue)
-                                      .map(v -> (SliceTargetValue) v);
-                var instances = existing.map(SliceTargetValue::targetInstances)
-                                        .or(1);
-                var minInstances = existing.map(SliceTargetValue::effectiveMinInstances)
-                                           .or(instances);
+                var existing = kvStore.get(key).filter(v -> v instanceof SliceTargetValue)
+                                          .map(v -> (SliceTargetValue) v);
+                var instances = existing.map(SliceTargetValue::targetInstances).or(1);
+                var minInstances = existing.map(SliceTargetValue::effectiveMinInstances).or(instances);
                 var value = new SliceTargetValue(version,
                                                  instances,
                                                  minInstances,
@@ -620,7 +571,7 @@ public interface RollingUpdateManager {
                                                  "CORE_ONLY",
                                                  System.currentTimeMillis());
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
-                return clusterNode.<Unit> apply(List.of(command))
+                return clusterNode.<Unit>apply(List.of(command))
                                   .timeout(kvOperationTimeout)
                                   .mapToUnit();
             }
@@ -629,7 +580,7 @@ public interface RollingUpdateManager {
             private Promise<Unit> removeRoutingKey(RollingUpdate update) {
                 var routingKey = new AetherKey.VersionRoutingKey(update.artifactBase());
                 var routingCmd = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(routingKey);
-                return clusterNode.<Unit> apply(List.of(routingCmd))
+                return clusterNode.<Unit>apply(List.of(routingCmd))
                                   .timeout(kvOperationTimeout)
                                   .mapToUnit();
             }

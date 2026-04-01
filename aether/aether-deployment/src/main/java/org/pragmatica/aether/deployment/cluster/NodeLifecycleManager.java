@@ -59,27 +59,20 @@ public interface NodeLifecycleManager {
 
 /// Implementation that delegates to an optional ComputeProvider.
 /// Uses tag-based instance lookup (aether-node-id) for terminate and restart operations.
-record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) implements NodeLifecycleManager {
+record NodeLifecycleManagerRecord( Option<ComputeProvider> computeProvider) implements NodeLifecycleManager {
     private static final Logger log = LoggerFactory.getLogger(NodeLifecycleManagerRecord.class);
     private static final String NODE_ID_TAG = "aether-node-id";
 
-    @Override
-    public Promise<ActionResult> executeAction(NodeAction action) {
-        return switch (action) {
-            case NodeAction.StartNode startNode -> provisionNode(startNode.spec()).map(ActionResult.NodeStarted::new);
-            case NodeAction.StopNode stopNode -> terminateNode(stopNode.nodeId())
-            .map(_ -> new ActionResult.NodeStopped(stopNode.nodeId()));
-            case NodeAction.RestartNode restartNode -> restartNode(restartNode.nodeId())
-            .map(_ -> new ActionResult.NodeRestarted(restartNode.nodeId()));
-            case NodeAction.MigrateSlices _ -> EnvironmentError.operationNotSupported("migrateSlices")
-                                                               .promise();
-        };
+    @Override public Promise<ActionResult> executeAction(NodeAction action) {
+        return switch (action) {case NodeAction.StartNode startNode -> provisionNode(startNode.spec()).map(ActionResult.NodeStarted::new); case NodeAction.StopNode stopNode -> terminateNode(stopNode.nodeId())
+        .map(_ -> new ActionResult.NodeStopped(stopNode.nodeId()));case NodeAction.RestartNode restartNode -> restartNode(restartNode.nodeId())
+        .map(_ -> new ActionResult.NodeRestarted(restartNode.nodeId()));case NodeAction.MigrateSlices _ -> EnvironmentError.operationNotSupported("migrateSlices")
+        .promise();};
     }
 
-    @Override
-    public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
+    @Override public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
         return computeProvider.fold(() -> EnvironmentError.operationNotSupported("provisionNode: no ComputeProvider")
-                                                          .promise(),
+        .promise(),
                                     provider -> {
                                         log.info("Provisioning new instance: size={}, pool={}",
                                                  spec.instanceSize(),
@@ -88,56 +81,53 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) imple
                                     });
     }
 
-    @Override
-    public Promise<Unit> terminateNode(NodeId nodeId) {
+    @Override public Promise<Unit> terminateNode(NodeId nodeId) {
         return computeProvider.fold(() -> EnvironmentError.operationNotSupported("terminateNode: no ComputeProvider")
-                                                          .promise(),
+        .promise(),
                                     provider -> lookupAndTerminate(provider, nodeId));
     }
 
-    @Override
-    public Promise<Unit> restartNode(NodeId nodeId) {
+    @Override public Promise<Unit> restartNode(NodeId nodeId) {
         return computeProvider.fold(() -> EnvironmentError.operationNotSupported("restartNode: no ComputeProvider")
-                                                          .promise(),
+        .promise(),
                                     provider -> lookupAndRestart(provider, nodeId));
     }
 
-    @Override
-    public boolean isCloudManaged() {
+    @Override public boolean isCloudManaged() {
         return computeProvider.isPresent();
     }
 
     // --- Leaf: look up instance by aether-node-id tag and terminate ---
     private Promise<Unit> lookupAndTerminate(ComputeProvider provider, NodeId nodeId) {
         return provider.listInstances(Map.of(NODE_ID_TAG,
-                                             nodeId.id()))
-                       .flatMap(instances -> terminateMatchedInstance(provider, nodeId, instances))
-                       .onFailure(cause -> log.warn("Failed to look up cloud instance for node {}: {}",
-                                                    nodeId,
-                                                    cause.message()));
+                                             nodeId.id())).flatMap(instances -> terminateMatchedInstance(provider,
+                                                                                                         nodeId,
+                                                                                                         instances))
+                                     .onFailure(cause -> log.warn("Failed to look up cloud instance for node {}: {}",
+                                                                  nodeId,
+                                                                  cause.message()));
     }
 
     // --- Leaf: look up instance by aether-node-id tag and restart ---
     private Promise<Unit> lookupAndRestart(ComputeProvider provider, NodeId nodeId) {
         return provider.listInstances(Map.of(NODE_ID_TAG,
-                                             nodeId.id()))
-                       .flatMap(instances -> restartMatchedInstance(provider, nodeId, instances))
-                       .onFailure(cause -> log.warn("Failed to look up cloud instance for restart of node {}: {}",
-                                                    nodeId,
-                                                    cause.message()));
+                                             nodeId.id())).flatMap(instances -> restartMatchedInstance(provider,
+                                                                                                       nodeId,
+                                                                                                       instances))
+                                     .onFailure(cause -> log.warn("Failed to look up cloud instance for restart of node {}: {}",
+                                                                  nodeId,
+                                                                  cause.message()));
     }
 
     // --- Leaf: terminate a single matched instance ---
     private Promise<Unit> terminateMatchedInstance(ComputeProvider provider,
                                                    NodeId nodeId,
                                                    List<InstanceInfo> instances) {
-        if (instances.size() == 1) {
-            var instanceId = instances.getFirst()
-                                      .id();
+        if ( instances.size() == 1) {
+            var instanceId = instances.getFirst().id();
             log.info("Terminating cloud instance {} for node {}", instanceId.value(), nodeId);
             return provider.terminate(instanceId)
-                           .onSuccess(_ -> log.info("Cloud instance {} terminated successfully",
-                                                    instanceId.value()));
+            .onSuccess(_ -> log.info("Cloud instance {} terminated successfully", instanceId.value()));
         }
         return logMismatch("terminate", nodeId, instances.size());
     }
@@ -146,28 +136,25 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) imple
     private Promise<Unit> restartMatchedInstance(ComputeProvider provider,
                                                  NodeId nodeId,
                                                  List<InstanceInfo> instances) {
-        if (instances.size() == 1) {
-            var instanceId = instances.getFirst()
-                                      .id();
+        if ( instances.size() == 1) {
+            var instanceId = instances.getFirst().id();
             log.info("Restarting cloud instance {} for node {}", instanceId.value(), nodeId);
             return provider.restart(instanceId)
-                           .onSuccess(_ -> log.info("Cloud instance {} restarted successfully",
-                                                    instanceId.value()));
+            .onSuccess(_ -> log.info("Cloud instance {} restarted successfully", instanceId.value()));
         }
         return logMismatch("restart", nodeId, instances.size());
     }
 
     // --- Leaf: log tag lookup mismatch and succeed (non-fatal) ---
     private static Promise<Unit> logMismatch(String operation, NodeId nodeId, int count) {
-        if (count == 0) {
-            log.warn("No cloud instance found with tag {}={} — skipping {}", NODE_ID_TAG, nodeId.id(), operation);
-        } else {
-            log.warn("Found {} cloud instances with tag {}={} — expected 1, skipping {}",
-                     count,
-                     NODE_ID_TAG,
-                     nodeId.id(),
-                     operation);
-        }
+        if ( count == 0) {
+        log.warn("No cloud instance found with tag {}={} — skipping {}", NODE_ID_TAG, nodeId.id(), operation);} else
+        {
+        log.warn("Found {} cloud instances with tag {}={} — expected 1, skipping {}",
+                 count,
+                 NODE_ID_TAG,
+                 nodeId.id(),
+                 operation);}
         return Promise.success(Unit.unit());
     }
 }

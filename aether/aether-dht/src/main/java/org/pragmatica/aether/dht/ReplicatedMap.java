@@ -1,5 +1,6 @@
 package org.pragmatica.aether.dht;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -25,8 +26,7 @@ public interface ReplicatedMap<K, V> {
     ReplicatedMap<K, V> subscribe(MapSubscription<K, V> subscription);
 
     /// Iterate over all cached entries in the local materialized view.
-    @SuppressWarnings("JBCT-RET-01") // Side-effect iteration over local cache
-    void forEach(BiConsumer<K, V> consumer);
+    @Contract void forEach(BiConsumer<K, V> consumer);
 
     /// The map name (namespace prefix).
     String name();

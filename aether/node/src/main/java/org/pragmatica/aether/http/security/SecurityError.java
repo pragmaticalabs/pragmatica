@@ -19,35 +19,35 @@ public sealed interface SecurityError extends Cause {
     SecurityError MALFORMED_TOKEN = new InvalidCredentials("Malformed JWT token");
 
     /// Missing required authentication credentials.
-    record MissingCredentials(String message) implements SecurityError {}
+    record MissingCredentials(String message) implements SecurityError{}
 
     /// Invalid or expired credentials.
-    record InvalidCredentials(String message) implements SecurityError {}
+    record InvalidCredentials(String message) implements SecurityError{}
 
     /// Authenticated principal lacks sufficient authorization level.
-    record AccessDenied(String message) implements SecurityError {}
+    record AccessDenied(String message) implements SecurityError{}
 
     /// JWT token has expired.
-    record TokenExpired(String message) implements SecurityError {}
+    record TokenExpired(String message) implements SecurityError{}
 
     /// JWT signature validation failed.
-    record SignatureInvalid(String message) implements SecurityError {}
+    record SignatureInvalid(String message) implements SecurityError{}
 
     /// JWT issuer does not match expected value.
-    record IssuerMismatch(String message) implements SecurityError {}
+    record IssuerMismatch(String message) implements SecurityError{}
 
     /// JWT audience does not match expected value.
-    record AudienceMismatch(String message) implements SecurityError {}
+    record AudienceMismatch(String message) implements SecurityError{}
 
     /// JWKS key not found for the given key ID.
-    record KeyNotFound(String message) implements SecurityError {}
+    record KeyNotFound(String message) implements SecurityError{}
 
     /// Failed to fetch or parse JWKS from remote endpoint.
-    record JwksFetchFailed(String message) implements SecurityError {}
+    record JwksFetchFailed(String message) implements SecurityError{}
 
     /// Route requires authentication but no security mode is configured.
     SecurityError NO_VALIDATOR_CONFIGURED = new MissingCredentials("Route requires authentication but no security mode is configured");
 
     /// Authenticated principal lacks the required role.
-    record InsufficientRole(String message) implements SecurityError {}
+    record InsufficientRole(String message) implements SecurityError{}
 }

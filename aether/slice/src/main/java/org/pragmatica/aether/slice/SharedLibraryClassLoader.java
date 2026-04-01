@@ -81,11 +81,10 @@ public class SharedLibraryClassLoader extends URLClassLoader {
     /// @param jarUrl     URL to the JAR file
     public synchronized Result<Unit> addArtifact(String groupId, String artifactId, Version version, URL jarUrl) {
         var key = artifactKey(groupId, artifactId);
-        if (loadedArtifacts.containsKey(key)) {
+        if ( loadedArtifacts.containsKey(key)) {
             log.warn("Artifact {} already loaded with version {}, ignoring request to load version {}",
                      key,
-                     loadedArtifacts.get(key)
-                                    .withQualifier(),
+                     loadedArtifacts.get(key).withQualifier(),
                      version.withQualifier());
             return Result.unitResult();
         }
@@ -106,7 +105,7 @@ public class SharedLibraryClassLoader extends URLClassLoader {
     /// @param version    The version being provided
     public synchronized Result<Unit> registerRuntimeProvided(String groupId, String artifactId, Version version) {
         var key = artifactKey(groupId, artifactId);
-        if (!loadedArtifacts.containsKey(key)) {
+        if ( !loadedArtifacts.containsKey(key)) {
             loadedArtifacts.put(key, version);
             log.debug("Registered runtime-provided artifact {}:{}", key, version.withQualifier());
         }
@@ -140,8 +139,7 @@ public class SharedLibraryClassLoader extends URLClassLoader {
 
     /// JDK override — kept as void/throws per URLClassLoader contract.
     @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
-    @Override
-    public void close() throws IOException {
+    @Override public void close() throws IOException {
         loadedArtifacts.clear();
         super.close();
     }

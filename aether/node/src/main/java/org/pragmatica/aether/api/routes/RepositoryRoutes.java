@@ -37,10 +37,9 @@ public final class RepositoryRoutes implements RouteSource {
         return new RepositoryRoutes(nodeSupplier);
     }
 
-    @Override
-    public Stream<Route<?>> routes() {
+    @Override public Stream<Route<?>> routes() {
         return Stream.of(// Artifact info endpoint - captures everything after /repository/info/
-        Route.<ArtifactInfoResponse> get("/repository/info")
+        Route.<ArtifactInfoResponse>get("/repository/info")
              .withoutParameters()
              .to(ctx -> handleRepositoryInfo(ctx.pathParams()))
              .asJson());
@@ -49,9 +48,8 @@ public final class RepositoryRoutes implements RouteSource {
     private Promise<ArtifactInfoResponse> handleRepositoryInfo(List<String> pathSegments) {
         // Path segments: [groupPart1, groupPart2, ..., artifactId, version]
         // Need at least 3 parts: one group segment + artifactId + version
-        if (pathSegments.size() < 3) {
-            return INVALID_PATH.promise();
-        }
+        if ( pathSegments.size() < 3) {
+        return INVALID_PATH.promise();}
         return parseArtifact(pathSegments).async()
                             .flatMap(this::fetchArtifactInfo);
     }
@@ -61,25 +59,21 @@ public final class RepositoryRoutes implements RouteSource {
         var artifactIdStr = parts.get(parts.size() - 2);
         var groupPath = String.join(".",
                                     parts.subList(0, parts.size() - 2));
-        return Result.all(GroupId.groupId(groupPath),
-                          ArtifactId.artifactId(artifactIdStr),
-                          Version.version(versionStr))
-                     .map(Artifact::new);
+        return Result.all(GroupId.groupId(groupPath), ArtifactId.artifactId(artifactIdStr), Version.version(versionStr))
+        .map(Artifact::new);
     }
 
     private Promise<ArtifactInfoResponse> fetchArtifactInfo(Artifact artifact) {
         var node = nodeSupplier.get();
-        return node.artifactStore()
-                   .resolveWithMetadata(artifact)
-                   .map(resolved -> buildResponse(node, artifact, resolved));
+        return node.artifactStore().resolveWithMetadata(artifact)
+                                 .map(resolved -> buildResponse(node, artifact, resolved));
     }
 
     private ArtifactInfoResponse buildResponse(AetherNode node,
                                                Artifact artifact,
                                                ArtifactStore.ResolvedArtifact resolved) {
         var meta = resolved.metadata();
-        var isDeployed = node.artifactMetricsCollector()
-                             .isDeployed(artifact);
+        var isDeployed = node.artifactMetricsCollector().isDeployed(artifact);
         return new ArtifactInfoResponse(artifact.asString(),
                                         meta.size(),
                                         meta.chunkCount(),

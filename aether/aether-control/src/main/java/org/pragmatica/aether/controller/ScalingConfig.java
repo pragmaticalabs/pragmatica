@@ -30,12 +30,12 @@ import java.util.Map;
 /// @param scaleDownThreshold      Relative change below which to scale down (default: 0.5 = 50% below average)
 /// @param weights                 Per-metric weights for composite load factor calculation
 /// @param errorRateBlockThreshold Error rate threshold above which scale-up is blocked (default: 0.1)
-public record ScalingConfig(int windowSize,
-                            long evaluationIntervalMs,
-                            double scaleUpThreshold,
-                            double scaleDownThreshold,
-                            Map<ScalingMetric, Double> weights,
-                            double errorRateBlockThreshold) {
+public record ScalingConfig( int windowSize,
+                             long evaluationIntervalMs,
+                             double scaleUpThreshold,
+                             double scaleDownThreshold,
+                             Map<ScalingMetric, Double> weights,
+                             double errorRateBlockThreshold) {
     private static final int DEFAULT_WINDOW_SIZE = 10;
     private static final int FORGE_WINDOW_SIZE = 5;
     private static final long DEFAULT_EVALUATION_INTERVAL_MS = 5000;
@@ -48,8 +48,7 @@ public record ScalingConfig(int windowSize,
     ///
     /// @deprecated Use {@link #errorRateBlockThreshold()} instead. This constant is kept for
     /// backward compatibility and returns the default value.
-    @Deprecated
-    static final double ERROR_RATE_BLOCK_THRESHOLD = DEFAULT_ERROR_RATE_BLOCK_THRESHOLD;
+    @Deprecated static final double ERROR_RATE_BLOCK_THRESHOLD = DEFAULT_ERROR_RATE_BLOCK_THRESHOLD;
 
     /// Create ScalingConfig with default values for production use.
     ///
@@ -69,7 +68,38 @@ public record ScalingConfig(int windowSize,
     ///
     /// @return ScalingConfig with production defaults
     @SuppressWarnings("JBCT-VO-02") // Named configuration profile — uses new directly with compile-time-verified defaults
-    public static ScalingConfig productionDefaults() {
+    public static// Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    ScalingConfig productionDefaults() {
         var weights = new EnumMap<ScalingMetric, Double>(ScalingMetric.class);
         weights.put(ScalingMetric.CPU, 0.4);
         weights.put(ScalingMetric.ACTIVE_INVOCATIONS, 0.4);
@@ -105,7 +135,38 @@ public record ScalingConfig(int windowSize,
     ///
     /// @return ScalingConfig with Forge-appropriate defaults
     @SuppressWarnings("JBCT-VO-02") // Named configuration profile — uses new directly with compile-time-verified defaults
-    public static ScalingConfig forgeDefaults() {
+    public static// Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    // Named configuration profile — uses new directly with compile-time-verified defaults
+    ScalingConfig forgeDefaults() {
         var weights = new EnumMap<ScalingMetric, Double>(ScalingMetric.class);
         weights.put(ScalingMetric.CPU, 0.0);
         // Disabled for Forge
@@ -173,32 +234,27 @@ public record ScalingConfig(int windowSize,
     private static Result<Unit> validatePositive(double value, String name) {
         return value > 0
                ? Result.unitResult()
-               : Causes.cause(name + " must be positive, got: " + value)
-                       .result();
+               : Causes.cause(name + " must be positive, got: " + value).result();
     }
 
     private static Result<Unit> validatePositive(int value, String name) {
         return value > 0
                ? Result.unitResult()
-               : Causes.cause(name + " must be positive, got: " + value)
-                       .result();
+               : Causes.cause(name + " must be positive, got: " + value).result();
     }
 
     private static Result<Unit> validateThresholdOrder(double scaleUp, double scaleDown) {
         return scaleUp > scaleDown
                ? Result.unitResult()
                : Causes.cause("scaleUpThreshold must be greater than scaleDownThreshold, got: " + scaleUp + " <= " + scaleDown)
-                       .result();
+        .result();
     }
 
     /// Validate that all weights are non-negative.
     private static Result<Unit> validateWeights(Map<ScalingMetric, Double> weights) {
-        for (var entry : weights.entrySet()) {
-            if (entry.getValue() < 0) {
-                return Causes.cause("Weight for " + entry.getKey() + " must be >= 0, got: " + entry.getValue())
-                             .result();
-            }
-        }
+        for ( var entry : weights.entrySet()) {
+        if ( entry.getValue() < 0) {
+        return Causes.cause("Weight for " + entry.getKey() + " must be >= 0, got: " + entry.getValue()).result();}}
         return Result.unitResult();
     }
 

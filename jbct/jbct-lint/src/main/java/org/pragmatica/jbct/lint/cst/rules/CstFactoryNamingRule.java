@@ -31,7 +31,7 @@ public class CstFactoryNamingRule implements CstLintRule {
             return Stream.empty();
         }
         // Check records for factory methods
-        return findAll(root, RuleId.RecordDecl.class).stream()
+        return findAllRecords(root).stream()
                       .flatMap(record -> checkFactoryMethods(record, source, ctx));
     }
 
@@ -40,10 +40,10 @@ public class CstFactoryNamingRule implements CstLintRule {
                                   .or("");
         if (typeName.isEmpty()) return Stream.empty();
         var expectedName = camelCase(typeName);
-        // Find ClassMember nodes containing static factory methods
-        return findAll(record, RuleId.ClassMember.class).stream()
+        // Find RecordMember nodes (wraps ClassMember in records) containing static factory methods
+        return findAll(record, RuleId.RecordMember.class).stream()
                       .filter(member -> isStaticFactoryMember(member, typeName, source))
-                      .flatMap(member -> findFirst(member, RuleId.MethodDecl.class).stream())
+                      .flatMap(member -> findFirstMethod(member).stream())
                       .filter(method -> !isCorrectlyNamed(method, expectedName, source))
                       .map(method -> createDiagnostic(method, typeName, expectedName, source, ctx));
     }

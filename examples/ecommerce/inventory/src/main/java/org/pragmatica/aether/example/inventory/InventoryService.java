@@ -18,11 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-/// Inventory management slice.
-/// Manages product stock levels, availability checking, and reservations.
-@Slice
-public interface InventoryService {
-    // === Requests ===
+@Slice public interface InventoryService {
     record CheckStockRequest(List<LineItem> items) {
         public static CheckStockRequest checkStockRequest(List<LineItem> items) {
             return new CheckStockRequest(List.copyOf(items));
@@ -41,7 +37,6 @@ public interface InventoryService {
         }
     }
 
-    // === Responses ===
     record StockAvailability(Map<ProductId, Quantity> availableStock, List<ProductId> unavailableItems) {
         public static StockAvailability fullyAvailable(Map<ProductId, Quantity> stock) {
             return new StockAvailability(Map.copyOf(stock), List.of());
@@ -57,7 +52,7 @@ public interface InventoryService {
         }
 
         public boolean hasUnavailableItems() {
-            return ! unavailableItems.isEmpty();
+            return! unavailableItems.isEmpty();
         }
     }
 
@@ -67,38 +62,31 @@ public interface InventoryService {
         public static StockReservation stockReservation(OrderId orderId) {
             return new StockReservation(IdGenerator.generate("RES"),
                                         orderId,
-                                        Instant.now()
-                                               .plusSeconds(RESERVATION_DURATION_MINUTES * 60));
+                                        Instant.now().plusSeconds(RESERVATION_DURATION_MINUTES * 60));
         }
 
         public boolean isExpired() {
-            return Instant.now()
-                          .isAfter(expiresAt);
+            return Instant.now().isAfter(expiresAt);
         }
     }
 
-    // === Errors ===
     sealed interface InventoryError extends Cause {
         record InsufficientStock(List<ProductId> products) implements InventoryError {
-            @Override
-            public String message() {
-                var ids = products.stream()
-                                  .map(ProductId::value)
-                                  .toList();
+            @Override public String message() {
+                var ids = products.stream().map(ProductId::value)
+                                         .toList();
                 return "Insufficient stock for products: " + ids;
             }
         }
 
         record ReservationNotFound(String reservationId) implements InventoryError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Reservation not found: " + reservationId;
             }
         }
 
         record ReservationExpired(String reservationId) implements InventoryError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Reservation expired: " + reservationId;
             }
         }
@@ -108,17 +96,11 @@ public interface InventoryService {
         }
     }
 
-    // === Internal Types ===
-    record ProductStock(ProductId productId, Quantity available) {}
+    record ProductStock(ProductId productId, Quantity available){}
 
-    // === Operations ===
     Promise<StockAvailability> checkStock(CheckStockRequest request);
-
     Promise<StockReservation> reserveStock(ReserveStockRequest request);
-
     Promise<Unit> releaseStock(ReleaseStockRequest request);
-
-    // === SQL Constants ===
     String SELECT_STOCK = "SELECT product_id, stock FROM products WHERE product_id = ?";
     String UPDATE_STOCK = "UPDATE products SET stock = stock - ? WHERE product_id = ? AND stock >= ?";
     String RESTORE_STOCK = "UPDATE products SET stock = stock + ? WHERE product_id = ?";
@@ -128,61 +110,46 @@ public interface InventoryService {
     String DELETE_RESERVATION_ITEMS = "DELETE FROM reservation_items WHERE reservation_id = ?";
     String DELETE_RESERVATION = "DELETE FROM stock_reservations WHERE reservation_id = ?";
 
-    // === Factory ===
     static InventoryService inventoryService(@Sql SqlConnector db) {
-        record inventoryService(SqlConnector db) implements InventoryService {
-            @Override
-            public Promise<StockAvailability> checkStock(CheckStockRequest request) {
+        record inventoryService( SqlConnector db) implements InventoryService {
+            @Override public Promise<StockAvailability> checkStock(CheckStockRequest request) {
                 return fetchStockLevels(request.items()).map(stockMap -> buildAvailability(request.items(), stockMap));
             }
 
-            @Override
-            public Promise<StockReservation> reserveStock(ReserveStockRequest request) {
-                return checkStock(CheckStockRequest.checkStockRequest(request.items()))
-                .flatMap(availability -> availability.hasUnavailableItems()
-                                         ? InventoryError.insufficientStock(availability.unavailableItems())
-                                                         .promise()
-                                         : performReservation(request));
+            @Override public Promise<StockReservation> reserveStock(ReserveStockRequest request) {
+                return checkStock(CheckStockRequest.checkStockRequest(request.items())).flatMap(availability -> availability.hasUnavailableItems()
+                                                                                                               ? InventoryError.insufficientStock(availability.unavailableItems()).promise()
+                                                                                                               : performReservation(request));
             }
 
-            @Override
-            public Promise<Unit> releaseStock(ReleaseStockRequest request) {
+            @Override public Promise<Unit> releaseStock(ReleaseStockRequest request) {
                 return db.transactional(conn -> restoreStockFromReservation(conn, request.reservationId()));
             }
 
             private Promise<Map<ProductId, Quantity>> fetchStockLevels(List<LineItem> items) {
-                var promises = items.stream()
-                                    .map(item -> fetchSingleStock(item.productId()))
-                                    .toList();
-                return Promise.allOf(promises)
-                              .flatMap(results -> Result.allOf(results)
-                                                        .async())
-                              .map(inventoryService::toStockMap);
+                var promises = items.stream().map(item -> fetchSingleStock(item.productId()))
+                                           .toList();
+                return Promise.allOf(promises).flatMap(results -> Result.allOf(results).async())
+                                    .map(inventoryService::toStockMap);
             }
 
             private Promise<ProductStock> fetchSingleStock(ProductId productId) {
                 return db.queryOptional(SELECT_STOCK,
-                                        row -> row.getInt("stock")
-                                                  .flatMap(Quantity::quantity)
-                                                  .map(qty -> new ProductStock(productId, qty)),
-                                        productId.value())
-                         .map(opt -> opt.or(new ProductStock(productId, Quantity.ZERO)));
+                                        row -> row.getInt("stock").flatMap(Quantity::quantity)
+                                                         .map(qty -> new ProductStock(productId, qty)),
+                                        productId.value()).map(opt -> opt.or(new ProductStock(productId, Quantity.ZERO)));
             }
 
             private static Map<ProductId, Quantity> toStockMap(List<ProductStock> stocks) {
-                return stocks.stream()
-                             .collect(Collectors.toMap(ProductStock::productId, ProductStock::available));
+                return stocks.stream().collect(Collectors.toMap(ProductStock::productId, ProductStock::available));
             }
 
             private static StockAvailability buildAvailability(List<LineItem> items,
                                                                Map<ProductId, Quantity> stockMap) {
-                var unavailable = items.stream()
-                                       .filter(item -> stockMap.getOrDefault(item.productId(),
-                                                                             Quantity.ZERO)
-                                                               .value() < item.quantity()
-                                                                              .value())
-                                       .map(LineItem::productId)
-                                       .toList();
+                var unavailable = items.stream().filter(item -> stockMap.getOrDefault(item.productId(),
+                                                                                      Quantity.ZERO).value() < item.quantity().value())
+                                              .map(LineItem::productId)
+                                              .toList();
                 return unavailable.isEmpty()
                        ? StockAvailability.fullyAvailable(stockMap)
                        : StockAvailability.partiallyAvailable(stockMap, unavailable);
@@ -198,81 +165,60 @@ public interface InventoryService {
                                                                    List<LineItem> items) {
                 return conn.update(INSERT_RESERVATION,
                                    reservation.reservationId(),
-                                   reservation.orderId()
-                                              .value(),
-                                   reservation.expiresAt())
-                           .flatMap(_ -> decrementAllStock(conn, items))
-                           .flatMap(_ -> insertAllReservationItems(conn,
-                                                                   reservation.reservationId(),
-                                                                   items))
-                           .map(_ -> reservation);
+                                   reservation.orderId().value(),
+                                   reservation.expiresAt()).flatMap(_ -> decrementAllStock(conn, items))
+                                  .flatMap(_ -> insertAllReservationItems(conn,
+                                                                          reservation.reservationId(),
+                                                                          items))
+                                  .map(_ -> reservation);
             }
 
             private Promise<Integer> decrementAllStock(SqlConnector conn, List<LineItem> items) {
-                var updates = items.stream()
-                                   .map(item -> conn.update(UPDATE_STOCK,
-                                                            item.quantity()
-                                                                .value(),
-                                                            item.productId()
-                                                                .value(),
-                                                            item.quantity()
-                                                                .value()))
-                                   .toList();
-                return Promise.allOf(updates)
-                              .flatMap(results -> Result.allOf(results)
-                                                        .async())
-                              .map(counts -> counts.stream()
-                                                   .mapToInt(Integer::intValue)
-                                                   .sum());
+                var updates = items.stream().map(item -> conn.update(UPDATE_STOCK,
+                                                                     item.quantity().value(),
+                                                                     item.productId().value(),
+                                                                     item.quantity().value()))
+                                          .toList();
+                return Promise.allOf(updates).flatMap(results -> Result.allOf(results).async())
+                                    .map(counts -> counts.stream().mapToInt(Integer::intValue)
+                                                                .sum());
             }
 
             private Promise<Integer> insertAllReservationItems(SqlConnector conn,
                                                                String reservationId,
                                                                List<LineItem> items) {
-                var inserts = items.stream()
-                                   .map(item -> conn.update(INSERT_RESERVATION_ITEM,
-                                                            reservationId,
-                                                            item.productId()
-                                                                .value(),
-                                                            item.quantity()
-                                                                .value()))
-                                   .toList();
-                return Promise.allOf(inserts)
-                              .flatMap(results -> Result.allOf(results)
-                                                        .async())
-                              .map(counts -> counts.stream()
-                                                   .mapToInt(Integer::intValue)
-                                                   .sum());
+                var inserts = items.stream().map(item -> conn.update(INSERT_RESERVATION_ITEM,
+                                                                     reservationId,
+                                                                     item.productId().value(),
+                                                                     item.quantity().value()))
+                                          .toList();
+                return Promise.allOf(inserts).flatMap(results -> Result.allOf(results).async())
+                                    .map(counts -> counts.stream().mapToInt(Integer::intValue)
+                                                                .sum());
             }
 
             private Promise<Unit> restoreStockFromReservation(SqlConnector conn, String reservationId) {
                 return conn.queryList(SELECT_RESERVATION_ITEMS,
                                       row -> Result.all(row.getString("product_id"),
-                                                        row.getInt("quantity"))
-                                                   .map(ReservationItem::new),
-                                      reservationId)
-                           .flatMap(items -> restoreAllStock(conn, items))
-                           .flatMap(_ -> conn.update(DELETE_RESERVATION_ITEMS, reservationId))
-                           .flatMap(_ -> conn.update(DELETE_RESERVATION, reservationId))
-                           .mapToUnit();
+                                                        row.getInt("quantity")).map(ReservationItem::new),
+                                      reservationId).flatMap(items -> restoreAllStock(conn, items))
+                                     .flatMap(_ -> conn.update(DELETE_RESERVATION_ITEMS, reservationId))
+                                     .flatMap(_ -> conn.update(DELETE_RESERVATION, reservationId))
+                                     .mapToUnit();
             }
 
             private Promise<Integer> restoreAllStock(SqlConnector conn, List<ReservationItem> items) {
-                var updates = items.stream()
-                                   .map(item -> conn.update(RESTORE_STOCK,
-                                                            item.quantity(),
-                                                            item.productId()))
-                                   .toList();
-                return Promise.allOf(updates)
-                              .flatMap(results -> Result.allOf(results)
-                                                        .async())
-                              .map(counts -> counts.stream()
-                                                   .mapToInt(Integer::intValue)
-                                                   .sum());
+                var updates = items.stream().map(item -> conn.update(RESTORE_STOCK,
+                                                                     item.quantity(),
+                                                                     item.productId()))
+                                          .toList();
+                return Promise.allOf(updates).flatMap(results -> Result.allOf(results).async())
+                                    .map(counts -> counts.stream().mapToInt(Integer::intValue)
+                                                                .sum());
             }
         }
         return new inventoryService(db);
     }
 
-    record ReservationItem(String productId, int quantity) {}
+    record ReservationItem(String productId, int quantity){}
 }

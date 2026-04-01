@@ -17,11 +17,11 @@ import static org.pragmatica.lang.Result.success;
 /// @param artifactCoord full artifact coordinate (e.g., "org.example:user-service:1.0.0")
 /// @param sliceMethod   slice method name to invoke
 /// @param security      security policy for this route
-public record HttpRouteDefinition(String httpMethod,
-                                  String pathPrefix,
-                                  String artifactCoord,
-                                  String sliceMethod,
-                                  SecurityPolicy security) {
+public record HttpRouteDefinition( String httpMethod,
+                                   String pathPrefix,
+                                   String artifactCoord,
+                                   String sliceMethod,
+                                   SecurityPolicy security) {
     /// Canonical constructor with validation.
     public HttpRouteDefinition {
         Objects.requireNonNull(httpMethod, "httpMethod");
@@ -37,8 +37,7 @@ public record HttpRouteDefinition(String httpMethod,
                                                                   Result<String> artifactCoord,
                                                                   Result<String> sliceMethod,
                                                                   Result<SecurityPolicy> security) {
-        return Result.all(httpMethod, pathPrefix, artifactCoord, sliceMethod, security)
-                     .map(HttpRouteDefinition::new);
+        return Result.all(httpMethod, pathPrefix, artifactCoord, sliceMethod, security).map(HttpRouteDefinition::new);
     }
 
     /// Create public route definition with path normalization.
@@ -59,9 +58,8 @@ public record HttpRouteDefinition(String httpMethod,
                           success(normalizePrefix(pathPrefix)),
                           success(artifactCoord),
                           success(sliceMethod),
-                          success(security))
-                     .map(HttpRouteDefinition::new)
-                     .unwrap();
+                          success(security)).map(HttpRouteDefinition::new)
+                         .unwrap();
     }
 
     private static String normalizePrefix(String path) {
@@ -69,12 +67,10 @@ public record HttpRouteDefinition(String httpMethod,
         var normalized = path.isBlank()
                          ? "/"
                          : path.strip();
-        if (!normalized.startsWith("/")) {
-            normalized = "/" + normalized;
-        }
-        if (!normalized.endsWith("/")) {
-            normalized = normalized + "/";
-        }
+        if ( !normalized.startsWith("/")) {
+        normalized = "/" + normalized;}
+        if ( !normalized.endsWith("/")) {
+        normalized = normalized + "/";}
         return normalized;
     }
 }

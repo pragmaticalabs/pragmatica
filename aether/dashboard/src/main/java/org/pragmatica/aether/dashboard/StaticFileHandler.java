@@ -75,13 +75,12 @@ public final class StaticFileHandler {
     public void handle(RequestContext request, ResponseWriter response) {
         var path = request.path();
         // Handle root path
-        if (path.equals("/") || path.equals("/index.html")) {
-            path = "/index.html";
-        }
+        if ( path.equals("/") || path.equals("/index.html")) {
+        path = "/index.html";}
         // Decode URL before security check to prevent bypass via percent-encoding
         path = URLDecoder.decode(path, StandardCharsets.UTF_8);
         // Security: prevent directory traversal
-        if (path.contains("..")) {
+        if ( path.contains("..")) {
             sendError(response, HttpStatus.FORBIDDEN, "Invalid path");
             return;
         }
@@ -100,8 +99,7 @@ public final class StaticFileHandler {
 
     private void sendStaticContent(ResponseWriter response, String path, byte[] content) {
         var contentType = getContentType(path);
-        response.header("Cache-Control", "no-cache")
-                .write(HttpStatus.OK, content, contentType);
+        response.header("Cache-Control", "no-cache").write(HttpStatus.OK, content, contentType);
     }
 
     private Option<byte[]> loadResource(String path) {
@@ -111,22 +109,25 @@ public final class StaticFileHandler {
     private Option<byte[]> doLoadResource(String path) {
         try (InputStream is = getClass().getClassLoader()
                                       .getResourceAsStream(path)) {
-            if (is == null) {
-                return Option.empty();
-            }
+            if ( is == null) {
+            return Option.empty();}
             return Option.option(is.readAllBytes());
-        } catch (IOException e) {
+        }
+
+
+
+
+
+        catch (IOException e) {
             log.error("Error loading resource: {}", path, e);
             return Option.empty();
         }
     }
 
     private ContentType getContentType(String path) {
-        for (var entry : CONTENT_TYPES.entrySet()) {
-            if (path.endsWith(entry.getKey())) {
-                return entry.getValue();
-            }
-        }
+        for ( var entry : CONTENT_TYPES.entrySet()) {
+        if ( path.endsWith(entry.getKey())) {
+        return entry.getValue();}}
         return CommonContentType.APPLICATION_OCTET_STREAM;
     }
 

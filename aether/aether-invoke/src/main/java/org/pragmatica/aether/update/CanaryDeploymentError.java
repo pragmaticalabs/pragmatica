@@ -11,8 +11,7 @@ public sealed interface CanaryDeploymentError extends Cause {
             return new CanaryNotFound(canaryId);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Canary deployment not found: " + canaryId;
         }
     }
@@ -23,8 +22,7 @@ public sealed interface CanaryDeploymentError extends Cause {
             return new CanaryAlreadyExists(artifactBase);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Canary deployment already in progress for " + artifactBase;
         }
     }
@@ -35,8 +33,7 @@ public sealed interface CanaryDeploymentError extends Cause {
             return new InvalidCanaryState(from, to);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Invalid canary state transition from " + from + " to " + to;
         }
     }
@@ -47,8 +44,7 @@ public sealed interface CanaryDeploymentError extends Cause {
             return new InitialDeployment(artifactBase);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Initial deployment for " + artifactBase + " (no previous version)";
         }
     }
@@ -56,8 +52,7 @@ public sealed interface CanaryDeploymentError extends Cause {
     /// Not the leader node.
     enum NotLeader implements CanaryDeploymentError {
         INSTANCE;
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Canary deployment operations can only be performed by the leader node";
         }
     }

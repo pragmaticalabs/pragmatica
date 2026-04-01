@@ -15,11 +15,11 @@ import static org.pragmatica.lang.Result.success;
 /// @param timeout       Transaction timeout (optional)
 /// @param readOnly      Whether the transaction is read-only
 /// @param rollbackFor   Exception classes that should trigger rollback (empty = rollback on all)
-public record TransactionConfig(TransactionPropagation propagation,
-                                IsolationLevel isolation,
-                                Option<TimeSpan> timeout,
-                                boolean readOnly,
-                                Class<?>[] rollbackFor) {
+public record TransactionConfig( TransactionPropagation propagation,
+                                 IsolationLevel isolation,
+                                 Option<TimeSpan> timeout,
+                                 boolean readOnly,
+                                 Class<?>[] rollbackFor) {
     private static final TransactionPropagation DEFAULT_PROPAGATION = TransactionPropagation.REQUIRED;
     private static final IsolationLevel DEFAULT_ISOLATION = IsolationLevel.DEFAULT;
     private static final Class<?>[] EMPTY_ROLLBACK_FOR = new Class<?>[0];
@@ -40,8 +40,7 @@ public record TransactionConfig(TransactionPropagation propagation,
                                                               IsolationLevel isolation) {
         var validPropagation = option(propagation).toResult(TransactionError.invalidConfig("Propagation cannot be null"));
         var validIsolation = option(isolation).toResult(TransactionError.invalidConfig("Isolation cannot be null"));
-        return Result.all(validPropagation, validIsolation)
-                     .map(TransactionConfig::withPropagationAndIsolation);
+        return Result.all(validPropagation, validIsolation).map(TransactionConfig::withPropagationAndIsolation);
     }
 
     @SuppressWarnings({"JBCT-VO-02", "JBCT-NAM-01"})

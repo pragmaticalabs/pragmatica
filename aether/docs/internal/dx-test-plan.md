@@ -128,7 +128,7 @@ mvn clean install
 | 3.5 | Dashboard | `curl -s -o /dev/null -w "%{http_code}" http://localhost:8888` | `200` |
 | 3.6 | Management API | `curl -s http://localhost:5150/api/status` | Cluster status JSON |
 | 3.7 | Nodes healthy | `curl -s http://localhost:5150/api/nodes` | 3 nodes listed |
-| 3.8 | Slices deployed | `curl -s http://localhost:5150/api/slices` | HelloWorld slice listed |
+| 3.8 | Slices deployed | `curl -s http://localhost:5150/api/slices` | HelloWorld slice listed (cluster-wide view with instances) |
 
 Stop Forge: `Ctrl+C`
 
@@ -312,7 +312,7 @@ mvn clean install
 | 6.3 | Run Forge | `./run-forge.sh` starts, both slices deploy |
 | 6.4 | HelloWorld API | `curl -s http://localhost:8070/api/hello/World` works |
 | 6.5 | Analytics API | `curl -s http://localhost:8070/api/analytics/count/World` returns count |
-| 6.6 | Both in slices list | `curl -s http://localhost:5150/api/slices` shows both |
+| 6.6 | Both in slices list | `curl -s http://localhost:5150/api/slices` shows both (cluster-wide view) |
 
 ---
 
@@ -645,7 +645,7 @@ aether -c localhost:5150 events
 | 11.3 | Readiness | `curl -s localhost:5150/health/ready` | `{"status":"UP"}` |
 | 11.4 | Node list | `aether -c localhost:5150 nodes` | Array of 3 nodes |
 | 11.5 | Slice list | `aether -c localhost:5150 slices` | Both slices with instances |
-| 11.6 | Routes | `curl -s localhost:5150/api/routes \| jq .` | `/api/hello/{name}`, `/api/analytics/count/{name}` |
+| 11.6 | Routes (node) | `curl -s localhost:5150/api/node/routes \| jq .` | `/api/hello/{name}`, `/api/analytics/count/{name}` |
 | 11.7 | Blueprint | `aether -c localhost:5150 blueprint list` | Active blueprint |
 | 11.8 | Metrics | `aether -c localhost:5150 metrics` | CPU, memory, latency |
 | 11.9 | Invocation metrics | `aether -c localhost:5150 invocation-metrics` | Per-method stats |

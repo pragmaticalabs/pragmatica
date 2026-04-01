@@ -44,20 +44,17 @@ public sealed interface MavenLocalRepoLocator {
 
     private static Option<String> getLocalRepoFromSettings(String settingsPath) {
         var file = new File(settingsPath);
-        if (!file.exists()) {
-            return Option.empty();
-        }
-        try{
+        if ( !file.exists()) {
+        return Option.empty();}
+        try {
             var dbf = DocumentBuilderFactory.newInstance();
             dbf.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
             var db = dbf.newDocumentBuilder();
             var doc = db.parse(file);
             var nodes = doc.getElementsByTagName("localRepository");
-            if (nodes.getLength() > 0) {
-                return option(nodes.item(0)
-                                   .getTextContent()
-                                   .trim()).filter(Verify.Is::notEmpty);
-            }
+            if ( nodes.getLength() > 0) {
+            return option(nodes.item(0).getTextContent()
+                                    .trim()).filter(Verify.Is::notEmpty);}
         } catch (Exception e) {
             log.debug("Failed to read Maven settings from {}: {}", settingsPath, e.getMessage());
         }
@@ -78,14 +75,12 @@ public sealed interface MavenLocalRepoLocator {
 
     // Expands leading ~ and ${user.home} in the path for cross-platform compatibility
     private static String expandPath(String path, String userHome) {
-        if (path.startsWith("~" + File.separator) || path.equals("~")) {
-            path = userHome + path.substring(1);
-        }
-        if (path.contains("${user.home}")) {
-            path = path.replace("${user.home}", userHome);
-        }
+        if ( path.startsWith("~" + File.separator) || path.equals("~")) {
+        path = userHome + path.substring(1);}
+        if ( path.contains("${user.home}")) {
+        path = path.replace("${user.home}", userHome);}
         return path;
     }
 
-    record unused() implements MavenLocalRepoLocator {}
+    record unused() implements MavenLocalRepoLocator{}
 }

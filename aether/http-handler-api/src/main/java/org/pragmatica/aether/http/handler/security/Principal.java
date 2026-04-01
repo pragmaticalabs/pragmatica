@@ -11,8 +11,7 @@ import org.pragmatica.serialization.Codec;
 /// Represents the authenticated entity making a request.
 ///
 /// @param value the principal identifier
-@Codec
-public record Principal(String value) {
+@Codec public record Principal( String value) {
     /// Validation errors for Principal.
     public sealed interface PrincipalError extends Cause {
         enum General implements PrincipalError {
@@ -22,16 +21,13 @@ public record Principal(String value) {
             General(String message) {
                 this.message = message;
             }
-            @Override
-            public String message() {
+            @Override public String message() {
                 return message;
             }
         }
 
-        @SuppressWarnings("unused")
-        record unused() implements PrincipalError {
-            @Override
-            public String message() {
+        @SuppressWarnings("unused") record unused() implements PrincipalError {
+            @Override public String message() {
                 return "";
             }
         }
@@ -79,7 +75,7 @@ public record Principal(String value) {
 
     private static Result<String> ensureNotBlank(String value) {
         return Verify.ensure(value, Verify.Is::notNull, PrincipalError.General.NULL_VALUE)
-                     .filter(PrincipalError.General.BLANK_VALUE, Verify.Is::notBlank);
+        .filter(PrincipalError.General.BLANK_VALUE, Verify.Is::notBlank);
     }
 
     /// Principal type with associated prefix.

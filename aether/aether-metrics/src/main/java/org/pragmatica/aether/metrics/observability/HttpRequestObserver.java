@@ -42,9 +42,8 @@ public final class HttpRequestObserver {
     }
 
     private Timer requestTimer(String method, String routePattern) {
-        return Timer.builder("aether_http_request_duration_seconds")
-                    .tags("method", method, "route", routePattern)
-                    .register(registry.registry());
+        return Timer.builder("aether_http_request_duration_seconds").tags("method", method, "route", routePattern)
+                            .register(registry.registry());
     }
 
     private Counter securityDenialCounter(String type, String method, String routePattern) {

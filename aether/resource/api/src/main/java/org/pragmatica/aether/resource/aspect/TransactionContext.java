@@ -20,11 +20,11 @@ import static org.pragmatica.lang.Result.success;
 /// @param status        Current transaction status
 /// @param startTime     When the transaction started
 /// @param parentContext Parent transaction context (for nested transactions)
-public record TransactionContext(String id,
-                                 TransactionConfig config,
-                                 TransactionStatus status,
-                                 Instant startTime,
-                                 Option<TransactionContext> parentContext) {
+public record TransactionContext( String id,
+                                  TransactionConfig config,
+                                  TransactionStatus status,
+                                  Instant startTime,
+                                  Option<TransactionContext> parentContext) {
     /// Transaction status.
     public enum TransactionStatus {
         ACTIVE,
@@ -34,8 +34,7 @@ public record TransactionContext(String id,
     }
 
     public static Result<TransactionContext> transactionContext(TransactionConfig config) {
-        return success(new TransactionContext(UUID.randomUUID()
-                                                  .toString(),
+        return success(new TransactionContext(UUID.randomUUID().toString(),
                                               config,
                                               TransactionStatus.ACTIVE,
                                               Instant.now(),
@@ -45,8 +44,7 @@ public record TransactionContext(String id,
     /// Creates a nested transaction context.
     @SuppressWarnings({"JBCT-VO-02", "JBCT-NAM-01"})
     public static TransactionContext nestedContext(TransactionConfig config, TransactionContext parent) {
-        return new TransactionContext(UUID.randomUUID()
-                                          .toString(),
+        return new TransactionContext(UUID.randomUUID().toString(),
                                       config,
                                       TransactionStatus.ACTIVE,
                                       Instant.now(),
@@ -89,9 +87,8 @@ public record TransactionContext(String id,
 
     /// Checks if the transaction has timed out.
     public boolean isTimedOut() {
-        return config.timeout()
-                     .filter(this::hasExceededTimeout)
-                     .isPresent();
+        return config.timeout().filter(this::hasExceededTimeout)
+                             .isPresent();
     }
 
     private boolean hasExceededTimeout(TimeSpan timeout) {

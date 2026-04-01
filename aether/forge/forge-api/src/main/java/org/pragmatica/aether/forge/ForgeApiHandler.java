@@ -96,7 +96,7 @@ public final class ForgeApiHandler {
     }
 
     private static void executeChaosEvent(EmberCluster cluster, ChaosEvent event) {
-        switch (event) {
+        switch ( event) {
             case ChaosEvent.NodeKill kill -> cluster.killNode(kill.nodeId(), false);
             case ChaosEvent.LatencySpike _ -> {}
             case ChaosEvent.SliceCrash _ -> {}
@@ -120,12 +120,16 @@ public final class ForgeApiHandler {
     public void handle(RequestContext request, ResponseWriter response) {
         var path = request.path();
         log.debug("API request: {} {}", request.method(), path);
-        try{
+        try {
             var method = convertMethod(request.method());
-            router.findRoute(method, path)
-                  .onEmpty(() -> sendNotFound(response, path))
-                  .onPresent(route -> handleRoute(request, response, route, path));
-        } catch (Exception e) {
+            router.findRoute(method, path).onEmpty(() -> sendNotFound(response, path))
+                            .onPresent(route -> handleRoute(request, response, route, path));
+        }
+
+
+
+
+        catch (Exception e) {
             log.error("Error handling API request: {}", e.getMessage(), e);
             sendError(response, HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
         }
@@ -136,111 +140,71 @@ public final class ForgeApiHandler {
         // Create a Netty FullHttpRequest for the routing RequestContextImpl
         var nettyRequest = createNettyRequest(request, route.path());
         var context = RequestContextImpl.requestContext(nettyRequest, route, jsonCodec, requestId);
-        route.handler()
-             .handle(context)
-             .onSuccess(result -> sendSuccessResponse(response, route, result))
-             .onFailure(cause -> sendError(response,
-                                           HttpStatus.BAD_REQUEST,
-                                           cause.message()));
+        route.handler().handle(context)
+                     .onSuccess(result -> sendSuccessResponse(response, route, result))
+                     .onFailure(cause -> sendError(response,
+                                                   HttpStatus.BAD_REQUEST,
+                                                   cause.message()));
     }
 
     private DefaultFullHttpRequest createNettyRequest(RequestContext request, String routePath) {
-        var method = switch (request.method()) {
-            case GET -> HttpMethod.GET;
-            case POST -> HttpMethod.POST;
-            case PUT -> HttpMethod.PUT;
-            case DELETE -> HttpMethod.DELETE;
-            case PATCH -> HttpMethod.PATCH;
-            case HEAD -> HttpMethod.HEAD;
-            case OPTIONS -> HttpMethod.OPTIONS;
-            case TRACE -> HttpMethod.TRACE;
-            case CONNECT -> HttpMethod.CONNECT;
-        };
+        var method = switch (request.method()) {case GET -> HttpMethod.GET;case POST -> HttpMethod.POST;case PUT -> HttpMethod.PUT;case DELETE -> HttpMethod.DELETE;case PATCH -> HttpMethod.PATCH;case HEAD -> HttpMethod.HEAD;case OPTIONS -> HttpMethod.OPTIONS;case TRACE -> HttpMethod.TRACE;case CONNECT -> HttpMethod.CONNECT;};
         // Build URI with query string
         var uri = request.path();
-        var queryString = buildQueryString(request.queryParams()
-                                                  .asMap());
-        if (!queryString.isEmpty()) {
-            uri = uri + "?" + queryString;
-        }
+        var queryString = buildQueryString(request.queryParams().asMap());
+        if ( !queryString.isEmpty()) {
+        uri = uri + "?" + queryString;}
         var nettyRequest = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1,
                                                       method,
                                                       uri,
                                                       Unpooled.wrappedBuffer(request.body()));
         // Copy headers
-        for (var entry : request.headers()
-                                .asMap()
-                                .entrySet()) {
-            for (var value : entry.getValue()) {
-                nettyRequest.headers()
-                            .add(entry.getKey(),
-                                 value);
-            }
-        }
+        for ( var entry : request.headers().asMap()
+                                         .entrySet()) {
+        for ( var value : entry.getValue()) {
+        nettyRequest.headers().add(entry.getKey(), value);}}
         return nettyRequest;
     }
 
     private String buildQueryString(java.util.Map<String, java.util.List<String>> params) {
-        if (params.isEmpty()) {
-            return "";
-        }
+        if ( params.isEmpty()) {
+        return "";}
         var sb = new StringBuilder();
-        for (var entry : params.entrySet()) {
-            for (var value : entry.getValue()) {
-                if (!sb.isEmpty()) {
-                    sb.append("&");
-                }
-                sb.append(entry.getKey())
-                  .append("=")
-                  .append(value);
-            }
-        }
+        for ( var entry : params.entrySet()) {
+        for ( var value : entry.getValue()) {
+            if ( !sb.isEmpty()) {
+            sb.append("&");}
+            sb.append(entry.getKey()).append("=")
+                     .append(value);
+        }}
         return sb.toString();
     }
 
     private void sendSuccessResponse(ResponseWriter response, Route<?> route, Object result) {
         var serverContentType = toServerContentType(route.contentType());
-        var category = route.contentType()
-                            .category();
+        var category = route.contentType().category();
         // HTML and PLAIN_TEXT String responses must bypass JSON serialization
-        if ((category == ContentCategory.HTML || category == ContentCategory.PLAIN_TEXT) && result instanceof String text) {
+        if ( (category == ContentCategory.HTML || category == ContentCategory.PLAIN_TEXT) && result instanceof String text) {
             response.write(HttpStatus.OK, text.getBytes(StandardCharsets.UTF_8), serverContentType);
             return;
         }
-        jsonCodec.serialize(result)
-                 .onSuccess(byteBuf -> {
-                                var bytes = new byte[byteBuf.readableBytes()];
-                                byteBuf.readBytes(bytes);
-                                byteBuf.release();
-                                response.write(HttpStatus.OK, bytes, serverContentType);
-                            })
-                 .onFailure(cause -> sendError(response,
-                                               HttpStatus.INTERNAL_SERVER_ERROR,
-                                               cause.message()));
+        jsonCodec.serialize(result).onSuccess(byteBuf -> {
+                                                  var bytes = new byte[byteBuf.readableBytes()];
+                                                  byteBuf.readBytes(bytes);
+                                                  byteBuf.release();
+                                                  response.write(HttpStatus.OK, bytes, serverContentType);
+                                              })
+                           .onFailure(cause -> sendError(response,
+                                                         HttpStatus.INTERNAL_SERVER_ERROR,
+                                                         cause.message()));
     }
 
     private org.pragmatica.http.ContentType toServerContentType(org.pragmatica.http.routing.ContentType routingContentType) {
-        return switch (routingContentType.category()) {
-            case JSON -> CommonContentType.APPLICATION_JSON;
-            case PLAIN_TEXT -> CommonContentType.TEXT_PLAIN;
-            case HTML -> CommonContentType.TEXT_HTML;
-            case BINARY -> CommonContentType.APPLICATION_OCTET_STREAM;
-            default -> CommonContentType.APPLICATION_OCTET_STREAM;
-        };
+        return switch (routingContentType.category()) {case JSON -> CommonContentType.APPLICATION_JSON;case PLAIN_TEXT -> CommonContentType.TEXT_PLAIN;case HTML -> CommonContentType.TEXT_HTML;case BINARY -> CommonContentType.APPLICATION_OCTET_STREAM;default -> CommonContentType.APPLICATION_OCTET_STREAM;};
     }
 
     private org.pragmatica.http.routing.HttpMethod convertMethod(org.pragmatica.http.HttpMethod method) {
-        return switch (method) {
-            case GET -> org.pragmatica.http.routing.HttpMethod.GET;
-            case POST -> org.pragmatica.http.routing.HttpMethod.POST;
-            case PUT -> org.pragmatica.http.routing.HttpMethod.PUT;
-            case DELETE -> org.pragmatica.http.routing.HttpMethod.DELETE;
-            case PATCH -> org.pragmatica.http.routing.HttpMethod.PATCH;
-            case HEAD -> org.pragmatica.http.routing.HttpMethod.HEAD;
-            case OPTIONS -> org.pragmatica.http.routing.HttpMethod.OPTIONS;
-            case TRACE -> org.pragmatica.http.routing.HttpMethod.TRACE;
-            case CONNECT -> org.pragmatica.http.routing.HttpMethod.CONNECT;
-        };
+        return switch (method) {case GET -> org.pragmatica.http.routing.HttpMethod.GET;case POST -> org.pragmatica.http.routing.HttpMethod.POST;case PUT -> org.pragmatica.http.routing.HttpMethod.PUT;case DELETE -> org.pragmatica.http.routing.HttpMethod.DELETE;case PATCH -> org.pragmatica.http.routing.HttpMethod.PATCH;case HEAD -> org.pragmatica.http.routing.HttpMethod.HEAD;case OPTIONS -> org.pragmatica.http.routing.HttpMethod.OPTIONS;case TRACE -> org.pragmatica.http.routing.HttpMethod.TRACE;case CONNECT -> org.pragmatica.http.routing.HttpMethod.CONNECT;};
     }
 
     private void sendNotFound(ResponseWriter response, String path) {
@@ -254,33 +218,28 @@ public final class ForgeApiHandler {
     }
 
     public void addEvent(String type, String message) {
-        var event = new ForgeEvent(Instant.now()
-                                          .toString(),
+        var event = new ForgeEvent(Instant.now().toString(),
                                    type,
                                    "INFO",
                                    message);
         events.addLast(event);
-        while (events.size() > MAX_EVENTS) {
-            events.pollFirst();
-        }
+        while ( events.size() > MAX_EVENTS) {
+        events.pollFirst();}
         log.info("[EVENT] {}: {}", type, message);
     }
 
     public void addNodeEvent(String timestamp, String type, String severity, String message) {
         var event = new ForgeEvent(timestamp, type, severity, message);
         events.addLast(event);
-        while (events.size() > MAX_EVENTS) {
-            events.pollFirst();
-        }
+        while ( events.size() > MAX_EVENTS) {
+        events.pollFirst();}
     }
 
     private String escapeJson(String str) {
-        return Option.option(str)
-                     .map(s -> s.replace("\\", "\\\\")
-                                .replace("\"", "\\\"")
-                                .replace("\n", "\\n")
-                                .replace("\r", "\\r")
-                                .replace("\t", "\\t"))
-                     .or("");
+        return Option.option(str).map(s -> s.replace("\\", "\\\\").replace("\"", "\\\"")
+                                                    .replace("\n", "\\n")
+                                                    .replace("\r", "\\r")
+                                                    .replace("\t", "\\t"))
+                            .or("");
     }
 }

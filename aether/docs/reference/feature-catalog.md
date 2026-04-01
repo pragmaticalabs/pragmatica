@@ -47,7 +47,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 13 | Rabia consensus | Battle-tested | Leaderless Byzantine fault-tolerant consensus for KV-Store replication |
+| 13 | Rabia consensus | Battle-tested | Leaderless crash-fault tolerant (CFT) consensus for KV-Store replication |
 | 14 | Leader election | Battle-tested | Lightweight leader detection with virtually instant re-election on departure |
 | 15 | Quorum state management | Battle-tested | Monotonic-sequenced quorum notifications, graceful degradation on quorum loss, automatic restoration |
 | 16 | Topology management | Battle-tested | Node discovery, addition/removal events, health tracking, grace period for departures |
@@ -98,6 +98,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 105 | Hybrid Logical Clock | Complete | `integrations/hlc/` module. HlcTimestamp (48-bit microseconds + 16-bit counter packed into long), HlcClock (thread-safe, ReentrantLock), drift detection, counter overflow protection. Foundation for causal ordering |
 | 106 | DHT versioned writes | Complete | HLC-stamped puts with atomic version comparison in storage. Rejects stale writes (version ≤ current). Synchronous notification delivery via `withSuccess()` preserves causal write ordering. Superseded flag in PutResponse skips stale notifications. Full replication (`DHTConfig.FULL`) for control plane maps |
 | 139 | KV-Store durable backup | Complete | Cluster metadata (slice targets, node lifecycle, config) serialized to TOML file in local git repo. Git provides versioning, history, diffs, optional remote push. BackupService with automatic periodic + on-change triggers. REST API (`POST /api/backup`, `GET /api/backups`, `POST /api/backup/restore`), CLI (`aether backup trigger/list/restore`). Delivered in v0.19.3 |
+| 140 | Hierarchical Storage Engine | Complete | Content-addressed block storage (`integrations/storage` library). SHA-256 BlockId, Memory + LocalDisk tiers with CAS-bounded capacity, write-through + tier-waterfall reads, SingleFlightCache dedup, MetadataStore (in-memory + KV-Store), SnapshotManager (dual-trigger), StorageReadinessGate (startup barriers), per-instance TOML config, ArtifactStore migration, REST + CLI management. 93 tests |
 | 34 | Configuration service | Complete | TOML-based config with runtime overrides via KV-Store, environment variable interpolation, system property fallback |
 | 107 | Centralized timeout configuration | Complete | All operator-facing timeouts externalized to `TimeoutsConfig` with 13 subsystem groups (invocation, forwarding, deployment, rolling update, cluster, consensus, election, SWIM, observability, DHT, worker, security, repository, scaling). TOML `[timeouts.*]` sections with human-readable duration strings. Legacy `_ms` fields supported with automatic migration. See [timeout-configuration.md](timeout-configuration.md) |
 
@@ -152,10 +153,11 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 49 | REST management API | Battle-tested | 60+ endpoints across 13 route classes: status, health, blueprints, slices, scaling, rolling updates, config, thresholds, alerts, aspects, logging, TTM, invocation metrics, controller config, node lifecycle |
-| 50 | Interactive CLI | Complete | Batch and REPL modes. Commands: status, nodes, slices, metrics, health, scale, artifact, blueprint, update, invocation-metrics, controller, alerts, thresholds, aspects, traces, observability, config, logging, events, node lifecycle/drain/activate/shutdown |
+| 49 | REST management API | Battle-tested | 60+ endpoints across 13 route classes: status, health, blueprints, slices, scaling, rolling updates, config, thresholds, alerts, aspects, logging, TTM, invocation metrics, controller config, node lifecycle. Cluster-wide vs per-node separation: `/api/slices` (cluster-wide), `/api/node/slices` (per-node), `/api/node/routes` (per-node) |
+| 50 | Interactive CLI | Complete | Batch and REPL modes. Commands: status, nodes, slices, node-slices, routes, node-routes, metrics, health, scale, artifact, blueprint, update, invocation-metrics, controller, alerts, thresholds, aspects, traces, observability, config, logging, events, node lifecycle/drain/activate/shutdown |
 | 51 | WebSocket streams | Complete | `/ws/dashboard` (metrics), `/ws/status` (cluster state), `/ws/events` (real-time cluster events with delta broadcasting) |
-| 146 | In-memory streaming (preview) | Complete | StreamPublisher/StreamSubscriber/StreamAccess API, OffHeapRingBuffer (MemorySegment), StreamPartitionManager, annotation processor (envelope v7), consumer runtime (RETRY/SKIP/STALL), dead-letter handler, REST API, CLI |
+| 146 | In-memory streaming | Complete | StreamPublisher/StreamSubscriber/StreamAccess API, OffHeapRingBuffer, StreamPartitionManager, ResourceFactory SPI (StreamPublisherFactory, StreamAccessFactory), StreamConsumerAdapter, StreamConfigParser (blueprint TOML), CDM stream creation + consumer wiring, consensus cursor checkpointing, max-event-size enforcement, annotation processor (envelope v7), consumer runtime with configurable retries, dead-letter handler, REST API, CLI |
+| 147 | Declarative cluster management | Complete (Phase 1) | TOML-based cluster config (`cluster.toml`), `ClusterManagementConfig` model with validation, secret resolution (env vars, files, Vault), Hetzner cloud provisioning via REST API, 12-step bootstrap orchestrator (validate, resolve, provision, health, quorum, store, register), cluster registry (JSON, multi-cluster), CLI commands (`aether cluster bootstrap`, `cluster scale`, `cluster upgrade`), Management API (`GET/POST /api/cluster/config`, `POST /api/cluster/scale`, `POST /api/cluster/upgrade`) |
 | 52 | Dynamic log levels | Complete | Runtime log level adjustment per logger via KV-Store. CLI and API control |
 | 53 | E2E test framework | Battle-tested | Testcontainers-based cluster testing with 10 test classes on bridge networking. Container DNS for inter-node communication, network partition/disconnect/reconnect support. Tests: ArtifactRepository, NodeFailure, RollingRestart, SwimDetection, NodeDrain, NetworkPartition, SliceLifecycle, TopologyGrowth, LoadBalancerFailover, LeaderIsolation |
 | 76 | Forge integration tests | Battle-tested | In-process EmberCluster tests: 16 test classes covering cluster formation, node failure, chaos, rolling updates, pub-sub delivery, invocation metrics, graceful shutdown, network partitions. Class-level cluster setup, health-endpoint readiness polling, `@Tag("Heavy")` for 5 resource-intensive tests |
@@ -255,7 +257,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 66 | Cluster expense tracking | Planned | Real-time cost visibility from cloud billing APIs. Per-node, per-slice, per-request cost derivation. Budget alerts. Prerequisite: Cloud Integration |
 | 67 | ~~TLS certificate management~~ | ~~Complete~~ | ~~Moved to Security section (features 88-91)~~ |
 | 69 | ~~KV-Store state backup~~ | ~~Complete~~ | ~~Delivered in v0.19.3 — moved to Storage & Data section~~ |
-| 70 | Aether runtime rolling upgrade | Planned | Upgrade Aether node software across running cluster without downtime. Node-by-node with health verification |
+| 70 | Aether runtime rolling upgrade | Partial | Phase 1: `POST /api/cluster/upgrade` endpoint updates version in KV-Store config. CLI `aether cluster upgrade --version X.Y.Z`. Full rolling orchestration deferred to Phase 2 |
 | 71 | Email notification resource | Complete | Phase 1: `integrations/net/smtp` (async Netty SMTP client), `integrations/email-http` (HTTP sender with SendGrid/Mailgun/Postmark/Resend SPI), `aether/resource/notification` (ResourceFactory + @Notify qualifier). SMTP and HTTP backends with retry. 57 tests |
 | 103 | Per-blueprint artifact scoping (Tier 2) | Planned | Per-blueprint SliceTargetKey scoping for multi-tenant clusters. Blueprint-scoped CDM maps, WorkerSliceDirectiveKey blueprint scoping, Management API `blueprintId` parameter. Prerequisite: Tier 1 (#102) |
 
@@ -266,10 +268,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 24 |
-| Complete | 115 |
+| Complete | 116 |
 | Partial | 1 |
 | Planned | 5 |
-| Total | 146 |
+| Total | 147 |
 
 **Battle-tested features (24):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint, Message delivery (pub-sub), E2E test framework, Forge integration tests
 
@@ -295,4 +297,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-03-23 (v0.23.0)*
+*Last updated: 2026-03-29 (v0.25.0)*

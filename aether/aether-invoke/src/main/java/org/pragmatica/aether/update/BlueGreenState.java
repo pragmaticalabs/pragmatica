@@ -36,16 +36,16 @@ public enum BlueGreenState {
     FAILED;
     /// Returns valid transitions from this state.
     public Set<BlueGreenState> validTransitions() {
-        return switch (this) {
-            case PENDING -> Set.of(DEPLOYING_GREEN, FAILED);
-            case DEPLOYING_GREEN -> Set.of(GREEN_READY, ROLLING_BACK, FAILED);
-            case GREEN_READY -> Set.of(SWITCHED, ROLLING_BACK, FAILED);
-            case SWITCHED -> Set.of(DRAINING, SWITCH_BACK, FAILED);
-            case SWITCH_BACK -> Set.of(ROLLED_BACK, FAILED);
-            case ROLLING_BACK -> Set.of(ROLLED_BACK, FAILED);
-            case DRAINING -> Set.of(COMPLETED, FAILED);
-            case COMPLETED, ROLLED_BACK, FAILED -> Set.of();
-        };
+        return switch (this) {case PENDING -> Set.of(DEPLOYING_GREEN, FAILED);case DEPLOYING_GREEN -> Set.of(GREEN_READY,
+                                                                                                             ROLLING_BACK,
+                                                                                                             FAILED);case GREEN_READY -> Set.of(SWITCHED,
+                                                                                                                                                ROLLING_BACK,
+                                                                                                                                                FAILED);case SWITCHED -> Set.of(DRAINING,
+                                                                                                                                                                                SWITCH_BACK,
+                                                                                                                                                                                FAILED);case SWITCH_BACK -> Set.of(ROLLED_BACK,
+                                                                                                                                                                                                                   FAILED);case ROLLING_BACK -> Set.of(ROLLED_BACK,
+                                                                                                                                                                                                                                                       FAILED);case DRAINING -> Set.of(COMPLETED,
+                                                                                                                                                                                                                                                                                       FAILED);case COMPLETED, ROLLED_BACK, FAILED -> Set.of();};
     }
     /// Checks if this state is a terminal state.
     public boolean isTerminal() {

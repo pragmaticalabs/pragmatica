@@ -1,7 +1,4 @@
 package org.pragmatica.aether.resource.aspect;
-/// Transaction isolation levels.
-/// Defines the degree to which operations in one transaction are isolated
-/// from concurrent transactions.
 public enum IsolationLevel {
     /// Use the default isolation level of the underlying data source.
     DEFAULT,

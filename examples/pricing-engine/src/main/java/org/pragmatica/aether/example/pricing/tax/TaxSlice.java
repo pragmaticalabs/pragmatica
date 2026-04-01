@@ -7,11 +7,7 @@ import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
-/// Tax calculation slice — reads tax_rates from DB.
-///
-/// Tax-exempt regions (no row in DB) return zero tax.
-@Slice
-public interface TaxSlice {
+@Slice public interface TaxSlice {
     record TaxRequest(String regionCode, int amountCents) {
         static TaxRequest taxRequest(String regionCode, int amountCents) {
             return new TaxRequest(regionCode, amountCents);
@@ -27,20 +23,18 @@ public interface TaxSlice {
     Promise<TaxResponse> calculateTax(TaxRequest request);
 
     static TaxSlice taxSlice(@Sql SqlConnector db) {
-        record taxSlice(SqlConnector db) implements TaxSlice {
+        record taxSlice( SqlConnector db) implements TaxSlice {
             private static final String SELECT_TAX_RATE = "SELECT rate_bps FROM tax_rates WHERE region_code = ?";
             private static final RowMapper<Integer> RATE_BPS_MAPPER = row -> row.getInt("rate_bps");
 
-            @Override
-            public Promise<TaxResponse> calculateTax(TaxRequest request) {
+            @Override public Promise<TaxResponse> calculateTax(TaxRequest request) {
                 var regionCode = request.regionCode();
-                return db.queryOptional(SELECT_TAX_RATE, RATE_BPS_MAPPER, regionCode)
-                         .map(maybeRate -> resolveTax(request, maybeRate));
+                return db.queryOptional(SELECT_TAX_RATE, RATE_BPS_MAPPER, regionCode).map(maybeRate -> resolveTax(request,
+                                                                                                                  maybeRate));
             }
 
             private static TaxResponse resolveTax(TaxRequest request, Option<Integer> maybeRate) {
-                return maybeRate.map(bps -> taxFor(request, bps))
-                                .or(zeroTax(request));
+                return maybeRate.map(bps -> taxFor(request, bps)).or(zeroTax(request));
             }
 
             private static TaxResponse taxFor(TaxRequest request, int rateBps) {

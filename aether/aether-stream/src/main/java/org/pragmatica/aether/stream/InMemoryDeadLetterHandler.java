@@ -14,13 +14,12 @@ final class InMemoryDeadLetterHandler implements DeadLetterHandler {
     private final ConcurrentHashMap<String, CopyOnWriteArrayList<DeadLetterEntry>> entries = new ConcurrentHashMap<>();
 
     @Contract
-    @Override
-    public void record(String streamName,
-                       int partition,
-                       long offset,
-                       byte[] payload,
-                       String errorMessage,
-                       int attemptCount) {
+    @Override public void record(String streamName,
+                                 int partition,
+                                 long offset,
+                                 byte[] payload,
+                                 String errorMessage,
+                                 int attemptCount) {
         var entry = DeadLetterEntry.deadLetterEntry(streamName,
                                                     partition,
                                                     offset,
@@ -28,16 +27,12 @@ final class InMemoryDeadLetterHandler implements DeadLetterHandler {
                                                     errorMessage,
                                                     attemptCount,
                                                     System.currentTimeMillis());
-        entries.computeIfAbsent(streamName,
-                                _ -> new CopyOnWriteArrayList<>())
-               .add(entry);
+        entries.computeIfAbsent(streamName, _ -> new CopyOnWriteArrayList<>()).add(entry);
     }
 
-    @Override
-    public List<DeadLetterEntry> read(String streamName, int maxCount) {
-        return option(entries.get(streamName)).map(list -> list.stream()
-                                                               .limit(maxCount)
-                                                               .toList())
+    @Override public List<DeadLetterEntry> read(String streamName, int maxCount) {
+        return option(entries.get(streamName)).map(list -> list.stream().limit(maxCount)
+                                                                      .toList())
                      .or(List.of());
     }
 }

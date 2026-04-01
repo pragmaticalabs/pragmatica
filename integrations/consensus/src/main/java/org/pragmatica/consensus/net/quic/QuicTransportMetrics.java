@@ -33,6 +33,8 @@ public final class QuicTransportMetrics {
     private final LongAdder messagesReceived = new LongAdder();
     private final LongAdder writeFailures = new LongAdder();
     private final LongAdder backpressureDrops = new LongAdder();
+    private final LongAdder backpressureQueued = new LongAdder();
+    private final AtomicInteger backpressureQueueDepth = new AtomicInteger(0);
 
     private QuicTransportMetrics() {}
 
@@ -71,18 +73,36 @@ public final class QuicTransportMetrics {
         backpressureDrops.increment();
     }
 
+    public void onBackpressureQueued() {
+        backpressureQueued.increment();
+        backpressureQueueDepth.incrementAndGet();
+    }
+
+    public void onBackpressureDrained() {
+        backpressureQueueDepth.decrementAndGet();
+    }
+
+    public void onBackpressureQueueCleared(int size) {
+        backpressureQueueDepth.addAndGet(-size);
+    }
+
     // --- Snapshot ---
 
     /// Returns a snapshot of all QUIC transport metrics as a map
     /// suitable for JSON serialization and Prometheus exposition.
+    @SuppressWarnings("JBCT-PAT-01") // Metrics snapshot assembly
     public Map<String, Number> snapshot() {
-        return Map.of("quic_active_connections", activeConnections.get(),
-                       "quic_handshake_total", handshakeTotal.sum(),
-                       "quic_handshake_failures_total", handshakeFailures.sum(),
-                       "quic_messages_sent_total", messagesSent.sum(),
-                       "quic_messages_received_total", messagesReceived.sum(),
-                       "quic_write_failures_total", writeFailures.sum(),
-                       "quic_backpressure_drops_total", backpressureDrops.sum());
+        var metrics = new java.util.HashMap<String, Number>();
+        metrics.put("quic_active_connections", activeConnections.get());
+        metrics.put("quic_handshake_total", handshakeTotal.sum());
+        metrics.put("quic_handshake_failures_total", handshakeFailures.sum());
+        metrics.put("quic_messages_sent_total", messagesSent.sum());
+        metrics.put("quic_messages_received_total", messagesReceived.sum());
+        metrics.put("quic_write_failures_total", writeFailures.sum());
+        metrics.put("quic_backpressure_drops_total", backpressureDrops.sum());
+        metrics.put("quic_backpressure_queued_total", backpressureQueued.sum());
+        metrics.put("quic_backpressure_queue_depth", backpressureQueueDepth.get());
+        return Map.copyOf(metrics);
     }
 
     public int activeConnectionCount() {
@@ -111,5 +131,13 @@ public final class QuicTransportMetrics {
 
     public long backpressureDropCount() {
         return backpressureDrops.sum();
+    }
+
+    public long backpressureQueuedCount() {
+        return backpressureQueued.sum();
+    }
+
+    public int backpressureQueueDepth() {
+        return backpressureQueueDepth.get();
     }
 }

@@ -12,14 +12,13 @@ import org.pragmatica.serialization.Codec;
 /// @param avgErrorRate           average error rate across community
 /// @param windowDurationMs       sliding window duration in milliseconds
 /// @param timestampMs            when evidence was collected
-@Codec
-public record ScalingEvidence(int memberCount,
-                              double avgCpuUsage,
-                              double avgP95LatencyMs,
-                              long totalActiveInvocations,
-                              double avgErrorRate,
-                              long windowDurationMs,
-                              long timestampMs) {
+@Codec public record ScalingEvidence( int memberCount,
+                                      double avgCpuUsage,
+                                      double avgP95LatencyMs,
+                                      long totalActiveInvocations,
+                                      double avgErrorRate,
+                                      long windowDurationMs,
+                                      long timestampMs) {
     /// Factory following JBCT naming convention.
     public static ScalingEvidence scalingEvidence(int memberCount,
                                                   double avgCpuUsage,

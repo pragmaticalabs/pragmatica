@@ -12,15 +12,13 @@ public record EnvSecretsProvider() implements SecretsProvider {
         return new EnvSecretsProvider();
     }
 
-    @Override
-    public Promise<String> resolveSecret(String secretPath) {
+    @Override public Promise<String> resolveSecret(String secretPath) {
         return Option.option(System.getenv(toEnvVarName(secretPath)))
-                     .async(EnvironmentError.secretResolutionFailed(secretPath,
-                                                                    new IllegalStateException("Environment variable not set")));
+        .async(EnvironmentError.secretResolutionFailed(secretPath,
+                                                       new IllegalStateException("Environment variable not set")));
     }
 
     static String toEnvVarName(String path) {
-        return PREFIX + path.replace('/', '_')
-                           .toUpperCase();
+        return PREFIX + path.replace('/', '_').toUpperCase();
     }
 }

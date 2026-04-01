@@ -7,6 +7,7 @@ import org.pragmatica.cloud.azure.AzureClient;
 import org.pragmatica.cloud.azure.api.ResourceRow;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.concurrent.StoppableThread;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -41,7 +42,7 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
     private final String clusterName;
     private final Option<String> selfVmName;
     private final long pollIntervalMs;
-    private final AtomicReference<Thread> watchThread = new AtomicReference<>();
+    private final StoppableThread watchThread = StoppableThread.stoppableThread();
 
     private AzureDiscoveryProvider(AzureClient client,
                                    String clusterName,
@@ -57,64 +58,49 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
     public static AzureDiscoveryProvider azureDiscoveryProvider(AzureClient client,
                                                                 AzureEnvironmentConfig config) {
         return new AzureDiscoveryProvider(client,
-                                          config.clusterName()
-                                                .or("default"),
+                                          config.clusterName().or("default"),
                                           config.selfVmName(),
                                           config.discoveryPollIntervalMs());
     }
 
-    @Override
-    public Promise<List<PeerInfo>> discoverPeers() {
-        return client.queryResources(clusterQuery())
-                     .map(AzureDiscoveryProvider::toPeerInfoList)
-                     .mapError(AzureDiscoveryProvider::toDiscoveryError);
+    @Override public Promise<List<PeerInfo>> discoverPeers() {
+        return client.queryResources(clusterQuery()).map(AzureDiscoveryProvider::toPeerInfoList)
+                                    .mapError(AzureDiscoveryProvider::toDiscoveryError);
     }
 
-    @Override
-    public Promise<Unit> watchPeers(Consumer<List<PeerInfo>> onChange) {
-        var thread = Thread.ofVirtual()
-                           .name("azure-discovery-watcher")
-                           .start(() -> pollLoop(onChange));
+    @Override public Promise<Unit> watchPeers(Consumer<List<PeerInfo>> onChange) {
+        var thread = Thread.ofVirtual().name("azure-discovery-watcher")
+                                     .start(() -> pollLoop(onChange));
         watchThread.set(thread);
         return Promise.success(unit());
     }
 
-    @Override
-    public Promise<Unit> stopWatching() {
+    @Override public Promise<Unit> stopWatching() {
         interruptWatchThread();
         return Promise.success(unit());
     }
 
-    @Override
-    public Promise<Unit> registerSelf(PeerInfo self) {
-        return selfVmName.map(name -> applyRegistrationTags(name, self))
-                         .or(NO_SELF_VM_NAME.promise());
+    @Override public Promise<Unit> registerSelf(PeerInfo self) {
+        return selfVmName.map(name -> applyRegistrationTags(name, self)).or(NO_SELF_VM_NAME.promise());
     }
 
-    @Override
-    public Promise<Unit> deregisterSelf() {
-        return selfVmName.map(this::clearTags)
-                         .or(NO_SELF_VM_NAME.promise());
+    @Override public Promise<Unit> deregisterSelf() {
+        return selfVmName.map(this::clearTags).or(NO_SELF_VM_NAME.promise());
     }
 
     // --- Leaf: build KQL query for cluster discovery ---
     String clusterQuery() {
-        return "Resources | where type == \"microsoft.compute/virtualmachines\"" + " | where tags[\"" + TAG_CLUSTER
-               + "\"] == \"" + clusterName + "\"";
+        return "Resources | where type == \"microsoft.compute/virtualmachines\"" + " | where tags[\"" + TAG_CLUSTER + "\"] == \"" + clusterName + "\"";
     }
 
     // --- Leaf: apply registration tags to self VM ---
     private Promise<Unit> applyRegistrationTags(String vmName, PeerInfo self) {
-        return client.updateTags(vmName,
-                                 buildSelfTags(self))
-                     .mapToUnit();
+        return client.updateTags(vmName, buildSelfTags(self)).mapToUnit();
     }
 
     // --- Leaf: clear aether tags from self VM ---
     private Promise<Unit> clearTags(String vmName) {
-        return client.updateTags(vmName,
-                                 Map.of())
-                     .mapToUnit();
+        return client.updateTags(vmName, Map.of()).mapToUnit();
     }
 
     // --- Leaf: build tag map for self-registration ---
@@ -124,15 +110,13 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
                       TAG_PORT,
                       String.valueOf(self.port()),
                       TAG_ROLE,
-                      self.metadata()
-                          .getOrDefault("role", DEFAULT_ROLE));
+                      self.metadata().getOrDefault("role", DEFAULT_ROLE));
     }
 
     // --- Leaf: map resource rows to peer info list ---
     private static List<PeerInfo> toPeerInfoList(List<ResourceRow> rows) {
-        return rows.stream()
-                   .map(AzureDiscoveryProvider::rowToPeerInfo)
-                   .toList();
+        return rows.stream().map(AzureDiscoveryProvider::rowToPeerInfo)
+                          .toList();
     }
 
     // --- Leaf: extract PeerInfo from a resource row ---
@@ -154,8 +138,7 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: parse port string to int, falling back to default ---
     private static int parsePortOrDefault(String portStr) {
-        return org.pragmatica.lang.parse.Number.parseInt(portStr)
-                  .or(DEFAULT_PORT);
+        return org.pragmatica.lang.parse.Number.parseInt(portStr).or(DEFAULT_PORT);
     }
 
     // --- Leaf: extract metadata from resource row tags ---
@@ -166,8 +149,7 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
     // --- Leaf: poll loop for watching peers ---
     private void pollLoop(Consumer<List<PeerInfo>> onChange) {
         var previousPeers = new AtomicReference<Set<String>>(Set.of());
-        while (!Thread.currentThread()
-                      .isInterrupted()) {
+        while ( !Thread.currentThread().isInterrupted()) {
             pollOnce(onChange, previousPeers);
             sleepOrExit();
         }
@@ -186,7 +168,7 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
                                         Consumer<List<PeerInfo>> onChange,
                                         AtomicReference<Set<String>> previousPeers) {
         var currentKeys = toPeerKeys(peers);
-        if (!currentKeys.equals(previousPeers.get())) {
+        if ( !currentKeys.equals(previousPeers.get())) {
             previousPeers.set(currentKeys);
             onChange.accept(peers);
         }
@@ -194,9 +176,8 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: convert peer list to set of host:port keys for comparison ---
     private static Set<String> toPeerKeys(List<PeerInfo> peers) {
-        return peers.stream()
-                    .map(AzureDiscoveryProvider::peerKey)
-                    .collect(Collectors.toSet());
+        return peers.stream().map(AzureDiscoveryProvider::peerKey)
+                           .collect(Collectors.toSet());
     }
 
     // --- Leaf: format peer key for comparison ---
@@ -206,20 +187,21 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: sleep for poll interval, exit on interrupt ---
     private void sleepOrExit() {
-        try{
+        try {
             Thread.sleep(pollIntervalMs);
-        } catch (InterruptedException e) {
-            Thread.currentThread()
-                  .interrupt();
+        }
+
+
+
+
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
     // --- Leaf: interrupt and clear the watch thread ---
     private void interruptWatchThread() {
-        var thread = watchThread.getAndSet(null);
-        if (thread != null) {
-            thread.interrupt();
-        }
+        watchThread.stop();
     }
 
     // --- Leaf: map cause to discovery error ---

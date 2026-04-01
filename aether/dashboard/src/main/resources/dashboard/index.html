@@ -38,6 +38,7 @@
             <button class="nav-tab" :class="currentPage === 'metrics' && 'active'" @click="currentPage = 'metrics'">Metrics</button>
             <button class="nav-tab" :class="currentPage === 'requests' && 'active'" @click="currentPage = 'requests'">Requests</button>
             <button class="nav-tab" :class="currentPage === 'alerts' && 'active'" @click="currentPage = 'alerts'">Alerts</button>
+            <button class="nav-tab" :class="currentPage === 'observability' && 'active'" @click="currentPage = 'observability'">Observability</button>
             <button class="nav-tab" :class="currentPage === 'deployments' && 'active'" @click="currentPage = 'deployments'">Deployments</button>
             <button class="nav-tab" :class="currentPage === 'config' && 'active'" @click="currentPage = 'config'">Config</button>
             <button class="nav-tab" :class="currentPage === 'testing' && 'active'" @click="currentPage = 'testing'" x-show="$store.forge.isForge">Testing</button>
@@ -151,6 +152,9 @@
                                         <span class="schema-badge" :class="$store.schema.statusClass(ds.status)" x-text="ds.status"></span>
                                         <span class="schema-version" x-text="'v' + ds.currentVersion"></span>
                                         <span class="schema-migration" x-text="ds.lastMigration"></span>
+                                        <button class="schema-retry-btn"
+                                                x-show="(ds.status || '').toUpperCase() === 'FAILED'"
+                                                @click="$store.schema.retrySchema(ds.name)">Retry</button>
                                     </div>
                                 </template>
                             </div>
@@ -265,59 +269,181 @@
 
             <!-- Requests Page -->
             <div x-show="currentPage === 'requests'" x-cloak>
-                <div class="filter-bar">
-                    <input type="text" placeholder="Filter by artifact..." x-model="requestFilters.artifact" class="filter-input">
-                    <input type="text" placeholder="Filter by method..." x-model="requestFilters.method" class="filter-input">
-                    <select x-model="requestFilters.status" class="filter-select">
-                        <option value="">All</option>
-                        <option value="success">Success</option>
-                        <option value="failure">Failure</option>
-                    </select>
+                <!-- Controls Bar -->
+                <div class="requests-controls">
+                    <div class="time-range-selector">
+                        <template x-for="range in ['5m', '15m', '1h', '24h']" :key="range">
+                            <button class="btn btn-small" :class="$store.requests.timeRange === range ? 'btn-primary' : 'btn-secondary'"
+                                    @click="$store.requests.setTimeRange(range)" x-text="range"></button>
+                        </template>
+                    </div>
+                    <div class="requests-filters">
+                        <input type="text" placeholder="Filter by method..." x-model="$store.requests.methodFilter" class="filter-input">
+                        <select x-model="$store.requests.statusFilter" class="filter-select">
+                            <option value="">All Statuses</option>
+                            <option value="success">Success</option>
+                            <option value="error">Error</option>
+                        </select>
+                    </div>
                 </div>
+
+                <!-- Trace Stats Summary -->
+                <div class="requests-stats-row" x-show="$store.requests.traceStats">
+                    <div class="metric-cell">
+                        <div class="metric-value" x-text="formatNumber($store.requests.traceStats ? $store.requests.traceStats.totalTraces || 0 : 0)"></div>
+                        <div class="metric-label">TOTAL TRACES</div>
+                    </div>
+                    <div class="metric-cell">
+                        <div class="metric-value" x-text="formatNumber($store.requests.traceStats ? $store.requests.traceStats.activeTraces || 0 : 0)"></div>
+                        <div class="metric-label">ACTIVE</div>
+                    </div>
+                    <div class="metric-cell">
+                        <div class="metric-value" x-text="formatNumber($store.requests.invocations.length)"></div>
+                        <div class="metric-label">METHODS</div>
+                    </div>
+                    <div class="metric-cell">
+                        <div class="metric-value" x-text="formatNumber($store.requests.slowInvocations.length)"></div>
+                        <div class="metric-label">SLOW CALLS</div>
+                    </div>
+                </div>
+
+                <!-- Invocation Metrics Table -->
                 <div class="panel">
-                    <h2>INVOCATION TABLE</h2>
+                    <h2 class="panel-header">
+                        INVOCATION METRICS
+                        <span class="panel-count" x-text="$store.requests.filteredInvocations().length + ' METHODS'"></span>
+                    </h2>
                     <table class="invocation-table sortable">
                         <thead>
                             <tr>
-                                <th @click="sortInvocations('method')">Method</th>
-                                <th @click="sortInvocations('artifact')">Artifact</th>
-                                <th @click="sortInvocations('count')">Count</th>
-                                <th @click="sortInvocations('successRate')">Suc%</th>
-                                <th @click="sortInvocations('avgDurationMs')">Avg</th>
-                                <th>Slow</th>
+                                <th @click="$store.requests.toggleSort('method')">Method<span x-text="$store.requests.sortIndicator('method')"></span></th>
+                                <th @click="$store.requests.toggleSort('count')">Total<span x-text="$store.requests.sortIndicator('count')"></span></th>
+                                <th @click="$store.requests.toggleSort('successCount')">Success<span x-text="$store.requests.sortIndicator('successCount')"></span></th>
+                                <th @click="$store.requests.toggleSort('failureCount')">Errors<span x-text="$store.requests.sortIndicator('failureCount')"></span></th>
+                                <th @click="$store.requests.toggleSort('avgDurationMs')">Avg Latency<span x-text="$store.requests.sortIndicator('avgDurationMs')"></span></th>
+                                <th @click="$store.requests.toggleSort('p95Ns')">P95<span x-text="$store.requests.sortIndicator('p95Ns')"></span></th>
+                                <th @click="$store.requests.toggleSort('errorsPerMin')">Errors/min<span x-text="$store.requests.sortIndicator('errorsPerMin')"></span></th>
                             </tr>
                         </thead>
                         <tbody>
-                            <template x-for="inv in filteredInvocations()" :key="inv.artifact + ':' + inv.method">
-                                <tr @click="toggleInvocationDetail(inv)" class="clickable-row">
-                                    <td x-text="inv.method"></td>
-                                    <td x-text="inv.artifact"></td>
+                            <template x-for="inv in $store.requests.filteredInvocations()" :key="inv.artifact + ':' + inv.method">
+                                <tr @click="$store.requests.toggleExpand(inv)" class="clickable-row">
+                                    <td>
+                                        <span class="mono-text" x-text="inv.method"></span>
+                                        <span class="requests-artifact-hint" x-text="inv.artifact"></span>
+                                    </td>
                                     <td x-text="formatNumber(inv.count)"></td>
-                                    <td x-text="formatPercent(inv.successRate)"></td>
+                                    <td><span class="requests-success-text" x-text="formatNumber(inv.successCount)"></span></td>
+                                    <td><span :class="inv.failureCount > 0 ? 'requests-error-text' : ''" x-text="formatNumber(inv.failureCount)"></span></td>
                                     <td x-text="formatLatency(inv.avgDurationMs)"></td>
-                                    <td x-text="inv.slowCalls"></td>
+                                    <td x-text="formatLatency(inv.p95Ns / 1000000)"></td>
+                                    <td><span :class="inv.errorsPerMin > 0 ? 'requests-error-text' : ''" x-text="formatNumber(inv.errorsPerMin)"></span></td>
                                 </tr>
                             </template>
                         </tbody>
                         <tbody>
-                            <template x-for="inv in filteredInvocations()" :key="'detail:' + inv.artifact + ':' + inv.method">
-                                <tr class="invocation-detail-row" x-show="InvocationTable.isExpanded(inv)" x-transition>
-                                    <td colspan="6">
+                            <template x-for="inv in $store.requests.filteredInvocations()" :key="'detail:' + inv.artifact + ':' + inv.method">
+                                <tr class="invocation-detail-row" x-show="$store.requests.isExpanded(inv)" x-transition>
+                                    <td colspan="7">
                                         <div class="invocation-detail">
-                                            <span class="detail-label">Slow calls:</span>
+                                            <span class="detail-label">Artifact:</span>
+                                            <span class="detail-value" x-text="inv.artifact"></span>
+                                            <span class="detail-label">Success Rate:</span>
+                                            <span class="detail-value" x-text="formatPercent(inv.successRate)"></span>
+                                            <span class="detail-label">Slow Calls:</span>
                                             <span class="detail-value" x-text="inv.slowCalls"></span>
-                                            <span class="detail-label">Success:</span>
-                                            <span class="detail-value" x-text="formatNumber(inv.successCount)"></span>
-                                            <span class="detail-label">Failures:</span>
-                                            <span class="detail-value" x-text="formatNumber(inv.failureCount)"></span>
-                                            <span class="detail-hint">Per-call details available via REST API.</span>
+                                            <span class="detail-label">P50:</span>
+                                            <span class="detail-value" x-text="formatLatency(inv.p50Ns / 1000000)"></span>
                                         </div>
                                     </td>
                                 </tr>
                             </template>
                         </tbody>
                     </table>
-                    <div x-show="filteredInvocations().length === 0" class="no-data">No invocations recorded</div>
+                    <div x-show="$store.requests.filteredInvocations().length === 0" class="no-data">No invocations recorded</div>
+                </div>
+
+                <!-- Slow Requests Panel -->
+                <div class="panel">
+                    <h2 class="panel-header">
+                        SLOW REQUESTS
+                        <span class="panel-count" x-text="$store.requests.filteredSlowInvocations().length + ' SLOW'"></span>
+                    </h2>
+                    <table class="slow-requests-table sortable">
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>Method</th>
+                                <th>Artifact</th>
+                                <th>Duration</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="slow in $store.requests.filteredSlowInvocations()" :key="slow.timestampNs + ':' + slow.method">
+                                <tr @click="$store.requests.toggleSlowExpand(slow)" class="clickable-row">
+                                    <td><span class="mono-text" x-text="$store.requests.formatSlowTimestamp(slow.timestampNs)"></span></td>
+                                    <td><span class="mono-text" x-text="slow.method"></span></td>
+                                    <td x-text="slow.artifact"></td>
+                                    <td x-text="formatLatency(slow.durationMs)"></td>
+                                    <td>
+                                        <span class="status-badge" :class="slow.success ? 'active' : 'failed'"
+                                              x-text="slow.success ? 'OK' : 'FAIL'"></span>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                        <tbody>
+                            <template x-for="slow in $store.requests.filteredSlowInvocations()" :key="'slowdetail:' + slow.timestampNs + ':' + slow.method">
+                                <tr class="invocation-detail-row" x-show="$store.requests.isSlowExpanded(slow)" x-transition>
+                                    <td colspan="5">
+                                        <div class="invocation-detail">
+                                            <span class="detail-label">Duration (ns):</span>
+                                            <span class="detail-value" x-text="formatNumber(slow.durationNs)"></span>
+                                            <span class="detail-label">Error:</span>
+                                            <span class="detail-value" x-text="slow.error || 'None'"></span>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                    <div x-show="$store.requests.filteredSlowInvocations().length === 0" class="no-data">No slow invocations recorded</div>
+                </div>
+
+                <!-- Recent Traces Panel -->
+                <div class="panel" x-show="$store.requests.traces.length > 0">
+                    <h2 class="panel-header">
+                        RECENT TRACES
+                        <span class="panel-count" x-text="$store.requests.traces.length + ' TRACES'"></span>
+                    </h2>
+                    <table class="traces-table">
+                        <thead>
+                            <tr>
+                                <th>Request ID</th>
+                                <th>Method</th>
+                                <th>Node</th>
+                                <th>Duration</th>
+                                <th>Depth</th>
+                                <th>Outcome</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="trace in $store.requests.traces.slice(0, 25)" :key="trace.requestId + ':' + trace.callee + ':' + trace.durationNs">
+                                <tr>
+                                    <td><span class="mono-text requests-trace-id" x-text="(trace.requestId || '').substring(0, 12) + '...'"></span></td>
+                                    <td><span class="mono-text" x-text="trace.callee"></span></td>
+                                    <td x-text="trace.nodeId"></td>
+                                    <td x-text="formatLatency(trace.durationMs)"></td>
+                                    <td x-text="trace.depth"></td>
+                                    <td>
+                                        <span class="status-badge" :class="trace.outcome === 'SUCCESS' ? 'active' : 'failed'"
+                                              x-text="trace.outcome"></span>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
                 </div>
             </div>
 
@@ -549,6 +675,68 @@
                 </div>
             </div>
 
+            <!-- Observability Page -->
+            <div x-show="currentPage === 'observability'" x-cloak>
+                <div class="panel">
+                    <h2 class="panel-header">
+                        OBSERVABILITY DEPTH
+                        <span class="panel-count" x-text="$store.observability.depthConfigs.length + ' RULES'"></span>
+                    </h2>
+                    <table class="obs-table">
+                        <thead>
+                            <tr>
+                                <th>Artifact</th>
+                                <th>Method</th>
+                                <th>Depth Threshold</th>
+                                <th>Traces/sec Target</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="config in $store.observability.depthConfigs" :key="config.key">
+                                <tr>
+                                    <td class="obs-cell-artifact" x-text="$store.observability.artifactFromKey(config.key)"></td>
+                                    <td class="obs-cell-method" x-text="$store.observability.methodFromKey(config.key)"></td>
+                                    <td>
+                                        <template x-if="$store.observability.editingKey === config.key">
+                                            <input type="number" min="0" x-model.number="$store.observability.editDepth"
+                                                   class="obs-depth-input" @keydown.enter="$store.observability.saveEdit(config)"
+                                                   @keydown.escape="$store.observability.cancelEdit()">
+                                        </template>
+                                        <template x-if="$store.observability.editingKey !== config.key">
+                                            <span class="obs-depth-value" @click="$store.observability.startEdit(config)"
+                                                  x-text="config.depthThreshold"></span>
+                                        </template>
+                                    </td>
+                                    <td x-text="config.targetTracesPerSec"></td>
+                                    <td class="obs-actions">
+                                        <template x-if="$store.observability.editingKey === config.key">
+                                            <span>
+                                                <button class="btn btn-small btn-primary" @click="$store.observability.saveEdit(config)">Save</button>
+                                                <button class="btn btn-small btn-secondary" @click="$store.observability.cancelEdit()">Cancel</button>
+                                            </span>
+                                        </template>
+                                        <template x-if="$store.observability.editingKey !== config.key">
+                                            <span>
+                                                <button class="btn btn-small btn-primary" @click="$store.observability.startEdit(config)">Edit</button>
+                                                <button class="btn btn-small btn-danger" @click="$store.observability.removeRule(config)">Remove</button>
+                                            </span>
+                                        </template>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                    <div x-show="$store.observability.depthConfigs.length === 0" class="no-data">No depth rules configured</div>
+                    <div class="obs-add-rule">
+                        <input type="text" placeholder="Artifact (e.g. com.example:my-slice)" x-model="$store.observability.newRule.artifact" class="obs-add-input obs-add-artifact">
+                        <input type="text" placeholder="Method" x-model="$store.observability.newRule.method" class="obs-add-input obs-add-method">
+                        <input type="number" min="0" placeholder="Depth" x-model.number="$store.observability.newRule.depthThreshold" class="obs-add-input obs-add-depth">
+                        <button class="btn btn-small btn-primary" @click="$store.observability.addRule()">Add Rule</button>
+                    </div>
+                </div>
+            </div>
+
             <!-- Config Page -->
             <div x-show="currentPage === 'config'" x-cloak>
                 <div class="config-grid">
@@ -583,16 +771,6 @@
                             </div>
                         </template>
                         <div x-show="!$store.cluster.logLevels || Object.keys($store.cluster.logLevels).length === 0" class="no-data">No log levels configured</div>
-                    </div>
-                    <div class="panel">
-                        <h2>OBSERVABILITY DEPTH</h2>
-                        <template x-for="(depth, key) in $store.cluster.observabilityDepth || {}" :key="key">
-                            <div class="obs-depth-row">
-                                <span x-text="key"></span>
-                                <input type="number" :value="depth" @change="$store.cluster.setObservabilityDepth(key, parseInt($event.target.value))" class="obs-depth-input">
-                            </div>
-                        </template>
-                        <div x-show="!$store.cluster.observabilityDepth || Object.keys($store.cluster.observabilityDepth).length === 0" class="no-data">No observability depth configured</div>
                     </div>
                 </div>
             </div>
@@ -657,12 +835,14 @@
     <script src="js/stores/metrics.js"></script>
     <script src="js/stores/events.js"></script>
     <script src="js/stores/alerts.js"></script>
+    <script src="js/stores/observability.js"></script>
     <script src="js/stores/deployments.js"></script>
     <script src="js/stores/schema.js"></script>
     <script src="js/stores/governors.js"></script>
     <script src="js/stores/strategies.js"></script>
     <script src="js/stores/streams.js"></script>
     <script src="js/stores/topology.js"></script>
+    <script src="js/stores/requests.js"></script>
     <script src="js/stores/forge.js"></script>
     <script src="js/components/sparkline.js"></script>
     <script src="js/components/timeseries.js"></script>

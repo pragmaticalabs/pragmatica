@@ -34,16 +34,12 @@ public interface ArtifactMapper {
     /// @return artifact or error if className format is invalid
     static Result<Artifact> toArtifact(String className, String version) {
         var lastDot = className.lastIndexOf('.');
-        if (lastDot <= 0) {
-            return INVALID_CLASS_NAME.apply(className)
-                                     .result();
-        }
+        if ( lastDot <= 0) {
+        return INVALID_CLASS_NAME.apply(className).result();}
         var groupId = className.substring(0, lastDot);
         var simpleName = className.substring(lastDot + 1);
-        if (simpleName.isEmpty() || !Character.isUpperCase(simpleName.charAt(0))) {
-            return INVALID_CLASS_NAME.apply(className)
-                                     .result();
-        }
+        if ( simpleName.isEmpty() || !Character.isUpperCase(simpleName.charAt(0))) {
+        return INVALID_CLASS_NAME.apply(className).result();}
         var artifactId = toKebabCase(simpleName);
         return Artifact.artifact(groupId + ":" + artifactId + ":" + version);
     }
@@ -79,10 +75,8 @@ public interface ArtifactMapper {
     ///
     /// @return class name (e.g., "org.example.UserService")
     static String toClassName(Artifact artifact) {
-        var groupId = artifact.groupId()
-                              .id();
-        var artifactId = artifact.artifactId()
-                                 .id();
+        var groupId = artifact.groupId().id();
+        var artifactId = artifact.artifactId().id();
         var simpleName = toPascalCase(artifactId);
         return groupId + "." + simpleName;
     }
@@ -108,28 +102,31 @@ public interface ArtifactMapper {
     ///   - XMLParser → xml-parser
     ///
     private static String toKebabCase(String pascalCase) {
-        if (pascalCase == null || pascalCase.isEmpty()) {
-            return pascalCase;
-        }
+        if ( pascalCase == null || pascalCase.isEmpty()) {
+        return pascalCase;}
         var result = new StringBuilder();
         var chars = pascalCase.toCharArray();
-        for (int i = 0; i < chars.length; i++) {
+        for ( int i = 0; i < chars.length; i++) {
             var c = chars[i];
-            if (Character.isUpperCase(c)) {
+            if ( Character.isUpperCase(c)) {
                 // Add hyphen before uppercase (except at start)
-                if (i > 0) {
+                if ( i > 0) {
                     // Don't add hyphen if previous char was also uppercase and next is lowercase
                     // (handles cases like "XMLParser" → "xml-parser")
                     var prevUpper = Character.isUpperCase(chars[i - 1]);
                     var nextLower = (i + 1 < chars.length) && Character.isLowerCase(chars[i + 1]);
-                    if (!prevUpper || nextLower) {
-                        result.append('-');
-                    }
+                    if ( !prevUpper || nextLower) {
+                    result.append('-');}
                 }
                 result.append(Character.toLowerCase(c));
-            } else {
-                result.append(c);
-            }
+            } else
+
+
+
+
+
+            {
+            result.append(c);}
         }
         return result.toString();
     }
@@ -143,21 +140,18 @@ public interface ArtifactMapper {
     ///   - api → Api
     ///
     private static String toPascalCase(String kebabCase) {
-        if (kebabCase == null || kebabCase.isEmpty()) {
-            return kebabCase;
-        }
+        if ( kebabCase == null || kebabCase.isEmpty()) {
+        return kebabCase;}
         var result = new StringBuilder();
         var capitalizeNext = true;
-        for (var c : kebabCase.toCharArray()) {
-            if (c == '-') {
-                capitalizeNext = true;
-            } else if (capitalizeNext) {
-                result.append(Character.toUpperCase(c));
-                capitalizeNext = false;
-            } else {
-                result.append(c);
-            }
-        }
+        for ( var c : kebabCase.toCharArray()) {
+        if ( c == '-') {
+        capitalizeNext = true;} else
+        if ( capitalizeNext) {
+            result.append(Character.toUpperCase(c));
+            capitalizeNext = false;
+        } else {
+        result.append(c);}}
         return result.toString();
     }
 
@@ -165,14 +159,7 @@ public interface ArtifactMapper {
     /// For exact versions, returns the version directly.
     /// For ranges/comparisons, returns the lower bound.
     private static String extractVersion(VersionPattern pattern) {
-        return switch (pattern) {
-            case VersionPattern.Exact(Version version) -> version.withQualifier();
-            case VersionPattern.Range(Version from, _, _, _) -> from.withQualifier();
-            case VersionPattern.Comparison(_, Version version) -> version.withQualifier();
-            case VersionPattern.Tilde(Version version) -> version.withQualifier();
-            case VersionPattern.Caret(Version version) -> version.withQualifier();
-            case VersionPattern.unused _ -> "0.0.0";
-        };
+        return switch (pattern) {case VersionPattern.Exact(Version version) -> version.withQualifier();case VersionPattern.Range(Version from, _, _, _) -> from.withQualifier();case VersionPattern.Comparison(_, Version version) -> version.withQualifier();case VersionPattern.Tilde(Version version) -> version.withQualifier();case VersionPattern.Caret(Version version) -> version.withQualifier();case VersionPattern.unused _ -> "0.0.0";};
     }
 
     Fn1<Cause, String> INVALID_CLASS_NAME = Causes.forOneValue("Invalid class name format: %s. Expected fully qualified name like 'org.example.ClassName'");

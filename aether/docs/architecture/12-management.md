@@ -189,21 +189,15 @@ graph TB
 
 ## E2E Testing
 
-81 E2E tests against 5-node Podman clusters:
+Testing is split across three layers:
 
-| Category | Tests | Description |
-|----------|-------|-------------|
-| Cluster formation | ~10 | Quorum establishment, node discovery |
-| Deployment | ~15 | Blueprint apply, multi-slice, scaling |
-| Rolling updates | ~5 | Version transition, traffic routing |
-| Artifacts | ~10 | Upload, cross-node resolution, integrity |
-| Chaos | ~10 | Leader kill, node restart, recovery |
-| Network partition | ~5 | Split-brain, partition healing |
-| Invocation | ~10 | Local, remote, retry, failover |
-| Worker pools | ~10 | SWIM, governors, group management |
-| Observability | ~6 | Metrics, alerts, aspects |
+| Layer | Count | Description |
+|-------|-------|-------------|
+| Unit tests | 10,686 | All modules, `mvn verify` |
+| Forge integration | 21 | In-process EmberCluster tests (cluster formation, chaos, rolling updates) |
+| Docker integration | 14 suites, ~50 scripts | 5-node Docker cluster on target host (smoke, chaos, scaling, streaming, security, deployment, resources, artifacts, database, observability, network, edge-cases) |
 
-28 E2E tests currently (26 stable, 2 flaky - being hardened).
+Docker integration tests run via `aether/tests/integration/scripts/run-all.sh` against a target host. See [integration test README](../../tests/integration/README.md) for setup and environment variables.
 
 ## Related Documents
 

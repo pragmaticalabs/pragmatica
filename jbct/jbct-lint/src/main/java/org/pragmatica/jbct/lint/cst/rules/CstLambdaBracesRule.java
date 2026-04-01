@@ -28,7 +28,7 @@ public class CstLambdaBracesRule implements CstLintRule {
         if (!ctx.shouldLint(packageName)) {
             return Stream.empty();
         }
-        return findAll(root, RuleId.Lambda.class).stream()
+        return findAllLambdas(root).stream()
                       .filter(lambda -> hasBlockBody(lambda, source))
                       .map(lambda -> createDiagnostic(lambda, ctx));
     }

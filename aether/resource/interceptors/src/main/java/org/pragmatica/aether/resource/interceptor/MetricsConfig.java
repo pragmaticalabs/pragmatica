@@ -17,11 +17,11 @@ import static org.pragmatica.lang.Verify.ensure;
 /// @param recordTiming Record timing information
 /// @param recordCounts Record success/failure counts
 /// @param tags         Additional tags for metrics (alternating key-value pairs)
-public record MetricsConfig(String name,
-                            MeterRegistry registry,
-                            boolean recordTiming,
-                            boolean recordCounts,
-                            List<String> tags) {
+public record MetricsConfig( String name,
+                             MeterRegistry registry,
+                             boolean recordTiming,
+                             boolean recordCounts,
+                             List<String> tags) {
     /// Create metrics configuration with defaults (timing + counts enabled, no tags).
     ///
     /// @param name     Metric name prefix

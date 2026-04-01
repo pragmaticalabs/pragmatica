@@ -941,6 +941,38 @@ This starts the Aether Forge development server. The dashboard is available at `
 If Forge is running with `repositories=["local"]`, it automatically picks up the slice.
 Your slice is now live and can be called through the Forge API.
 
+## Per-Route Security
+
+Add a `[security]` section to your `routes.toml` to control authentication per route:
+
+```toml
+prefix = "/api/v1/urls"
+
+[security]
+default = "authenticated"
+override_policy = "strengthen_only"
+
+[routes]
+resolve = ["GET /{shortCode}", "public"]           # No auth needed
+shorten = "POST /"                                   # Uses default: authenticated
+adminReset = ["POST /admin/reset", "role:admin"]    # Requires admin role
+health = ["GET /health", "public"]                   # Health check, no auth
+```
+
+Routes can be:
+- **String** (uses default security): `shorten = "POST /"`
+- **Array** (explicit security): `resolve = ["GET /{shortCode}", "public"]`
+
+The `[security]` section is optional -- routes without it default to `public`.
+
+The `override_policy` controls what operators can change at deploy time via blueprint.toml:
+- **`strengthen_only`** (default) -- operators can only make routes more restrictive
+- **`full`** -- operators can change security in any direction
+- **`none`** -- no overrides allowed
+
+See the [Management API reference](../reference/management-api.md#security-overrides)
+for full details on operator security overrides.
+
 ## Securing Your Endpoints
 
 By default, the app HTTP server runs without authentication. For production deployments,

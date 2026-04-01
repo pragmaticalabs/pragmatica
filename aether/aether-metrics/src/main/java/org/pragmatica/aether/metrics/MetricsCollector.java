@@ -2,6 +2,7 @@ package org.pragmatica.aether.metrics;
 
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPing;
 import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPong;
 import org.pragmatica.consensus.net.ClusterNetwork;
@@ -45,17 +46,14 @@ public interface MetricsCollector {
     Map<String, Double> collectLocal();
 
     /// Record a method call with its duration.
-    @SuppressWarnings("JBCT-RET-01")
-    void recordCall(MethodName method, long durationMs);
+    @Contract void recordCall(MethodName method, long durationMs);
 
     /// Record a custom metric value from a slice.
-    @SuppressWarnings("JBCT-RET-01")
-    void recordCustom(String name, double value);
+    @Contract void recordCustom(String name, double value);
 
     /// Set the invocation metrics provider for cluster-wide aggregation.
     /// Invocation snapshots are encoded as flat map entries and exchanged via gossip.
-    @SuppressWarnings("JBCT-RET-01")
-    void setInvocationMetricsProvider(InvocationMetricsCollector provider);
+    @Contract void setInvocationMetricsProvider(InvocationMetricsCollector provider);
 
     /// Get all known metrics (local + remote nodes).
     Map<NodeId, Map<String, Double>> allMetrics();
@@ -69,25 +67,21 @@ public interface MetricsCollector {
     Map<NodeId, List<MetricsSnapshot>> historicalMetrics();
 
     /// Immutable metrics snapshot with timestamp.
-    record MetricsSnapshot(long timestamp, Map<String, Double> metrics) {}
+    record MetricsSnapshot(long timestamp, Map<String, Double> metrics){}
 
     /// Remove a node from remote metrics and history.
     /// Called when a node leaves the cluster or is detected as down.
-    @SuppressWarnings("JBCT-RET-01")
-    void removeNode(NodeId nodeId);
+    @Contract void removeNode(NodeId nodeId);
 
     /// Handle topology changes to clean up metrics for departed nodes.
     @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    void onTopologyChange(TopologyChangeNotification topologyChange);
+    @Contract void onTopologyChange(TopologyChangeNotification topologyChange);
 
     @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    void onMetricsPing(MetricsPing ping);
+    @Contract void onMetricsPing(MetricsPing ping);
 
     @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    void onMetricsPong(MetricsPong pong);
+    @Contract void onMetricsPong(MetricsPong pong);
 
     /// Default sliding window duration: 2 hours in milliseconds.
     long DEFAULT_slidingWindowMs = 2 * 60 * 60 * 1000L;
@@ -141,8 +135,7 @@ class MetricsCollectorImpl implements MetricsCollector {
         this.memoryMxBean = ManagementFactory.getMemoryMXBean();
     }
 
-    @Override
-    public Map<String, Double> collectLocal() {
+    @Override public Map<String, Double> collectLocal() {
         var metrics = new HashMap<String, Double>();
         collectCpuMetrics(metrics);
         collectHeapMetrics(metrics);
@@ -153,27 +146,21 @@ class MetricsCollectorImpl implements MetricsCollector {
     }
 
     @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void recordCall(MethodName method, long durationMs) {
-        callStats.computeIfAbsent(method,
-                                  _ -> CallStats.callStats())
-                 .record(durationMs);
+    @Contract public void recordCall(MethodName method, long durationMs) {
+        callStats.computeIfAbsent(method, _ -> CallStats.callStats()).record(durationMs);
     }
 
     @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void recordCustom(String name, double value) {
+    @Contract public void recordCustom(String name, double value) {
         customMetrics.put(name, value);
     }
 
     @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void setInvocationMetricsProvider(InvocationMetricsCollector provider) {
+    @Contract public void setInvocationMetricsProvider(InvocationMetricsCollector provider) {
         this.invocationMetricsProvider = provider;
     }
 
-    @Override
-    public Map<NodeId, Map<String, Double>> allMetrics() {
+    @Override public Map<NodeId, Map<String, Double>> allMetrics() {
         var local = collectLocal();
         addToHistory(self, local);
         var result = new ConcurrentHashMap<>(remoteMetrics);
@@ -181,16 +168,13 @@ class MetricsCollectorImpl implements MetricsCollector {
         return result;
     }
 
-    @Override
-    public Map<String, Double> metricsFor(NodeId nodeId) {
-        if (nodeId.equals(self)) {
-            return collectLocal();
-        }
+    @Override public Map<String, Double> metricsFor(NodeId nodeId) {
+        if ( nodeId.equals(self)) {
+        return collectLocal();}
         return remoteMetrics.getOrDefault(nodeId, Map.of());
     }
 
-    @Override
-    public Map<NodeId, List<MetricsSnapshot>> historicalMetrics() {
+    @Override public Map<NodeId, List<MetricsSnapshot>> historicalMetrics() {
         var cutoff = System.currentTimeMillis() - slidingWindowMs;
         var result = new ConcurrentHashMap<NodeId, List<MetricsSnapshot>>();
         historicalMetricsMap.forEach((nodeId, ringBuffer) -> addFilteredHistory(result, nodeId, ringBuffer, cutoff));
@@ -198,16 +182,14 @@ class MetricsCollectorImpl implements MetricsCollector {
     }
 
     @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void removeNode(NodeId nodeId) {
+    @Contract public void removeNode(NodeId nodeId) {
         remoteMetrics.remove(nodeId);
         historicalMetricsMap.remove(nodeId);
     }
 
     @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void onTopologyChange(TopologyChangeNotification topologyChange) {
-        switch (topologyChange) {
+    @Contract public void onTopologyChange(TopologyChangeNotification topologyChange) {
+        switch ( topologyChange) {
             case TopologyChangeNotification.NodeRemoved(var removedNode, _) -> removeNode(removedNode);
             case TopologyChangeNotification.NodeDown(var downNode, _) -> removeNode(downNode);
             default -> {}
@@ -215,18 +197,14 @@ class MetricsCollectorImpl implements MetricsCollector {
     }
 
     @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void onMetricsPing(MetricsPing ping) {
-        ping.allMetrics()
-            .forEach(this::storeRemoteMetrics);
+    @Contract public void onMetricsPing(MetricsPing ping) {
+        ping.allMetrics().forEach(this::storeRemoteMetrics);
         network.send(ping.sender(), new MetricsPong(self, collectLocal()));
     }
 
     @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void onMetricsPong(MetricsPong pong) {
-        if (!pong.sender()
-                 .equals(self)) {
+    @Contract public void onMetricsPong(MetricsPong pong) {
+        if ( !pong.sender().equals(self)) {
             remoteMetrics.put(pong.sender(), pong.metrics());
             addToHistory(pong.sender(), pong.metrics());
         }
@@ -234,7 +212,7 @@ class MetricsCollectorImpl implements MetricsCollector {
 
     private void collectCpuMetrics(Map<String, Double> metrics) {
         double systemLoad = osMxBean.getSystemLoadAverage();
-        if (systemLoad >= 0) {
+        if ( systemLoad >= 0) {
             int processors = osMxBean.getAvailableProcessors();
             metrics.put(CPU_USAGE, Math.min(1.0, systemLoad / processors));
         }
@@ -244,10 +222,9 @@ class MetricsCollectorImpl implements MetricsCollector {
         var heapUsage = memoryMxBean.getHeapMemoryUsage();
         metrics.put(HEAP_USED, (double) heapUsage.getUsed());
         metrics.put(HEAP_MAX, (double) heapUsage.getMax());
-        if (heapUsage.getMax() > 0) {
-            metrics.put(HEAP_USAGE,
-                        (double) heapUsage.getUsed() / heapUsage.getMax());
-        }
+        if ( heapUsage.getMax() > 0) {
+        metrics.put(HEAP_USAGE,
+                    (double) heapUsage.getUsed() / heapUsage.getMax());}
     }
 
     private void collectCallStatsMetrics(Map<String, Double> metrics) {
@@ -258,26 +235,21 @@ class MetricsCollectorImpl implements MetricsCollector {
         var prefix = "method." + method.name() + ".";
         metrics.put(prefix + "calls", (double) stats.count.sum());
         metrics.put(prefix + "duration.total", stats.totalDuration.sum());
-        if (stats.count.sum() > 0) {
-            metrics.put(prefix + "duration.avg",
-                        stats.totalDuration.sum() / stats.count.sum());
-        }
+        if ( stats.count.sum() > 0) {
+        metrics.put(prefix + "duration.avg",
+                    stats.totalDuration.sum() / stats.count.sum());}
     }
 
     private void collectInvocationMetrics(Map<String, Double> metrics) {
         var invMetrics = invocationMetricsProvider;
-        if (invMetrics == null) {
-            return;
-        }
-        invMetrics.snapshot()
-                  .forEach(snapshot -> addInvocationSnapshot(metrics, snapshot));
+        if ( invMetrics == null) {
+        return;}
+        invMetrics.snapshot().forEach(snapshot -> addInvocationSnapshot(metrics, snapshot));
     }
 
     private void addInvocationSnapshot(Map<String, Double> metrics,
                                        InvocationMetricsCollector.MethodSnapshot snapshot) {
-        var prefix = "inv|" + snapshot.artifact()
-                                     .asString() + "|" + snapshot.methodName()
-                                                                .name() + "|";
+        var prefix = "inv|" + snapshot.artifact().asString() + "|" + snapshot.methodName().name() + "|";
         var m = snapshot.metrics();
         metrics.put(prefix + "count", (double) m.count());
         metrics.put(prefix + "success", (double) m.successCount());
@@ -288,7 +260,7 @@ class MetricsCollectorImpl implements MetricsCollector {
     }
 
     private void storeRemoteMetrics(NodeId nodeId, Map<String, Double> metrics) {
-        if (!nodeId.equals(self)) {
+        if ( !nodeId.equals(self)) {
             remoteMetrics.put(nodeId, metrics);
             addToHistory(nodeId, metrics);
         }
@@ -299,9 +271,8 @@ class MetricsCollectorImpl implements MetricsCollector {
                                     RingBuffer<MetricsSnapshot> ringBuffer,
                                     long cutoff) {
         var filtered = ringBuffer.filter(s -> s.timestamp() >= cutoff);
-        if (!filtered.isEmpty()) {
-            result.put(nodeId, filtered);
-        }
+        if ( !filtered.isEmpty()) {
+        result.put(nodeId, filtered);}
     }
 
     /// Add metrics snapshot to historical ring buffer.

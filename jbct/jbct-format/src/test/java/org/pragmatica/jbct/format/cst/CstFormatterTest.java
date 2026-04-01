@@ -372,4 +372,120 @@ class CstFormatterTest {
                          "Line count changed on pass " + i + " for " + fileName + ": " + firstLines + " -> " + currentLines);
         }
     }
+
+    @Test
+    void format_recordWithVoidMethodsAndAnnotations_noBlankLineInsertion() {
+        // Reproduces the real-world pattern from LoggingMethodInterceptor
+        var input = """
+            package com.example;
+
+            @SuppressWarnings("JBCT-RET-01")
+            public record Test(String config) {
+                @Override public String toString() {
+                    return config;
+                }
+
+                private <T> void logEntry(T request) {
+                    if (config.isEmpty()) {
+                        System.out.println(request);
+                    } else {
+                        System.out.println(config);
+                    }
+                }
+
+                private <R> void logExit(String result, long startNanos) {
+                    var durationMs = (System.nanoTime() - startNanos) / 1_000_000.0;
+                    var formattedDuration = String.format("%.2f", durationMs);
+                    System.out.println(formattedDuration);
+                }
+
+                @SuppressWarnings("JBCT-SEQ-01")
+                private void log(String format, Object... args) {
+                    switch (config) {
+                        case "trace" -> System.out.println(format);
+                        case "debug" -> System.err.println(format);
+                        default -> System.out.println(format);
+                    }
+                }
+            }
+            """;
+        var source = new SourceFile(Path.of("Test.java"), input);
+        // Format twice to check idempotency
+        var first = formatter.format(source);
+        first.onFailure(cause -> fail("Format failed: " + cause.message()))
+             .onSuccess(formatted -> {
+                 var content = formatted.content();
+                 // No blank lines between 'private' and return type/void
+                 assertThat(content).doesNotContain("private\n\n");
+                 assertThat(content).doesNotContain("private\n\nvoid");
+                 assertThat(content).doesNotContain("private\n\n\nvoid");
+                 // No blank lines between annotation and method
+                 assertThat(content).doesNotContain("@SuppressWarnings(\"JBCT-SEQ-01\")\n\n");
+                 // Format again — must be idempotent
+                 var second = formatter.format(formatted);
+                 second.onSuccess(reformatted ->
+                     assertEquals(content, reformatted.content(),
+                         "Formatter is not idempotent — second pass changed the output"));
+             });
+    }
+
+    @Test
+    void format_suppressWarningsOnRecord_noBlankLineInsertion() {
+        var input = """
+            package com.example;
+
+            @SuppressWarnings("JBCT-RET-01")
+            public record Test(String config) {
+                private <T> void logEntry(T request) {
+                    System.out.println(request);
+                }
+
+                private void helper() {
+                    System.out.println(config);
+                }
+            }
+            """;
+        var source = new SourceFile(Path.of("Test.java"), input);
+        var result = formatter.format(source);
+        result.onFailure(cause -> fail("Format failed: " + cause.message()))
+              .onSuccess(formatted -> {
+                  var content = formatted.content();
+                  // No blank lines should appear between @SuppressWarnings and the record declaration
+                  assertThat(content).doesNotContain("@SuppressWarnings(\"JBCT-RET-01\")\n\n\npublic");
+                  assertThat(content).doesNotContain("@SuppressWarnings(\"JBCT-RET-01\")\n\npublic");
+                  // No blank lines between method-level @SuppressWarnings and method
+                  assertThat(content).doesNotContain("private\n\nvoid");
+                  assertThat(content).doesNotContain("private\n\n\nvoid");
+                  // The annotation should be directly before the declaration (at most one newline)
+                  assertThat(content).contains("@SuppressWarnings(\"JBCT-RET-01\")");
+              });
+    }
+
+    @Test
+    void format_annotatedMethods_preservesStructure() {
+        var input = """
+            package com.example;
+
+            public class Test {
+                @SuppressWarnings("JBCT-RET-01")
+                private <T> void logEntry(T request) {
+                    System.out.println(request);
+                }
+
+                @SuppressWarnings({"JBCT-SEQ-01", "JBCT-RET-01"})
+                private void log(String format, Object... args) {
+                    System.out.println(format);
+                }
+            }
+            """;
+        var source = new SourceFile(Path.of("Test.java"), input);
+        var result = formatter.format(source);
+        result.onFailure(cause -> fail("Format failed: " + cause.message()))
+              .onSuccess(formatted -> {
+                  var content = formatted.content();
+                  // Method signature should not be split with blank lines after 'private'
+                  assertThat(content).doesNotContain("private\n\n");
+                  assertThat(content).doesNotContain("private\n<");
+              });
+    }
 }

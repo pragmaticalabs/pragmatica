@@ -26,11 +26,9 @@ public interface SecretsProvider {
     /// Resolve multiple secrets in a single call (batch).
     /// Implementations may optimize with batch APIs. Default resolves sequentially via allOf.
     default Promise<Map<String, String>> resolveSecrets(List<String> secretPaths) {
-        var futures = secretPaths.stream()
-                                 .map(path -> resolveSecret(path).map(value -> Map.entry(path, value)))
-                                 .toList();
-        return Promise.allOf(futures)
-                      .map(SecretsProvider::collectEntries);
+        var futures = secretPaths.stream().map(path -> resolveSecret(path).map(value -> Map.entry(path, value)))
+                                        .toList();
+        return Promise.allOf(futures).map(SecretsProvider::collectEntries);
     }
 
     /// Register a callback for secret rotation events. Default: no-op.
@@ -40,9 +38,8 @@ public interface SecretsProvider {
 
     private static Map<String, String> collectEntries(List<Result<Map.Entry<String, String>>> results) {
         var map = new HashMap<String, String>();
-        for (var result : results) {
-            result.onSuccess(entry -> map.put(entry.getKey(), entry.getValue()));
-        }
+        for ( var result : results) {
+        result.onSuccess(entry -> map.put(entry.getKey(), entry.getValue()));}
         return Map.copyOf(map);
     }
 }

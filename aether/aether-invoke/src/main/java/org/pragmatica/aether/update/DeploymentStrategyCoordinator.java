@@ -53,60 +53,45 @@ public interface DeploymentStrategyCoordinator {
                                                                        Option<CanaryDeploymentManager> canaryManager,
                                                                        Option<BlueGreenDeploymentManager> blueGreenManager,
                                                                        Option<AbTestManager> abTestManager) {
-        record deploymentStrategyCoordinator(RollingUpdateManager rollingUpdateManager,
-                                             Option<CanaryDeploymentManager> canaryManager,
-                                             Option<BlueGreenDeploymentManager> blueGreenManager,
-                                             Option<AbTestManager> abTestManager)
+        record deploymentStrategyCoordinator( RollingUpdateManager rollingUpdateManager,
+                                              Option<CanaryDeploymentManager> canaryManager,
+                                              Option<BlueGreenDeploymentManager> blueGreenManager,
+                                              Option<AbTestManager> abTestManager)
         implements DeploymentStrategyCoordinator {
-            @Override
-            public Option<DeploymentStrategy> getAnyActiveStrategy(ArtifactBase artifactBase) {
-                var rolling = rollingUpdateManager.getActiveUpdate(artifactBase)
-                                                  .map(DeploymentStrategy.class::cast);
-                if (rolling.isPresent()) {
-                    return rolling;
-                }
+            @Override public Option<DeploymentStrategy> getAnyActiveStrategy(ArtifactBase artifactBase) {
+                var rolling = rollingUpdateManager.getActiveUpdate(artifactBase).map(DeploymentStrategy.class::cast);
+                if ( rolling.isPresent()) {
+                return rolling;}
                 var canary = canaryManager.flatMap(cm -> cm.getActiveCanary(artifactBase))
-                                          .map(DeploymentStrategy.class::cast);
-                if (canary.isPresent()) {
-                    return canary;
-                }
+                .map(DeploymentStrategy.class::cast);
+                if ( canary.isPresent()) {
+                return canary;}
                 var blueGreen = blueGreenManager.flatMap(bg -> bg.getActiveDeployment(artifactBase))
-                                                .map(DeploymentStrategy.class::cast);
-                if (blueGreen.isPresent()) {
-                    return blueGreen;
-                }
-                return abTestManager.flatMap(ab -> ab.getActiveTest(artifactBase))
-                                    .map(DeploymentStrategy.class::cast);
+                .map(DeploymentStrategy.class::cast);
+                if ( blueGreen.isPresent()) {
+                return blueGreen;}
+                return abTestManager.flatMap(ab -> ab.getActiveTest(artifactBase)).map(DeploymentStrategy.class::cast);
             }
 
-            @Override
-            public Option<VersionRouting> getActiveRouting(ArtifactBase artifactBase) {
+            @Override public Option<VersionRouting> getActiveRouting(ArtifactBase artifactBase) {
                 return getAnyActiveStrategy(artifactBase).map(DeploymentStrategy::routing);
             }
 
-            @Override
-            public Option<DeploymentStrategy> getActiveStrategyWithRouting(ArtifactBase artifactBase) {
-                var rolling = rollingUpdateManager.getActiveUpdate(artifactBase)
-                                                  .filter(RollingUpdate::isActive)
+            @Override public Option<DeploymentStrategy> getActiveStrategyWithRouting(ArtifactBase artifactBase) {
+                var rolling = rollingUpdateManager.getActiveUpdate(artifactBase).filter(RollingUpdate::isActive)
+                                                                  .map(DeploymentStrategy.class::cast);
+                if ( rolling.isPresent()) {
+                return rolling;}
+                var canary = canaryManager.flatMap(cm -> cm.getActiveCanary(artifactBase)).filter(CanaryDeployment::isActive)
                                                   .map(DeploymentStrategy.class::cast);
-                if (rolling.isPresent()) {
-                    return rolling;
-                }
-                var canary = canaryManager.flatMap(cm -> cm.getActiveCanary(artifactBase))
-                                          .filter(CanaryDeployment::isActive)
-                                          .map(DeploymentStrategy.class::cast);
-                if (canary.isPresent()) {
-                    return canary;
-                }
-                var blueGreen = blueGreenManager.flatMap(bg -> bg.getActiveDeployment(artifactBase))
-                                                .filter(BlueGreenDeployment::isActive)
-                                                .map(DeploymentStrategy.class::cast);
-                if (blueGreen.isPresent()) {
-                    return blueGreen;
-                }
-                return abTestManager.flatMap(ab -> ab.getActiveTest(artifactBase))
-                                    .filter(AbTestDeployment::isActive)
-                                    .map(DeploymentStrategy.class::cast);
+                if ( canary.isPresent()) {
+                return canary;}
+                var blueGreen = blueGreenManager.flatMap(bg -> bg.getActiveDeployment(artifactBase)).filter(BlueGreenDeployment::isActive)
+                                                        .map(DeploymentStrategy.class::cast);
+                if ( blueGreen.isPresent()) {
+                return blueGreen;}
+                return abTestManager.flatMap(ab -> ab.getActiveTest(artifactBase)).filter(AbTestDeployment::isActive)
+                                            .map(DeploymentStrategy.class::cast);
             }
         }
         return new deploymentStrategyCoordinator(rollingUpdateManager, canaryManager, blueGreenManager, abTestManager);

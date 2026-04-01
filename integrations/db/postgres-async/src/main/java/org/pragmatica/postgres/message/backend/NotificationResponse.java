@@ -24,4 +24,8 @@ public final class NotificationResponse implements BackendMessage {
     public String getPayload() {
         return payload;
     }
+
+    public int getBackend() {
+        return backend;
+    }
 }

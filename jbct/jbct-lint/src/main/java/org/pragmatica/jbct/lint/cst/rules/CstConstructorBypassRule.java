@@ -46,7 +46,7 @@ public class CstConstructorBypassRule implements CstLintRule {
 
     private Set<String> collectValueObjectTypes(CstNode root, String source) {
         var types = new HashSet<String>();
-        findAll(root, RuleId.RecordDecl.class)
+        findAllRecords(root)
         .forEach(record -> {
                      var name = childByRule(record, RuleId.Identifier.class).map(id -> text(id, source))
                                            .or("");
@@ -70,13 +70,15 @@ public class CstConstructorBypassRule implements CstLintRule {
 
     private boolean isInAllowedContext(CstNode root, CstNode node, String source) {
         // Check if inside factory method (static method returning Result)
-        // Note: "static" keyword is in ClassMember, not MethodDecl
-        return findAncestor(root, node, RuleId.ClassMember.class).map(member -> {
-                                                                          var memberText = text(member, source);
-                                                                          // Allow in factory methods (static methods returning Result)
-        return memberText.contains("static ") && memberText.contains("Result<");
-                                                                      })
-                           .or(false);
+        // Note: "static" keyword is in ClassMember/RecordMember, not Member
+        // RecordMember wraps ClassMember in records (ordered choice)
+        return findAncestor(root, node, RuleId.ClassMember.class)
+                          .orElse(() -> findAncestor(root, node, RuleId.RecordMember.class))
+                          .map(member -> {
+                                   var memberText = text(member, source);
+                                   return memberText.contains("static ") && memberText.contains("Result<");
+                               })
+                          .or(false);
     }
 
     private Diagnostic createDiagnostic(CstNode node, String source, LintContext ctx) {

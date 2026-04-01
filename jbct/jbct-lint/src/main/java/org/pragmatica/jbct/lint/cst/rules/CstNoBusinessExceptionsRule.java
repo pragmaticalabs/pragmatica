@@ -29,16 +29,16 @@ public class CstNoBusinessExceptionsRule implements CstLintRule {
             return Stream.empty();
         }
         // Find classes extending Exception
-        var exceptionClasses = findAll(root, RuleId.ClassDecl.class).stream()
+        var exceptionClasses = findAllClasses(root).stream()
                                       .filter(cls -> extendsException(cls, source))
                                       .map(cls -> createExceptionClassDiagnostic(cls, source, ctx));
         // Find throw statements
-        var throwStatements = findAll(root, RuleId.Stmt.class).stream()
+        var throwStatements = findAllStatements(root).stream()
                                      .filter(stmt -> text(stmt, source).trim()
                                                          .startsWith("throw "))
                                      .map(stmt -> createThrowDiagnostic(stmt, ctx));
         // Find methods with throws clause
-        var throwsClauses = findAll(root, RuleId.MethodDecl.class).stream()
+        var throwsClauses = findAllMethods(root).stream()
                                    .filter(method -> hasThrowsClause(method, source))
                                    .map(method -> createThrowsClauseDiagnostic(method, source, ctx));
         return Stream.concat(Stream.concat(exceptionClasses, throwStatements), throwsClauses);

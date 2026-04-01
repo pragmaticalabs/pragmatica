@@ -13,8 +13,7 @@ import static org.pragmatica.lang.utils.Causes.fromThrowable;
 /// Error types for database connector operations.
 public sealed interface DatabaseConnectorError extends Cause {
     record unused() implements DatabaseConnectorError {
-        @Override
-        public String message() {
+        @Override public String message() {
             return "unused";
         }
     }
@@ -25,33 +24,25 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new ConnectionFailed(message, cause));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Connection failed: " + message;
         }
 
-        @Override
-        public Option<Cause> source() {
+        @Override public Option<Cause> source() {
             return cause.map(t -> fromThrowable(t));
         }
     }
 
     static ConnectionFailed connectionFailed(String message) {
-        return ConnectionFailed.connectionFailed(message,
-                                                 none())
-                               .unwrap();
+        return ConnectionFailed.connectionFailed(message, none()).unwrap();
     }
 
     static ConnectionFailed connectionFailed(String message, Throwable cause) {
-        return ConnectionFailed.connectionFailed(message,
-                                                 option(cause))
-                               .unwrap();
+        return ConnectionFailed.connectionFailed(message, option(cause)).unwrap();
     }
 
     static ConnectionFailed connectionFailed(Throwable cause) {
-        return ConnectionFailed.connectionFailed(cause.getMessage(),
-                                                 option(cause))
-                               .unwrap();
+        return ConnectionFailed.connectionFailed(cause.getMessage(), option(cause)).unwrap();
     }
 
     /// Query execution failed.
@@ -60,13 +51,11 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new QueryFailed(sql, message, cause));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Query failed: " + message + " [SQL: " + truncateSql(sql) + "]";
         }
 
-        @Override
-        public Option<Cause> source() {
+        @Override public Option<Cause> source() {
             return cause.map(t -> fromThrowable(t));
         }
 
@@ -77,17 +66,11 @@ public sealed interface DatabaseConnectorError extends Cause {
     }
 
     static QueryFailed queryFailed(String sql, String message) {
-        return QueryFailed.queryFailed(sql,
-                                       message,
-                                       none())
-                          .unwrap();
+        return QueryFailed.queryFailed(sql, message, none()).unwrap();
     }
 
     static QueryFailed queryFailed(String sql, Throwable cause) {
-        return QueryFailed.queryFailed(sql,
-                                       cause.getMessage(),
-                                       option(cause))
-                          .unwrap();
+        return QueryFailed.queryFailed(sql, cause.getMessage(), option(cause)).unwrap();
     }
 
     /// Database constraint violation (unique, foreign key, etc).
@@ -96,15 +79,13 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new ConstraintViolation(constraint, message));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Constraint violation (" + constraint + "): " + message;
         }
     }
 
     static ConstraintViolation constraintViolation(String message) {
-        return ConstraintViolation.constraintViolation("unknown", message)
-                                  .unwrap();
+        return ConstraintViolation.constraintViolation("unknown", message).unwrap();
     }
 
     /// Operation timed out.
@@ -113,15 +94,13 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new TimedOut(operation));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Operation timed out: " + operation;
         }
     }
 
     static TimedOut timeout(String operation) {
-        return TimedOut.timedOut(operation)
-                       .unwrap();
+        return TimedOut.timedOut(operation).unwrap();
     }
 
     /// Transaction rolled back (deadlock, serialization failure, etc).
@@ -130,22 +109,19 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new TransactionRolledBack(reason));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Transaction rolled back: " + reason;
         }
     }
 
     static TransactionRolledBack transactionRollback(String reason) {
-        return TransactionRolledBack.transactionRolledBack(reason)
-                                    .unwrap();
+        return TransactionRolledBack.transactionRolledBack(reason).unwrap();
     }
 
     /// Transaction not active when required.
     enum TransactionNotActive implements DatabaseConnectorError {
         INSTANCE;
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Transaction is required for this operation";
         }
     }
@@ -153,8 +129,7 @@ public sealed interface DatabaseConnectorError extends Cause {
     /// Query returned no result when one was expected.
     enum ResultNotFound implements DatabaseConnectorError {
         INSTANCE;
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Query returned no result when one was expected";
         }
     }
@@ -165,15 +140,13 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new MultipleResults(count));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Expected single result but got " + count;
         }
     }
 
     static MultipleResults multipleResults(int count) {
-        return MultipleResults.multipleResults(count)
-                              .unwrap();
+        return MultipleResults.multipleResults(count).unwrap();
     }
 
     /// Configuration error.
@@ -182,22 +155,19 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new ConfigurationError(reason));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Configuration error: " + reason;
         }
     }
 
     static ConfigurationError configurationError(String reason) {
-        return ConfigurationError.configurationError(reason)
-                                 .unwrap();
+        return ConfigurationError.configurationError(reason).unwrap();
     }
 
     /// Pool exhausted - no connections available.
     enum PoolExhausted implements DatabaseConnectorError {
         INSTANCE;
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Connection pool exhausted - no connections available";
         }
     }
@@ -208,21 +178,17 @@ public sealed interface DatabaseConnectorError extends Cause {
             return success(new DatabaseFailure(cause));
         }
 
-        @Override
-        public String message() {
-            return "Database operation failed: " + option(cause.getMessage()).or(() -> cause.getClass()
-                                                                                            .getName());
+        @Override public String message() {
+            return "Database operation failed: " + option(cause.getMessage()).or(() -> cause.getClass().getName());
         }
 
-        @Override
-        public Option<Cause> source() {
+        @Override public Option<Cause> source() {
             return some(fromThrowable(cause));
         }
     }
 
     static DatabaseFailure databaseFailure(Throwable cause) {
-        return DatabaseFailure.databaseFailure(cause)
-                              .unwrap();
+        return DatabaseFailure.databaseFailure(cause).unwrap();
     }
 
     private static String limitLength(String s) {

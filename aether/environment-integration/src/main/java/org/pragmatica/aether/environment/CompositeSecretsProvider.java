@@ -7,17 +7,15 @@ import java.util.List;
 
 /// SecretsProvider that chains multiple providers, returning the first successful resolution.
 /// If all providers fail, the last failure is returned.
-public record CompositeSecretsProvider(List<SecretsProvider> providers) implements SecretsProvider {
+public record CompositeSecretsProvider( List<SecretsProvider> providers) implements SecretsProvider {
     public static CompositeSecretsProvider compositeSecretsProvider(SecretsProvider... providers) {
         return new CompositeSecretsProvider(List.of(providers));
     }
 
-    @Override
-    public Promise<String> resolveSecret(String secretPath) {
+    @Override public Promise<String> resolveSecret(String secretPath) {
         var result = initialFailure(secretPath);
-        for (var provider : providers) {
-            result = chainNextProvider(result, provider, secretPath);
-        }
+        for ( var provider : providers) {
+        result = chainNextProvider(result, provider, secretPath);}
         return result;
     }
 
@@ -30,8 +28,7 @@ public record CompositeSecretsProvider(List<SecretsProvider> providers) implemen
     }
 
     private static Promise<String> initialFailure(String secretPath) {
-        return EnvironmentError.secretResolutionFailed(secretPath,
-                                                       new IllegalStateException("No providers configured"))
-                               .promise();
+        return EnvironmentError.secretResolutionFailed(secretPath, new IllegalStateException("No providers configured"))
+        .promise();
     }
 }

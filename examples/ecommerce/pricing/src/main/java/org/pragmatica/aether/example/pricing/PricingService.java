@@ -18,11 +18,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
-/// Pricing slice.
-/// Calculates prices, applies discounts, and computes taxes.
-@Slice
-public interface PricingService {
-    // === Requests ===
+@Slice public interface PricingService {
     record CalculatePriceRequest(CustomerId customerId, List<LineItem> items) {
         public static CalculatePriceRequest calculatePriceRequest(CustomerId customerId, List<LineItem> items) {
             return new CalculatePriceRequest(customerId, List.copyOf(items));
@@ -33,8 +29,7 @@ public interface PricingService {
         public static ApplyDiscountRequest applyDiscountRequest(CustomerId customerId, Money subtotal, String code) {
             return new ApplyDiscountRequest(customerId,
                                             subtotal,
-                                            Option.option(code)
-                                                  .filter(s -> !s.isBlank()));
+                                            Option.option(code).filter(s -> !s.isBlank()));
         }
 
         public static ApplyDiscountRequest withoutCode(CustomerId customerId, Money subtotal) {
@@ -48,7 +43,6 @@ public interface PricingService {
         }
     }
 
-    // === Responses ===
     record PriceBreakdown(Map<ProductId, LinePrice> linePrices,
                           Money subtotal,
                           Money discountAmount,
@@ -57,8 +51,10 @@ public interface PricingService {
                           Money total) {
         public record LinePrice(ProductId productId, Money unitPrice, int quantity, Money lineTotal) {
             public static Result<LinePrice> linePrice(ProductId productId, Money unitPrice, int quantity) {
-                return unitPrice.multiply(BigDecimal.valueOf(quantity))
-                                .map(lineTotal -> new LinePrice(productId, unitPrice, quantity, lineTotal));
+                return unitPrice.multiply(BigDecimal.valueOf(quantity)).map(lineTotal -> new LinePrice(productId,
+                                                                                                       unitPrice,
+                                                                                                       quantity,
+                                                                                                       lineTotal));
             }
         }
 
@@ -68,8 +64,12 @@ public interface PricingService {
                                                             Money taxAmount,
                                                             Money shippingCost,
                                                             Money total) {
-            return Result.success(total)
-                         .map(t -> new PriceBreakdown(linePrices, subtotal, discountAmount, taxAmount, shippingCost, t));
+            return Result.success(total).map(t -> new PriceBreakdown(linePrices,
+                                                                     subtotal,
+                                                                     discountAmount,
+                                                                     taxAmount,
+                                                                     shippingCost,
+                                                                     t));
         }
 
         public static Builder builder() {
@@ -117,15 +117,14 @@ public interface PricingService {
             }
 
             public Result<PriceBreakdown> build() {
-                return subtotal.subtract(discountAmount)
-                               .flatMap(afterDiscount -> afterDiscount.add(taxAmount))
-                               .flatMap(afterTax -> afterTax.add(shippingCost))
-                               .flatMap(total -> priceBreakdown(linePrices,
-                                                                subtotal,
-                                                                discountAmount,
-                                                                taxAmount,
-                                                                shippingCost,
-                                                                total));
+                return subtotal.subtract(discountAmount).flatMap(afterDiscount -> afterDiscount.add(taxAmount))
+                                        .flatMap(afterTax -> afterTax.add(shippingCost))
+                                        .flatMap(total -> priceBreakdown(linePrices,
+                                                                         subtotal,
+                                                                         discountAmount,
+                                                                         taxAmount,
+                                                                         shippingCost,
+                                                                         total));
             }
         }
     }
@@ -148,7 +147,7 @@ public interface PricingService {
         }
 
         public boolean hasDiscount() {
-            return ! discountAmount.isZero();
+            return! discountAmount.isZero();
         }
     }
 
@@ -165,107 +164,84 @@ public interface PricingService {
         }
     }
 
-    // === Errors ===
     sealed interface PricingError extends Cause {
         record InvalidDiscountCode(String code) implements PricingError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Invalid discount code: " + code;
             }
         }
 
         record MinimumPurchaseNotMet(BigDecimal minimum) implements PricingError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Minimum purchase of $" + minimum.toPlainString() + " required for this discount";
             }
         }
 
         record ProductNotFound(String productId) implements PricingError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Price not found for product: " + productId;
             }
         }
     }
 
-    // === Operations ===
     Promise<PriceBreakdown> calculatePrice(CalculatePriceRequest request);
-
     Promise<DiscountResult> applyDiscount(ApplyDiscountRequest request);
-
     Promise<TaxResult> calculateTax(CalculateTaxRequest request);
 
-    // === Internal Types ===
-    record DiscountCode(String code, int percentOff, BigDecimal minimumPurchase) {}
+    record DiscountCode(String code, int percentOff, BigDecimal minimumPurchase){}
 
-    // === Factory ===
     static PricingService pricingService() {
-        record pricingService(Map<ProductId, Money> productPrices,
-                              Map<String, DiscountCode> discountCodes,
-                              Map<String, BigDecimal> taxRates,
-                              Set<String> loyalCustomers) implements PricingService {
-            @Override
-            public Promise<PriceBreakdown> calculatePrice(CalculatePriceRequest request) {
-                return calculateLinePrices(request.items()).flatMap(linePrices -> calculateSubtotal(linePrices)
-                .map(subtotal -> PriceBreakdown.builder()
-                                               .linePrices(linePrices)
-                                               .subtotal(subtotal)))
+        record pricingService( Map<ProductId, Money> productPrices,
+                               Map<String, DiscountCode> discountCodes,
+                               Map<String, BigDecimal> taxRates,
+                               Set<String> loyalCustomers) implements PricingService {
+            @Override public Promise<PriceBreakdown> calculatePrice(CalculatePriceRequest request) {
+                return calculateLinePrices(request.items()).flatMap(linePrices -> calculateSubtotal(linePrices).map(subtotal -> PriceBreakdown.builder().linePrices(linePrices)
+                                                                                                                                                      .subtotal(subtotal)))
                                           .flatMap(PriceBreakdown.Builder::build)
                                           .async();
             }
 
-            @Override
-            public Promise<DiscountResult> applyDiscount(ApplyDiscountRequest request) {
-                return request.discountCode()
-                              .map(code -> applyCodeDiscount(code,
-                                                             request.subtotal()))
-                              .or(() -> applyAutomaticDiscount(request));
+            @Override public Promise<DiscountResult> applyDiscount(ApplyDiscountRequest request) {
+                return request.discountCode().map(code -> applyCodeDiscount(code,
+                                                                            request.subtotal()))
+                                           .or(() -> applyAutomaticDiscount(request));
             }
 
-            @Override
-            public Promise<TaxResult> calculateTax(CalculateTaxRequest request) {
-                var state = request.shippingAddress()
-                                   .state()
-                                   .toUpperCase();
+            @Override public Promise<TaxResult> calculateTax(CalculateTaxRequest request) {
+                var state = request.shippingAddress().state()
+                                                   .toUpperCase();
                 var rate = taxRates.getOrDefault(state, BigDecimal.valueOf(0.08));
-                return request.subtotal()
-                              .percentage((int)(rate.doubleValue() * 100))
-                              .map(taxAmount -> TaxResult.taxResult(taxAmount, rate, state))
-                              .async();
+                return request.subtotal().percentage((int)(rate.doubleValue() * 100))
+                                       .map(taxAmount -> TaxResult.taxResult(taxAmount, rate, state))
+                                       .async();
             }
 
             private Result<Map<ProductId, PriceBreakdown.LinePrice>> calculateLinePrices(List<LineItem> items) {
-                var results = items.stream()
-                                   .map(this::calculateLinePrice)
-                                   .toList();
-                return Result.allOf(results)
-                             .map(linePrices -> linePrices.stream()
-                                                          .collect(Collectors.toMap(PriceBreakdown.LinePrice::productId,
-                                                                                    lp -> lp)));
+                var results = items.stream().map(this::calculateLinePrice)
+                                          .toList();
+                return Result.allOf(results).map(linePrices -> linePrices.stream().collect(Collectors.toMap(PriceBreakdown.LinePrice::productId,
+                                                                                                            lp -> lp)));
             }
 
             private Result<PriceBreakdown.LinePrice> calculateLinePrice(LineItem item) {
                 var unitPrice = productPrices.getOrDefault(item.productId(), Money.ZERO_USD);
                 return PriceBreakdown.LinePrice.linePrice(item.productId(),
                                                           unitPrice,
-                                                          item.quantity()
-                                                              .value());
+                                                          item.quantity().value());
             }
 
             private Result<Money> calculateSubtotal(Map<ProductId, PriceBreakdown.LinePrice> linePrices) {
-                var totals = linePrices.values()
-                                       .stream()
-                                       .map(PriceBreakdown.LinePrice::lineTotal)
-                                       .toList();
+                var totals = linePrices.values().stream()
+                                              .map(PriceBreakdown.LinePrice::lineTotal)
+                                              .toList();
                 return sumMoney(totals);
             }
 
             private static Result<Money> sumMoney(List<Money> amounts) {
-                return amounts.stream()
-                              .reduce(Result.success(Money.ZERO_USD),
-                                      pricingService::addToAccumulator,
-                                      pricingService::combineMoneyResults);
+                return amounts.stream().reduce(Result.success(Money.ZERO_USD),
+                                               pricingService::addToAccumulator,
+                                               pricingService::combineMoneyResults);
             }
 
             private static Result<Money> addToAccumulator(Result<Money> acc, Money money) {
@@ -273,46 +249,32 @@ public interface PricingService {
             }
 
             private static Result<Money> combineMoneyResults(Result<Money> a, Result<Money> b) {
-                return Result.all(a, b)
-                             .flatMap(Money::add);
+                return Result.all(a, b).flatMap(Money::add);
             }
 
             private Promise<DiscountResult> applyCodeDiscount(String code, Money subtotal) {
-                return Option.option(discountCodes.get(code.toUpperCase()))
-                             .toResult(new PricingError.InvalidDiscountCode(code))
-                             .flatMap(discount -> validateMinimumPurchase(discount, subtotal))
-                             .flatMap(discount -> subtotal.percentage(discount.percentOff())
-                                                          .map(amount -> DiscountResult.percentOff(discount.percentOff(),
-                                                                                                   amount,
-                                                                                                   code)))
-                             .async();
+                return Option.option(discountCodes.get(code.toUpperCase())).toResult(new PricingError.InvalidDiscountCode(code))
+                                    .flatMap(discount -> validateMinimumPurchase(discount, subtotal))
+                                    .flatMap(discount -> subtotal.percentage(discount.percentOff()).map(amount -> DiscountResult.percentOff(discount.percentOff(),
+                                                                                                                                            amount,
+                                                                                                                                            code)))
+                                    .async();
             }
 
             private Result<DiscountCode> validateMinimumPurchase(DiscountCode discount, Money subtotal) {
-                return subtotal.amount()
-                               .compareTo(discount.minimumPurchase()) >= 0
+                return subtotal.amount().compareTo(discount.minimumPurchase()) >= 0
                        ? Result.success(discount)
                        : new PricingError.MinimumPurchaseNotMet(discount.minimumPurchase()).result();
             }
 
             private Promise<DiscountResult> applyAutomaticDiscount(ApplyDiscountRequest request) {
-                // Bulk discount: 10% off for orders over $500
-                if (request.subtotal()
-                           .amount()
-                           .compareTo(BigDecimal.valueOf(500)) >= 0) {
-                    return request.subtotal()
-                                  .percentage(10)
-                                  .map(DiscountResult::bulkDiscount)
-                                  .async();
-                }
-                // Loyalty discount: 5% off for loyal customers
-                if (loyalCustomers.contains(request.customerId()
-                                                   .value())) {
-                    return request.subtotal()
-                                  .percentage(5)
-                                  .map(DiscountResult::loyaltyDiscount)
-                                  .async();
-                }
+                if ( request.subtotal().amount()
+                                     .compareTo(BigDecimal.valueOf(500)) >= 0) {return request.subtotal().percentage(10)
+                                                                                                       .map(DiscountResult::bulkDiscount)
+                                                                                                       .async();}
+                if ( loyalCustomers.contains(request.customerId().value())) {return request.subtotal().percentage(5)
+                                                                                                    .map(DiscountResult::loyaltyDiscount)
+                                                                                                    .async();}
                 return Promise.success(DiscountResult.noDiscount());
             }
         }
@@ -338,11 +300,9 @@ public interface PricingService {
     }
 
     private static void addPrice(Map<ProductId, Money> productPrices, String productId, String price) {
-        ProductId.productId(productId)
-                 .flatMap(id -> Money.usd(price)
-                                     .map(p -> Map.entry(id, p)))
-                 .onSuccess(entry -> productPrices.put(entry.getKey(),
-                                                       entry.getValue()));
+        ProductId.productId(productId).flatMap(id -> Money.usd(price).map(p -> Map.entry(id, p)))
+                           .onSuccess(entry -> productPrices.put(entry.getKey(),
+                                                                 entry.getValue()));
     }
 
     private static void initializeDiscountCodes(Map<String, DiscountCode> discountCodes) {

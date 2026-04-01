@@ -49,20 +49,22 @@ import static org.pragmatica.lang.Result.success;
 /// @param backup         Backup configuration
 /// @param dhtReplication DHT replication behavior configuration
 /// @param timeouts       Centralized timeout configuration
+/// @param storage        Named hierarchical storage instance configurations from [storage.*] sections
 /// @param endpoints      Infrastructure endpoint configurations from [endpoints.*] sections
-public record AetherConfig(ClusterConfig cluster,
-                           NodeConfig node,
-                           Option<TlsConfig> tls,
-                           Option<DockerConfig> docker,
-                           Option<KubernetesConfig> kubernetes,
-                           TtmConfig ttm,
-                           SliceConfig slice,
-                           AppHttpConfig appHttp,
-                           BackupConfig backup,
-                           DhtReplicationConfig dhtReplication,
-                           TimeoutsConfig timeouts,
-                           Option<CloudConfig> cloud,
-                           Map<String, EndpointConfig> endpoints) {
+public record AetherConfig( ClusterConfig cluster,
+                            NodeConfig node,
+                            Option<TlsConfig> tls,
+                            Option<DockerConfig> docker,
+                            Option<KubernetesConfig> kubernetes,
+                            TtmConfig ttm,
+                            SliceConfig slice,
+                            AppHttpConfig appHttp,
+                            BackupConfig backup,
+                            DhtReplicationConfig dhtReplication,
+                            TimeoutsConfig timeouts,
+                            Map<String, StorageConfig> storage,
+                            Option<CloudConfig> cloud,
+                            Map<String, EndpointConfig> endpoints) {
     /// Factory method following JBCT naming convention.
     public static Result<AetherConfig> aetherConfig(ClusterConfig cluster,
                                                     NodeConfig node,
@@ -86,6 +88,7 @@ public record AetherConfig(ClusterConfig cluster,
                                         backup,
                                         dhtReplication,
                                         timeouts,
+                                        Map.of(),
                                         none(),
                                         Map.of()));
     }
@@ -122,6 +125,24 @@ public record AetherConfig(ClusterConfig cluster,
     }
 
     @SuppressWarnings("JBCT-VO-02")
+    public AetherConfig withStorage(Map<String, StorageConfig> storage) {
+        return new AetherConfig(cluster,
+                                node,
+                                tls,
+                                docker,
+                                kubernetes,
+                                ttm,
+                                slice,
+                                appHttp,
+                                backup,
+                                dhtReplication,
+                                timeouts,
+                                storage,
+                                cloud,
+                                endpoints);
+    }
+
+    @SuppressWarnings("JBCT-VO-02")
     public AetherConfig withEndpoints(Map<String, EndpointConfig> endpoints) {
         return new AetherConfig(cluster,
                                 node,
@@ -134,6 +155,7 @@ public record AetherConfig(ClusterConfig cluster,
                                 backup,
                                 dhtReplication,
                                 timeouts,
+                                storage,
                                 cloud,
                                 endpoints);
     }
@@ -151,6 +173,7 @@ public record AetherConfig(ClusterConfig cluster,
                                 backup,
                                 dhtReplication,
                                 timeouts,
+                                storage,
                                 some(cloud),
                                 endpoints);
     }
@@ -196,6 +219,7 @@ public record AetherConfig(ClusterConfig cluster,
         private TimeoutsConfig timeoutsConfig;
         private Integer coreMax;
         private CloudConfig cloudConfig;
+        private Map<String, StorageConfig> storageConfig;
         private Map<String, EndpointConfig> endpointsConfig;
 
         @SuppressWarnings("JBCT-NAM-01")
@@ -284,6 +308,11 @@ public record AetherConfig(ClusterConfig cluster,
             return this;
         }
 
+        public Builder storage(Map<String, StorageConfig> storageConfig) {
+            this.storageConfig = storageConfig;
+            return this;
+        }
+
         public Builder endpoints(Map<String, EndpointConfig> endpointsConfig) {
             this.endpointsConfig = endpointsConfig;
             return this;
@@ -313,11 +342,15 @@ public record AetherConfig(ClusterConfig cluster,
                                                    finalBackup,
                                                    finalDhtReplication,
                                                    finalTimeouts)
-                                     .unwrap();
+            .unwrap();
+            var finalStorage = storageFor();
+            var withStorage = finalStorage.isEmpty()
+                              ? config
+                              : config.withStorage(finalStorage);
             var finalEndpoints = endpointsFor();
             var withEp = finalEndpoints.isEmpty()
-                         ? config
-                         : config.withEndpoints(finalEndpoints);
+                         ? withStorage
+                         : withStorage.withEndpoints(finalEndpoints);
             return option(cloudConfig).fold(() -> withEp, withEp::withCloud);
         }
 
@@ -379,6 +412,10 @@ public record AetherConfig(ClusterConfig cluster,
 
         private TimeoutsConfig timeoutsFor() {
             return option(timeoutsConfig).or(TimeoutsConfig.timeoutsConfig());
+        }
+
+        private Map<String, StorageConfig> storageFor() {
+            return option(storageConfig).or(Map.of());
         }
 
         private Map<String, EndpointConfig> endpointsFor() {

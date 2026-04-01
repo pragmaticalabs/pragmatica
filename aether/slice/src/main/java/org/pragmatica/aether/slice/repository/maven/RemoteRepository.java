@@ -4,6 +4,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -13,6 +14,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -62,7 +64,7 @@ public interface RemoteRepository extends Repository {
                                                      Path localRepo,
                                                      Duration httpTimeout) {
         var cachedPath = localPath(artifact, localRepo);
-        if (Files.exists(cachedPath)) {
+        if ( Files.exists(cachedPath)) {
             log.debug("Cache hit for {} at {}", artifact.asString(), cachedPath);
             return toLocation(artifact, cachedPath);
         }
@@ -74,9 +76,7 @@ public interface RemoteRepository extends Repository {
                                                       Option<MavenSettingsCredentials.Credentials> credentials,
                                                       Path targetPath,
                                                       Duration httpTimeout) {
-        var httpOps = JdkHttpOperations.jdkHttpOperations(httpTimeout,
-                                                          java.net.http.HttpClient.Redirect.NORMAL,
-                                                          Option.none());
+        var httpOps = JdkHttpOperations.jdkHttpOperations(httpTimeout, HttpClient.Redirect.NORMAL, Option.none());
         var artifactPath = remotePath(artifact);
         var jarUrl = baseUrl + artifactPath;
         var sha1Url = jarUrl + ".sha1";
@@ -96,17 +96,14 @@ public interface RemoteRepository extends Repository {
                                                Artifact artifact,
                                                Duration httpTimeout) {
         var jarRequest = buildRequest(jarUrl, credentials, httpTimeout);
-        return httpOps.sendBytes(jarRequest)
-                      .flatMap(result -> handleJarResponse(result, jarUrl, artifact));
+        return httpOps.sendBytes(jarRequest).flatMap(result -> handleJarResponse(result, jarUrl, artifact));
     }
 
-    private static Promise<byte[]> handleJarResponse(org.pragmatica.http.HttpResult<byte[]> result,
+    private static Promise<byte[]> handleJarResponse(HttpResult<byte[]> result,
                                                      String jarUrl,
                                                      Artifact artifact) {
-        if (result.statusCode() != 200) {
-            return new RemoteRepositoryError.DownloadFailed(jarUrl,
-                                                            new RemoteDownloadException(jarUrl, result.statusCode())).promise();
-        }
+        if ( result.statusCode() != 200) {
+        return new RemoteRepositoryError.DownloadFailed(jarUrl, new RemoteDownloadException(jarUrl, result.statusCode())).promise();}
         var jarBytes = result.body();
         log.info("Downloaded {} ({} bytes) from {}", artifact.asString(), jarBytes.length, jarUrl);
         return Promise.success(jarBytes);
@@ -120,18 +117,16 @@ public interface RemoteRepository extends Repository {
                                                     Path targetPath,
                                                     Duration httpTimeout) {
         var sha1Request = buildRequest(sha1Url, credentials, httpTimeout);
-        return httpOps.sendString(sha1Request)
-                      .flatMap(result -> handleSha1Response(result, jarBytes, artifact))
-                      .flatMap(_ -> cacheAndReturn(targetPath, jarBytes, artifact));
+        return httpOps.sendString(sha1Request).flatMap(result -> handleSha1Response(result, jarBytes, artifact))
+                                 .flatMap(_ -> cacheAndReturn(targetPath, jarBytes, artifact));
     }
 
     @SuppressWarnings("JBCT-SEQ-01")
-    private static Promise<byte[]> handleSha1Response(org.pragmatica.http.HttpResult<String> result,
+    private static Promise<byte[]> handleSha1Response(HttpResult<String> result,
                                                       byte[] jarBytes,
                                                       Artifact artifact) {
-        if (result.statusCode() == 200) {
-            return verifySha1Checksum(result.body(), jarBytes, artifact);
-        }
+        if ( result.statusCode() == 200) {
+        return verifySha1Checksum(result.body(), jarBytes, artifact);}
         log.debug("No SHA-1 checksum available for {} ({}), skipping verification",
                   artifact.asString(),
                   result.statusCode());
@@ -140,21 +135,18 @@ public interface RemoteRepository extends Repository {
 
     @SuppressWarnings("JBCT-SEQ-01")
     private static Promise<byte[]> verifySha1Checksum(String sha1Body, byte[] jarBytes, Artifact artifact) {
-        var expectedSha1 = sha1Body.trim()
-                                   .split("\\s") [0];
-        return Promise.lift(cause -> new RemoteRepositoryError.DownloadFailed(artifact.asString(),
-                                                                              cause),
+        var expectedSha1 = sha1Body.trim().split("\\s") [0];
+        return Promise.lift(cause -> new RemoteRepositoryError.DownloadFailed(artifact.asString(), cause),
                             () -> computeSha1(jarBytes))
-                      .flatMap(actualSha1 -> matchChecksum(expectedSha1, actualSha1, jarBytes, artifact));
+        .flatMap(actualSha1 -> matchChecksum(expectedSha1, actualSha1, jarBytes, artifact));
     }
 
     private static Promise<byte[]> matchChecksum(String expected, String actual, byte[] jarBytes, Artifact artifact) {
-        if (!expected.equalsIgnoreCase(actual)) {
-            return new RemoteRepositoryError.DownloadFailed(artifact.asString(),
-                                                            new ChecksumMismatchException(artifact.asString(),
-                                                                                          expected,
-                                                                                          actual)).promise();
-        }
+        if ( !expected.equalsIgnoreCase(actual)) {
+        return new RemoteRepositoryError.DownloadFailed(artifact.asString(),
+                                                        new ChecksumMismatchException(artifact.asString(),
+                                                                                      expected,
+                                                                                      actual)).promise();}
         log.debug("SHA-1 verified for {}: {}", artifact.asString(), actual);
         return Promise.success(jarBytes);
     }
@@ -173,10 +165,9 @@ public interface RemoteRepository extends Repository {
     private static HttpRequest buildRequest(String url,
                                             Option<MavenSettingsCredentials.Credentials> credentials,
                                             Duration httpTimeout) {
-        var builder = HttpRequest.newBuilder()
-                                 .uri(URI.create(url))
-                                 .GET()
-                                 .timeout(httpTimeout);
+        var builder = HttpRequest.newBuilder().uri(URI.create(url))
+                                            .GET()
+                                            .timeout(httpTimeout);
         credentials.onPresent(creds -> builder.header("Authorization", creds.toBasicAuthHeader()));
         return builder.build();
     }
@@ -185,19 +176,24 @@ public interface RemoteRepository extends Repository {
         var digest = MessageDigest.getInstance("SHA-1");
         var hash = digest.digest(data);
         var sb = new StringBuilder();
-        for (byte b : hash) {
-            sb.append(String.format("%02x", b));
-        }
+        for ( byte b : hash) {
+        sb.append(String.format("%02x", b));}
         return sb.toString();
     }
 
     private static void cacheArtifact(Path targetPath, byte[] content) throws IOException {
         Files.createDirectories(targetPath.getParent());
         var tempFile = Files.createTempFile(targetPath.getParent(), ".download-", ".tmp");
-        try{
+        try {
             Files.write(tempFile, content);
             Files.move(tempFile, targetPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (Exception e) {
+        }
+
+
+
+
+
+        catch (Exception e) {
             Files.deleteIfExists(tempFile);
             throw e;
         }
@@ -205,31 +201,24 @@ public interface RemoteRepository extends Repository {
 
     private static Path localPath(Artifact artifact, Path localRepo) {
         var version = artifact.version();
-        var artifactId = artifact.artifactId()
-                                 .id();
-        return localRepo.resolve(artifact.groupId()
-                                         .id()
-                                         .replace('.', '/'))
-                        .resolve(artifactId)
-                        .resolve(version.withQualifier())
-                        .resolve(artifactId + "-" + version.withQualifier() + ".jar");
+        var artifactId = artifact.artifactId().id();
+        return localRepo.resolve(artifact.groupId().id()
+                                                 .replace('.', '/')).resolve(artifactId)
+                                .resolve(version.withQualifier())
+                                .resolve(artifactId + "-" + version.withQualifier() + ".jar");
     }
 
     private static String remotePath(Artifact artifact) {
         var version = artifact.version();
-        var artifactId = artifact.artifactId()
-                                 .id();
-        return artifact.groupId()
-                       .id()
-                       .replace('.', '/') + "/" + artifactId + "/" + version.withQualifier() + "/" + artifactId + "-" + version.withQualifier()
-               + ".jar";
+        var artifactId = artifact.artifactId().id();
+        return artifact.groupId().id()
+                               .replace('.', '/') + "/" + artifactId + "/" + version.withQualifier() + "/" + artifactId + "-" + version.withQualifier() + ".jar";
     }
 
     private static Promise<Location> toLocation(Artifact artifact, Path path) {
         return Promise.lift(cause -> LOCATION_ERROR.apply(artifact.asString() + ": " + cause.getMessage()),
-                            () -> path.toUri()
-                                      .toURL())
-                      .flatMap(url -> location(artifact, url).async());
+                            () -> path.toUri().toURL())
+        .flatMap(url -> location(artifact, url).async());
     }
 
     Fn1<Cause, String> LOCATION_ERROR = Causes.forOneValue("Failed to create location for artifact %s");
@@ -237,14 +226,11 @@ public interface RemoteRepository extends Repository {
     /// Errors specific to remote repository operations.
     sealed interface RemoteRepositoryError extends Cause {
         record DownloadFailed(String url, Throwable cause) implements RemoteRepositoryError {
-            @Override
-            public String message() {
-                if (cause instanceof RemoteDownloadException rde) {
-                    return "Download failed: HTTP " + rde.statusCode() + " from " + rde.url();
-                }
-                if (cause instanceof ChecksumMismatchException cme) {
-                    return "Checksum mismatch for " + cme.artifact() + ": expected " + cme.expected() + ", got " + cme.actual();
-                }
+            @Override public String message() {
+                if ( cause instanceof RemoteDownloadException rde) {
+                return "Download failed: HTTP " + rde.statusCode() + " from " + rde.url();}
+                if ( cause instanceof ChecksumMismatchException cme) {
+                return "Checksum mismatch for " + cme.artifact() + ": expected " + cme.expected() + ", got " + cme.actual();}
                 return "Download failed from " + url + ": " + cause.getMessage();
             }
         }

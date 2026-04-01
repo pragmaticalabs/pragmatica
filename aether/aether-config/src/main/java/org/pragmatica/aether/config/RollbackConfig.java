@@ -22,10 +22,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param triggerOnAllInstancesFailed Whether to trigger rollback when all instances fail
 /// @param cooldown Minimum time between rollbacks for the same artifact
 /// @param maxRollbacks Maximum consecutive rollbacks before requiring human intervention
-public record RollbackConfig(boolean enabled,
-                             boolean triggerOnAllInstancesFailed,
-                             TimeSpan cooldown,
-                             int maxRollbacks) {
+public record RollbackConfig( boolean enabled,
+                              boolean triggerOnAllInstancesFailed,
+                              TimeSpan cooldown,
+                              int maxRollbacks) {
     /// Factory method following JBCT naming convention.
     public static Result<RollbackConfig> rollbackConfig(boolean enabled,
                                                         boolean triggerOnAllInstancesFailed,

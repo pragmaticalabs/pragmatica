@@ -8,6 +8,7 @@ import org.pragmatica.cloud.gcp.api.Instance;
 import org.pragmatica.cloud.gcp.api.SetLabelsRequest;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.concurrent.StoppableThread;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -42,7 +43,7 @@ public final class GcpDiscoveryProvider implements DiscoveryProvider {
     private final String clusterName;
     private final Option<String> selfInstanceName;
     private final long pollIntervalMs;
-    private final AtomicReference<Thread> watchThread = new AtomicReference<>();
+    private final StoppableThread watchThread = StoppableThread.stoppableThread();
 
     private GcpDiscoveryProvider(GcpClient client,
                                  String clusterName,
@@ -58,44 +59,34 @@ public final class GcpDiscoveryProvider implements DiscoveryProvider {
     public static GcpDiscoveryProvider gcpDiscoveryProvider(GcpClient client,
                                                             GcpEnvironmentConfig config) {
         return new GcpDiscoveryProvider(client,
-                                        config.clusterName()
-                                              .or("default"),
+                                        config.clusterName().or("default"),
                                         config.selfInstanceName(),
                                         config.discoveryPollIntervalMs());
     }
 
-    @Override
-    public Promise<List<PeerInfo>> discoverPeers() {
-        return client.listInstances(clusterLabelFilter())
-                     .map(GcpDiscoveryProvider::toPeerInfoList)
-                     .mapError(GcpDiscoveryProvider::toDiscoveryError);
+    @Override public Promise<List<PeerInfo>> discoverPeers() {
+        return client.listInstances(clusterLabelFilter()).map(GcpDiscoveryProvider::toPeerInfoList)
+                                   .mapError(GcpDiscoveryProvider::toDiscoveryError);
     }
 
-    @Override
-    public Promise<Unit> watchPeers(Consumer<List<PeerInfo>> onChange) {
-        var thread = Thread.ofVirtual()
-                           .name("gcp-discovery-watcher")
-                           .start(() -> pollLoop(onChange));
+    @Override public Promise<Unit> watchPeers(Consumer<List<PeerInfo>> onChange) {
+        var thread = Thread.ofVirtual().name("gcp-discovery-watcher")
+                                     .start(() -> pollLoop(onChange));
         watchThread.set(thread);
         return Promise.success(unit());
     }
 
-    @Override
-    public Promise<Unit> stopWatching() {
+    @Override public Promise<Unit> stopWatching() {
         interruptWatchThread();
         return Promise.success(unit());
     }
 
-    @Override
-    public Promise<Unit> registerSelf(PeerInfo self) {
-        return selfInstanceName.map(name -> applyRegistrationLabels(name, self))
-                               .or(NO_SELF_INSTANCE.promise());
+    @Override public Promise<Unit> registerSelf(PeerInfo self) {
+        return selfInstanceName.map(name -> applyRegistrationLabels(name, self)).or(NO_SELF_INSTANCE.promise());
     }
 
-    @Override
-    public Promise<Unit> deregisterSelf() {
-        return selfInstanceName.map(this::clearLabels)
-                               .or(NO_SELF_INSTANCE.promise());
+    @Override public Promise<Unit> deregisterSelf() {
+        return selfInstanceName.map(this::clearLabels).or(NO_SELF_INSTANCE.promise());
     }
 
     // --- Leaf: build label filter for cluster ---
@@ -106,24 +97,17 @@ public final class GcpDiscoveryProvider implements DiscoveryProvider {
     // --- Leaf: apply registration labels to self instance ---
     private Promise<Unit> applyRegistrationLabels(String instanceName, PeerInfo self) {
         return client.getInstance(instanceName)
-                     .flatMap(instance -> setLabelsOnSelf(instanceName,
-                                                          instance,
-                                                          buildSelfLabels(self)));
+        .flatMap(instance -> setLabelsOnSelf(instanceName, instance, buildSelfLabels(self)));
     }
 
     // --- Leaf: set labels on self instance ---
     private Promise<Unit> setLabelsOnSelf(String instanceName, Instance instance, Map<String, String> labels) {
-        return client.setLabels(instanceName,
-                                new SetLabelsRequest(labels, ""))
-                     .mapToUnit();
+        return client.setLabels(instanceName, new SetLabelsRequest(labels, "")).mapToUnit();
     }
 
     // --- Leaf: clear labels on self instance ---
     private Promise<Unit> clearLabels(String instanceName) {
-        return client.getInstance(instanceName)
-                     .flatMap(instance -> setLabelsOnSelf(instanceName,
-                                                          instance,
-                                                          Map.of()));
+        return client.getInstance(instanceName).flatMap(instance -> setLabelsOnSelf(instanceName, instance, Map.of()));
     }
 
     // --- Leaf: build label map for self-registration ---
@@ -133,15 +117,13 @@ public final class GcpDiscoveryProvider implements DiscoveryProvider {
                       LABEL_PORT,
                       String.valueOf(self.port()),
                       LABEL_ROLE,
-                      self.metadata()
-                          .getOrDefault("role", DEFAULT_ROLE));
+                      self.metadata().getOrDefault("role", DEFAULT_ROLE));
     }
 
     // --- Leaf: map instance list to peer info list ---
     private static List<PeerInfo> toPeerInfoList(List<Instance> instances) {
-        return instances.stream()
-                        .map(GcpDiscoveryProvider::instanceToPeerInfo)
-                        .toList();
+        return instances.stream().map(GcpDiscoveryProvider::instanceToPeerInfo)
+                               .toList();
     }
 
     // --- Leaf: extract PeerInfo from an instance ---
@@ -162,8 +144,7 @@ public final class GcpDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: get first IP from network interface list ---
     private static String firstIp(List<Instance.NetworkInterface> interfaces) {
-        return interfaces.getFirst()
-                         .networkIP();
+        return interfaces.getFirst().networkIP();
     }
 
     // --- Leaf: extract port from aether-port label, default 9100 ---
@@ -175,8 +156,7 @@ public final class GcpDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: parse port string to int, falling back to default ---
     private static int parsePortOrDefault(String portStr) {
-        return org.pragmatica.lang.parse.Number.parseInt(portStr)
-                  .or(DEFAULT_PORT);
+        return org.pragmatica.lang.parse.Number.parseInt(portStr).or(DEFAULT_PORT);
     }
 
     // --- Leaf: extract metadata from instance labels ---
@@ -187,8 +167,7 @@ public final class GcpDiscoveryProvider implements DiscoveryProvider {
     // --- Leaf: poll loop for watching peers ---
     private void pollLoop(Consumer<List<PeerInfo>> onChange) {
         var previousPeers = new AtomicReference<Set<String>>(Set.of());
-        while (!Thread.currentThread()
-                      .isInterrupted()) {
+        while ( !Thread.currentThread().isInterrupted()) {
             pollOnce(onChange, previousPeers);
             sleepOrExit();
         }
@@ -207,7 +186,7 @@ public final class GcpDiscoveryProvider implements DiscoveryProvider {
                                         Consumer<List<PeerInfo>> onChange,
                                         AtomicReference<Set<String>> previousPeers) {
         var currentKeys = toPeerKeys(peers);
-        if (!currentKeys.equals(previousPeers.get())) {
+        if ( !currentKeys.equals(previousPeers.get())) {
             previousPeers.set(currentKeys);
             onChange.accept(peers);
         }
@@ -215,9 +194,8 @@ public final class GcpDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: convert peer list to set of host:port keys for comparison ---
     private static Set<String> toPeerKeys(List<PeerInfo> peers) {
-        return peers.stream()
-                    .map(GcpDiscoveryProvider::peerKey)
-                    .collect(Collectors.toSet());
+        return peers.stream().map(GcpDiscoveryProvider::peerKey)
+                           .collect(Collectors.toSet());
     }
 
     // --- Leaf: format peer key for comparison ---
@@ -227,20 +205,21 @@ public final class GcpDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: sleep for poll interval, exit on interrupt ---
     private void sleepOrExit() {
-        try{
+        try {
             Thread.sleep(pollIntervalMs);
-        } catch (InterruptedException e) {
-            Thread.currentThread()
-                  .interrupt();
+        }
+
+
+
+
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
     // --- Leaf: interrupt and clear the watch thread ---
     private void interruptWatchThread() {
-        var thread = watchThread.getAndSet(null);
-        if (thread != null) {
-            thread.interrupt();
-        }
+        watchThread.stop();
     }
 
     // --- Leaf: map cause to discovery error ---

@@ -18,10 +18,8 @@ public sealed interface InstanceType {
         }
     }
 
-    InstanceType ON_DEMAND = OnDemand.onDemand()
-                                    .unwrap();
-    InstanceType SPOT = Spot.spot()
-                           .unwrap();
+    InstanceType ON_DEMAND = OnDemand.onDemand().unwrap();
+    InstanceType SPOT = Spot.spot().unwrap();
 
     record unused() implements InstanceType {
         public static Result<unused> unused() {

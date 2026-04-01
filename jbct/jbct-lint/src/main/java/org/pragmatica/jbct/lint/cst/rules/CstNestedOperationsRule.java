@@ -50,7 +50,7 @@ public class CstNestedOperationsRule implements CstLintRule {
             return Stream.empty();
         }
         // Find lambdas with nested operations
-        return findAll(root, RuleId.Lambda.class).stream()
+        return findAllLambdas(root).stream()
                       .filter(lambda -> hasNestedOperations(lambda, source))
                       .map(lambda -> createDiagnostic(lambda, source, ctx));
     }

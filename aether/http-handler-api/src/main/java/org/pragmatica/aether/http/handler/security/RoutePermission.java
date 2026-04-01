@@ -1,13 +1,5 @@
 package org.pragmatica.aether.http.handler.security;
-/// Declares the minimum role required to access a route.
-///
-/// Used alongside {@link SecurityPolicy} to add authorization
-/// checks after authentication succeeds. While {@link SecurityPolicy}
-/// determines HOW a request is authenticated, {@link RoutePermission}
-/// determines WHAT level of access is required.
-///
-/// @param minimumRole the minimum {@link AuthorizationRole} needed
-public record RoutePermission(AuthorizationRole minimumRole) {
+public record RoutePermission( AuthorizationRole minimumRole) {
     /// Only ADMIN role can access.
     public static final RoutePermission ADMIN_ONLY = new RoutePermission(AuthorizationRole.ADMIN);
 

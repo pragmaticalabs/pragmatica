@@ -16,14 +16,13 @@ import org.pragmatica.serialization.Codec;
 /// @param currentInstances  current instance count
 /// @param requestedInstances desired instance count
 /// @param evidence          scaling evidence from sliding window
-@Codec
-public record CommunityScalingRequest(String communityId,
-                                      NodeId governorId,
-                                      Artifact artifact,
-                                      String direction,
-                                      int currentInstances,
-                                      int requestedInstances,
-                                      ScalingEvidence evidence) implements Message.Wired {
+@Codec public record CommunityScalingRequest( String communityId,
+                                              NodeId governorId,
+                                              Artifact artifact,
+                                              String direction,
+                                              int currentInstances,
+                                              int requestedInstances,
+                                              ScalingEvidence evidence) implements Message.Wired {
     /// Factory following JBCT naming convention.
     public static CommunityScalingRequest communityScalingRequest(String communityId,
                                                                   NodeId governorId,

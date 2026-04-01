@@ -15,16 +15,10 @@
  */
 
 package org.pragmatica.aether.config;
-/// Backup configuration for Aether cluster state persistence.
-///
-/// @param enabled  whether backup is enabled
-/// @param interval backup interval like "5m" (parsed elsewhere)
-/// @param path     backup directory path
-/// @param remote   optional git remote URL (empty = no remote)
-public record BackupConfig(boolean enabled,
-                           String interval,
-                           String path,
-                           String remote) {
+public record BackupConfig( boolean enabled,
+                            String interval,
+                            String path,
+                            String remote) {
     /// Create a disabled backup configuration with defaults.
     public static BackupConfig backupConfig() {
         return new BackupConfig(false, "5m", "", "");
@@ -37,11 +31,7 @@ public record BackupConfig(boolean enabled,
 
     /// Create a backup configuration with environment-aware default path.
     public static BackupConfig backupConfig(Environment env) {
-        var defaultPath = switch (env) {
-            case LOCAL -> "./aether-backups";
-            case DOCKER -> "/data/backups";
-            case KUBERNETES -> "/var/aether/backups";
-        };
+        var defaultPath = switch (env) {case LOCAL -> "./aether-backups";case DOCKER -> "/data/backups";case KUBERNETES -> "/var/aether/backups";};
         return new BackupConfig(false, "5m", defaultPath, "");
     }
 }

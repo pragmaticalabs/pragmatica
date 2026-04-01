@@ -43,19 +43,18 @@ public final class SpiResourceProvider implements ResourceProvider {
         this.consumers = new ConcurrentHashMap<>();
         this.runtimeExtensions = new ConcurrentHashMap<>();
         Map<Class<?>, List<ResourceFactory<?, ?>>> factoryMap = new ConcurrentHashMap<>();
-        ServiceLoader.load(ResourceFactory.class)
-                     .stream()
-                     .map(ServiceLoader.Provider::get)
-                     .forEach(factory -> factoryMap.computeIfAbsent(factory.resourceType(),
-                                                                    _ -> new ArrayList<>())
-                                                   .add(factory));
+        ServiceLoader.load(ResourceFactory.class).stream()
+                          .map(ServiceLoader.Provider::get)
+                          .forEach(factory -> factoryMap.computeIfAbsent(factory.resourceType(),
+                                                                         _ -> new ArrayList<>())
+        .add(factory));
         // Sort each list by priority descending (highest first) and make immutable
         factoryMap.replaceAll((_, list) -> sortByPriorityDescending(list));
         this.factories = Map.copyOf(factoryMap);
     }
 
     private static List<ResourceFactory<?, ?>> sortByPriorityDescending(List<ResourceFactory<?, ?>> list) {
-        list.sort(Comparator.<ResourceFactory<?, ?>> comparingInt(ResourceFactory::priority)
+        list.sort(Comparator.<ResourceFactory<?, ?>>comparingInt(ResourceFactory::priority)
                             .reversed());
         return List.copyOf(list);
     }
@@ -68,9 +67,8 @@ public final class SpiResourceProvider implements ResourceProvider {
     }
 
     private static Result<?> loadFromConfigService(String section, Class<?> configClass) {
-        return ConfigService.instance()
-                            .toResult(ResourceProvisioningError.ConfigServiceNotAvailable.INSTANCE)
-                            .flatMap(svc -> svc.config(section, configClass));
+        return ConfigService.instance().toResult(ResourceProvisioningError.ConfigServiceNotAvailable.INSTANCE)
+                                     .flatMap(svc -> svc.config(section, configClass));
     }
 
     /// Create an SpiResourceProvider with a custom config loader.
@@ -112,18 +110,14 @@ public final class SpiResourceProvider implements ResourceProvider {
         return (Promise<T>) promiseCache.computeIfAbsent(key, k -> createResource(resourceType, configSection));
     }
 
-    @Override
-    public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
+    @Override public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
         var key = new CacheKey(resourceType, configSection);
         context.extension(String.class)
-               .onSuccess(sliceId -> consumers.computeIfAbsent(key,
-                                                               _ -> ConcurrentHashMap.newKeySet())
-                                              .add(sliceId));
+        .onSuccess(sliceId -> consumers.computeIfAbsent(key, _ -> ConcurrentHashMap.newKeySet()).add(sliceId));
         return createResourceWithContext(resourceType, configSection, context);
     }
 
-    @Override
-    public boolean hasFactory(Class<?> resourceType) {
+    @Override public boolean hasFactory(Class<?> resourceType) {
         return factories.containsKey(resourceType);
     }
 
@@ -131,30 +125,27 @@ public final class SpiResourceProvider implements ResourceProvider {
     @SuppressWarnings("unchecked")
     public Promise<Unit> releaseAll(String sliceId) {
         var closeFutures = new ArrayList<Promise<Unit>>();
-        var iterator = consumers.entrySet()
-                                .iterator();
-        while (iterator.hasNext()) {
+        var iterator = consumers.entrySet().iterator();
+        while ( iterator.hasNext()) {
             var entry = iterator.next();
             var key = entry.getKey();
             var consumerSet = entry.getValue();
             consumerSet.remove(sliceId);
-            if (consumerSet.isEmpty()) {
+            if ( consumerSet.isEmpty()) {
                 iterator.remove();
                 var cached = promiseCache.remove(key);
-                if (cached != null) {
+                if ( cached != null) {
                     var factoryList = factories.get(key.resourceType());
-                    if (factoryList != null && !factoryList.isEmpty()) {
+                    if ( factoryList != null && !factoryList.isEmpty()) {
                         var factory = (ResourceFactory<Object, ?>) factoryList.getFirst();
                         closeFutures.add(cached.flatMap(resource -> factory.close(resource)));
                     }
                 }
             }
         }
-        if (closeFutures.isEmpty()) {
-            return Promise.unitPromise();
-        }
-        return Promise.allOf(closeFutures)
-                      .map(_ -> Unit.unit());
+        if ( closeFutures.isEmpty()) {
+        return Promise.unitPromise();}
+        return Promise.allOf(closeFutures).map(_ -> Unit.unit());
     }
 
     @SuppressWarnings("unchecked")
@@ -181,9 +172,8 @@ public final class SpiResourceProvider implements ResourceProvider {
 
     private ProvisioningContext enrichWithRuntimeExtensions(ProvisioningContext context) {
         var enriched = context;
-        for (var entry : runtimeExtensions.entrySet()) {
-            @SuppressWarnings("unchecked")
-            var type = (Class<Object>) entry.getKey();
+        for ( var entry : runtimeExtensions.entrySet()) {
+            @SuppressWarnings("unchecked") var type = (Class<Object>) entry.getKey();
             enriched = enriched.withExtension(type, entry.getValue());
         }
         return enriched;
@@ -193,8 +183,7 @@ public final class SpiResourceProvider implements ResourceProvider {
                                                Class<T> resourceType,
                                                String configSection) {
         return loadConfig(configSection,
-                          factoryList.getFirst()
-                                     .configType())
+                          factoryList.getFirst().configType())
         .flatMap(config -> selectAndInvoke(factoryList, config, resourceType, configSection));
     }
 
@@ -203,8 +192,7 @@ public final class SpiResourceProvider implements ResourceProvider {
                                                           String configSection,
                                                           ProvisioningContext context) {
         return loadConfig(configSection,
-                          factoryList.getFirst()
-                                     .configType())
+                          factoryList.getFirst().configType())
         .flatMap(config -> selectAndInvokeWithContext(factoryList, config, resourceType, configSection, context));
     }
 
@@ -213,14 +201,13 @@ public final class SpiResourceProvider implements ResourceProvider {
                                               C config,
                                               Class<T> resourceType,
                                               String configSection) {
-        for (var factory : factoryList) {
+        for ( var factory : factoryList) {
             var typed = (ResourceFactory<T, C>) factory;
-            if (typed.supports(config)) {
-                return typed.provision(config)
-                            .mapError(cause -> new SliceLoadingFailure.Fatal.ResourceCreationFailed(resourceType.getSimpleName(),
-                                                                                                    configSection,
-                                                                                                    cause));
-            }
+            if ( typed.supports(config)) {
+            return typed.provision(config)
+            .mapError(cause -> new SliceLoadingFailure.Fatal.ResourceCreationFailed(resourceType.getSimpleName(),
+                                                                                    configSection,
+                                                                                    cause));}
         }
         return new SliceLoadingFailure.Fatal.ResourceFactoryNotFound(resourceType.getName()).promise();
     }
@@ -231,26 +218,25 @@ public final class SpiResourceProvider implements ResourceProvider {
                                                          Class<T> resourceType,
                                                          String configSection,
                                                          ProvisioningContext context) {
-        for (var factory : factoryList) {
+        for ( var factory : factoryList) {
             var typed = (ResourceFactory<T, C>) factory;
-            if (typed.supports(config)) {
-                return typed.provision(config, context)
-                            .mapError(cause -> new SliceLoadingFailure.Fatal.ResourceCreationFailed(resourceType.getSimpleName(),
-                                                                                                    configSection,
-                                                                                                    cause));
-            }
+            if ( typed.supports(config)) {
+            return typed.provision(config, context)
+            .mapError(cause -> new SliceLoadingFailure.Fatal.ResourceCreationFailed(resourceType.getSimpleName(),
+                                                                                    configSection,
+                                                                                    cause));}
         }
         return new SliceLoadingFailure.Fatal.ResourceFactoryNotFound(resourceType.getName()).promise();
     }
 
     @SuppressWarnings("unchecked")
     private <C> Promise<C> loadConfig(String section, Class<C> configType) {
-        return configLoader.apply(section, configType)
-                           .mapError(cause -> new SliceLoadingFailure.Fatal.ConfigurationFailed(section, cause))
-                           .map(obj -> (C) obj)
-                           .async();
+        return configLoader.apply(section, configType).mapError(cause -> new SliceLoadingFailure.Fatal.ConfigurationFailed(section,
+                                                                                                                           cause))
+                                 .map(obj -> (C) obj)
+                                 .async();
     }
 
     /// Cache key for (resourceType, configSection) pairs.
-    private record CacheKey(Class<?> resourceType, String configSection) {}
+    private record CacheKey(Class<?> resourceType, String configSection){}
 }

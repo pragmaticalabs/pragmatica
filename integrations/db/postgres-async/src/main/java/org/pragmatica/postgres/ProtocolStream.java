@@ -23,6 +23,7 @@ import org.pragmatica.postgres.message.frontend.Bind;
 import org.pragmatica.postgres.message.frontend.Describe;
 import org.pragmatica.postgres.message.frontend.Query;
 import org.pragmatica.postgres.message.frontend.StartupMessage;
+import org.pragmatica.postgres.net.NotificationHandler;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -48,6 +49,8 @@ public interface ProtocolStream {
     Promise<Integer> send(Bind bind, Consumer<DataRow> onRow);
 
     Runnable subscribe(String channel, Consumer<String> onNotification);
+
+    Runnable subscribeWithDetails(String channel, NotificationHandler onNotification);
 
     boolean isConnected();
 

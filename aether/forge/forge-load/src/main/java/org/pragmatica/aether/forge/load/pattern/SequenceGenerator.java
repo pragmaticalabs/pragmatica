@@ -36,22 +36,18 @@ public final class SequenceGenerator implements PatternGenerator {
     public static Result<PatternGenerator> sequenceGenerator(String seqSpec) {
         var trimmed = option(seqSpec).map(String::trim)
                             .filter(s -> !s.isBlank());
-        return trimmed.map(SequenceGenerator::toLongAndCreate)
-                      .or(success(sequenceGenerator(1)));
+        return trimmed.map(SequenceGenerator::toLongAndCreate).or(success(sequenceGenerator(1)));
     }
 
     private static Result<PatternGenerator> toLongAndCreate(String s) {
-        return Number.parseLong(s)
-                     .map(SequenceGenerator::sequenceGenerator);
+        return Number.parseLong(s).map(SequenceGenerator::sequenceGenerator);
     }
 
-    @Override
-    public String generate() {
+    @Override public String generate() {
         return String.valueOf(counter.getAndIncrement());
     }
 
-    @Override
-    public String pattern() {
+    @Override public String pattern() {
         return "${seq:" + start + "}";
     }
 

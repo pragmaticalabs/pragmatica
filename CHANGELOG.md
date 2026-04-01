@@ -4,7 +4,87 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.24.1] - Unreleased
+## [0.25.0] - Unreleased
+
+### Added
+- **Hierarchical Storage Engine (AHSE)** — Content-addressed block storage with tiered Memory + Disk hierarchy. Core library at `integrations/storage` (zero Aether deps), Aether adapter at `aether/aether-storage`. BlockId (SHA-256), MemoryTier (CAS-bounded), LocalDiskTier (sharded filesystem), StorageInstance (write-through + tier-waterfall reads), SingleFlightCache (read dedup), MetadataStore (in-memory + KV-Store backed), SnapshotManager (dual-trigger: mutation count + time interval, rolling pruning), StorageReadinessGate (startup sequencing with read/write barriers), per-instance TOML config (`[storage.*]` sections), ArtifactStore migration (chunks via StorageInstance), config-driven StorageFactory with node wiring, per-node REST API (`/api/storage`, `/api/storage/{name}`, `/api/storage/{name}/snapshot`), per-cluster REST API (`/api/cluster/storage`, `/api/cluster/storage/{name}`) with KV-Store status publishing, CLI commands (`aether storage list/status/snapshot`), 107 unit + integration tests
+- **Streaming Phase 1 runtime** — `StreamPublisherFactory` and `StreamAccessFactory` (ResourceFactory SPI), `StreamPublisherImpl` with partition-key routing or round-robin, `StreamAccessImpl` with cross-partition fetch and consensus cursor checkpointing, `StreamConsumerAdapter` for single-event and batch handlers, `StreamConfigParser` for blueprint `[streams.xxx]` TOML sections
+- **CDM stream integration** — stream creation from blueprint config during deployment, consumer subscription registration at slice activation via KV-Store, unsubscription on deactivation
+- **QUIC certificate rotation** — `CertificateRenewalScheduler` wired to node startup, triggers at 60% remaining validity, exponential retry backoff (5min→4h cap), server restart on same port with atomic SSL context swap
+- **HTTP server certificate rotation** — ManagementServer and AppHttpServer receive renewed bundles and restart with new TLS contexts (H1 + H3)
+- **Certificate expiry observability** — `GET /api/certificate` endpoint, `aether cert status` CLI command, expiry timestamp and renewal status
+- **QUIC per-stream backpressure queue** — bounded queue (100 per peer per stream type) replaces silent drop, drain on channel writable, queue depth metrics
+- **Declarative cluster management** — `aether-cluster.toml` config format with `[deployment]` + `[cluster]` sections, config parser with 14 validation rules, diff engine with field-to-action matrix, `aether cluster` CLI (bootstrap, apply, status, export, scale, upgrade, drain, destroy, list, use, remove), cluster registry (`~/.aether/clusters.toml`), cloud-init user-data template, KV-Store config storage with optimistic concurrency, 5 management API endpoints
+- **Gossip key rotation** — `RotatingGossipEncryptor` with VarHandle hot-swap, epoch-day versioned keys from `SelfSignedCertificateProvider`, KV-Store `GossipKeyRotationHandler` for cluster-wide key distribution, 24-hour dual-key overlap window
+- **TLS operator guide** — comprehensive documentation: auto-generated certs, manual cert files, rotation lifecycle, monitoring, gossip encryption, troubleshooting
+- **On-premises SSH bootstrap** — `SshBootstrapOrchestrator` with per-node Docker deployment, `DockerComposeGenerator` for single-host testing, `SystemdUnitTemplate` for JVM deployments, `RemoteCommandRunner` (ProcessBuilder SSH/SCP), `--compose-only` flag
+- **Notification hub example** — two-slice example exercising streaming + per-route security + Principal injection end-to-end
+- **PostgreSQL LISTEN/NOTIFY resource** — `PgNotificationSubscriber` with dedicated connection, multi-channel config (`[pg-notifications.xxx]`), `PgNotification(channel, payload, pid)`, annotation processor detection, comprehensive developer guide
+- **Dashboard observability** — depth registry config UI (inline edit, add/remove rules) + invocation requests tab (sortable metrics, slow requests, traces, filters)
+- **Integration test suite** — 14 suites, 56 Docker-based test scripts (smoke, stability, chaos, scaling, streaming, security, deployment, cluster-mgmt, resources, artifacts, database, observability, network, edge-cases)
+- **Installation binaries** — jlink custom JRE + shaded JAR bundles for node/cli/forge, multi-platform archives (linux-amd64, linux-arm64, darwin), platform-aware install.sh/upgrade.sh
+
+- **Streaming Phase 2** — Governor-push replication (fire-and-forget with watermark tracking), strong consistency (Rabia consensus produce path for total ordering), sealed segment pipeline (EvictionListener → SegmentSealer → StorageSegmentSink → SegmentReader), consumer read-preference (LEADER/NEAREST/FOLLOWER_ONLY), governor failover recovery (watermark-based replica catch-up), tier-aware retention (aggressive post-seal eviction)
+- **AHSE Phase 2** — RemoteTier (S3-backed StorageTier with SigV4 REST client), ContentStore (auto-chunking API with manifest blocks, compression integration), DemotionManager (4 eviction strategies: AGE/LFU/LRU/SIZE_PRESSURE, dormant/active lifecycle), StorageGarbageCollector (orphan collection with grace period, dormant/active), PromotionManager (frequency-based cold-to-hot promotion), write-behind policy (async slow-tier writes with bounded queue), cross-node prefetching (SWIM-piggybacked access hints)
+- **AHSE Phase 3** — LZ4/ZSTD compression pipeline, AES-256-GCM block encryption, StorageBackedPersistence (ContentStore-backed RabiaPersistence)
+- **S3 REST client** — SigV4-signed S3-compatible client in `integrations/cloud/aws/s3` (PutObject/GetObject/DeleteObject/HeadObject/ListObjectsV2, path-style MinIO support)
+- **Architectural compliance** — dormant/active lifecycle on all background workers, KV-Store persistence abstractions (WatermarkStore, ReplicaAssignmentStore, TombstoneStore), SegmentIndex rebuild from storage refs, control-plane delegation investigation updated
+- **Integration test metrics** — opt-in thread/heap/RSS collection before+after each test (`COLLECT_METRICS=true`)
+- **Integration test README** — comprehensive setup guide, architecture docs, test-writing examples
+- **Soak test exclusion** — `SKIP_SOAK=true` (default) in `run-all.sh` and `run-suite.sh` to skip long-running soak tests
+
+### Removed
+- **`-XX:+ZGenerational`** — removed from all JVM configurations (Java 25 makes generational ZGC the default)
+- **`-XX:+UseCompactObjectHeaders`** — removed from all JVM configurations (no measurable impact in benchmarks)
+
+### Changed
+- **java-peglib 0.2.1** — parser regenerated, all 35 lint rules updated for new CST shape (ordered-choice container wrapping)
+- **ConsumerConfig** — added `checkpointIntervalMs`, `maxRetries`, `deadLetterStream` fields (backward compatible)
+- **StreamConfig** — added `maxEventSizeBytes` field with enforcement in `StreamPartitionManager.publishLocal()`
+- **Nullable AtomicReference eliminated** — `CancellableTask` (VarHandle, 9 usages), `StoppableThread` (VarHandle, 4 usages), `AtomicHolder<T>` (VarHandle, 4 usages) in `core/` replace all `getAndSet(null)` patterns
+- **Docker image base** — switched from `eclipse-temurin:25-alpine` to `eclipse-temurin:25-noble` (glibc required by netty-quiche native library)
+- **SSH bootstrap** — Docker bridge network with container hostnames instead of `--network host`, env-var-based config (PEERS, CLUSTER_PORT, MANAGEMENT_PORT), `$HOME/aether` paths instead of `/opt/aether`
+- **Docker config** — `repositories = ["builtin"]` (DHT is fully distributed; `local` fallback removed)
+- **Integration test assertions** — cluster health checks use `/api/status` instead of `/health/ready` and `/api/nodes`
+- **CLI global output formatting** — `--format` (json/table/value/csv), `--field` (dot-notation extraction), `--quiet`, `--no-color` / `NO_COLOR` env var on all ~100 commands via picocli mixin
+- **CLI Jackson migration** — replaced hand-rolled JSON parsing with `JsonMapper` tree API; deleted `SimpleJsonReader`, `formatJson()`, `extractJsonString()` and duplicates
+- **CLI standardized exit codes** — `SUCCESS=0`, `ERROR=1`, `TIMEOUT=2`, `NOT_FOUND=3` across all commands
+- **CLI TLS support** — `--tls-skip-verify` / `-k` flag with trust-all SSL; scheme-aware URL resolution
+- **CLI shell completions** — `aether generate-completion` for bash/zsh/fish; auto-install in `install.sh`
+- **JsonMapper tree API** — `readTree()`, `extractField()`, `prettyPrint()` methods added to jackson integration module
+
+### Changed
+- **Cluster-wide `/api/slices`** — returns all slices across all nodes with per-node instance states, target counts, and version; old per-node behavior moved to `/api/node/slices`
+- **Per-node route endpoint** — `/api/routes` moved to `/api/node/routes` for naming consistency
+- **CLI `slices` command** — now shows cluster-wide view; added `node-slices`, `routes`, `node-routes` commands
+
+### Added
+- **Standalone passive load balancer** — `aether-lb.jar` shaded binary with `--peers`, `--http-port`, `--cluster-port` CLI args, joins cluster as PassiveNode, routes HTTP via binary protocol; includes Dockerfile
+- **Passive node KV-Store snapshot sync** — passive nodes (LB) receive full KV-Store state on cluster join via `KVSyncRequest`/`KVSyncResponse`; LB works regardless of when it starts relative to blueprint deployment
+- **Stream auto-creation on publish** — `POST /api/streams/{name}/publish` auto-creates stream with default config if it doesn't exist; follows Kafka `auto.create.topics.enable` pattern
+- **Stream creation endpoint** — `POST /api/streams` for explicit stream creation with configurable partition count
+
+### Changed
+- **java-peglib 0.2.0** — PEG parser generator bumped from 0.1.8, Java25Parser regenerated (-2,940 lines net)
+
+### Fixed
+- **CLI version** — was hardcoded at 0.19.2, now correctly shows 0.25.0
+- **`@CodecFor` annotation processor** — two-pass processing: register all types first, then generate codecs (fixes ordering issues); generates codecs for external records and enums
+- **Java 25 ambiguous method reference** — `ListenNotifyTest.subscribe()` lambda → method reference for stricter overload resolution
+- **Streaming API** — REST publish failed with "Stream not found" because streams were only created lazily by slice factories, not available via management API
+- **Stream publish payload** — changed from base64-only to raw UTF-8 string for simpler management API usage
+- **Stream memory allocation** — management API streams use 16MB default (was 1GB per stream, crashing containers)
+- **Stream memory cap** — `StreamPartitionManager` enforces 128MB global off-heap cap, rejects new streams when exceeded instead of OOM crash
+- **Idle stream reaper** — `reapIdleStreams()` destroys empty streams past retention age, freeing off-heap memory
+- **Integration test `api_post`/`app_post`** — bash brace expansion bug `"${2:-{}}"` appended extra `}` to all POST bodies
+- **Integration test suite** — API key auth (`aether-integration-test-key` default), correct url-shortener endpoints (`/api/v1/urls/`), stream payload format (`data` as string), stream info JSON parsing, concurrent deploy test, reduced streaming load duration (30s from 300s)
+- **Autoscaler noisy log** — scale-down rule logged at INFO every 5s even when blocked by min-instances guard; changed to DEBUG
+- **Java 25 TLS compatibility** — RSA self-signed certs for dev mode, BouncyCastle PEMParser for EC key loading (preserves named curve encoding for BoringSSL), explicit BC KeyFactory in `SelfSignedCertificateProvider`
+- **Schema migration lock failover** — new leader scans for MIGRATING schemas with expired locks and resets to PENDING
+- **Dashboard schema retry button** — FAILED migrations can be retried from dashboard UI
+- **Certificate rotation race condition** — SSL contexts updated before server stop, eliminating null-server window
+
+## [0.24.1] - 2026-03-25
 
 ### Added
 - **ClusterTopologyManager** — new node lifecycle manager with reconciliation state machine (FORMING → CONVERGED ↔ RECONCILING). Handles auto-heal, scale-up/down, quorum safety. Replaces fragile boolean flags in CDM with clean state transitions. Single action path for all node count changes

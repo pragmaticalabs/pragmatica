@@ -12,7 +12,7 @@ import java.util.stream.Collectors;
 @SuppressWarnings({"JBCT-UTIL-02", "JBCT-STY-04", "JBCT-RET-01"})
 public sealed interface FollowerHealthTracker permits ActiveFollowerHealthTracker {
     /// Record of last heartbeat from a follower.
-    record FollowerHealth(long lastHeartbeatMs, long lastDecisionSequence) {}
+    record FollowerHealth(long lastHeartbeatMs, long lastDecisionSequence){}
 
     /// Process an incoming heartbeat from a follower.
     void onHeartbeat(FollowerHeartbeat heartbeat);
@@ -40,30 +40,24 @@ final class ActiveFollowerHealthTracker implements FollowerHealthTracker {
         this.healthMap = healthMap;
     }
 
-    @Override
-    public void onHeartbeat(FollowerHeartbeat heartbeat) {
+    @Override public void onHeartbeat(FollowerHeartbeat heartbeat) {
         healthMap.put(heartbeat.nodeId(),
                       new FollowerHealth(heartbeat.timestampMs(), heartbeat.lastDecisionSequence()));
     }
 
-    @Override
-    public Set<NodeId> unresponsiveFollowers(long timeoutMs) {
+    @Override public Set<NodeId> unresponsiveFollowers(long timeoutMs) {
         var now = System.currentTimeMillis();
-        return healthMap.entrySet()
-                        .stream()
-                        .filter(entry -> (now - entry.getValue()
-                                                    .lastHeartbeatMs()) > timeoutMs)
-                        .map(Map.Entry::getKey)
-                        .collect(Collectors.toSet());
+        return healthMap.entrySet().stream()
+                                 .filter(entry -> (now - entry.getValue().lastHeartbeatMs()) > timeoutMs)
+                                 .map(Map.Entry::getKey)
+                                 .collect(Collectors.toSet());
     }
 
-    @Override
-    public void removeFollower(NodeId nodeId) {
+    @Override public void removeFollower(NodeId nodeId) {
         healthMap.remove(nodeId);
     }
 
-    @Override
-    public void clear() {
+    @Override public void clear() {
         healthMap.clear();
     }
 }

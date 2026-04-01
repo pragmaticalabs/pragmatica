@@ -65,9 +65,8 @@ public interface BlueprintExpander {
 
     /// Collect explicit slices from Blueprint into a map.
     private static Map<Artifact, SliceSpec> collectExplicitSlices(Blueprint blueprint) {
-        return blueprint.slices()
-                        .stream()
-                        .collect(Collectors.toUnmodifiableMap(SliceSpec::artifact, spec -> spec));
+        return blueprint.slices().stream()
+                               .collect(Collectors.toUnmodifiableMap(SliceSpec::artifact, spec -> spec));
     }
 
     /// Resolve all transitive dependencies for given slices.
@@ -85,13 +84,11 @@ public interface BlueprintExpander {
                                                               DependencyLoader loader,
                                                               Set<Artifact> processed,
                                                               Map<Artifact, Set<Artifact>> dependencies) {
-        var toProcess = artifacts.stream()
-                                 .filter(artifact -> !processed.contains(artifact))
-                                 .peek(processed::add)
-                                 .toList();
-        if (toProcess.isEmpty()) {
-            return Promise.success(Unit.unit());
-        }
+        var toProcess = artifacts.stream().filter(artifact -> !processed.contains(artifact))
+                                        .peek(processed::add)
+                                        .toList();
+        if ( toProcess.isEmpty()) {
+        return Promise.success(Unit.unit());}
         return processArtifactsSequentially(toProcess, loader, processed, dependencies, 0);
     }
 
@@ -101,13 +98,19 @@ public interface BlueprintExpander {
                                                               Set<Artifact> processed,
                                                               Map<Artifact, Set<Artifact>> dependencies,
                                                               int index) {
-        if (index >= artifacts.size()) {
-            return Promise.success(Unit.unit());
-        }
+        if ( index >= artifacts.size()) {
+        return Promise.success(Unit.unit());}
         var artifact = artifacts.get(index);
-        return loader.loadDependencies(artifact)
-                     .flatMap(deps -> storeDepsAndRecurse(artifact, deps, loader, processed, dependencies))
-                     .flatMap(_ -> processArtifactsSequentially(artifacts, loader, processed, dependencies, index + 1));
+        return loader.loadDependencies(artifact).flatMap(deps -> storeDepsAndRecurse(artifact,
+                                                                                     deps,
+                                                                                     loader,
+                                                                                     processed,
+                                                                                     dependencies))
+                                      .flatMap(_ -> processArtifactsSequentially(artifacts,
+                                                                                 loader,
+                                                                                 processed,
+                                                                                 dependencies,
+                                                                                 index + 1));
     }
 
     private static Promise<Unit> storeDepsAndRecurse(Artifact artifact,
@@ -121,13 +124,11 @@ public interface BlueprintExpander {
 
     /// Build dependency graph (artifact class name -> dependency class names).
     private static Map<String, List<String>> buildDependencyGraph(Map<Artifact, Set<Artifact>> dependencies) {
-        return dependencies.entrySet()
-                           .stream()
-                           .collect(Collectors.toUnmodifiableMap(entry -> ArtifactMapper.toClassName(entry.getKey()),
-                                                                 entry -> entry.getValue()
-                                                                               .stream()
-                                                                               .map(ArtifactMapper::toClassName)
-                                                                               .toList()));
+        return dependencies.entrySet().stream()
+                                    .collect(Collectors.toUnmodifiableMap(entry -> ArtifactMapper.toClassName(entry.getKey()),
+                                                                          entry -> entry.getValue().stream()
+                                                                                                 .map(ArtifactMapper::toClassName)
+                                                                                                 .toList()));
     }
 
     /// Check for circular dependencies.
@@ -141,17 +142,17 @@ public interface BlueprintExpander {
                                                               Map<String, List<String>> graph) {
         var allArtifacts = collectAllArtifacts(explicitSlices.keySet(), allDependencies);
         var sorted = topologicalSort(allArtifacts, allDependencies);
-        return Result.allOf(sorted.stream()
-                                  .map(artifact -> createResolvedSlice(artifact, explicitSlices, allDependencies))
-                                  .toList());
+        return Result.allOf(sorted.stream().map(artifact -> createResolvedSlice(artifact,
+                                                                                explicitSlices,
+                                                                                allDependencies))
+                                         .toList());
     }
 
     /// Collect all artifacts (explicit + transitive).
     private static Set<Artifact> collectAllArtifacts(Set<Artifact> explicit,
                                                      Map<Artifact, Set<Artifact>> dependencies) {
         var all = new HashSet<>(explicit);
-        dependencies.values()
-                    .forEach(all::addAll);
+        dependencies.values().forEach(all::addAll);
         return all;
     }
 
@@ -159,9 +160,8 @@ public interface BlueprintExpander {
     private static List<Artifact> topologicalSort(Set<Artifact> artifacts, Map<Artifact, Set<Artifact>> dependencies) {
         var visited = new HashSet<Artifact>();
         var result = new ArrayList<Artifact>();
-        artifacts.stream()
-                 .filter(artifact -> !visited.contains(artifact))
-                 .forEach(artifact -> topologicalSortDfs(artifact, dependencies, visited, result));
+        artifacts.stream().filter(artifact -> !visited.contains(artifact))
+                        .forEach(artifact -> topologicalSortDfs(artifact, dependencies, visited, result));
         return result;
     }
 
@@ -172,10 +172,9 @@ public interface BlueprintExpander {
                                            List<Artifact> result) {
         visited.add(artifact);
         dependencies.getOrDefault(artifact,
-                                  Set.of())
-                    .stream()
-                    .filter(dep -> !visited.contains(dep))
-                    .forEach(dep -> topologicalSortDfs(dep, dependencies, visited, result));
+                                  Set.of()).stream()
+                                 .filter(dep -> !visited.contains(dep))
+                                 .forEach(dep -> topologicalSortDfs(dep, dependencies, visited, result));
         result.add(artifact);
     }
 

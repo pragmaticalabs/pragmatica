@@ -30,8 +30,8 @@ public class TernaryOperators {
         return value < 0
                ? "negative"
                : value == 0
-                 ? "zero"
-                 : "positive";
+               ? "zero"
+               : "positive";
     }
 
     // Ternary in assignment
@@ -50,16 +50,15 @@ public class TernaryOperators {
 
     // Ternary in lambda
     java.util.function.Function<String, String> ternaryInLambda = s -> s.isEmpty()
-                                                                       ? "empty"
-                                                                       : s.toUpperCase();
+                                                                      ? "empty"
+                                                                      : s.toUpperCase();
 
     // Ternary in stream
     java.util.List<String> ternaryInStream(java.util.List<String> items) {
-        return items.stream()
-                    .map(s -> s.isEmpty()
-                              ? "(blank)"
-                              : s)
-                    .toList();
+        return items.stream().map(s -> s.isEmpty()
+                                      ? "(blank)"
+                                      : s)
+                           .toList();
     }
 
     // Ternary with Option
@@ -78,11 +77,11 @@ public class TernaryOperators {
 
     // Multiple ternaries in expression (avoid but handle)
     String multipleTernaries(boolean a, boolean b) {
-        return ( a
-                 ? "A"
-                 : "notA") + "-" + (b
-                                    ? "B"
-                                    : "notB");
+        return (a
+                ? "A"
+                : "notA") + "-" + (b
+                                   ? "B"
+                                   : "notB");
     }
 
     // Ternary with instanceof

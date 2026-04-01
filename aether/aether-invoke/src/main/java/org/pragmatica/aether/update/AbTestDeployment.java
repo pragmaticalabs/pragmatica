@@ -32,17 +32,17 @@ import java.util.Map;
 /// @param artifacts list of artifacts involved in this deployment
 /// @param createdAt timestamp when deployment was created
 /// @param updatedAt timestamp of last state change
-public record AbTestDeployment(String testId,
-                               ArtifactBase artifactBase,
-                               Version baselineVersion,
-                               Map<String, Version> variantVersions,
-                               AbTestState state,
-                               SplitRule splitRule,
-                               VersionRouting routing,
-                               Option<String> blueprintId,
-                               List<ArtifactBase> artifacts,
-                               long createdAt,
-                               long updatedAt) implements DeploymentStrategy {
+public record AbTestDeployment( String testId,
+                                ArtifactBase artifactBase,
+                                Version baselineVersion,
+                                Map<String, Version> variantVersions,
+                                AbTestState state,
+                                SplitRule splitRule,
+                                VersionRouting routing,
+                                Option<String> blueprintId,
+                                List<ArtifactBase> artifacts,
+                                long createdAt,
+                                long updatedAt) implements DeploymentStrategy {
     private static final Fn1<Cause, String> INVALID_TRANSITION = Causes.forOneValue("Invalid A/B test state transition: %s");
 
     /// Creates a new A/B test deployment in PENDING state.
@@ -54,11 +54,42 @@ public record AbTestDeployment(String testId,
     /// @param splitRule traffic routing rule
     /// @return new A/B test deployment
     @SuppressWarnings("JBCT-VO-02") // Factory method - validated construction
-    public static AbTestDeployment abTestDeployment(String testId,
-                                                    ArtifactBase artifactBase,
-                                                    Version baselineVersion,
-                                                    Map<String, Version> variantVersions,
-                                                    SplitRule splitRule) {
+    public static// Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    // Factory method - validated construction
+    AbTestDeployment abTestDeployment(String testId,
+                                      ArtifactBase artifactBase,
+                                      Version baselineVersion,
+                                      Map<String, Version> variantVersions,
+                                      SplitRule splitRule) {
         var now = System.currentTimeMillis();
         return new AbTestDeployment(testId,
                                     artifactBase,
@@ -78,12 +109,40 @@ public record AbTestDeployment(String testId,
     /// @param newState the new state
     /// @return updated A/B test deployment, or failure if transition is invalid
     @SuppressWarnings("JBCT-VO-02") // Record copy method with validated state transition
-    public Result<AbTestDeployment> transitionTo(AbTestState newState) {
-        if (!state.validTransitions()
-                  .contains(newState)) {
-            return INVALID_TRANSITION.apply(state + " -> " + newState)
-                                     .result();
-        }
+    public// Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    // Record copy method with validated state transition
+    Result<AbTestDeployment> transitionTo(AbTestState newState) {
+        if ( !state.validTransitions().contains(newState)) {
+        return INVALID_TRANSITION.apply(state + " -> " + newState).result();}
         return Result.success(new AbTestDeployment(testId,
                                                    artifactBase,
                                                    baselineVersion,
@@ -102,7 +161,38 @@ public record AbTestDeployment(String testId,
     /// @param newRouting the new routing configuration
     /// @return updated A/B test deployment
     @SuppressWarnings("JBCT-VO-02") // Record copy method with known-valid fields
-    public AbTestDeployment withRouting(VersionRouting newRouting) {
+    public// Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    AbTestDeployment withRouting(VersionRouting newRouting) {
         return new AbTestDeployment(testId,
                                     artifactBase,
                                     baselineVersion,
@@ -122,7 +212,38 @@ public record AbTestDeployment(String testId,
     /// @param newArtifacts the artifacts involved in this deployment
     /// @return updated A/B test deployment with blueprint context
     @SuppressWarnings("JBCT-VO-02") // Record copy method with known-valid fields
-    public AbTestDeployment withBlueprintContext(String newBlueprintId, List<ArtifactBase> newArtifacts) {
+    public// Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    AbTestDeployment withBlueprintContext(String newBlueprintId, List<ArtifactBase> newArtifacts) {
         return new AbTestDeployment(testId,
                                     artifactBase,
                                     baselineVersion,
@@ -136,35 +257,28 @@ public record AbTestDeployment(String testId,
                                     System.currentTimeMillis());
     }
 
-    @Override
-    public String strategyId() {
+    @Override public String strategyId() {
         return testId;
     }
 
     /// Returns the baseline version (old version being compared against).
-    @Override
-    public Version oldVersion() {
+    @Override public Version oldVersion() {
         return baselineVersion;
     }
 
     /// Returns the first variant version, or baseline if no variants exist.
-    @Override
-    public Version newVersion() {
-        return Option.from(variantVersions.values()
-                                          .stream()
-                                          .findFirst())
-                     .or(baselineVersion);
+    @Override public Version newVersion() {
+        return Option.from(variantVersions.values().stream()
+                                                 .findFirst()).or(baselineVersion);
     }
 
     /// Checks if this deployment is in a terminal state.
-    @Override
-    public boolean isTerminal() {
+    @Override public boolean isTerminal() {
         return state.isTerminal();
     }
 
     /// Checks if this deployment is active (not terminal).
-    @Override
-    public boolean isActive() {
+    @Override public boolean isActive() {
         return ! isTerminal();
     }
 

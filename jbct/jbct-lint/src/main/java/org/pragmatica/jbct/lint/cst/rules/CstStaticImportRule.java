@@ -54,7 +54,7 @@ public class CstStaticImportRule implements CstLintRule {
         // Collect static imports already in the file
         var staticImports = collectStaticImports(root, source);
         // Find qualified factory calls
-        return findAll(root, RuleId.MethodDecl.class).stream()
+        return findAllMethods(root).stream()
                       .flatMap(method -> findQualifiedCalls(method, source, staticImports, ctx));
     }
 

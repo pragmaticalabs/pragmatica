@@ -16,11 +16,11 @@ import static org.pragmatica.lang.Result.success;
 /// @param keyPath       Path to private key file (if not auto-generating)
 /// @param caPath        Path to CA certificate file (if not auto-generating)
 /// @param clusterSecret Shared secret for deterministic key derivation (empty = use default)
-public record TlsConfig(boolean autoGenerate,
-                        String certPath,
-                        String keyPath,
-                        String caPath,
-                        String clusterSecret) {
+public record TlsConfig( boolean autoGenerate,
+                         String certPath,
+                         String keyPath,
+                         String caPath,
+                         String clusterSecret) {
     /// Factory method following JBCT naming convention.
     public static Result<TlsConfig> tlsConfig(boolean autoGenerate,
                                               String certPath,

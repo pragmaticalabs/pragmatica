@@ -85,7 +85,7 @@ public class CstZoneTwoVerbsRule implements CstLintRule {
             return Stream.empty();
         }
         // Find functional interfaces that look like step interfaces
-        return findAll(root, RuleId.InterfaceDecl.class).stream()
+        return findAllInterfaces(root).stream()
                       .filter(iface -> isStepInterface(iface, source))
                       .flatMap(iface -> checkInterfaceName(iface, source, ctx));
     }
@@ -93,7 +93,7 @@ public class CstZoneTwoVerbsRule implements CstLintRule {
     private boolean isStepInterface(CstNode iface, String source) {
         var ifaceText = text(iface, source);
         // Check if it's a functional interface (single method)
-        var methodCount = findAll(iface, RuleId.MethodDecl.class).size();
+        var methodCount = findAllMethods(iface).size();
         if (methodCount != 1) {
             return false;
         }

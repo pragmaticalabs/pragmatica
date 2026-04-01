@@ -42,11 +42,10 @@ public final class DeferredSliceInvokerFacade implements SliceInvokerFacade {
         return Result.unitResult();
     }
 
-    @Override
-    public <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
-                                                          String methodName,
-                                                          TypeToken<T> requestType,
-                                                          TypeToken<R> responseType) {
+    @Override public <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
+                                                                    String methodName,
+                                                                    TypeToken<T> requestType,
+                                                                    TypeToken<R> responseType) {
         return option(delegate.get()).toResult(NOT_INITIALIZED)
                      .flatMap(d -> d.methodHandle(sliceArtifact, methodName, requestType, responseType));
     }

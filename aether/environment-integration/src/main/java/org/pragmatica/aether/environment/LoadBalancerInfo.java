@@ -7,11 +7,11 @@ import java.util.List;
 import static org.pragmatica.lang.Result.success;
 
 /// Information about a managed load balancer, including its targets and status.
-public record LoadBalancerInfo(String id,
-                               String name,
-                               String publicIp,
-                               String status,
-                               List<TargetInfo> targets) {
+public record LoadBalancerInfo( String id,
+                                String name,
+                                String publicIp,
+                                String status,
+                                List<TargetInfo> targets) {
     /// Health and weight information for a single LB target.
     public record TargetInfo(String ip, String healthStatus, int weight) {
         public static Result<TargetInfo> targetInfo(String ip, String healthStatus, int weight) {

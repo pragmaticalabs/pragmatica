@@ -99,6 +99,6 @@ public final class Ember {
                                        ObservabilityConfig.DEFAULT,
                                        lbEnabled,
                                        lbPort)
-                          .map(config -> EmberInstance.emberInstance(config));
+        .map(config -> EmberInstance.emberInstance(config));
     }
 }

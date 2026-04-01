@@ -16,12 +16,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
-/// Catalog slice — orchestrates pricing by combining DB lookup, discount, tax, and event publishing.
-///
-/// Queries the `products` table for base price, conditionally calls DiscountSlice and TaxSlice,
-/// publishes a HighValueOrderEvent for totals exceeding $500, and returns the full price breakdown.
-@Slice
-public interface CatalogSlice {
+@Slice public interface CatalogSlice {
     int HIGH_VALUE_THRESHOLD_CENTS = 50000;
 
     record HighValueOrderEvent(String productId, int quantity, int totalCents, String regionCode) {
@@ -61,15 +56,13 @@ public interface CatalogSlice {
 
     sealed interface PricingError extends Cause {
         record ProductNotFound(String productId) implements PricingError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Product not found: " + productId;
             }
         }
 
         record InvalidRequest(String reason) implements PricingError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Invalid request: " + reason;
             }
         }
@@ -81,15 +74,14 @@ public interface CatalogSlice {
                                      DiscountSlice discountSlice,
                                      TaxSlice taxSlice,
                                      @HighValueOrderPublisher Publisher<HighValueOrderEvent> highValuePublisher) {
-        record catalogSlice(SqlConnector db,
-                            DiscountSlice discountSlice,
-                            TaxSlice taxSlice,
-                            Publisher<HighValueOrderEvent> highValuePublisher) implements CatalogSlice {
+        record catalogSlice( SqlConnector db,
+                             DiscountSlice discountSlice,
+                             TaxSlice taxSlice,
+                             Publisher<HighValueOrderEvent> highValuePublisher) implements CatalogSlice {
             private static final String SELECT_PRICE = "SELECT price_cents FROM products WHERE product_id = ?";
             private static final Set<String> TAX_EXEMPT_REGIONS = Set.of("US-OR", "US-MT", "US-NH", "DE-FREE");
 
-            @Override
-            public Promise<PriceResponse> calculatePrice(PriceRequest request) {
+            @Override public Promise<PriceResponse> calculatePrice(PriceRequest request) {
                 var quantity = request.quantity();
                 return lookupBasePrice(request, quantity).flatMap(basePrice -> discountFor(request, basePrice))
                                       .flatMap(ctx -> taxFor(request, ctx))
@@ -101,38 +93,27 @@ public interface CatalogSlice {
             }
 
             private Promise<Integer> lookupUnitPrice(String productId) {
-                return db.queryOptional(SELECT_PRICE,
-                                        row -> row.getInt("price_cents"),
-                                        productId)
-                         .flatMap(opt -> opt.async(new PricingError.ProductNotFound(productId)));
+                return db.queryOptional(SELECT_PRICE, row -> row.getInt("price_cents"), productId).flatMap(opt -> opt.async(new PricingError.ProductNotFound(productId)));
             }
 
             private Promise<PricingContext> discountFor(PriceRequest request, int basePrice) {
-                if (hasCoupon(request)) {
-                    return discountSlice.calculateDiscount(new DiscountRequest(request.couponCode(),
-                                                                               basePrice))
-                                        .map(resp -> pricingContext(basePrice,
-                                                                    resp.discountAmountCents(),
-                                                                    List.of("catalog", "discount")));
-                }
+                if ( hasCoupon(request)) {return discountSlice.calculateDiscount(new DiscountRequest(request.couponCode(),
+                                                                                                     basePrice)).map(resp -> pricingContext(basePrice,
+                                                                                                                                            resp.discountAmountCents(),
+                                                                                                                                            List.of("catalog",
+                                                                                                                                                    "discount")));}
                 return Promise.success(pricingContext(basePrice, 0, List.of("catalog")));
             }
 
             private Promise<PricingContext> taxFor(PriceRequest request, PricingContext ctx) {
                 var taxableAmount = ctx.basePrice() - ctx.discountAmount();
-                if (isTaxExempt(request.regionCode())) {
-                    return Promise.success(ctx.withTax(0));
-                }
-                return taxSlice.calculateTax(new TaxRequest(request.regionCode(),
-                                                            taxableAmount))
-                               .map(resp -> ctx.withTaxStep(resp.taxAmountCents()));
+                if ( isTaxExempt(request.regionCode())) {return Promise.success(ctx.withTax(0));}
+                return taxSlice.calculateTax(new TaxRequest(request.regionCode(), taxableAmount)).map(resp -> ctx.withTaxStep(resp.taxAmountCents()));
             }
 
             private Promise<PriceResponse> publishIfHighValue(PriceRequest request, PricingContext ctx) {
                 var response = toResponse(ctx);
-                if (response.totalPrice() > HIGH_VALUE_THRESHOLD_CENTS) {
-                    return publishHighValueEvent(request, response);
-                }
+                if ( response.totalPrice() > HIGH_VALUE_THRESHOLD_CENTS) {return publishHighValueEvent(request, response);}
                 return Promise.success(response);
             }
 
@@ -141,8 +122,7 @@ public interface CatalogSlice {
                                                     request.quantity(),
                                                     response.totalPrice(),
                                                     request.regionCode());
-                return highValuePublisher.publish(event)
-                                         .map(_ -> response);
+                return highValuePublisher.publish(event).map(_ -> response);
             }
 
             private static PriceResponse toResponse(PricingContext ctx) {
@@ -151,8 +131,7 @@ public interface CatalogSlice {
             }
 
             private static boolean hasCoupon(PriceRequest request) {
-                return ! request.couponCode()
-                               .isBlank();
+                return! request.couponCode().isBlank();
             }
 
             private static boolean isTaxExempt(String regionCode) {
@@ -166,8 +145,6 @@ public interface CatalogSlice {
         return new catalogSlice(db, discountSlice, taxSlice, highValuePublisher);
     }
 
-    /// Internal context carrying accumulated pricing data through the chain.
-    /// Fully immutable — each transformation returns a new instance.
     record PricingContext(int basePrice, int discountAmount, int taxAmount, List<String> callPath) {
         public PricingContext {
             callPath = List.copyOf(callPath);

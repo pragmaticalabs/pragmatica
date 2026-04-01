@@ -107,7 +107,11 @@ public class CstPrinter {
 
     public String print(CstNode root) {
         printNode(root);
+        // Strip trailing whitespace from each line to ensure idempotent output
         return output.toString()
+                     .lines()
+                     .map(String::stripTrailing)
+                     .collect(java.util.stream.Collectors.joining("\n"))
                      .stripTrailing() + "\n";
     }
 
@@ -137,9 +141,12 @@ public class CstPrinter {
         // Handle leading trivia
         // TypeArgs/TypeParams/TypeArg: skip leading whitespace to prevent errant space inside generics
         // OrdinaryUnit: skip leading whitespace since we control file layout
+        // Member: skip leading newlines — ClassMember parent controls line breaks between modifiers and member,
+        //         but preserve space-only trivia (e.g., space between "static" and "<T>")
         var isTypeRelated = node.rule() instanceof RuleId.TypeArgs || node.rule() instanceof RuleId.TypeParams || node.rule() instanceof RuleId.TypeArg;
         var isOrdinaryUnit = node.rule() instanceof RuleId.OrdinaryUnit;
-        var effectiveMode = (isTypeRelated || isOrdinaryUnit)
+        var isMember = node.rule() instanceof RuleId.Member && hasNewlineInLeadingTrivia(node);
+        var effectiveMode = (isTypeRelated || isOrdinaryUnit || isMember)
                             ? TriviaMode.SKIP_LEADING
                             : mode;
         switch (effectiveMode) {
@@ -207,15 +214,18 @@ public class CstPrinter {
     private void printNonTerminal(CstNode.NonTerminal nt) {
         // Handle special formatting rules using pattern matching on sealed RuleId
         switch (nt.rule()) {
+            case RuleId.CompilationUnit _ -> printOrdinaryUnit(nt);
             case RuleId.OrdinaryUnit _ -> printOrdinaryUnit(nt);
             case RuleId.ImportDecl _ -> printImportDecl(nt);
             case RuleId.EnumBody _ -> printEnumBody(nt);
             case RuleId.RecordBody _ -> printRecordBody(nt);
+            case RuleId.Member _ -> printMember(nt);
             case RuleId.FieldDecl _ -> printFieldDecl(nt);
             case RuleId.ClassBody _ -> printClassBody(nt);
             case RuleId.AnnotationBody _ -> printAnnotationBody(nt);
             case RuleId.Block _ -> printBlock(nt);
             case RuleId.SwitchBlock _ -> printSwitchBlock(nt);
+            case RuleId.Unary _ -> printUnary(nt);
             case RuleId.Postfix _ -> printPostfix(nt);
             case RuleId.PostOp _ -> printPostOp(nt);
             case RuleId.Args _ -> printArgs(nt);
@@ -319,6 +329,101 @@ public class CstPrinter {
         var importText = text(imp, source).trim();
         print(importText);
         println();
+    }
+
+    /// Print a Member node. Member wraps MethodDecl/FieldDecl/RecordDecl/ConstructorDecl
+    /// in the new CST shape. Detect the member kind and delegate to the appropriate handler.
+    ///
+    /// Trivia note: Member's leading trivia contains the whitespace between the last
+    /// ClassMember modifier and the first method token. This trivia is already printed
+    /// by printNode before this method is called. To prevent double-printing, the first
+    /// child's leading whitespace trivia must be skipped.
+    private void printMember(CstNode.NonTerminal member) {
+        var kids = children(member);
+        // Check if this Member contains record components (is a record declaration)
+        boolean hasRecordComponents = kids.stream()
+                                          .anyMatch(c -> c.rule() instanceof RuleId.RecordComponents);
+        if (hasRecordComponents) {
+            printRecordDecl(member);
+        } else {
+            // For methods, fields, constructors — check for MethodDecl-like structure
+            boolean hasBlock = kids.stream()
+                                   .anyMatch(c -> c.rule() instanceof RuleId.Block);
+            boolean hasParams = kids.stream()
+                                    .anyMatch(c -> c.rule() instanceof RuleId.Params);
+            if (hasBlock || hasParams) {
+                printMethodDeclSkipFirstTrivia(member);
+            } else {
+                printChildrenSkipFirstTrivia(member);
+            }
+        }
+    }
+
+    /// Print children of a node, skipping leading whitespace trivia on the first child
+    /// to prevent double-printing when the parent's trivia already handled spacing.
+    private void printChildrenSkipFirstTrivia(CstNode.NonTerminal nt) {
+        boolean first = true;
+        for (var child : children(nt)) {
+            if (first) {
+                printNode(child, TriviaMode.SKIP_LEADING);
+                first = false;
+            } else {
+                printNode(child);
+            }
+        }
+    }
+
+    /// Like printMethodDecl but skips the first child's leading whitespace trivia.
+    /// Used when called from printMember where the parent already handles trivia.
+    private void printMethodDeclSkipFirstTrivia(CstNode.NonTerminal methodDecl) {
+        var children = children(methodDecl);
+        // Find TypeParams index (-1 if not present)
+        int typeParamsIndex = -1;
+        for (int i = 0; i < children.size(); i++) {
+            if (children.get(i)
+                        .rule() instanceof RuleId.TypeParams) {
+                typeParamsIndex = i;
+                break;
+            }
+        }
+        if (typeParamsIndex == -1) {
+            // No type params - print children, skipping first child's leading trivia
+            printChildrenSkipFirstTrivia(methodDecl);
+            return;
+        }
+        // Print first child (TypeParams) with skipped leading trivia
+        printNode(children.get(0), TriviaMode.SKIP_LEADING);
+        for (int i = 1; i <= typeParamsIndex; i++) {
+            printNode(children.get(i));
+        }
+        // Calculate if the method signature up to opening paren fits on the current line
+        var signatureText = new StringBuilder();
+        for (int i = typeParamsIndex + 1; i < children.size(); i++) {
+            var childText = text(children.get(i), source);
+            signatureText.append(childText);
+            if (childText.contains("(")) {
+                break;
+            }
+        }
+        var signatureWidth = signatureText.toString()
+                                          .replaceAll("\\s+", " ")
+                                          .trim()
+                                          .length();
+        if (currentColumn + 1 + signatureWidth <= config.maxLineLength()) {
+            print(" ");
+        } else {
+            println();
+            printIndent();
+        }
+        // Print remaining children - first after TypeParams skips leading whitespace
+        for (int i = typeParamsIndex + 1; i < children.size(); i++) {
+            var child = children.get(i);
+            if (i == typeParamsIndex + 1) {
+                printNodeSkipAllLeadingWhitespace(child);
+            } else {
+                printNode(child);
+            }
+        }
     }
 
     private void printFieldDecl(CstNode.NonTerminal field) {
@@ -620,6 +725,90 @@ public class CstPrinter {
         print("}");
     }
 
+    /// Print a Unary expression (Primary Postfix? | Primary PostOp?).
+    /// When Unary has both Primary and Postfix/PostOp children, combines them for chain alignment.
+    /// The Postfix node wraps multiple PostOp children, while a single PostOp appears directly.
+    /// In both cases, Primary is a sibling — this method bridges them for proper chain formatting.
+    private void printUnary(CstNode.NonTerminal unary) {
+        var children = children(unary);
+        CstNode primary = null;
+        CstNode.NonTerminal postfix = null;
+        var directPostOps = new ArrayList<CstNode>();
+        var otherChildren = new ArrayList<CstNode>();
+        for (var child : children) {
+            if (child.rule() instanceof RuleId.Primary) {
+                primary = child;
+            } else if (child.rule() instanceof RuleId.Postfix && child instanceof CstNode.NonTerminal nt) {
+                postfix = nt;
+            } else if (child.rule() instanceof RuleId.PostOp) {
+                directPostOps.add(child);
+            } else {
+                otherChildren.add(child);
+            }
+        }
+        if (primary != null && postfix != null) {
+            // Multiple PostOps wrapped in Postfix — use chain alignment
+            printPostfixWithPrimary(primary, postfix);
+            for (var other : otherChildren) {
+                printNode(other);
+            }
+        } else if (primary != null && !directPostOps.isEmpty()) {
+            // Single PostOp directly under Unary — print Primary then PostOp(s)
+            printNode(primary);
+            for (var postOp : directPostOps) {
+                printNode(postOp);
+            }
+            for (var other : otherChildren) {
+                printNode(other);
+            }
+        } else {
+            // No chain — print children normally
+            printChildren(unary);
+        }
+    }
+
+    /// Print a Postfix with its sibling Primary for chain alignment.
+    private void printPostfixWithPrimary(CstNode primary, CstNode.NonTerminal postfix) {
+        var postOps = new ArrayList<CstNode>();
+        for (var child : children(postfix)) {
+            if (child.rule() instanceof RuleId.PostOp) {
+                postOps.add(child);
+            }
+        }
+        var dotPlusParenPostOps = postOps.stream()
+                                         .filter(this::isDotMethodPostOp)
+                                         .toList();
+        boolean primaryHasMethodAccess = hasMethodAccessInPrimary(primary);
+        boolean hasInvocationOfMethodInPrimary = primaryHasMethodAccess && postOps.stream()
+                                                                                  .anyMatch(this::isBareInvocationPostOp);
+        int chainLinkCount = dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary
+                                                           ? 1
+                                                           : 0);
+        boolean shouldBreakChain = chainLinkCount >= 2;
+        if (shouldBreakChain && !measuringMode) {
+            printMethodChainAligned(primary, postOps, dotPlusParenPostOps, hasInvocationOfMethodInPrimary);
+        } else {
+            boolean canInline = !measuringMode && fitsOnLineUnary(primary, postOps);
+            printNode(primary);
+            for (var postOp : postOps) {
+                if (canInline) {
+                    printNodeSkipTrivia(postOp);
+                } else {
+                    printNode(postOp);
+                }
+            }
+        }
+    }
+
+    /// Check if primary + postOps together fit on the current line.
+    private boolean fitsOnLineUnary(CstNode primary, List<CstNode> postOps) {
+        int width = measureWidth(primary);
+        for (var postOp : postOps) {
+            width += measureWidth(postOp);
+        }
+        return currentColumn + width <= config.maxLineLength();
+    }
+
     /// Print a Postfix expression (Primary PostOp*).
     /// This handles method chains with JBCT alignment rules.
     private void printPostfix(CstNode.NonTerminal postfix) {
@@ -892,6 +1081,7 @@ public class CstPrinter {
                     case RuleId.Args _ -> printArgs(nt);
                     case RuleId.Block _ -> printBlock(nt);
                     case RuleId.Postfix _ -> printPostfix(nt);
+                    case RuleId.PostOp _ -> printPostOp(nt);
                     case RuleId.Ternary _ -> printTernary(nt);
                     case RuleId.Additive _ -> printAdditive(nt);
                     default -> {
@@ -1046,8 +1236,10 @@ public class CstPrinter {
         // Account for closing paren and typical suffix (") {" = 3 chars)
         // Use <= to include lines that are exactly at the limit
         if (totalWidth + 3 <= config.maxLineLength()) {
-            // Fits on one line - print children normally
-            printChildren(params);
+            // Fits on one line — skip leading trivia to prevent space after (
+            for (var child : children(params)) {
+                printNodeSkipTrivia(child);
+            }
         } else {
             // Break parameters onto multiple lines aligned to current position
             printBrokenParams(params);
@@ -1133,8 +1325,10 @@ public class CstPrinter {
         int totalWidth = currentColumn + width;
         // Account for closing paren and typical suffix (") {" = 3 chars)
         if (totalWidth + 3 <= config.maxLineLength()) {
-            // Fits on one line
-            printChildren(components);
+            // Fits on one line — skip leading trivia to prevent space after (
+            for (var child : children(components)) {
+                printNodeSkipTrivia(child);
+            }
         } else {
             // Break components onto multiple lines aligned to current position
             printBrokenRecordComponents(components);

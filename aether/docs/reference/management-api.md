@@ -266,7 +266,30 @@ curl "http://localhost:8080/api/events?since=2024-01-15T10:30:00Z"
 
 ### GET /api/slices
 
-List all deployed slice artifact identifiers.
+Returns cluster-wide slice data including per-node instances, target counts, and version information.
+
+**Response:**
+```json
+{
+  "slices": [
+    {
+      "artifact": "org.example:my-slice:1.0.0",
+      "targetInstances": 3,
+      "minInstances": 1,
+      "version": "1.0.0",
+      "instances": [
+        {"nodeId": "node-1", "state": "ACTIVE", "failureReason": ""},
+        {"nodeId": "node-2", "state": "ACTIVE", "failureReason": ""},
+        {"nodeId": "node-3", "state": "ACTIVE", "failureReason": ""}
+      ]
+    }
+  ]
+}
+```
+
+### GET /api/node/slices
+
+Returns a flat list of slice artifact identifiers loaded on the connected node (the previous behavior of `GET /api/slices`).
 
 **Response:**
 ```json
@@ -298,9 +321,9 @@ Get detailed slice status including per-node state and health.
 }
 ```
 
-### GET /api/routes
+### GET /api/node/routes
 
-List all registered HTTP routes from deployed slices.
+List HTTP routes registered on the connected node.
 
 **Response:**
 ```json
@@ -309,7 +332,26 @@ List all registered HTTP routes from deployed slices.
     {
       "method": "GET",
       "path": "/orders",
-      "nodes": ["node-1", "node-2"]
+      "nodes": ["node-1", "node-2"],
+      "security": "none"
+    }
+  ]
+}
+```
+
+### GET /api/routes
+
+List HTTP routes across the cluster.
+
+**Response:**
+```json
+{
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/orders",
+      "nodes": ["node-1", "node-2"],
+      "security": "none"
     }
   ]
 }
@@ -482,6 +524,50 @@ Validate a blueprint without applying it.
   "errors": ["Unknown artifact: org.example:missing:1.0.0"]
 }
 ```
+
+### Security Overrides
+
+Operators can override per-route security policies at deploy time via the `[security]` section in blueprint.toml.
+
+#### TOML Syntax
+
+```toml
+[security]
+override_policy = "strengthen_only"    # strengthen_only | full | none
+
+[security.overrides]
+"GET /api/v1/urls/*" = "authenticated"     # Wildcard suffix match
+"POST /api/v1/admin/reset" = "role:admin"  # Exact match
+"* /api/v1/health" = "public"              # Any HTTP method
+```
+
+#### Override Policy
+
+| Policy | Behavior |
+|--------|----------|
+| `strengthen_only` (default) | Operator can only make routes MORE restrictive (public->authenticated, authenticated->public is rejected) |
+| `full` | Operator can change security in any direction |
+| `none` | No overrides allowed -- slice developer's security is final |
+
+#### Security Values
+
+| Value | Meaning |
+|-------|---------|
+| `public` | No authentication required |
+| `authenticated` | Any valid credential (API key or JWT based on server security mode) |
+| `role:<name>` | Requires specific role in SecurityContext |
+
+#### Pattern Matching
+
+| Pattern | Matches |
+|---------|---------|
+| `"GET /api/v1/urls/"` | Exact method + path |
+| `"GET /api/v1/urls/*"` | GET requests to any path starting with `/api/v1/urls/` |
+| `"* /api/v1/urls/*"` | Any HTTP method to paths starting with `/api/v1/urls/` |
+
+#### Strength Ordering
+
+For `strengthen_only` policy, security levels are ordered: `public (0) < authenticated (1) < role:* (2)`. Overrides that weaken security are silently ignored.
 
 ---
 
@@ -1473,6 +1559,141 @@ Returns empty list if no worker communities exist (all nodes are core).
 
 ---
 
+## Declarative Cluster Configuration
+
+### GET /api/cluster/config
+
+Get the current cluster configuration from the KV-Store.
+
+**Response:**
+```json
+{
+  "tomlContent": "[cluster]\nname = \"production\"\n...",
+  "clusterName": "production",
+  "version": "0.21.1",
+  "coreCount": 5,
+  "coreMin": 3,
+  "coreMax": 9,
+  "deploymentType": "local",
+  "configVersion": 7,
+  "updatedAt": 1711468800000
+}
+```
+
+### GET /api/cluster/status
+
+Get aggregated cluster status including node health, slice deployment info, and certificate status.
+
+**Response:**
+```json
+{
+  "clusterName": "production",
+  "desiredVersion": "0.21.1",
+  "desiredCoreCount": 5,
+  "actualCoreCount": 5,
+  "state": "CONVERGED",
+  "leaderId": "node-1",
+  "nodes": [
+    {"nodeId": "node-1", "role": "core", "lifecycleState": "ON_DUTY", "version": "0.21.1", "isLeader": true}
+  ],
+  "slicesDeployed": 12,
+  "sliceInstances": 36,
+  "certificateExpiresAt": "2026-04-25T00:00:00Z",
+  "certificateDaysRemaining": 29,
+  "configVersion": 7,
+  "uptimeSeconds": 86400
+}
+```
+
+### POST /api/cluster/config
+
+Apply a cluster configuration change. Computes a diff against the stored config and executes actionable changes.
+
+**Request:**
+```json
+{
+  "tomlContent": "[cluster]\nname = \"production\"\n...",
+  "expectedVersion": 7
+}
+```
+
+**Response (applied):**
+```json
+{
+  "configVersion": 8,
+  "clusterName": "production",
+  "coreCount": 5,
+  "updatedAt": 1711468800000
+}
+```
+
+**Response (dry-run / no actionable changes):**
+```json
+{
+  "clusterName": "production",
+  "fromVersion": 7,
+  "toVersion": 7,
+  "plannedChanges": ["[NOOP] core.count unchanged"],
+  "changeCount": 0,
+  "rejectedCount": 0
+}
+```
+
+### POST /api/cluster/scale
+
+Scale the cluster core node count. Validates quorum safety (minimum 3, odd count, within min/max bounds).
+
+**RBAC:** ADMIN
+
+**Request:**
+```json
+{
+  "coreCount": 7,
+  "expectedVersion": 7
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "previousCount": 5,
+  "newCount": 7,
+  "configVersion": 8
+}
+```
+
+### POST /api/cluster/upgrade
+
+Initiate a cluster version upgrade. Phase 1 updates the version in the KV-Store config. Full rolling upgrade orchestration uses existing RollingUpdateManager infrastructure.
+
+**RBAC:** ADMIN
+
+**Request:**
+```json
+{
+  "targetVersion": "0.26.0"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "INITIATED",
+  "from": "0.25.0",
+  "to": "0.26.0"
+}
+```
+
+**Error (already at target version):**
+```json
+{
+  "error": "Cluster is already at version 0.26.0"
+}
+```
+
+---
+
 ## Topology
 
 ### GET /api/topology
@@ -2069,9 +2290,11 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | GET | `/api/health` | Cluster Status |
 | GET | `/api/nodes` | Cluster Status |
 | GET | `/api/events` | Cluster Status |
-| GET | `/api/slices` | Slice Management |
+| GET | `/api/slices` | Slice Management (cluster-wide) |
+| GET | `/api/node/slices` | Slice Management (per-node) |
 | GET | `/api/slices/status` | Slice Management |
-| GET | `/api/routes` | Slice Management |
+| GET | `/api/node/routes` | Slice Management (per-node) |
+| GET | `/api/routes` | Slice Management (cluster-wide) |
 | POST | `/api/scale` | Slice Management |
 | POST | `/api/blueprint` | Blueprint Management |
 | GET | `/api/blueprints` | Blueprint Management |
@@ -2590,6 +2813,33 @@ GET /api/streams/{name}/{partition}
 }
 ```
 
+### Create Stream
+
+```
+POST /api/streams
+```
+
+**Auth:** OPERATOR_AND_ABOVE
+
+Creates a stream with the given name and optional partition count. Idempotent — returns success if stream already exists.
+
+**Request:**
+```json
+{
+  "name": "my-stream",
+  "partitions": 4
+}
+```
+
+**Response:**
+```json
+{
+  "name": "my-stream",
+  "partitions": 4,
+  "status": "created"
+}
+```
+
 ### Publish Event
 
 ```
@@ -2598,10 +2848,12 @@ POST /api/streams/{name}/publish
 
 **Auth:** OPERATOR_AND_ABOVE
 
+Auto-creates the stream with default config if it does not exist.
+
 **Request:**
 ```json
 {
-  "data": "<base64-encoded-payload>"
+  "data": "<raw-string-payload>"
 }
 ```
 

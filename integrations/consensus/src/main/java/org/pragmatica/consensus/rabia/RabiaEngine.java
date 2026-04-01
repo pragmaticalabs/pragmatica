@@ -28,6 +28,7 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.*;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.concurrent.AtomicHolder;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -84,7 +85,7 @@ public class RabiaEngine<C extends Command> {
     private final TimeSpan phaseStallCheck;
     private volatile boolean activationAuthorized;
     private volatile boolean observerMode;
-    private final AtomicReference<QuorumStateNotification> pendingQuorum = new AtomicReference<>();
+    private final AtomicHolder<QuorumStateNotification> pendingQuorum = AtomicHolder.atomicHolder();
 
     // Single-thread executor with DiscardPolicy to silently drop tasks after shutdown
     private final ExecutorService executor = new ThreadPoolExecutor(1,
@@ -246,8 +247,8 @@ public class RabiaEngine<C extends Command> {
             observerMode = false;
         }
         activationAuthorized = true;
-        var pending = pendingQuorum.getAndSet(null);
-        if (pending != null) {
+        var pending = pendingQuorum.getAndClear();
+        if (pending.isPresent()) {
             log.info("Node {}: replaying stored quorum notification", self);
             clusterConnected();
         } else if (engineState.get().isObserving()) {
@@ -269,16 +270,19 @@ public class RabiaEngine<C extends Command> {
         log.info("Node {}: consensus observation authorized (observer mode)", self);
         activationAuthorized = true;
         observerMode = true;
-        var pending = pendingQuorum.getAndSet(null);
-        if (pending != null) {
-            log.info("Node {}: replaying stored quorum notification for observer mode", self);
-            clusterConnected();
-        }
+        pendingQuorum.getAndClear()
+                     .onPresent(this::replayQuorumForObserver);
     }
 
     /// Returns true if the engine is currently in observer mode.
     public boolean isObserving() {
         return engineState.get().isObserving();
+    }
+
+    @SuppressWarnings("JBCT-RET-01") // Side-effect callback — void inherent
+    private void replayQuorumForObserver(QuorumStateNotification notification) {
+        log.info("Node {}: replaying stored quorum notification for observer mode", self);
+        clusterConnected();
     }
 
     private void clusterConnected() {
@@ -361,6 +365,11 @@ public class RabiaEngine<C extends Command> {
         }
         if (!engineState.get().isActive()) {
             return ConsensusError.nodeInactive(self)
+                                 .result();
+        }
+        var pending = pendingBatches.size();
+        if (pending >= config.maxPendingBatches()) {
+            return ConsensusError.backpressureExceeded(pending, config.maxPendingBatches())
                                  .result();
         }
         return Result.success(commands);
@@ -728,11 +737,9 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// Handles a Propose message from another node.
+    /// NOTE: All nodes MUST process proposals regardless of active/dormant state.
+    /// Rabia is leaderless — every node participates in every round.
     private void handlePropose(Propose<C> propose) {
-        if (!engineState.get().isActive()) {
-            log.warn("Node {} ignores proposal {}. Node is dormant", self, propose);
-            return;
-        }
         log.trace("Node {} received proposal from {} for phase {}", self, propose.sender(), propose.phase());
         var currentPhaseValue = currentPhase.get();
         if (isPastPhase(propose.phase(), currentPhaseValue)) {
@@ -833,10 +840,6 @@ public class RabiaEngine<C extends Command> {
 
     /// Handles a round 1 vote from another node.
     private void handleVoteRound1(VoteRound1 vote) {
-        if (!engineState.get().isActive()) {
-            log.warn("Node {} ignores vote1 {}. Node is dormant", self, vote);
-            return;
-        }
         log.trace("Node {} received round 1 vote from {} for phase {} with value {}",
                   self,
                   vote.sender(),
@@ -909,10 +912,6 @@ public class RabiaEngine<C extends Command> {
 
     /// Handles a round 2 vote from another node.
     private void handleVoteRound2(VoteRound2 vote) {
-        if (!engineState.get().isActive()) {
-            log.warn("Node {} ignores vote2 {}. Node is dormant", self, vote);
-            return;
-        }
         log.trace("Node {} received round 2 vote from {} for phase {} with value {}",
                   self,
                   vote.sender(),
@@ -993,11 +992,6 @@ public class RabiaEngine<C extends Command> {
     /// Handles a decision message from another node.
     /// Observers also process decisions to keep their state machine in sync.
     private void handleDecision(Decision<C> decision) {
-        var state = engineState.get();
-        if (!state.isActive() && !state.isObserving()) {
-            log.warn("Node {} ignores decision {}. Node is dormant", self, decision);
-            return;
-        }
         log.trace("Node {} received decision {}", self, decision);
         commitDecision(getOrCreatePhaseData(decision.phase()), decision);
     }

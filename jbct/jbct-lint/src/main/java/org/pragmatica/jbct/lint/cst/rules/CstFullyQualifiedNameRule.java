@@ -35,7 +35,7 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
             return Stream.empty();
         }
         // Find FQCN in method bodies (not imports or package declaration)
-        return findAll(root, RuleId.MethodDecl.class).stream()
+        return findAllMethods(root).stream()
                       .flatMap(method -> findFqcnInMethod(method, source, ctx));
     }
 

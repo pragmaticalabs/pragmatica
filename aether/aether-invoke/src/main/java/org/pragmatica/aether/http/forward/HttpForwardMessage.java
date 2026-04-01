@@ -19,8 +19,7 @@ import org.pragmatica.serialization.Codec;
 ///   - Node B processes request, sends HttpForwardResponse back
 ///   - Node A returns response to original HTTP client
 /// </ol>
-@Codec
-public sealed interface HttpForwardMessage extends ProtocolMessage {
+@Codec public sealed interface HttpForwardMessage extends ProtocolMessage {
     /// Request to forward an HTTP request to another node.
     ///
     /// @param sender        Node forwarding the request
@@ -30,7 +29,7 @@ public sealed interface HttpForwardMessage extends ProtocolMessage {
     record HttpForwardRequest(NodeId sender,
                               String correlationId,
                               String requestId,
-                              byte[] requestData) implements HttpForwardMessage {}
+                              byte[] requestData) implements HttpForwardMessage{}
 
     /// Response from a forwarded HTTP request.
     ///
@@ -43,5 +42,5 @@ public sealed interface HttpForwardMessage extends ProtocolMessage {
                                String correlationId,
                                String requestId,
                                boolean success,
-                               byte[] payload) implements HttpForwardMessage {}
+                               byte[] payload) implements HttpForwardMessage{}
 }

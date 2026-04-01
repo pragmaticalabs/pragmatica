@@ -13,7 +13,7 @@ graph TB
             CLUSTER[":8090 Cluster"]
         end
 
-        CN["ClusterNetwork<br/>(Netty TCP)"]
+        CN["QuicClusterNetwork<br/>(Netty QUIC/H3)"]
         TM["TopologyManager"]
         MR["MessageRouter"]
 
@@ -23,12 +23,12 @@ graph TB
     end
 
     subgraph Peers["Peer Nodes"]
-        P1["Node B :8090"]
-        P2["Node C :8090"]
+        P1["Node B :8090/udp"]
+        P2["Node C :8090/udp"]
     end
 
-    CN <-->|"TCP (optional TLS)"| P1
-    CN <-->|"TCP (optional TLS)"| P2
+    CN <-->|"QUIC (TLS 1.3)"| P1
+    CN <-->|"QUIC (TLS 1.3)"| P2
 
     MR -->|"Consensus"| Rabia["RabiaEngine"]
     MR -->|"Invocation"| IH["InvocationHandler"]
@@ -38,9 +38,9 @@ graph TB
     MR -->|"SWIM"| SWIM["SwimProtocol"]
 ```
 
-## ClusterNetwork
+## QuicClusterNetwork
 
-Netty-based TCP transport for all inter-node communication.
+QUIC-based (HTTP/3) transport for all inter-node communication. Uses Netty's `netty-codec-http3` with TLS 1.3 built into the QUIC handshake — no separate TLS negotiation.
 
 ### Connection Management
 
@@ -49,13 +49,13 @@ sequenceDiagram
     participant A as Node A
     participant B as Node B
 
-    A->>B: TCP connect to :8090
-    B-->>A: Connection established
+    A->>B: QUIC connect to :8090/udp (TLS 1.3 handshake)
+    B-->>A: Connection established (0-RTT on reconnect)
 
     A->>B: Handshake (NodeId, capabilities)
     B-->>A: Handshake response
 
-    Note over A,B: Connection ready for messages
+    Note over A,B: Multiplexed QUIC streams ready
 
     loop Heartbeat
         A->>B: Ping
@@ -64,13 +64,15 @@ sequenceDiagram
 
     alt Connection lost
         A->>A: Reconnect with backoff
-        Note over A: Exponential backoff<br/>with jitter
+        Note over A: Exponential backoff<br/>with jitter<br/>0-RTT resumption
     end
 ```
 
 - Peer list configured at startup (no external service registry)
-- Automatic reconnection with exponential backoff
-- Heartbeat-based liveness detection
+- Automatic reconnection with exponential backoff and 0-RTT resumption
+- Per-stream backpressure (bounded queue, 100 per peer per stream type)
+- Automatic certificate rotation (60% validity trigger, atomic SSL context swap)
+- SWIM health detection on separate UDP port (cluster port + 100)
 
 ### Quorum Detection
 
@@ -86,7 +88,7 @@ A 5-node cluster tolerates 2 simultaneous failures. When quorum is lost, consens
 
 ## MessageRouter
 
-Multiplexes all inter-node messages over the single TCP connection. Each message type is routed to its handler:
+Multiplexes all inter-node messages over QUIC streams. Each message type is routed to its handler:
 
 | Message Type | Handler | Description |
 |-------------|---------|-------------|

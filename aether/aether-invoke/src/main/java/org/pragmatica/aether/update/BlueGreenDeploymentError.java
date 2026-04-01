@@ -11,8 +11,7 @@ public sealed interface BlueGreenDeploymentError extends Cause {
             return new DeploymentNotFound(deploymentId);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Blue-green deployment not found: " + deploymentId;
         }
     }
@@ -23,8 +22,7 @@ public sealed interface BlueGreenDeploymentError extends Cause {
             return new DeploymentAlreadyExists(artifactBase);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Blue-green deployment already in progress for " + artifactBase;
         }
     }
@@ -35,8 +33,7 @@ public sealed interface BlueGreenDeploymentError extends Cause {
             return new InvalidDeploymentState(from, to);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Invalid blue-green state transition from " + from + " to " + to;
         }
     }
@@ -47,8 +44,7 @@ public sealed interface BlueGreenDeploymentError extends Cause {
             return new InitialDeployment(artifactBase);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Initial deployment for " + artifactBase + " (no previous version)";
         }
     }
@@ -56,8 +52,7 @@ public sealed interface BlueGreenDeploymentError extends Cause {
     /// Not the leader node.
     enum NotLeader implements BlueGreenDeploymentError {
         INSTANCE;
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Blue-green deployment operations can only be performed by the leader node";
         }
     }

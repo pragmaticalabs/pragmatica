@@ -29,6 +29,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -59,63 +60,62 @@ public final class SliceRoutes implements RouteSource {
     }
 
     // Request DTOs - nullable types required for JSON deserialization
-    record ScaleRequest(String artifact, Integer instances, String placement) {}
+    record ScaleRequest(String artifact, Integer instances, String placement){}
 
-    record BlueprintDeployRequest(String artifact) {}
+    record BlueprintDeployRequest(String artifact){}
 
-    @Override
-    public Stream<Route<?>> routes() {
-        return Stream.of(Route.<SlicesResponse> get("/api/slices")
-                              .toJson(this::buildSlicesResponse),
-                         Route.<SlicesStatusResponse> get("/api/slices/status")
+    @Override public Stream<Route<?>> routes() {
+        return Stream.of(Route.<ClusterSlicesResponse>get("/api/slices")
+                              .toJson(this::buildClusterSlicesResponse),
+                         Route.<SlicesResponse>get("/api/node/slices")
+                              .toJson(this::buildNodeSlicesResponse),
+                         Route.<SlicesStatusResponse>get("/api/slices/status")
                               .toJson(this::buildSlicesStatusResponse),
-                         Route.<RoutesResponse> get("/api/routes")
+                         Route.<RoutesResponse>get("/api/node/routes")
                               .toJson(this::buildRoutesResponse),
-                         Route.<ScaleResponse> post("/api/scale")
+                         Route.<ScaleResponse>post("/api/scale")
                               .withBody(ScaleRequest.class)
                               .toJson(this::handleScale),
-                         Route.<BlueprintResponse> post("/api/blueprint")
+                         Route.<BlueprintResponse>post("/api/blueprint")
                               .to(ctx -> handleBlueprint(ctx.bodyAsString()))
                               .asJson(),
                          // Blueprint management routes
-        Route.<BlueprintListResponse> get("/api/blueprints")
+        Route.<BlueprintListResponse>get("/api/blueprints")
              .toJson(this::buildBlueprintListResponse),
-                         Route.<BlueprintDetailResponse> get("/api/blueprint")
+                         Route.<BlueprintDetailResponse>get("/api/blueprint")
                               .withPath(aString())
                               .to(this::handleGetBlueprint)
                               .asJson(),
-                         Route.<BlueprintStatusResponse> get("/api/blueprint")
+                         Route.<BlueprintStatusResponse>get("/api/blueprint")
                               .withPath(aString(),
                                         spacer("status"))
                               .to((id, _) -> handleGetBlueprintStatus(id))
                               .asJson(),
-                         Route.<BlueprintDeleteResponse> delete("/api/blueprint")
+                         Route.<BlueprintDeleteResponse>delete("/api/blueprint")
                               .withPath(aString())
                               .to(this::handleDeleteBlueprint)
                               .asJson(),
-                         Route.<BlueprintResponse> post("/api/blueprint/deploy")
+                         Route.<BlueprintResponse>post("/api/blueprint/deploy")
                               .withBody(BlueprintDeployRequest.class)
                               .toJson(this::handleBlueprintDeploy),
-                         Route.<BlueprintValidationResponse> post("/api/blueprint/validate")
+                         Route.<BlueprintValidationResponse>post("/api/blueprint/validate")
                               .to(ctx -> handleValidateBlueprint(ctx.bodyAsString()))
                               .asJson(),
-                         Route.<TopologyResponse> get("/api/topology")
+                         Route.<TopologyResponse>get("/api/topology")
                               .toJson(this::buildTopologyResponse));
     }
 
-    private record ScaleParams(String artifact, int instances, Option<String> placement) {}
+    private record ScaleParams(String artifact, int instances, Option<String> placement){}
 
     private Result<ScaleParams> validateScaleRequest(ScaleRequest request) {
-        return Result.all(Option.option(request.artifact())
-                                .toResult(MISSING_ARTIFACT_OR_INSTANCES),
-                          Option.option(request.instances())
-                                .toResult(MISSING_ARTIFACT_OR_INSTANCES))
-                     .map((art, inst) -> new ScaleParams(art,
-                                                         inst,
-                                                         Option.option(request.placement())));
+        return Result.all(Option.option(request.artifact()).toResult(MISSING_ARTIFACT_OR_INSTANCES),
+                          Option.option(request.instances()).toResult(MISSING_ARTIFACT_OR_INSTANCES))
+        .map((art, inst) -> new ScaleParams(art,
+                                            inst,
+                                            Option.option(request.placement())));
     }
 
-    private record ValidatedScale(ScaleParams params, Artifact artifact) {}
+    private record ValidatedScale(ScaleParams params, Artifact artifact){}
 
     private Promise<ScaleResponse> handleScale(ScaleRequest request) {
         return validateScaleRequest(request).async()
@@ -127,49 +127,40 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private Promise<ValidatedScale> resolveScaleArtifact(ScaleParams params) {
-        return Artifact.artifact(params.artifact())
-                       .async()
-                       .map(artifact -> new ValidatedScale(params, artifact));
+        return Artifact.artifact(params.artifact()).async()
+                                .map(artifact -> new ValidatedScale(params, artifact));
     }
 
     private Promise<ValidatedScale> guardScaleConstraints(ValidatedScale vs) {
         return guardBlueprintMembership(vs.artifact()).flatMap(_ -> guardMinInstances(vs.artifact(),
-                                                                                      vs.params()
-                                                                                        .instances()))
+                                                                                      vs.params().instances()))
                                        .map(_ -> vs);
     }
 
     private Promise<ScaleResponse> executeScale(ValidatedScale vs) {
         return applyDeployCommand(vs.artifact(),
-                                  vs.params()
-                                    .instances(),
-                                  vs.params()
-                                    .placement())
+                                  vs.params().instances(),
+                                  vs.params().placement())
         .map(_ -> new ScaleResponse("scaled",
-                                    vs.artifact()
-                                      .asString(),
-                                    vs.params()
-                                      .instances()));
+                                    vs.artifact().asString(),
+                                    vs.params().instances()));
     }
 
     private static final Cause BELOW_MIN_INSTANCES = Causes.cause("Requested instances is below blueprint minimum");
 
     private Promise<Unit> guardMinInstances(Artifact artifact, int requestedInstances) {
-        if (requestedInstances < 1) {
-            return BELOW_MIN_INSTANCES.promise();
-        }
+        if ( requestedInstances < 1) {
+        return BELOW_MIN_INSTANCES.promise();}
         var node = nodeSupplier.get();
         var key = SliceTargetKey.sliceTargetKey(artifact.base());
-        return node.kvStore()
-                   .get(key)
-                   .filter(v -> v instanceof SliceTargetValue)
-                   .map(v -> ((SliceTargetValue) v).effectiveMinInstances())
-                   .map(min -> requestedInstances >= min
-                               ? Promise.unitPromise()
-                               : Causes.cause("Requested " + requestedInstances
-                                              + " instances but blueprint minimum is " + min)
-                                       .<Unit> promise())
-                   .or(Promise.unitPromise());
+        return node.kvStore().get(key)
+                           .filter(v -> v instanceof SliceTargetValue)
+                           .map(v -> ((SliceTargetValue) v).effectiveMinInstances())
+                           .map(min -> requestedInstances >= min
+                                      ? Promise.unitPromise()
+                                      : Causes.cause("Requested " + requestedInstances + " instances but blueprint minimum is " + min)
+        .<Unit>promise())
+                           .or(Promise.unitPromise());
     }
 
     private Promise<Unit> guardBlueprintMembership(Artifact artifact) {
@@ -179,136 +170,110 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private boolean isPartOfActiveBlueprint(Artifact artifact) {
-        return nodeSupplier.get()
-                           .blueprintService()
-                           .list()
-                           .stream()
-                           .flatMap(blueprint -> blueprint.loadOrder()
-                                                          .stream())
-                           .anyMatch(slice -> slice.artifact()
-                                                   .base()
-                                                   .equals(artifact.base()));
+        return nodeSupplier.get().blueprintService()
+                               .list()
+                               .stream()
+                               .flatMap(blueprint -> blueprint.loadOrder().stream())
+                               .anyMatch(slice -> slice.artifact().base()
+                                                                .equals(artifact.base()));
     }
 
     private Promise<BlueprintResponse> handleBlueprint(String body) {
-        return nodeSupplier.get()
-                           .blueprintService()
-                           .publish(body)
-                           .withSuccess(this::pushSecurityOverrides)
-                           .map(expanded -> new BlueprintResponse("applied",
-                                                                  expanded.id()
-                                                                          .asString(),
-                                                                  expanded.loadOrder()
-                                                                          .size()))
-                           .onSuccess(r -> auditAndEmitBlueprintDeployed(r.blueprint(),
-                                                                         r.slices()))
-                           .onFailure(cause -> log.warn("Blueprint publish failed: {}",
-                                                        cause.message()));
+        return nodeSupplier.get().blueprintService()
+                               .publish(body)
+                               .withSuccess(this::pushSecurityOverrides)
+                               .map(expanded -> new BlueprintResponse("applied",
+                                                                      expanded.id().asString(),
+                                                                      expanded.loadOrder().size()))
+                               .onSuccess(r -> auditAndEmitBlueprintDeployed(r.blueprint(),
+                                                                             r.slices()))
+                               .onFailure(cause -> log.warn("Blueprint publish failed: {}",
+                                                            cause.message()));
     }
 
     private static final Cause MISSING_ARTIFACT_COORDS = Causes.cause("Missing 'artifact' field");
 
     private Promise<BlueprintResponse> handleBlueprintDeploy(BlueprintDeployRequest request) {
-        return Option.option(request.artifact())
-                     .toResult(MISSING_ARTIFACT_COORDS)
-                     .async()
-                     .flatMap(coords -> nodeSupplier.get()
-                                                    .blueprintService()
-                                                    .publishFromArtifact(coords))
-                     .withSuccess(this::pushSecurityOverrides)
-                     .map(expanded -> new BlueprintResponse("deployed",
-                                                            expanded.id()
-                                                                    .asString(),
-                                                            expanded.loadOrder()
-                                                                    .size()))
-                     .onSuccess(r -> auditAndEmitBlueprintDeployed(r.blueprint(),
-                                                                   r.slices()))
-                     .onFailure(cause -> log.warn("Blueprint artifact deploy failed: {}",
-                                                  cause.message()));
+        return Option.option(request.artifact()).toResult(MISSING_ARTIFACT_COORDS)
+                            .async()
+                            .flatMap(coords -> nodeSupplier.get().blueprintService()
+                                                               .publishFromArtifact(coords))
+                            .withSuccess(this::pushSecurityOverrides)
+                            .map(expanded -> new BlueprintResponse("deployed",
+                                                                   expanded.id().asString(),
+                                                                   expanded.loadOrder().size()))
+                            .onSuccess(r -> auditAndEmitBlueprintDeployed(r.blueprint(),
+                                                                          r.slices()))
+                            .onFailure(cause -> log.warn("Blueprint artifact deploy failed: {}",
+                                                         cause.message()));
     }
 
     private void pushSecurityOverrides(ExpandedBlueprint expanded) {
-        nodeSupplier.get()
-                    .appHttpServer()
-                    .httpRoutePublisher()
-                    .onPresent(pub -> pub.updateSecurityOverrides(expanded.securityOverrides()));
+        nodeSupplier.get().appHttpServer()
+                        .httpRoutePublisher()
+                        .onPresent(pub -> pub.updateSecurityOverrides(expanded.securityOverrides()));
     }
 
     private BlueprintListResponse buildBlueprintListResponse() {
-        var blueprints = nodeSupplier.get()
-                                     .blueprintService()
-                                     .list()
-                                     .stream()
-                                     .map(this::toBlueprintSummary)
-                                     .toList();
+        var blueprints = nodeSupplier.get().blueprintService()
+                                         .list()
+                                         .stream()
+                                         .map(this::toBlueprintSummary)
+                                         .toList();
         return new BlueprintListResponse(blueprints);
     }
 
     private BlueprintSummary toBlueprintSummary(ExpandedBlueprint blueprint) {
-        return new BlueprintSummary(blueprint.id()
-                                             .asString(),
-                                    blueprint.loadOrder()
-                                             .size());
+        return new BlueprintSummary(blueprint.id().asString(),
+                                    blueprint.loadOrder().size());
     }
 
     private Promise<BlueprintDetailResponse> handleGetBlueprint(String id) {
-        return BlueprintId.blueprintId(id)
-                          .async()
-                          .flatMap(blueprintId -> nodeSupplier.get()
-                                                              .blueprintService()
-                                                              .get(blueprintId)
-                                                              .async(BLUEPRINT_NOT_FOUND))
-                          .map(this::toBlueprintDetailResponse);
+        return BlueprintId.blueprintId(id).async()
+                                      .flatMap(blueprintId -> nodeSupplier.get().blueprintService()
+                                                                              .get(blueprintId)
+                                                                              .async(BLUEPRINT_NOT_FOUND))
+                                      .map(this::toBlueprintDetailResponse);
     }
 
     private BlueprintDetailResponse toBlueprintDetailResponse(ExpandedBlueprint blueprint) {
-        var slices = blueprint.loadOrder()
-                              .stream()
-                              .map(this::toBlueprintSliceInfo)
-                              .toList();
-        var dependencies = blueprint.loadOrder()
-                                    .stream()
-                                    .filter(ResolvedSlice::isDependency)
-                                    .map(s -> s.artifact()
-                                               .asString())
-                                    .toList();
-        return new BlueprintDetailResponse(blueprint.id()
-                                                    .asString(),
+        var slices = blueprint.loadOrder().stream()
+                                        .map(this::toBlueprintSliceInfo)
+                                        .toList();
+        var dependencies = blueprint.loadOrder().stream()
+                                              .filter(ResolvedSlice::isDependency)
+                                              .map(s -> s.artifact().asString())
+                                              .toList();
+        return new BlueprintDetailResponse(blueprint.id().asString(),
                                            slices,
                                            dependencies);
     }
 
     private BlueprintSliceInfo toBlueprintSliceInfo(ResolvedSlice slice) {
-        var deps = slice.dependencies()
-                        .stream()
-                        .map(Artifact::asString)
-                        .toList();
-        return new BlueprintSliceInfo(slice.artifact()
-                                           .asString(),
+        var deps = slice.dependencies().stream()
+                                     .map(Artifact::asString)
+                                     .toList();
+        return new BlueprintSliceInfo(slice.artifact().asString(),
                                       slice.instances(),
                                       slice.isDependency(),
                                       deps);
     }
 
     private Promise<BlueprintStatusResponse> handleGetBlueprintStatus(String id) {
-        return BlueprintId.blueprintId(id)
-                          .async()
-                          .flatMap(blueprintId -> nodeSupplier.get()
-                                                              .blueprintService()
-                                                              .get(blueprintId)
-                                                              .async(BLUEPRINT_NOT_FOUND))
-                          .map(this::toBlueprintStatusResponse);
+        return BlueprintId.blueprintId(id).async()
+                                      .flatMap(blueprintId -> nodeSupplier.get().blueprintService()
+                                                                              .get(blueprintId)
+                                                                              .async(BLUEPRINT_NOT_FOUND))
+                                      .map(this::toBlueprintStatusResponse);
     }
 
     private BlueprintStatusResponse toBlueprintStatusResponse(ExpandedBlueprint blueprint) {
         var node = nodeSupplier.get();
-        var sliceStatuses = blueprint.loadOrder()
-                                     .stream()
-                                     .map(slice -> computeSliceStatus(node, slice))
-                                     .toList();
+        var sliceStatuses = blueprint.loadOrder().stream()
+                                               .map(slice -> computeSliceStatus(node, slice))
+                                               .toList();
         var overallStatus = computeOverallStatus(sliceStatuses);
-        return new BlueprintStatusResponse(blueprint.id()
-                                                    .asString(),
+        return new BlueprintStatusResponse(blueprint.id().asString(),
                                            overallStatus,
                                            sliceStatuses);
     }
@@ -322,78 +287,62 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private int countActiveInstances(AetherNode node, Artifact artifact) {
-        return (int) node.deploymentMap()
-                        .byArtifact(artifact)
-                        .values()
-                        .stream()
-                        .filter(state -> state == SliceState.ACTIVE)
-                        .count();
+        return (int) node.deploymentMap().byArtifact(artifact)
+                                       .values()
+                                       .stream()
+                                       .filter(state -> state == SliceState.ACTIVE)
+                                       .count();
     }
 
     private String determineSliceDeploymentStatus(int target, int active) {
-        if (active == 0) {
-            return "PENDING";
-        } else if (active < target) {
-            return "DEPLOYING";
-        } else if (active == target) {
-            return "DEPLOYED";
-        } else {
-            return "SCALING_DOWN";
-        }
+        if ( active == 0) {
+        return "PENDING";} else
+        if ( active < target) {
+        return "DEPLOYING";} else if ( active == target) {
+        return "DEPLOYED";} else {
+        return "SCALING_DOWN";}
     }
 
     private String computeOverallStatus(List<BlueprintSliceStatus> sliceStatuses) {
-        var hasPending = sliceStatuses.stream()
-                                      .anyMatch(s -> "PENDING".equals(s.status()));
-        var hasDeploying = sliceStatuses.stream()
-                                        .anyMatch(s -> "DEPLOYING".equals(s.status()));
-        var hasScalingDown = sliceStatuses.stream()
-                                          .anyMatch(s -> "SCALING_DOWN".equals(s.status()));
-        var allDeployed = sliceStatuses.stream()
-                                       .allMatch(s -> "DEPLOYED".equals(s.status()));
-        if (allDeployed) {
-            return "DEPLOYED";
-        } else if (hasPending) {
-            return "PENDING";
-        } else if (hasDeploying || hasScalingDown) {
-            return "IN_PROGRESS";
-        } else {
-            return "PARTIAL";
-        }
+        var hasPending = sliceStatuses.stream().anyMatch(s -> "PENDING".equals(s.status()));
+        var hasDeploying = sliceStatuses.stream().anyMatch(s -> "DEPLOYING".equals(s.status()));
+        var hasScalingDown = sliceStatuses.stream().anyMatch(s -> "SCALING_DOWN".equals(s.status()));
+        var allDeployed = sliceStatuses.stream().allMatch(s -> "DEPLOYED".equals(s.status()));
+        if ( allDeployed) {
+        return "DEPLOYED";} else
+        if ( hasPending) {
+        return "PENDING";} else if ( hasDeploying || hasScalingDown) {
+        return "IN_PROGRESS";} else {
+        return "PARTIAL";}
     }
 
     private Promise<BlueprintDeleteResponse> handleDeleteBlueprint(String id) {
-        return BlueprintId.blueprintId(id)
-                          .async()
-                          .flatMap(blueprintId -> nodeSupplier.get()
-                                                              .blueprintService()
-                                                              .delete(blueprintId)
-                                                              .map(_ -> new BlueprintDeleteResponse("deleted",
-                                                                                                    blueprintId.asString())))
-                          .onSuccess(r -> auditAndEmitBlueprintDeleted(r.id()))
-                          .onFailure(cause -> log.warn("Blueprint delete failed: {}",
-                                                       cause.message()));
+        return BlueprintId.blueprintId(id).async()
+                                      .flatMap(blueprintId -> nodeSupplier.get().blueprintService()
+                                                                              .delete(blueprintId)
+                                                                              .map(_ -> new BlueprintDeleteResponse("deleted",
+                                                                                                                    blueprintId.asString())))
+                                      .onSuccess(r -> auditAndEmitBlueprintDeleted(r.id()))
+                                      .onFailure(cause -> log.warn("Blueprint delete failed: {}",
+                                                                   cause.message()));
     }
 
     private void auditAndEmitBlueprintDeployed(String blueprintId, int sliceCount) {
         AuditLog.blueprintDeployed(blueprintId, sliceCount);
-        nodeSupplier.get()
-                    .route(OperationalEvent.BlueprintDeployed.blueprintDeployed(blueprintId, "api"));
+        nodeSupplier.get().route(OperationalEvent.BlueprintDeployed.blueprintDeployed(blueprintId, "api"));
     }
 
     private void auditAndEmitBlueprintDeleted(String blueprintId) {
         AuditLog.blueprintDeleted(blueprintId);
-        nodeSupplier.get()
-                    .route(OperationalEvent.BlueprintDeleted.blueprintDeleted(blueprintId, "api"));
+        nodeSupplier.get().route(OperationalEvent.BlueprintDeleted.blueprintDeleted(blueprintId, "api"));
     }
 
     private Promise<BlueprintValidationResponse> handleValidateBlueprint(String body) {
         var warnings = BlueprintParser.detectUnrecognizedSections(body);
-        return Promise.success(nodeSupplier.get()
-                                           .blueprintService()
-                                           .validate(body)
-                                           .fold(cause -> failedValidationResponse(cause, warnings),
-                                                 blueprint -> successValidationResponse(blueprint, warnings)));
+        return Promise.success(nodeSupplier.get().blueprintService()
+                                               .validate(body)
+                                               .fold(cause -> failedValidationResponse(cause, warnings),
+                                                     blueprint -> successValidationResponse(blueprint, warnings)));
     }
 
     private static BlueprintValidationResponse failedValidationResponse(Cause cause, List<String> warnings) {
@@ -406,10 +355,8 @@ public final class SliceRoutes implements RouteSource {
 
     private static BlueprintValidationResponse successValidationResponse(Blueprint blueprint, List<String> warnings) {
         return new BlueprintValidationResponse(true,
-                                               blueprint.id()
-                                                        .asString(),
-                                               blueprint.slices()
-                                                        .size(),
+                                               blueprint.id().asString(),
+                                               blueprint.slices().size(),
                                                List.of(),
                                                warnings);
     }
@@ -417,12 +364,11 @@ public final class SliceRoutes implements RouteSource {
     private Promise<List<Long>> applyDeployCommand(Artifact artifact, int instances, Option<String> placement) {
         var node = nodeSupplier.get();
         var key = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
-        var existing = node.kvStore()
-                           .get(key)
-                           .filter(v -> v instanceof AetherValue.SliceTargetValue)
-                           .map(v -> applyScaleToExisting((AetherValue.SliceTargetValue) v,
-                                                          instances,
-                                                          placement));
+        var existing = node.kvStore().get(key)
+                                   .filter(v -> v instanceof AetherValue.SliceTargetValue)
+                                   .map(v -> applyScaleToExisting((AetherValue.SliceTargetValue) v,
+                                                                  instances,
+                                                                  placement));
         var defaultPlacement = placement.or("CORE_ONLY");
         AetherValue value = existing.or(AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(),
                                                                                       instances,
@@ -436,8 +382,7 @@ public final class SliceRoutes implements RouteSource {
                                                                      int instances,
                                                                      Option<String> placement) {
         var updated = existing.withInstances(instances);
-        return placement.map(updated::withPlacement)
-                        .or(updated);
+        return placement.map(updated::withPlacement).or(updated);
     }
 
     private TopologyResponse buildTopologyResponse() {
@@ -448,91 +393,114 @@ public final class SliceRoutes implements RouteSource {
 
     private List<SliceTopology> collectSliceTopologies() {
         var node = nodeSupplier.get();
-        var loaded = node.sliceStore()
-                         .loaded();
+        var loaded = node.sliceStore().loaded();
         log.debug("buildTopologyResponse: loaded slices={}", loaded.size());
-        var topologies = loaded.stream()
-                               .flatMap(ls -> TopologyParser.parse(ls.slice(),
-                                                                   ls.artifact()
-                                                                     .asString())
-                                                            .stream())
-                               .toList();
+        var topologies = loaded.stream().flatMap(ls -> TopologyParser.parse(ls.slice(),
+                                                                            ls.artifact().asString())
+        .stream())
+                                      .toList();
         log.debug("buildTopologyResponse: topologies={}", topologies.size());
         return topologies;
     }
 
     private TopologyResponse toTopologyResponse(TopologyGraph graph) {
         log.debug("buildTopologyResponse: graph nodes={}, edges={}",
-                  graph.nodes()
-                       .size(),
-                  graph.edges()
-                       .size());
-        var nodes = graph.nodes()
-                         .stream()
-                         .map(n -> new TopologyNodeInfo(n.id(),
-                                                        n.type()
-                                                         .name(),
-                                                        n.label(),
-                                                        n.sliceArtifact()))
-                         .toList();
-        var edges = graph.edges()
-                         .stream()
-                         .map(e -> new TopologyEdgeInfo(e.from(),
-                                                        e.to(),
-                                                        e.style()
-                                                         .name(),
-                                                        e.topicConfig()))
-                         .toList();
+                  graph.nodes().size(),
+                  graph.edges().size());
+        var nodes = graph.nodes().stream()
+                               .map(n -> new TopologyNodeInfo(n.id(),
+                                                              n.type().name(),
+                                                              n.label(),
+                                                              n.sliceArtifact()))
+                               .toList();
+        var edges = graph.edges().stream()
+                               .map(e -> new TopologyEdgeInfo(e.from(),
+                                                              e.to(),
+                                                              e.style().name(),
+                                                              e.topicConfig()))
+                               .toList();
         return new TopologyResponse(nodes, edges);
     }
 
-    private SlicesResponse buildSlicesResponse() {
+    private SlicesResponse buildNodeSlicesResponse() {
         var node = nodeSupplier.get();
-        var slices = node.sliceStore()
-                         .loaded()
-                         .stream()
-                         .map(slice -> slice.artifact()
-                                            .asString())
-                         .toList();
+        var slices = node.sliceStore().loaded()
+                                    .stream()
+                                    .map(slice -> slice.artifact().asString())
+                                    .toList();
         return new SlicesResponse(slices);
+    }
+
+    private ClusterSlicesResponse buildClusterSlicesResponse() {
+        var node = nodeSupplier.get();
+        var targets = collectSliceTargets(node);
+        var slices = node.deploymentMap().allDeployments()
+                                       .stream()
+                                       .map(info -> toClusterSliceInfo(info, targets))
+                                       .toList();
+        return new ClusterSlicesResponse(slices);
+    }
+
+    private Map<String, SliceTargetValue> collectSliceTargets(AetherNode node) {
+        var targets = new HashMap<String, SliceTargetValue>();
+        node.kvStore()
+        .forEach(SliceTargetKey.class,
+                 SliceTargetValue.class,
+                 (key, value) -> targets.put(key.artifactBase().asString(),
+                                             value));
+        return targets;
+    }
+
+    private static ClusterSliceInfo toClusterSliceInfo(DeploymentMap.SliceDeploymentInfo info,
+                                                       Map<String, SliceTargetValue> targets) {
+        var artifactStr = info.artifact();
+        var artifactBase = artifactStr.contains(":")
+                           ? artifactStr.substring(0, artifactStr.lastIndexOf(':'))
+                           : artifactStr;
+        var target = Option.option(targets.get(artifactBase));
+        var instances = info.instances().stream()
+                                      .map(i -> new ClusterSliceInstance(i.nodeId(),
+                                                                         i.state().name(),
+                                                                         ""))
+                                      .toList();
+        return new ClusterSliceInfo(artifactStr,
+                                    target.map(SliceTargetValue::targetInstances).or(instances.size()),
+                                    target.map(SliceTargetValue::effectiveMinInstances).or(1),
+                                    target.map(t -> t.currentVersion().withQualifier()).or(""),
+                                    instances);
     }
 
     private RoutesResponse buildRoutesResponse() {
         var node = nodeSupplier.get();
-        var routes = node.httpRouteRegistry()
-                         .allRoutes()
-                         .stream()
-                         .map(this::toRouteInfo)
-                         .toList();
+        var routes = node.httpRouteRegistry().allRoutes()
+                                           .stream()
+                                           .map(this::toRouteInfo)
+                                           .toList();
         return new RoutesResponse(routes);
     }
 
     private RouteInfo toRouteInfo(org.pragmatica.aether.http.HttpRouteRegistry.RouteInfo route) {
-        List<String> nodeIds = route.nodes()
-                                    .stream()
-                                    .map(NodeId::id)
-                                    .toList();
+        List<String> nodeIds = route.nodes().stream()
+                                          .map(NodeId::id)
+                                          .toList();
         return new RouteInfo(route.httpMethod(), route.pathPrefix(), nodeIds, route.security());
     }
 
     private SlicesStatusResponse buildSlicesStatusResponse() {
         var node = nodeSupplier.get();
-        var slices = node.deploymentMap()
-                         .allDeployments()
-                         .stream()
-                         .map(this::toSliceStatusFromDeployment)
-                         .toList();
+        var slices = node.deploymentMap().allDeployments()
+                                       .stream()
+                                       .map(this::toSliceStatusFromDeployment)
+                                       .toList();
         return new SlicesStatusResponse(slices);
     }
 
     private SliceStatus toSliceStatusFromDeployment(DeploymentMap.SliceDeploymentInfo info) {
-        var instanceInfos = info.instances()
-                                .stream()
-                                .map(this::toSliceInstanceInfoFromDeployment)
-                                .toList();
+        var instanceInfos = info.instances().stream()
+                                          .map(this::toSliceInstanceInfoFromDeployment)
+                                          .toList();
         return new SliceStatus(info.artifact(),
-                               info.aggregateState()
-                                   .name(),
+                               info.aggregateState().name(),
                                instanceInfos);
     }
 
@@ -541,8 +509,7 @@ public final class SliceRoutes implements RouteSource {
                      ? "HEALTHY"
                      : "UNHEALTHY";
         return new SliceInstanceInfo(inst.nodeId(),
-                                     inst.state()
-                                         .name(),
+                                     inst.state().name(),
                                      health);
     }
 }

@@ -83,6 +83,17 @@ public final class TlsContextFactory {
         return createServer(config);
     }
 
+    /// Create server-side SSL context from a [CertificateBundle].
+    /// Builds mutual TLS with the bundle's cert, key, and CA.
+    ///
+    /// @param bundle certificate bundle from a [CertificateProvider]
+    /// @return SSL context or error
+    public static Result<SslContext> createServerFromBundle(org.pragmatica.net.tcp.security.CertificateBundle bundle) {
+        var identity = new TlsConfig.Identity.FromProvider(bundle.certificatePem(), bundle.privateKeyPem());
+        var trust = new TlsConfig.Trust.FromCaBytes(bundle.caCertificatePem());
+        return buildServerContext(identity, Option.some(trust));
+    }
+
     // ===== Server Context Building =====
     private static Result<SslContext> buildServerContext(TlsConfig.Identity identity,
                                                          Option<TlsConfig.Trust> clientAuth) {
@@ -209,7 +220,7 @@ public final class TlsContextFactory {
     @SuppressWarnings("deprecation") // SelfSignedCertificate is for dev/testing only
     private static Result<KeyMaterial> generateSelfSigned() {
         try{
-            var ssc = new SelfSignedCertificate();
+            var ssc = new SelfSignedCertificate("localhost", "RSA", 2048);
             return Result.success(new KeyMaterial.FromFile(ssc.certificate(), ssc.privateKey(), null));
         } catch (Exception e) {
             return new TlsError.SelfSignedGenerationFailed(e).result();

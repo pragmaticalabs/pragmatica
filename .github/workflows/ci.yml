@@ -79,53 +79,6 @@ jobs:
             aether/forge/forge-tests/target/failsafe-reports/*.xml
           retention-days: 7
 
-  e2e-tests:
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-
-    env:
-      DOCKER_HOST: unix:///var/run/docker.sock
-      TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE: /var/run/docker.sock
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Java 25
-        uses: actions/setup-java@v4
-        with:
-          java-version: '25'
-          distribution: 'zulu'
-          cache: 'maven'
-
-      - name: Verify Docker
-        run: docker info
-
-      - name: Bootstrap jbct-maven-plugin and slice-processor
-        run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor -am
-
-      - name: Install all artifacts
-        run: mvn install -B -DskipTests
-
-      - name: Pre-build E2E container image
-        run: |
-          docker build -t aether-node-e2e \
-            -f aether/docker/aether-node/Dockerfile \
-            --build-arg JAR_PATH=aether/node/target/aether-node.jar \
-            --build-arg CONFIG_PATH=aether/docker/aether-node/aether.toml \
-            .
-
-      - name: Run E2E tests
-        run: mvn verify -B -Pwith-e2e -pl aether/e2e-tests -DskipE2ETests=false
-        timeout-minutes: 30
-        env:
-          AETHER_E2E_IMAGE: aether-node-e2e:latest
-
-      - name: Upload E2E test results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: e2e-test-results
-          path: |
-            aether/e2e-tests/target/failsafe-reports/*.xml
-          retention-days: 7
+  # E2E tests removed — replaced by Docker-based integration test suite
+  # at aether/tests/integration/ (run manually on dedicated hardware).
+  # See: aether/tests/integration/README.md

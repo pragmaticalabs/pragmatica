@@ -31,7 +31,7 @@ import static org.pragmatica.serialization.SliceCodec.writeString;
 @CodecFor(InetSocketAddress.class)
 @SuppressWarnings("JBCT-STY-03") // KvstoreCodecs exists in two packages — FQCN unavoidable
 public sealed interface WorkerCodecs {
-    record unused() implements WorkerCodecs {}
+    record unused() implements WorkerCodecs{}
 
     static SliceCodec workerCodecs(SliceCodec parent) {
         var all = new ArrayList<TypeCodec<?>>();

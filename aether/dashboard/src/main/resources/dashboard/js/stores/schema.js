@@ -23,6 +23,14 @@ document.addEventListener('alpine:init', function() {
                 case 'FAILED': return 'failed';
                 default: return 'unknown';
             }
+        },
+
+        async retrySchema(datasource) {
+            var data = await RestClient.post('/api/schema/retry/' + datasource, {});
+            if (data) {
+                Notifications.show('Retry triggered for ' + datasource, 'success');
+                await this.refresh();
+            }
         }
     });
 });

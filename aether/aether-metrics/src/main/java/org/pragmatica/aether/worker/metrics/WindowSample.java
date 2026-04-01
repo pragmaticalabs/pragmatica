@@ -10,13 +10,12 @@ import org.pragmatica.serialization.Codec;
 /// @param avgP95LatencyMs        average P95 latency in milliseconds
 /// @param avgErrorRate           average error rate
 /// @param timestampMs            when this sample was taken
-@Codec
-public record WindowSample(double avgCpuUsage,
-                           double avgHeapUsage,
-                           long totalActiveInvocations,
-                           double avgP95LatencyMs,
-                           double avgErrorRate,
-                           long timestampMs) {
+@Codec public record WindowSample( double avgCpuUsage,
+                                   double avgHeapUsage,
+                                   long totalActiveInvocations,
+                                   double avgP95LatencyMs,
+                                   double avgErrorRate,
+                                   long timestampMs) {
     /// Factory following JBCT naming convention.
     public static WindowSample windowSample(double avgCpuUsage,
                                             double avgHeapUsage,

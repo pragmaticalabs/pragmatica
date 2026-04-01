@@ -14,12 +14,12 @@ import static org.pragmatica.lang.Result.success;
 /// @param roleClaim JWT claim name for role extraction (default: "role")
 /// @param cacheTtlSeconds JWKS cache TTL in seconds (default: 3600 = 1 hour)
 /// @param clockSkewSeconds clock skew tolerance in seconds for token expiration (default: 30)
-public record JwtConfig(String jwksUrl,
-                        Option<String> issuer,
-                        Option<String> audience,
-                        String roleClaim,
-                        long cacheTtlSeconds,
-                        long clockSkewSeconds) {
+public record JwtConfig( String jwksUrl,
+                         Option<String> issuer,
+                         Option<String> audience,
+                         String roleClaim,
+                         long cacheTtlSeconds,
+                         long clockSkewSeconds) {
     public static final String DEFAULT_ROLE_CLAIM = "role";
     public static final long DEFAULT_CACHE_TTL_SECONDS = 3600;
     public static final long DEFAULT_CLOCK_SKEW_SECONDS = 30;

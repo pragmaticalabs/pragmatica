@@ -1,27 +1,5 @@
 package org.pragmatica.aether.metrics;
-/// Pre-computed derived metrics from raw measurements.
-///
-/// These metrics are calculated from recent samples to provide:
-///
-///   - Rates (per second)
-///   - Percentiles
-///   - Saturation signals
-///   - Trend indicators
-///
-///
-/// @param requestRate          Invocations per second
-/// @param errorRate            Errors per second
-/// @param gcRate               GC events per second
-/// @param latencyP50           50th percentile latency (ms)
-/// @param latencyP95           95th percentile latency (ms)
-/// @param latencyP99           99th percentile latency (ms)
-/// @param eventLoopSaturation  Event loop saturation (0.0-1.0, lag/threshold)
-/// @param heapSaturation       Heap saturation (0.0-1.0, used/max)
-/// @param backpressureRate     Backpressure events per second
-/// @param cpuTrend             CPU usage trend (positive = increasing)
-/// @param latencyTrend         Latency trend (positive = increasing)
-/// @param errorTrend           Error rate trend (positive = increasing)
-public record DerivedMetrics(// Rates (per second)
+public record DerivedMetrics( // Rates (per second)
 double requestRate,
 double errorRate,
 double gcRate,
@@ -60,7 +38,7 @@ double errorTrend) {
         double errorScore = Math.max(0, 1.0 - errorRate * 10);
         // 10% error = 0
         // Weighted average
-        return ( latencyScore * 0.3 + eventLoopScore * 0.3 + heapScore * 0.2 + errorScore * 0.2);
+        return (latencyScore * 0.3 + eventLoopScore * 0.3 + heapScore * 0.2 + errorScore * 0.2);
     }
 
     /// Check if system is under stress.

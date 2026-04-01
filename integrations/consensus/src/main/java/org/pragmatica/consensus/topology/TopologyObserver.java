@@ -127,7 +127,8 @@ public interface TopologyObserver extends TopologyManager {
             private void initReconcile() {
                 if (active.get()) {
                     router().route(new NetworkServiceMessage.ListConnectedNodes());
-                } else if (nodeStatesById().isEmpty()) {
+                } else if (nodeStatesById().size() <= 1) {
+                    log.info("Topology drained to self-only — re-seeding from config ({} core nodes)", config().coreNodes().size());
                     config().coreNodes()
                           .forEach(this::addNode);
                 }

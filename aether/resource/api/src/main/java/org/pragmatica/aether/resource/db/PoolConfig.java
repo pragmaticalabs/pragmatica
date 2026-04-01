@@ -18,16 +18,15 @@ import static org.pragmatica.lang.Result.success;
 /// @param validationQuery      SQL query to validate connections (optional)
 /// @param leakDetectionTimeout Time after which connection leak warnings are logged
 /// @param ioThreads            Number of Netty IO threads for async transport (0 = auto)
-public record PoolConfig(int minConnections,
-                         int maxConnections,
-                         TimeSpan connectionTimeout,
-                         TimeSpan idleTimeout,
-                         TimeSpan maxLifetime,
-                         Option<String> validationQuery,
-                         TimeSpan leakDetectionTimeout,
-                         int ioThreads) {
-    private static final int DEFAULT_IO_THREADS = Math.max(Runtime.getRuntime()
-                                                                  .availableProcessors(),
+public record PoolConfig( int minConnections,
+                          int maxConnections,
+                          TimeSpan connectionTimeout,
+                          TimeSpan idleTimeout,
+                          TimeSpan maxLifetime,
+                          Option<String> validationQuery,
+                          TimeSpan leakDetectionTimeout,
+                          int ioThreads) {
+    private static final int DEFAULT_IO_THREADS = Math.max(Runtime.getRuntime().availableProcessors(),
                                                            8);
 
     /// Creates a validated pool config with all parameters.
@@ -68,15 +67,11 @@ public record PoolConfig(int minConnections,
     /// Default pool configuration suitable for most applications.
     public static final PoolConfig DEFAULT = poolConfig(4,
                                                         20,
-                                                        TimeSpan.timeSpan("30s")
-                                                                .unwrap(),
-                                                        TimeSpan.timeSpan("10m")
-                                                                .unwrap(),
-                                                        TimeSpan.timeSpan("30m")
-                                                                .unwrap(),
+                                                        TimeSpan.timeSpan("30s").unwrap(),
+                                                        TimeSpan.timeSpan("10m").unwrap(),
+                                                        TimeSpan.timeSpan("30m").unwrap(),
                                                         none(),
-                                                        TimeSpan.timeSpan("0s")
-                                                                .unwrap(),
+                                                        TimeSpan.timeSpan("0s").unwrap(),
                                                         0).unwrap();
 
     /// Creates a builder for fluent configuration.

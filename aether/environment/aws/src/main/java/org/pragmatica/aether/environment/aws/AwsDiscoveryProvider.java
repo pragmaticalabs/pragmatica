@@ -8,6 +8,7 @@ import org.pragmatica.cloud.aws.api.DescribeInstancesResponse;
 import org.pragmatica.cloud.aws.api.Instance;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.concurrent.StoppableThread;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -39,7 +40,7 @@ public final class AwsDiscoveryProvider implements DiscoveryProvider {
     private final AwsClient client;
     private final String clusterName;
     private final long pollIntervalMs;
-    private final AtomicReference<Thread> watchThread = new AtomicReference<>();
+    private final StoppableThread watchThread = StoppableThread.stoppableThread();
 
     private AwsDiscoveryProvider(AwsClient client,
                                  String clusterName,
@@ -53,58 +54,46 @@ public final class AwsDiscoveryProvider implements DiscoveryProvider {
     public static AwsDiscoveryProvider awsDiscoveryProvider(AwsClient client,
                                                             AwsEnvironmentConfig config) {
         return new AwsDiscoveryProvider(client,
-                                        config.clusterName()
-                                              .or("default"),
+                                        config.clusterName().or("default"),
                                         config.discoveryPollIntervalMs());
     }
 
-    @Override
-    public Promise<List<PeerInfo>> discoverPeers() {
-        return client.describeInstances(TAG_CLUSTER, clusterName)
-                     .map(AwsDiscoveryProvider::toPeerInfoList)
-                     .mapError(AwsDiscoveryProvider::toDiscoveryError);
+    @Override public Promise<List<PeerInfo>> discoverPeers() {
+        return client.describeInstances(TAG_CLUSTER, clusterName).map(AwsDiscoveryProvider::toPeerInfoList)
+                                       .mapError(AwsDiscoveryProvider::toDiscoveryError);
     }
 
-    @Override
-    public Promise<Unit> watchPeers(Consumer<List<PeerInfo>> onChange) {
-        var thread = Thread.ofVirtual()
-                           .name("aws-discovery-watcher")
-                           .start(() -> pollLoop(onChange));
+    @Override public Promise<Unit> watchPeers(Consumer<List<PeerInfo>> onChange) {
+        var thread = Thread.ofVirtual().name("aws-discovery-watcher")
+                                     .start(() -> pollLoop(onChange));
         watchThread.set(thread);
         return Promise.success(unit());
     }
 
-    @Override
-    public Promise<Unit> stopWatching() {
+    @Override public Promise<Unit> stopWatching() {
         interruptWatchThread();
         return Promise.success(unit());
     }
 
-    @Override
-    public Promise<Unit> registerSelf(PeerInfo self) {
-        return EnvironmentError.operationNotSupported("registerSelf — use EC2 tags directly")
-                               .promise();
+    @Override public Promise<Unit> registerSelf(PeerInfo self) {
+        return EnvironmentError.operationNotSupported("registerSelf — use EC2 tags directly").promise();
     }
 
-    @Override
-    public Promise<Unit> deregisterSelf() {
-        return EnvironmentError.operationNotSupported("deregisterSelf — use EC2 tags directly")
-                               .promise();
+    @Override public Promise<Unit> deregisterSelf() {
+        return EnvironmentError.operationNotSupported("deregisterSelf — use EC2 tags directly").promise();
     }
 
     // --- Leaf: map describe response to peer info list ---
     private static List<PeerInfo> toPeerInfoList(DescribeInstancesResponse response) {
-        return response.allInstances()
-                       .stream()
-                       .filter(AwsDiscoveryProvider::isRunning)
-                       .map(AwsDiscoveryProvider::instanceToPeerInfo)
-                       .toList();
+        return response.allInstances().stream()
+                                    .filter(AwsDiscoveryProvider::isRunning)
+                                    .map(AwsDiscoveryProvider::instanceToPeerInfo)
+                                    .toList();
     }
 
     // --- Leaf: check if instance is running ---
     private static boolean isRunning(Instance instance) {
-        return "running".equals(instance.instanceState()
-                                        .name());
+        return "running".equals(instance.instanceState().name());
     }
 
     // --- Leaf: extract PeerInfo from an instance ---
@@ -125,8 +114,7 @@ public final class AwsDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: parse port string to int, falling back to default ---
     private static int parsePortOrDefault(String portStr) {
-        return org.pragmatica.lang.parse.Number.parseInt(portStr)
-                  .or(DEFAULT_PORT);
+        return org.pragmatica.lang.parse.Number.parseInt(portStr).or(DEFAULT_PORT);
     }
 
     // --- Leaf: extract metadata from instance tags ---
@@ -142,17 +130,15 @@ public final class AwsDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: find tag value by key ---
     private static Option<String> findTagValue(List<Instance.Tag> tags, String key) {
-        return Option.from(tags.stream()
-                               .filter(tag -> key.equals(tag.key()))
-                               .map(Instance.Tag::value)
-                               .findFirst());
+        return Option.from(tags.stream().filter(tag -> key.equals(tag.key()))
+                                      .map(Instance.Tag::value)
+                                      .findFirst());
     }
 
     // --- Leaf: poll loop for watching peers ---
     private void pollLoop(Consumer<List<PeerInfo>> onChange) {
         var previousPeers = new AtomicReference<Set<String>>(Set.of());
-        while (!Thread.currentThread()
-                      .isInterrupted()) {
+        while ( !Thread.currentThread().isInterrupted()) {
             pollOnce(onChange, previousPeers);
             sleepOrExit();
         }
@@ -171,7 +157,7 @@ public final class AwsDiscoveryProvider implements DiscoveryProvider {
                                         Consumer<List<PeerInfo>> onChange,
                                         AtomicReference<Set<String>> previousPeers) {
         var currentKeys = toPeerKeys(peers);
-        if (!currentKeys.equals(previousPeers.get())) {
+        if ( !currentKeys.equals(previousPeers.get())) {
             previousPeers.set(currentKeys);
             onChange.accept(peers);
         }
@@ -179,9 +165,8 @@ public final class AwsDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: convert peer list to set of host:port keys for comparison ---
     private static Set<String> toPeerKeys(List<PeerInfo> peers) {
-        return peers.stream()
-                    .map(AwsDiscoveryProvider::peerKey)
-                    .collect(Collectors.toSet());
+        return peers.stream().map(AwsDiscoveryProvider::peerKey)
+                           .collect(Collectors.toSet());
     }
 
     // --- Leaf: format peer key for comparison ---
@@ -191,20 +176,21 @@ public final class AwsDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: sleep for poll interval, exit on interrupt ---
     private void sleepOrExit() {
-        try{
+        try {
             Thread.sleep(pollIntervalMs);
-        } catch (InterruptedException e) {
-            Thread.currentThread()
-                  .interrupt();
+        }
+
+
+
+
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
     // --- Leaf: interrupt and clear the watch thread ---
     private void interruptWatchThread() {
-        var thread = watchThread.getAndSet(null);
-        if (thread != null) {
-            thread.interrupt();
-        }
+        watchThread.stop();
     }
 
     // --- Leaf: map cause to discovery error ---

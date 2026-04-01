@@ -12,11 +12,11 @@ import static org.pragmatica.lang.Verify.ensure;
 /// @param logArgs     Whether to log method arguments
 /// @param logResult   Whether to log method results
 /// @param logDuration Whether to log method execution duration
-public record LogConfig(String name,
-                        LogLevel level,
-                        boolean logArgs,
-                        boolean logResult,
-                        boolean logDuration) {
+public record LogConfig( String name,
+                         LogLevel level,
+                         boolean logArgs,
+                         boolean logResult,
+                         boolean logDuration) {
     /// Create logging configuration with defaults (INFO, log all).
     ///
     /// @param name Logger name prefix

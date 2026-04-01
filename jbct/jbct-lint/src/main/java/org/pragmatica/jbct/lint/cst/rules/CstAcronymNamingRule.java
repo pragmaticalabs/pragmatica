@@ -30,19 +30,19 @@ public class CstAcronymNamingRule implements CstLintRule {
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         // Check class declarations
-        var classDiagnostics = findAll(root, RuleId.ClassDecl.class).stream()
+        var classDiagnostics = findAllClasses(root).stream()
                                       .flatMap(decl -> checkTypeName(decl, source, ctx));
         // Check interface declarations
-        var interfaceDiagnostics = findAll(root, RuleId.InterfaceDecl.class).stream()
+        var interfaceDiagnostics = findAllInterfaces(root).stream()
                                           .flatMap(decl -> checkTypeName(decl, source, ctx));
         // Check enum declarations
-        var enumDiagnostics = findAll(root, RuleId.EnumDecl.class).stream()
+        var enumDiagnostics = findAllEnums(root).stream()
                                      .flatMap(decl -> checkTypeName(decl, source, ctx));
         // Check record declarations
-        var recordDiagnostics = findAll(root, RuleId.RecordDecl.class).stream()
+        var recordDiagnostics = findAllRecords(root).stream()
                                        .flatMap(decl -> checkTypeName(decl, source, ctx));
         // Check method declarations
-        var methodDiagnostics = findAll(root, RuleId.MethodDecl.class).stream()
+        var methodDiagnostics = findAllMethods(root).stream()
                                        .flatMap(method -> checkMethodName(method, source, ctx));
         return Stream.of(classDiagnostics, interfaceDiagnostics, enumDiagnostics, recordDiagnostics, methodDiagnostics)
                      .flatMap(s -> s);

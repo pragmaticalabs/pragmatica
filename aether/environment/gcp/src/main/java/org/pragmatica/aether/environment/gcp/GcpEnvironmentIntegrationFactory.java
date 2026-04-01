@@ -14,13 +14,11 @@ import static org.pragmatica.aether.environment.gcp.GcpEnvironmentConfig.gcpEnvi
 
 /// ServiceLoader factory for creating GcpEnvironmentIntegration from generic CloudConfig.
 public record GcpEnvironmentIntegrationFactory() implements EnvironmentIntegrationFactory {
-    @Override
-    public String providerName() {
+    @Override public String providerName() {
         return "gcp";
     }
 
-    @Override
-    public Result<EnvironmentIntegration> create(CloudConfig config) {
+    @Override public Result<EnvironmentIntegration> create(CloudConfig config) {
         return buildEnvironmentConfig(config).flatMap(GcpEnvironmentIntegration::gcpEnvironmentIntegration)
                                      .map(EnvironmentIntegration.class::cast);
     }
@@ -49,9 +47,8 @@ public record GcpEnvironmentIntegrationFactory() implements EnvironmentIntegrati
                                                           Map<String, String> lbMap) {
         var negName = lbMap.getOrDefault("neg_name", "");
         var portStr = lbMap.getOrDefault("port", "");
-        if (negName.isEmpty() || portStr.isEmpty()) {
-            return envConfig;
-        }
+        if ( negName.isEmpty() || portStr.isEmpty()) {
+        return envConfig;}
         return gcpNegConfig(negName,
                             Integer.parseInt(portStr)).map(neg -> withNetworkEndpointGroup(envConfig, neg))
                            .or(envConfig);
@@ -72,8 +69,39 @@ public record GcpEnvironmentIntegrationFactory() implements EnvironmentIntegrati
 
     // --- Leaf: withNetworkEndpointGroup copy helper ---
     @SuppressWarnings("JBCT-VO-02") // Copy-with-change — direct constructor use in config builder
-    private static GcpEnvironmentConfig withNetworkEndpointGroup(GcpEnvironmentConfig envConfig,
-                                                                 GcpEnvironmentConfig.GcpNegConfig negConfig) {
+    private static// Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    // Copy-with-change — direct constructor use in config builder
+    GcpEnvironmentConfig withNetworkEndpointGroup(GcpEnvironmentConfig envConfig,
+                                                  GcpEnvironmentConfig.GcpNegConfig negConfig) {
         return new GcpEnvironmentConfig(envConfig.gcpConfig(),
                                         envConfig.machineType(),
                                         envConfig.sourceImage(),

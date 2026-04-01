@@ -35,18 +35,16 @@ public interface SharedDependencyLoader {
     static Promise<Unit> processInfraDependencies(List<ArtifactDependency> dependencies,
                                                   SharedLibraryClassLoader sharedLibraryLoader,
                                                   Repository repository) {
-        if (dependencies.isEmpty()) {
-            return Promise.success(unit());
-        }
+        if ( dependencies.isEmpty()) {
+        return Promise.success(unit());}
         return processInfraSequentially(dependencies, sharedLibraryLoader, repository);
     }
 
     private static Promise<Unit> processInfraSequentially(List<ArtifactDependency> dependencies,
                                                           SharedLibraryClassLoader sharedLibraryLoader,
                                                           Repository repository) {
-        if (dependencies.isEmpty()) {
-            return Promise.success(unit());
-        }
+        if ( dependencies.isEmpty()) {
+        return Promise.success(unit());}
         var dependency = dependencies.getFirst();
         var remaining = dependencies.subList(1, dependencies.size());
         return loadInfraIntoShared(dependency, sharedLibraryLoader, repository)
@@ -57,8 +55,8 @@ public interface SharedDependencyLoader {
                                                      SharedLibraryClassLoader sharedLibraryLoader,
                                                      Repository repository) {
         return sharedLibraryLoader.checkCompatibility(dependency)
-                                  .fold(() -> loadInfraArtifact(dependency, sharedLibraryLoader, repository),
-                                        _ -> logInfraAlreadyLoaded(dependency));
+        .fold(() -> loadInfraArtifact(dependency, sharedLibraryLoader, repository),
+              _ -> logInfraAlreadyLoaded(dependency));
     }
 
     private static Promise<Unit> loadInfraArtifact(ArtifactDependency dependency,
@@ -90,7 +88,7 @@ public interface SharedDependencyLoader {
     /// @param sliceClassLoader   The ClassLoader to use for loading the slice
     /// @param conflictingJarUrls URLs of JARs that conflict with shared versions (loaded into slice)
     record SharedDependencyResult(SliceClassLoader sliceClassLoader,
-                                  List<URL> conflictingJarUrls) {}
+                                  List<URL> conflictingJarUrls){}
 
     /// Process shared dependencies for a slice.
     ///
@@ -127,9 +125,8 @@ public interface SharedDependencyLoader {
                                                      SharedLibraryClassLoader sharedLibraryLoader,
                                                      Repository repository,
                                                      List<URL> conflictUrls) {
-        if (dependencies.isEmpty()) {
-            return Promise.success(unit());
-        }
+        if ( dependencies.isEmpty()) {
+        return Promise.success(unit());}
         var dependency = dependencies.getFirst();
         var remaining = dependencies.subList(1, dependencies.size());
         return processSingleDependency(dependency, sharedLibraryLoader, repository, conflictUrls)
@@ -141,21 +138,19 @@ public interface SharedDependencyLoader {
                                                          Repository repository,
                                                          List<URL> conflictUrls) {
         return sharedLibraryLoader.checkCompatibility(dependency)
-                                  .fold(() -> loadIntoShared(dependency, sharedLibraryLoader, repository),
-                                        result -> handleCompatibilityResult(dependency, result, repository, conflictUrls));
+        .fold(() -> loadIntoShared(dependency, sharedLibraryLoader, repository),
+              result -> handleCompatibilityResult(dependency, result, repository, conflictUrls));
     }
 
     private static Promise<Unit> handleCompatibilityResult(ArtifactDependency dependency,
                                                            CompatibilityResult result,
                                                            Repository repository,
                                                            List<URL> conflictUrls) {
-        return switch (result) {
-            case CompatibilityResult.Compatible(var loadedVersion) ->
-            logCompatibleDependency(dependency, loadedVersion);
-            case CompatibilityResult.Conflict(var loadedVersion, _) ->
-            handleConflictingDependency(dependency, loadedVersion, repository, conflictUrls);
-            case CompatibilityResult.unused() -> Promise.success(unit());
-        };
+        return switch (result) {case CompatibilityResult.Compatible(var loadedVersion) -> logCompatibleDependency(dependency,
+                                                                                                                  loadedVersion);case CompatibilityResult.Conflict(var loadedVersion, _) -> handleConflictingDependency(dependency,
+                                                                                                                                                                                                                        loadedVersion,
+                                                                                                                                                                                                                        repository,
+                                                                                                                                                                                                                        conflictUrls);case CompatibilityResult.unused() -> Promise.success(unit());};
     }
 
     private static Promise<Unit> logCompatibleDependency(ArtifactDependency dependency, Version loadedVersion) {
@@ -225,14 +220,7 @@ public interface SharedDependencyLoader {
     }
 
     private static Version extractVersion(VersionPattern pattern) {
-        return switch (pattern) {
-            case VersionPattern.Exact(Version version) -> version;
-            case VersionPattern.Range(Version from, _, _, _) -> from;
-            case VersionPattern.Comparison(_, Version version) -> version;
-            case VersionPattern.Tilde(Version version) -> version;
-            case VersionPattern.Caret(Version version) -> version;
-            case VersionPattern.unused _ -> Version.version("0.0.0")
-                                                   .unwrap();
-        };
+        return switch (pattern) {case VersionPattern.Exact(Version version) -> version;case VersionPattern.Range(Version from, _, _, _) -> from;case VersionPattern.Comparison(_, Version version) -> version;case VersionPattern.Tilde(Version version) -> version;case VersionPattern.Caret(Version version) -> version;case VersionPattern.unused _ -> Version.version("0.0.0")
+        .unwrap();};
     }
 }

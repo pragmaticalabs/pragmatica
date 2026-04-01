@@ -17,8 +17,7 @@ public class Comments<T> {
     /// @see Option
     public void withLinks() {}
 
-    @Deprecated
-    public String traditionalJavaDoc(String first, String second) {
+    @Deprecated public String traditionalJavaDoc(String first, String second) {
         return first + second;
     }
 
@@ -28,9 +27,8 @@ public class Comments<T> {
     // Comment before method
     public void methodWithComment() {
         var x = 1;
-        if (x > 0) {
-            process(x);
-        }
+        if ( x > 0) {
+        process(x);}
     }
 
     /*
@@ -96,7 +94,7 @@ public class Comments<T> {
     }
 
     /// @param name display name
-    record Entity(String id, String name) {}
+    record Entity(String id, String name){}
 
     // Stub methods
     void process(int x) {}

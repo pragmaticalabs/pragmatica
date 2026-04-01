@@ -34,4 +34,10 @@ public sealed interface NetworkMessage extends Message.Wired {
 
     /// Topology discovery response - list of known nodes sent to target
     record DiscoveredNodes(NodeId target, java.util.List<NodeInfo> nodes) implements NetworkMessage {}
+
+    /// KV-Store snapshot request — sent by passive nodes to get current state.
+    record KVSyncRequest(NodeId sender) implements NetworkMessage {}
+
+    /// KV-Store snapshot response — carries serialized KV-Store state.
+    record KVSyncResponse(NodeId target, byte[] snapshot) implements NetworkMessage {}
 }

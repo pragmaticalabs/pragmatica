@@ -16,20 +16,17 @@ import java.util.List;
 ///   - `GET /repository/**` - Resolve artifacts
 ///   - `PUT /repository/**` - Deploy artifacts
 ///
-public record ArtifactRepoSlice(MavenProtocolHandler mavenHandler) implements Slice {
+public record ArtifactRepoSlice( MavenProtocolHandler mavenHandler) implements Slice {
     public static ArtifactRepoSlice artifactRepoSlice(ArtifactStore store) {
         return new ArtifactRepoSlice(MavenProtocolHandler.mavenProtocolHandler(store));
     }
 
-    @Override
-    public List<SliceMethod<?, ?>> methods() {
-        return List.of(new SliceMethod<>(MethodName.methodName("get")
-                                                   .unwrap(),
+    @Override public List<SliceMethod<?, ?>> methods() {
+        return List.of(new SliceMethod<>(MethodName.methodName("get").unwrap(),
                                          this::handleGet,
                                          new TypeToken<MavenProtocolHandler.MavenResponse>() {},
                                          new TypeToken<RepositoryRequest>() {}),
-                       new SliceMethod<>(MethodName.methodName("put")
-                                                   .unwrap(),
+                       new SliceMethod<>(MethodName.methodName("put").unwrap(),
                                          this::handlePut,
                                          new TypeToken<MavenProtocolHandler.MavenResponse>() {},
                                          new TypeToken<RepositoryRequest>() {}));
@@ -45,5 +42,5 @@ public record ArtifactRepoSlice(MavenProtocolHandler mavenHandler) implements Sl
 
     /// Request for repository operations.
     public record RepositoryRequest(String path,
-                                    byte[] content) {}
+                                    byte[] content){}
 }

@@ -46,7 +46,7 @@ public interface DecisionTreeController extends ClusterController {
                                                  cpuScaleDownThreshold,
                                                  callRateScaleUpThreshold,
                                                  1000)
-                               .map(config -> decisionTreeController(config));
+        .map(config -> decisionTreeController(config));
     }
 
     /// Create a decision tree controller with full configuration.
@@ -77,59 +77,56 @@ public interface DecisionTreeController extends ClusterController {
             this.lastEvaluationTime = new AtomicLong(lastEvaluationTime);
         }
 
-        @Override
-        public ControllerConfig configuration() {
+        @Override public ControllerConfig configuration() {
             return config;
         }
 
-        @Override
-        public Unit updateConfiguration(ControllerConfig config) {
+        @Override public Unit updateConfiguration(ControllerConfig config) {
             log.info("Controller configuration updated: {}", config);
             this.config = config;
             return unit();
         }
 
-        @Override
-        public Promise<ControlDecisions> evaluate(ControlContext context) {
+        @Override public Promise<ControlDecisions> evaluate(ControlContext context) {
             var currentConfig = this.config;
             var avgCpu = context.avgMetric(MetricsCollector.CPU_USAGE);
             log.debug("Evaluating: avgCpu={}, blueprints={}",
                       avgCpu,
-                      context.blueprints()
-                             .size());
+                      context.blueprints().size());
             // Compute elapsed time atomically using CAS loop to prevent race
             // where two concurrent calls both get near-zero elapsed time
             var currentTime = System.currentTimeMillis();
             long previousTime;
             long expected;
-            do{
+            do {
                 expected = lastEvaluationTime.get();
                 previousTime = expected;
-            } while (!lastEvaluationTime.compareAndSet(expected, currentTime));
+            } while (
+
+
+
+
+            !lastEvaluationTime.compareAndSet(expected, currentTime));
             var elapsedSeconds = Math.max(1.0, (currentTime - previousTime) / 1000.0);
             // Prune previousCallCounts at the start of each evaluation cycle.
             // Metrics are rebuilt from context.metrics() each cycle, so stale entries
             // (from metrics no longer reported by any node) are removed.
-            var currentMetricKeys = context.metrics()
-                                           .values()
-                                           .stream()
-                                           .flatMap(nodeMetrics -> nodeMetrics.keySet()
-                                                                              .stream())
-                                           .filter(this::isCallMetric)
-                                           .collect(java.util.stream.Collectors.toSet());
-            previousCallCounts.keySet()
-                              .retainAll(currentMetricKeys);
-            var changes = context.blueprints()
-                                 .entrySet()
-                                 .stream()
-                                 .map(entry -> evaluateBlueprint(entry.getKey(),
-                                                                 entry.getValue(),
-                                                                 avgCpu,
-                                                                 context.metrics(),
-                                                                 currentConfig,
-                                                                 elapsedSeconds))
-                                 .flatMap(List::stream)
-                                 .toList();
+            var currentMetricKeys = context.metrics().values()
+                                                   .stream()
+                                                   .flatMap(nodeMetrics -> nodeMetrics.keySet().stream())
+                                                   .filter(this::isCallMetric)
+                                                   .collect(java.util.stream.Collectors.toSet());
+            previousCallCounts.keySet().retainAll(currentMetricKeys);
+            var changes = context.blueprints().entrySet()
+                                            .stream()
+                                            .map(entry -> evaluateBlueprint(entry.getKey(),
+                                                                            entry.getValue(),
+                                                                            avgCpu,
+                                                                            context.metrics(),
+                                                                            currentConfig,
+                                                                            elapsedSeconds))
+                                            .flatMap(List::stream)
+                                            .toList();
             return Promise.success(new ControlDecisions(changes));
         }
 
@@ -151,13 +148,11 @@ public interface DecisionTreeController extends ClusterController {
                                                                double avgCpu,
                                                                ControllerConfig currentConfig) {
             // Skip CPU rules when CPU weight is zero (e.g. Forge environment)
-            if (currentConfig.scalingConfig()
-                             .weights()
-                             .getOrDefault(ScalingMetric.CPU, 0.0) == 0.0) {
-                return Option.none();
-            }
+            if ( currentConfig.scalingConfig().weights()
+                                            .getOrDefault(ScalingMetric.CPU, 0.0) == 0.0) {
+            return Option.none();}
             // Rule 1: High CPU → scale up
-            if (avgCpu > currentConfig.cpuScaleUpThreshold()) {
+            if ( avgCpu > currentConfig.cpuScaleUpThreshold()) {
                 log.info("Rule triggered: High CPU ({} > {}), scaling up {}",
                          avgCpu,
                          currentConfig.cpuScaleUpThreshold(),
@@ -165,11 +160,11 @@ public interface DecisionTreeController extends ClusterController {
                 return Option.some(List.of(new BlueprintChange.ScaleUp(artifact, 1)));
             }
             // Rule 2: Low CPU → scale down (if above minimum instances)
-            if (avgCpu < currentConfig.cpuScaleDownThreshold() && blueprint.instances() > blueprint.minInstances()) {
-                log.info("Rule triggered: Low CPU ({} < {}), scaling down {}",
-                         avgCpu,
-                         currentConfig.cpuScaleDownThreshold(),
-                         artifact);
+            if ( avgCpu < currentConfig.cpuScaleDownThreshold() && blueprint.instances() > blueprint.minInstances()) {
+                log.debug("Rule triggered: Low CPU ({} < {}), scaling down {}",
+                          avgCpu,
+                          currentConfig.cpuScaleDownThreshold(),
+                          artifact);
                 return Option.some(List.of(new BlueprintChange.ScaleDown(artifact, 1)));
             }
             return Option.none();
@@ -181,14 +176,12 @@ public interface DecisionTreeController extends ClusterController {
                                                                    double elapsedSeconds) {
             // Rule 3: High call rate → scale up
             // Collect call metrics and update previous counts, then check for high rate
-            var callMetricEntries = metrics.values()
-                                           .stream()
-                                           .flatMap(nodeMetrics -> nodeMetrics.entrySet()
-                                                                              .stream())
-                                           .filter(entry -> isCallMetric(entry.getKey()))
-                                           .toList();
+            var callMetricEntries = metrics.values().stream()
+                                                  .flatMap(nodeMetrics -> nodeMetrics.entrySet().stream())
+                                                  .filter(entry -> isCallMetric(entry.getKey()))
+                                                  .toList();
             var hasHighCallRate = checkAndUpdateCallRates(callMetricEntries, elapsedSeconds, currentConfig);
-            if (hasHighCallRate) {
+            if ( hasHighCallRate) {
                 log.info("Rule triggered: High call rate, scaling up {}", artifact);
                 return Option.some(List.of(new BlueprintChange.ScaleUp(artifact, 1)));
             }
@@ -202,7 +195,7 @@ public interface DecisionTreeController extends ClusterController {
                                                 double elapsedSeconds,
                                                 ControllerConfig currentConfig) {
             var hasHighRate = false;
-            for (var entry : callMetricEntries) {
+            for ( var entry : callMetricEntries) {
                 var metricName = entry.getKey();
                 var currentCount = entry.getValue();
                 // put() atomically stores new value and returns previous (or null if absent)
@@ -212,9 +205,8 @@ public interface DecisionTreeController extends ClusterController {
                                     : 0.0;
                 var delta = currentCount - previousCount;
                 var callsPerSecond = delta / elapsedSeconds;
-                if (callsPerSecond > currentConfig.callRateScaleUpThreshold()) {
-                    hasHighRate = true;
-                }
+                if ( callsPerSecond > currentConfig.callRateScaleUpThreshold()) {
+                hasHighRate = true;}
             }
             return hasHighRate;
         }

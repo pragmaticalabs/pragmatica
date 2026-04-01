@@ -51,24 +51,20 @@ final class ForecastAnalyzerImpl implements ForecastAnalyzer {
         this.config = config;
     }
 
-    @Override
-    public TTMForecast analyze(float[] predictions,
-                               double confidence,
-                               List<MinuteAggregate> recentHistory,
-                               ControllerConfig currentConfig) {
+    @Override public TTMForecast analyze(float[] predictions,
+                                         double confidence,
+                                         List<MinuteAggregate> recentHistory,
+                                         ControllerConfig currentConfig) {
         long timestamp = System.currentTimeMillis();
         // Check confidence threshold
-        if (confidence < config.confidenceThreshold()) {
-            return new TTMForecast(timestamp, predictions, confidence, ScalingRecommendation.NoAction.LOW_CONFIDENCE);
-        }
+        if ( confidence < config.confidenceThreshold()) {
+        return new TTMForecast(timestamp, predictions, confidence, ScalingRecommendation.NoAction.LOW_CONFIDENCE);}
         // Check if we have enough history
-        if (recentHistory.isEmpty()) {
-            return new TTMForecast(timestamp, predictions, confidence, ScalingRecommendation.NoAction.INSUFFICIENT_DATA);
-        }
+        if ( recentHistory.isEmpty()) {
+        return new TTMForecast(timestamp, predictions, confidence, ScalingRecommendation.NoAction.INSUFFICIENT_DATA);}
         // Check predictions array has required indices
-        if (predictions.length <= FeatureIndex.INVOCATIONS) {
-            return new TTMForecast(timestamp, predictions, confidence, ScalingRecommendation.NoAction.INSUFFICIENT_DATA);
-        }
+        if ( predictions.length <= FeatureIndex.INVOCATIONS) {
+        return new TTMForecast(timestamp, predictions, confidence, ScalingRecommendation.NoAction.INSUFFICIENT_DATA);}
         // Get current metrics (average of last 5 minutes or available)
         var current = averageRecent(recentHistory, 5);
         float predictedCpu = predictions[FeatureIndex.CPU_USAGE];
@@ -84,52 +80,40 @@ final class ForecastAnalyzerImpl implements ForecastAnalyzer {
     }
 
     private MinuteAggregate averageRecent(List<MinuteAggregate> history, int count) {
-        if (history.isEmpty()) {
-            return MinuteAggregate.EMPTY;
-        }
+        if ( history.isEmpty()) {
+        return MinuteAggregate.EMPTY;}
         int start = Math.max(0, history.size() - count);
         var recent = history.subList(start, history.size());
-        double avgCpu = recent.stream()
-                              .mapToDouble(MinuteAggregate::avgCpuUsage)
-                              .average()
-                              .orElse(0);
-        double avgHeap = recent.stream()
-                               .mapToDouble(MinuteAggregate::avgHeapUsage)
-                               .average()
-                               .orElse(0);
-        double avgLag = recent.stream()
-                              .mapToDouble(MinuteAggregate::avgEventLoopLagMs)
-                              .average()
-                              .orElse(0);
-        double avgLatency = recent.stream()
-                                  .mapToDouble(MinuteAggregate::avgLatencyMs)
+        double avgCpu = recent.stream().mapToDouble(MinuteAggregate::avgCpuUsage)
+                                     .average()
+                                     .orElse(0);
+        double avgHeap = recent.stream().mapToDouble(MinuteAggregate::avgHeapUsage)
+                                      .average()
+                                      .orElse(0);
+        double avgLag = recent.stream().mapToDouble(MinuteAggregate::avgEventLoopLagMs)
+                                     .average()
+                                     .orElse(0);
+        double avgLatency = recent.stream().mapToDouble(MinuteAggregate::avgLatencyMs)
+                                         .average()
+                                         .orElse(0);
+        long totalInvocations = recent.stream().mapToLong(MinuteAggregate::totalInvocations)
+                                             .sum() / recent.size();
+        long totalGc = recent.stream().mapToLong(MinuteAggregate::totalGcPauseMs)
+                                    .sum() / recent.size();
+        double p50 = recent.stream().mapToDouble(MinuteAggregate::latencyP50)
                                   .average()
                                   .orElse(0);
-        long totalInvocations = recent.stream()
-                                      .mapToLong(MinuteAggregate::totalInvocations)
-                                      .sum() / recent.size();
-        long totalGc = recent.stream()
-                             .mapToLong(MinuteAggregate::totalGcPauseMs)
-                             .sum() / recent.size();
-        double p50 = recent.stream()
-                           .mapToDouble(MinuteAggregate::latencyP50)
-                           .average()
-                           .orElse(0);
-        double p95 = recent.stream()
-                           .mapToDouble(MinuteAggregate::latencyP95)
-                           .average()
-                           .orElse(0);
-        double p99 = recent.stream()
-                           .mapToDouble(MinuteAggregate::latencyP99)
-                           .average()
-                           .orElse(0);
-        double errorRate = recent.stream()
-                                 .mapToDouble(MinuteAggregate::errorRate)
-                                 .average()
-                                 .orElse(0);
-        int events = recent.stream()
-                           .mapToInt(MinuteAggregate::eventCount)
-                           .sum() / recent.size();
+        double p95 = recent.stream().mapToDouble(MinuteAggregate::latencyP95)
+                                  .average()
+                                  .orElse(0);
+        double p99 = recent.stream().mapToDouble(MinuteAggregate::latencyP99)
+                                  .average()
+                                  .orElse(0);
+        double errorRate = recent.stream().mapToDouble(MinuteAggregate::errorRate)
+                                        .average()
+                                        .orElse(0);
+        int events = recent.stream().mapToInt(MinuteAggregate::eventCount)
+                                  .sum() / recent.size();
         return MinuteAggregate.minuteAggregate(System.currentTimeMillis(),
                                                avgCpu,
                                                avgHeap,
@@ -153,17 +137,17 @@ final class ForecastAnalyzerImpl implements ForecastAnalyzer {
         float currentCpu = (float) current.avgCpuUsage();
         float cpuIncrease = predictedCpu - currentCpu;
         // Significant load increase predicted
-        if (cpuIncrease > CPU_INCREASE_THRESHOLD || (predictedCpu > HIGH_CPU_THRESHOLD && cpuIncrease > HIGH_CPU_INCREASE_THRESHOLD)) {
+        if ( cpuIncrease > CPU_INCREASE_THRESHOLD || (predictedCpu > HIGH_CPU_THRESHOLD && cpuIncrease > HIGH_CPU_INCREASE_THRESHOLD)) {
             int suggested = (int) Math.ceil(predictedCpu / TARGET_CPU_UTILIZATION);
             return new ScalingRecommendation.PreemptiveScaleUp(predictedCpu, predictedLatency, Math.max(1, suggested));
         }
         // Significant load decrease predicted
-        if (cpuIncrease < CPU_DECREASE_THRESHOLD && predictedCpu < LOW_CPU_THRESHOLD) {
+        if ( cpuIncrease < CPU_DECREASE_THRESHOLD && predictedCpu < LOW_CPU_THRESHOLD) {
             int suggested = Math.max(1, (int) Math.ceil(predictedCpu / SCALE_DOWN_TARGET_CPU));
             return new ScalingRecommendation.PreemptiveScaleDown(predictedCpu, suggested);
         }
         // Moderate change - adjust thresholds
-        if (Math.abs(cpuIncrease) > MODERATE_CHANGE_THRESHOLD) {
+        if ( Math.abs(cpuIncrease) > MODERATE_CHANGE_THRESHOLD) {
             double newScaleUp = Math.max(MIN_SCALE_UP_THRESHOLD,
                                          Math.min(MAX_SCALE_UP_THRESHOLD,
                                                   currentConfig.cpuScaleUpThreshold() - cpuIncrease * THRESHOLD_ADJUSTMENT_FACTOR));

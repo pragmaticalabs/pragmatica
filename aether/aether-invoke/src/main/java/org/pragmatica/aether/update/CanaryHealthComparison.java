@@ -13,13 +13,13 @@ import org.pragmatica.aether.artifact.Version;
 /// @param canaryMetrics metrics snapshot for canary version
 /// @param verdict the health comparison verdict
 /// @param collectedAt timestamp when metrics were collected
-public record CanaryHealthComparison(String canaryId,
-                                     Version baselineVersion,
-                                     Version canaryVersion,
-                                     VersionMetrics baselineMetrics,
-                                     VersionMetrics canaryMetrics,
-                                     Verdict verdict,
-                                     long collectedAt) {
+public record CanaryHealthComparison( String canaryId,
+                                      Version baselineVersion,
+                                      Version canaryVersion,
+                                      VersionMetrics baselineMetrics,
+                                      VersionMetrics canaryMetrics,
+                                      Verdict verdict,
+                                      long collectedAt) {
     /// Health comparison verdict.
     public enum Verdict {
         /// Both absolute and relative thresholds pass — canary is healthy.
@@ -100,30 +100,27 @@ public record CanaryHealthComparison(String canaryId,
                                                   VersionMetrics canaryMetrics,
                                                   HealthThresholds thresholds,
                                                   CanaryAnalysisConfig config) {
-        if (!canaryMetrics.hasSufficientData()) {
-            return withVerdict(canaryId,
-                               baselineVersion,
-                               canaryVersion,
-                               baselineMetrics,
-                               canaryMetrics,
-                               Verdict.INSUFFICIENT_DATA);
-        }
-        if (breachesAbsoluteThreshold(canaryMetrics, thresholds, config)) {
-            return withVerdict(canaryId,
-                               baselineVersion,
-                               canaryVersion,
-                               baselineMetrics,
-                               canaryMetrics,
-                               Verdict.ABSOLUTE_BREACH);
-        }
-        if (breachesRelativeThreshold(baselineMetrics, canaryMetrics, config)) {
-            return withVerdict(canaryId,
-                               baselineVersion,
-                               canaryVersion,
-                               baselineMetrics,
-                               canaryMetrics,
-                               Verdict.RELATIVE_BREACH);
-        }
+        if ( !canaryMetrics.hasSufficientData()) {
+        return withVerdict(canaryId,
+                           baselineVersion,
+                           canaryVersion,
+                           baselineMetrics,
+                           canaryMetrics,
+                           Verdict.INSUFFICIENT_DATA);}
+        if ( breachesAbsoluteThreshold(canaryMetrics, thresholds, config)) {
+        return withVerdict(canaryId,
+                           baselineVersion,
+                           canaryVersion,
+                           baselineMetrics,
+                           canaryMetrics,
+                           Verdict.ABSOLUTE_BREACH);}
+        if ( breachesRelativeThreshold(baselineMetrics, canaryMetrics, config)) {
+        return withVerdict(canaryId,
+                           baselineVersion,
+                           canaryVersion,
+                           baselineMetrics,
+                           canaryMetrics,
+                           Verdict.RELATIVE_BREACH);}
         return withVerdict(canaryId, baselineVersion, canaryVersion, baselineMetrics, canaryMetrics, Verdict.HEALTHY);
     }
 
@@ -156,9 +153,8 @@ public record CanaryHealthComparison(String canaryId,
     private static boolean breachesRelativeThreshold(VersionMetrics baselineMetrics,
                                                      VersionMetrics canaryMetrics,
                                                      CanaryAnalysisConfig config) {
-        if (config.mode() == CanaryAnalysisConfig.ComparisonMode.ABSOLUTE_ONLY || !baselineMetrics.hasSufficientData()) {
-            return false;
-        }
+        if ( config.mode() == CanaryAnalysisConfig.ComparisonMode.ABSOLUTE_ONLY || !baselineMetrics.hasSufficientData()) {
+        return false;}
         var relativeThreshold = 1.0 + (config.relativeThresholdPercent() / 100.0);
         return canaryMetrics.exceedsRelativeErrorRate(baselineMetrics.errorRate(), relativeThreshold) || canaryMetrics.exceedsRelativeLatency(baselineMetrics.p99LatencyMs(),
                                                                                                                                               relativeThreshold);

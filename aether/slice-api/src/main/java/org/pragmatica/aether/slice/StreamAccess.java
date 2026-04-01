@@ -43,13 +43,13 @@ public interface StreamAccess<T> {
     Promise<StreamMetadata> metadata();
 
     /// Event wrapper with offset and timestamp metadata.
-    record StreamEvent<T>(long offset, long timestamp, int partition, T payload) {}
+    record StreamEvent<T>(long offset, long timestamp, int partition, T payload){}
 
     /// Stream metadata.
     record StreamMetadata(String streamName,
                           int partitionCount,
-                          List<PartitionInfo> partitions) {}
+                          List<PartitionInfo> partitions){}
 
     /// Per-partition metadata.
-    record PartitionInfo(int partition, long headOffset, long tailOffset, long eventCount) {}
+    record PartitionInfo(int partition, long headOffset, long tailOffset, long eventCount){}
 }

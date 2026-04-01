@@ -17,23 +17,116 @@ import org.pragmatica.lang.utils.Causes;
 /// @param maxErrorRate maximum allowed error rate (0.0-1.0, default 0.01 = 1%)
 /// @param maxLatencyMs maximum allowed p99 latency in milliseconds (default 500ms)
 /// @param requireManualApproval if true, requires explicit approval regardless of metrics
-public record HealthThresholds(double maxErrorRate,
-                               long maxLatencyMs,
-                               boolean requireManualApproval) {
+public record HealthThresholds( double maxErrorRate,
+                                long maxLatencyMs,
+                                boolean requireManualApproval) {
     private static final Cause INVALID_ERROR_RATE = Causes.cause("Error rate must be between 0.0 and 1.0");
     private static final Cause NEGATIVE_LATENCY = Causes.cause("Latency must be non-negative");
 
     /// Default thresholds: 1% error rate, 500ms latency, no manual approval required.
     @SuppressWarnings("JBCT-VO-02") // Static constants use pre-validated values
-    public static final HealthThresholds DEFAULT = new HealthThresholds(0.01, 500, false);
+    public static final// Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    HealthThresholds DEFAULT = new HealthThresholds(0.01, 500, false);
 
     /// Strict thresholds for critical services: 0.1% error rate, 200ms latency.
     @SuppressWarnings("JBCT-VO-02") // Static constants use pre-validated values
-    public static final HealthThresholds STRICT = new HealthThresholds(0.001, 200, false);
+    public static final// Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    HealthThresholds STRICT = new HealthThresholds(0.001, 200, false);
 
     /// Manual-only: always requires manual approval.
     @SuppressWarnings("JBCT-VO-02") // Static constants use pre-validated values
-    public static final HealthThresholds MANUAL_ONLY = new HealthThresholds(0.0, 0, true);
+    public static final// Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    // Static constants use pre-validated values
+    HealthThresholds MANUAL_ONLY = new HealthThresholds(0.0, 0, true);
 
     /// Creates health thresholds with validation.
     ///
@@ -41,12 +134,10 @@ public record HealthThresholds(double maxErrorRate,
     public static Result<HealthThresholds> healthThresholds(double maxErrorRate,
                                                             long maxLatencyMs,
                                                             boolean requireManualApproval) {
-        if (maxErrorRate < 0.0 || maxErrorRate > 1.0) {
-            return INVALID_ERROR_RATE.result();
-        }
-        if (maxLatencyMs < 0) {
-            return NEGATIVE_LATENCY.result();
-        }
+        if ( maxErrorRate < 0.0 || maxErrorRate > 1.0) {
+        return INVALID_ERROR_RATE.result();}
+        if ( maxLatencyMs < 0) {
+        return NEGATIVE_LATENCY.result();}
         return Result.success(new HealthThresholds(maxErrorRate, maxLatencyMs, requireManualApproval));
     }
 
@@ -66,21 +157,82 @@ public record HealthThresholds(double maxErrorRate,
     /// @param latencyMs current p99 latency
     /// @return true if healthy, false otherwise
     public boolean isHealthy(double errorRate, long latencyMs) {
-        if (requireManualApproval) {
-            return false;
-        }
+        if ( requireManualApproval) {
+        return false;}
         return errorRate <= maxErrorRate && latencyMs <= maxLatencyMs;
     }
 
     /// Returns a copy with manual approval required.
     @SuppressWarnings("JBCT-VO-02") // Record copy method with known-valid fields
-    public HealthThresholds withManualApproval() {
+    public// Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    HealthThresholds withManualApproval() {
         return new HealthThresholds(maxErrorRate, maxLatencyMs, true);
     }
 
     /// Returns a copy without manual approval requirement.
     @SuppressWarnings("JBCT-VO-02") // Record copy method with known-valid fields
-    public HealthThresholds withAutoApproval() {
+    public// Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    // Record copy method with known-valid fields
+    HealthThresholds withAutoApproval() {
         return new HealthThresholds(maxErrorRate, maxLatencyMs, false);
     }
 }

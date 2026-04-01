@@ -29,7 +29,7 @@ public class CstVoidTypeRule implements CstLintRule {
             return Stream.empty();
         }
         // Find methods returning Void (boxed)
-        return findAll(root, RuleId.MethodDecl.class).stream()
+        return findAllMethods(root).stream()
                       .filter(method -> returnsBoxedVoid(method, source))
                       .map(method -> createDiagnostic(method, source, ctx));
     }

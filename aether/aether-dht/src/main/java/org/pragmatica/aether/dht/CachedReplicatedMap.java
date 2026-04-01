@@ -1,5 +1,6 @@
 package org.pragmatica.aether.dht;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -51,11 +52,9 @@ public final class CachedReplicatedMap<K, V> implements MapSubscription<K, V> {
     /// Get: check cache first, fallback to DHT.
     public Promise<Option<V>> get(K key) {
         var cached = readFromCache(key);
-        if (cached.isPresent()) {
-            return Promise.success(cached);
-        }
-        return delegate.get(key)
-                       .onSuccess(opt -> opt.onPresent(value -> cacheValue(key, value)));
+        if ( cached.isPresent()) {
+        return Promise.success(cached);}
+        return delegate.get(key).onSuccess(opt -> opt.onPresent(value -> cacheValue(key, value)));
     }
 
     /// Remove: writes through to DHT. Cache invalidated via subscription callback.
@@ -63,74 +62,58 @@ public final class CachedReplicatedMap<K, V> implements MapSubscription<K, V> {
         return delegate.remove(key);
     }
 
-    @Override
-    @SuppressWarnings("JBCT-RET-01") // Event callback - void required
-    public void onPut(K key, V value) {
+    @Contract @Override public void onPut(K key, V value) {
         cacheValue(key, value);
     }
 
-    @Override
-    @SuppressWarnings("JBCT-RET-01") // Event callback - void required
-    public void onRemove(K key) {
+    @Contract @Override public void onRemove(K key) {
         evictFromCache(key);
     }
 
     /// Current cache size (for monitoring).
     public int cacheSize() {
-        lock.readLock()
-            .lock();
-        try{
+        lock.readLock().lock();
+        try {
             return cache.size();
-        } finally{
-            lock.readLock()
-                .unlock();
+        } finally {
+            lock.readLock().unlock();
         }
     }
 
     private Option<V> readFromCache(K key) {
-        lock.readLock()
-            .lock();
-        try{
-            return Option.option(cache.get(key))
-                         .filter(entry -> !entry.isExpired(ttlMs))
-                         .map(CacheEntry::value);
-        } finally{
-            lock.readLock()
-                .unlock();
+        lock.readLock().lock();
+        try {
+            return Option.option(cache.get(key)).filter(entry -> !entry.isExpired(ttlMs))
+                                .map(CacheEntry::value);
+        } finally {
+            lock.readLock().unlock();
         }
     }
 
     @SuppressWarnings("JBCT-RET-01") // Cache side-effect - void required
     private void cacheValue(K key, V value) {
-        lock.writeLock()
-            .lock();
-        try{
+        lock.writeLock().lock();
+        try {
             cache.put(key, new CacheEntry<>(value, System.currentTimeMillis()));
-        } finally{
-            lock.writeLock()
-                .unlock();
+        } finally {
+            lock.writeLock().unlock();
         }
     }
 
     @SuppressWarnings("JBCT-RET-01") // Cache side-effect - void required
     private void evictFromCache(K key) {
-        lock.writeLock()
-            .lock();
-        try{
+        lock.writeLock().lock();
+        try {
             cache.remove(key);
-        } finally{
-            lock.writeLock()
-                .unlock();
+        } finally {
+            lock.writeLock().unlock();
         }
     }
 
     private static <K, V> Map<K, CacheEntry<V>> newLruCache(int maxSize) {
-        return new LinkedHashMap<>(maxSize, 0.75f, true) {
-            @Override
-            protected boolean removeEldestEntry(Map.Entry<K, CacheEntry<V>> eldest) {
-                return size() > maxSize;
-            }
-        };
+        return new LinkedHashMap<>(maxSize, 0.75f, true) {@Override protected boolean removeEldestEntry(Map.Entry<K, CacheEntry<V>> eldest) {
+            return size() > maxSize;
+        }};
     }
 
     private record CacheEntry<V>(V value, long createdAt) {

@@ -57,9 +57,8 @@ public final class ChaosController {
     public Result<Unit> setEnabled(boolean enabled) {
         this.enabled.set(enabled);
         logEnabledState(enabled);
-        if (!enabled) {
-            stopAllChaos();
-        }
+        if ( !enabled) {
+        stopAllChaos();}
         return unitResult();
     }
 
@@ -77,19 +76,15 @@ public final class ChaosController {
 
     /// Inject a chaos event immediately.
     public Promise<String> injectChaos(ChaosEvent event) {
-        if (!enabled.get()) {
+        if ( !enabled.get()) {
             log.warn("Chaos injection attempted but controller is disabled");
             return Promise.success("disabled");
         }
         var eventId = generateEventId();
-        var activeEvent = ActiveChaosEvent.activeChaosEvent(eventId,
-                                                            event,
-                                                            Instant.now())
-                                          .unwrap();
-        if (activeEvents.putIfAbsent(eventId, activeEvent) != null) {
-            return Promise.success("disabled");
-        }
-        if (!enabled.get()) {
+        var activeEvent = ActiveChaosEvent.activeChaosEvent(eventId, event, Instant.now()).unwrap();
+        if ( activeEvents.putIfAbsent(eventId, activeEvent) != null) {
+        return Promise.success("disabled");}
+        if ( !enabled.get()) {
             activeEvents.remove(eventId);
             return Promise.success("disabled");
         }
@@ -97,9 +92,8 @@ public final class ChaosController {
     }
 
     private static String generateEventId() {
-        return UUID.randomUUID()
-                   .toString()
-                   .substring(0, EVENT_ID_LENGTH);
+        return UUID.randomUUID().toString()
+                              .substring(0, EVENT_ID_LENGTH);
     }
 
     private Promise<String> chaosEventOutcome(String eventId, ChaosEvent event) {
@@ -110,9 +104,8 @@ public final class ChaosController {
     }
 
     private Result<Unit> liftEventExecution(String eventId, ChaosEvent event) {
-        return Result.lift(_ -> ChaosError.ExecutionFailed.INSTANCE,
-                           () -> eventExecutor.accept(event))
-                     .onFailure(c -> onEventFailure(eventId, c));
+        return Result.lift(_ -> ChaosError.ExecutionFailed.INSTANCE, () -> eventExecutor.accept(event))
+        .onFailure(c -> onEventFailure(eventId, c));
     }
 
     private void onEventFailure(String eventId, Cause cause) {
@@ -121,9 +114,8 @@ public final class ChaosController {
     }
 
     private void scheduleEventRemoval(String eventId, ChaosEvent event) {
-        event.duration()
-             .filter(d -> !d.isZero() && !d.isNegative())
-             .onPresent(d -> scheduleRemoval(eventId, d));
+        event.duration().filter(d -> !d.isZero() && !d.isNegative())
+                      .onPresent(d -> scheduleRemoval(eventId, d));
     }
 
     private void scheduleRemoval(String eventId, Duration duration) {
@@ -147,21 +139,19 @@ public final class ChaosController {
     private static void logStoppedEvent(String eventId, ActiveChaosEvent event) {
         option(event).onPresent(e -> log.info("Stopping chaos event {}: {}",
                                               eventId,
-                                              e.event()
-                                               .description()));
+                                              e.event().description()));
     }
 
     /// Stop all active chaos events.
     public Result<Unit> stopAllChaos() {
         log.info("Stopping all {} active chaos events", activeEvents.size());
-        List.copyOf(activeEvents.keySet())
-            .forEach(this::stopChaos);
+        List.copyOf(activeEvents.keySet()).forEach(this::stopChaos);
         return unitResult();
     }
 
     /// Schedule a chaos event for later.
     public String scheduleChaos(ChaosEvent event, Duration delay) {
-        if (!enabled.get()) {
+        if ( !enabled.get()) {
             log.warn("Chaos scheduling attempted but controller is disabled");
             return "disabled";
         }
@@ -179,24 +169,19 @@ public final class ChaosController {
     /// Get chaos controller status.
     public ChaosStatus status() {
         var eventsCopy = List.copyOf(activeEvents.values());
-        return ChaosStatus.chaosStatus(enabled.get(),
-                                       activeEvents.size(),
-                                       eventsCopy)
-                          .unwrap();
+        return ChaosStatus.chaosStatus(enabled.get(), activeEvents.size(), eventsCopy).unwrap();
     }
 
     /// Shutdown the chaos controller.
     public Result<Unit> shutdown() {
         stopAllChaos();
         scheduler.shutdown();
-        try{
-            if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
-                scheduler.shutdownNow();
-            }
+        try {
+            if ( !scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+            scheduler.shutdownNow();}
         } catch (InterruptedException e) {
             scheduler.shutdownNow();
-            Thread.currentThread()
-                  .interrupt();
+            Thread.currentThread().interrupt();
         }
         return unitResult();
     }
@@ -212,9 +197,8 @@ public final class ChaosController {
         }
 
         public String toJson() {
-            var durationStr = event.duration()
-                                   .map(ChaosController::durationText)
-                                   .or("indefinite");
+            var durationStr = event.duration().map(ChaosController::durationText)
+                                            .or("indefinite");
             return String.format("{\"eventId\":\"%s\",\"type\":\"%s\",\"description\":\"%s\",\"startedAt\":\"%s\",\"duration\":\"%s\"}",
                                  eventId,
                                  event.type(),
@@ -249,10 +233,9 @@ public final class ChaosController {
         private String buildEventsJson() {
             var sb = new StringBuilder("[");
             var first = true;
-            for (var event : activeEvents) {
-                if (!first) {
-                    sb.append(",");
-                }
+            for ( var event : activeEvents) {
+                if ( !first) {
+                sb.append(",");}
                 first = false;
                 sb.append(event.toJson());
             }
@@ -270,15 +253,13 @@ public final class ChaosController {
                 return success(new ExecutionFailed());
             }
 
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Failed to execute chaos event";
             }
         }
 
         record unused() implements ChaosError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "";
             }
         }

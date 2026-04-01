@@ -44,16 +44,8 @@ class ApiKeySecurityValidator implements SecurityValidator {
         return entries;
     }
 
-    @Override
-    public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
-        return switch (policy) {
-            case SecurityPolicy.Public() -> Result.success(SecurityContext.securityContext());
-            case SecurityPolicy.ApiKeyRequired() -> validateApiKey(request);
-            case SecurityPolicy.Authenticated() -> validateApiKey(request);
-            case SecurityPolicy.RoleRequired _ -> validateApiKey(request);
-            case SecurityPolicy.BearerTokenRequired() -> Result.success(SecurityContext.securityContext());
-            default -> Result.success(SecurityContext.securityContext());
-        };
+    @Override public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
+        return switch (policy) {case SecurityPolicy.Public() -> Result.success(SecurityContext.securityContext());case SecurityPolicy.ApiKeyRequired() -> validateApiKey(request);case SecurityPolicy.Authenticated() -> validateApiKey(request);case SecurityPolicy.RoleRequired _ -> validateApiKey(request);case SecurityPolicy.BearerTokenRequired() -> Result.success(SecurityContext.securityContext());default -> Result.success(SecurityContext.securityContext());};
     }
 
     private Result<SecurityContext> validateApiKey(HttpRequestContext request) {
@@ -63,37 +55,29 @@ class ApiKeySecurityValidator implements SecurityValidator {
 
     private Result<SecurityContext> checkApiKey(String apiKey) {
         var candidateHash = hashKey(apiKey).getBytes(StandardCharsets.UTF_8);
-        return Option.from(keyEntries.entrySet()
-                                     .stream()
-                                     .filter(e -> MessageDigest.isEqual(e.getKey()
-                                                                         .getBytes(StandardCharsets.UTF_8),
-                                                                        candidateHash))
-                                     .map(Map.Entry::getValue)
-                                     .findFirst())
-                     .toResult(SecurityError.INVALID_API_KEY)
-                     .flatMap(ApiKeySecurityValidator::toSecurityContext);
+        return Option.from(keyEntries.entrySet().stream()
+                                              .filter(e -> MessageDigest.isEqual(e.getKey()
+        .getBytes(StandardCharsets.UTF_8),
+                                                                                 candidateHash))
+                                              .map(Map.Entry::getValue)
+                                              .findFirst()).toResult(SecurityError.INVALID_API_KEY)
+                          .flatMap(ApiKeySecurityValidator::toSecurityContext);
     }
 
     private static Result<SecurityContext> toSecurityContext(ApiKeyEntry entry) {
-        var roles = entry.roles()
-                         .stream()
-                         .map(Role::role)
-                         .flatMap(r -> r.stream())
-                         .collect(Collectors.toSet());
+        var roles = entry.roles().stream()
+                               .map(Role::role)
+                               .flatMap(r -> r.stream())
+                               .collect(Collectors.toSet());
         var authRole = parseAuthorizationRole(entry.authorizationRole());
         return SecurityContext.securityContext(entry.name(), roles, authRole);
     }
 
     private static AuthorizationRole parseAuthorizationRole(String value) {
-        return switch (value) {
-            case "ADMIN" -> AuthorizationRole.ADMIN;
-            case "OPERATOR" -> AuthorizationRole.OPERATOR;
-            case "VIEWER" -> AuthorizationRole.VIEWER;
-            default -> {
-                log.warn("Unknown authorization role '{}', defaulting to VIEWER", value);
-                yield AuthorizationRole.VIEWER;
-            }
-        };
+        return switch (value) {case "ADMIN" -> AuthorizationRole.ADMIN;case "OPERATOR" -> AuthorizationRole.OPERATOR;case "VIEWER" -> AuthorizationRole.VIEWER;default -> {
+            log.warn("Unknown authorization role '{}', defaulting to VIEWER", value);
+            yield AuthorizationRole.VIEWER;
+        }};
     }
 
     private Option<String> extractApiKey(Map<String, List<String>> headers) {
@@ -101,30 +85,32 @@ class ApiKeySecurityValidator implements SecurityValidator {
     }
 
     private static Option<String> extractCaseSensitive(Map<String, List<String>> headers) {
-        return Option.option(headers.get(API_KEY_HEADER))
-                     .filter(values -> !values.isEmpty())
-                     .map(List::getFirst);
+        return Option.option(headers.get(API_KEY_HEADER)).filter(values -> !values.isEmpty())
+                            .map(List::getFirst);
     }
 
     private static Option<String> extractCaseInsensitive(Map<String, List<String>> headers) {
-        var value = headers.entrySet()
-                           .stream()
-                           .filter(e -> API_KEY_HEADER.equalsIgnoreCase(e.getKey()))
-                           .map(Map.Entry::getValue)
-                           .filter(values -> values != null && !values.isEmpty())
-                           .map(List::getFirst)
-                           .findFirst();
+        var value = headers.entrySet().stream()
+                                    .filter(e -> API_KEY_HEADER.equalsIgnoreCase(e.getKey()))
+                                    .map(Map.Entry::getValue)
+                                    .filter(values -> values != null && !values.isEmpty())
+                                    .map(List::getFirst)
+                                    .findFirst();
         return Option.from(value);
     }
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-EX-01"})
     private static String hashKey(String key) {
-        try{
+        try {
             var digest = MessageDigest.getInstance("SHA-256");
             var hash = digest.digest(key.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of()
-                            .formatHex(hash);
-        } catch (NoSuchAlgorithmException e) {
+            return HexFormat.of().formatHex(hash);
+        }
+
+
+
+
+        catch (NoSuchAlgorithmException e) {
             // SHA-256 is guaranteed to be available in all JVMs
             throw new AssertionError("SHA-256 not available", e);
         }

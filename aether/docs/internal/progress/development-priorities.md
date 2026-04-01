@@ -231,8 +231,8 @@ v0.24.0-0.24.1 delivered: QUIC cluster transport (replacing TCP), per-route secu
 1. **Streaming** (partial) — [implementation spec](../../specs/streaming-spec.md), [exploratory design](../../specs/in-memory-streams-spec.md), [lifecycle operations](../../specs/in-memory-streams-spec.md#16-stream-lifecycle-operations)
     - **Done (v0.23.0):** Slice API (StreamPublisher, StreamAccess, StreamSubscriber), OffHeapRingBuffer, StreamPartitionManager, StreamConsumerRuntime, DeadLetterHandler, annotation processor, REST API, CLI, KV-Store types
     - **Phase 1 remaining (#67):** StreamPublisherFactory + StreamAccessFactory, blueprint `[streams.xxx]` parsing, @StreamSubscriber wiring to ConsumerRuntime, cross-node partition routing
-    - **Phase 2 (#69):** Ring buffer persistence, retention enforcement, replication, governor failover recovery
-    - **Phase 3:** PostgreSQL persistent backend, transactional cursors, compaction
+    - **Phase 2 (#69):** Ring buffer persistence via AHSE ([spec](../../specs/hierarchical-storage-spec.md)), retention enforcement, replication, governor failover recovery
+    - **Phase 3:** Transactional cursors via PostgreSQL (exactly-once), log compaction (AHSE-native), cold-tier replay
 
 2. **Canary, Blue-Green & A/B Testing Deployment Strategies** — ✅ **Implemented in v0.21.0**
      - Canary: multi-stage progressive traffic shift, auto-evaluation, auto-rollback, KV persistence
@@ -319,7 +319,28 @@ Part of Cloud Integration (#3). Per-provider status:
 
 ### LOWER PRIORITY
 
-6. **Configurable Rate Limiting per HTTP Route**
+6. **Hierarchical Storage System** — [implementation spec](../../specs/hierarchical-storage-spec.md), [#99](https://github.com/pragmaticalabs/pragmatica/issues/99)
+    - Unified three-tier content-addressable storage: In-memory DHT → Node-local disk → Remote object store (S3/MinIO/GCS)
+    - Consumers: Streaming (Phase 2 persistence), ContentStore (#99), ArtifactStore (replacing DHT-only), KV-Store backup
+    - Immutable blocks with SHA-256 content addressing, automatic deduplication
+    - Per-instance configuration: chunk size, compression (LZ4/zstd), encryption (AES-256-GCM), retention, replication
+    - **Mandatory:** Automatic KV-Store metadata snapshotting (dual-trigger: mutation count + time elapsed)
+    - Cross-node prefetching on partition reassignment, single-flight fetching, distributed GC
+    - **Phase 1:** Core abstractions, Memory + Local disk tiers, metadata store with snapshotting, ArtifactStore migration
+    - **Phase 2:** S3 tier, ContentStore integration, demotion policies, cross-node prefetching
+    - **Phase 3:** Streaming integration, compression, encryption, advanced GC
+    - **Phase 4:** Observability dashboard, quota management, performance tuning
+    - **Target: RC2**
+
+7. **Cross-Environment Fluid Migration** — [spec](../../specs/fluid-migration-spec.md), [#101](https://github.com/pragmaticalabs/pragmatica/issues/101)
+    - Zero-downtime migration between cloud providers, cloud↔on-prem, or regions
+    - NodeLifecycleValue `provider` field + CLI `--provider` filter
+    - DNS Provider SPI (Route53, Cloud DNS, Azure DNS)
+    - `aether cluster migrate` composite command with rollback
+    - Operator runbook for each migration scenario
+    - **Target: RC2**
+
+8. **Configurable Rate Limiting per HTTP Route**
      - Per-route rate limiting configuration in blueprint or management API
      - Token bucket or sliding window algorithm
      - Configurable limits: requests/second, burst size
@@ -327,26 +348,26 @@ Part of Cloud Integration (#3). Per-provider status:
      - Cluster-aware: distributed counters via consensus or per-node local limits
      - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
 
-7. **Advanced Topology Management**
+9. **Advanced Topology Management**
     - Proactive node replacement: track node age/health, replace before failure (rolling replacement for zero-downtime patching)
     - Placement constraints: min N nodes per availability zone, zone-aware provisioning on failure
     - Cost-aware scaling: prefer spot for scale-up, prefer spot termination for scale-down
     - Node quality scoring: replace consistently underperforming nodes proactively
     - Spot termination notice handling: preemptive on-demand replacement on 2-min AWS spot warning
 
-8. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
+10. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
     - Phases 1, 2a, 2b, 2b.5 complete in v0.19.3. Remaining work driven by real demand:
       - Phase 2c: Spot pool, spot-node exclusion from DHT ring
       - Phase 3: Multi-region, cross-region governors
     - **Architecture:** Small consensus core (5-7-9 active nodes) + self-organizing worker pools with elected governors. SWIM gossip for O(1) membership. Zone-aware grouping. Event-based community scaling.
     - **Research:** [10-system comparative analysis](../../internal/passive-worker-pool-research.md)
 
-9. **Observability Dashboard UI**
+11. **Observability Dashboard UI**
    - Wire `ObservabilityDepthRegistry` data to dashboard with UI for configuring per-method depth thresholds
    - Backend REST API (`/api/observability/depth`) and KV-store sync already implemented
    - Current state is functional; production value but no customers yet
 
-10. **Invocation Observability Dashboard Tab**
+12. **Invocation Observability Dashboard Tab**
    - "Requests" tab: table view with timestamp, requestId, caller → callee, depth, duration, status
    - Click-to-expand tree view showing invocation depth with input/output at each level
    - Waterfall view for multi-hop request visualization
@@ -355,7 +376,7 @@ Part of Cloud Integration (#3). Per-provider status:
    - See [RFC-0010](../../../../docs/rfc/RFC-0010-unified-invocation-observability.md) for data model and API
    - Backend complete (RFC-0010): REST API and trace store ready
 
-11. **Slice Development IDE Plugins**
+13. **Slice Development IDE Plugins**
     - IDE plugins for Aether slice development, providing deep integration with the JBCT toolchain
     - **Recommended approach:** build a shared **Language Server (LSP)** backend first, then thin IDE-specific clients. IntelliJ IDEA gets a native plugin for features that LSP cannot express (refactoring, inspections, run configs). VS Code, Eclipse, and NetBeans consume the LSP directly.
 
@@ -437,6 +458,13 @@ Part of Cloud Integration (#3). Per-provider status:
     **Guarantees:**
     - Aether's "each call eventually succeeds, if cluster is alive" applies
     - DB failure = transaction failure (expected behavior)
+
+- **Control Plane Task Delegation** — [investigation](../../internal/control-plane-delegation-investigation.md), [#102](https://github.com/pragmaticalabs/pragmatica/issues/102)
+    - Distribute leader-only control plane tasks across core nodes via KV-Store assignments
+    - 4 delegation groups: Metrics, Scaling, Deployment Strategies, Deployment (CDM)
+    - Reduces ~100MB RSS / ~30 threads on leader, reduces failover blast radius
+    - Architecture already supports it — no changes to RabiaEngine/KVStore needed
+    - Pre-GA: enforce Dormant/Active pattern for all new leader-activated components
 
 - **Multi-Region Federation** — Current architecture is single-region (Rabia all-to-all consensus requires low-latency links). Multi-region requires federation: independent Aether clusters per region, cross-region data sync (async replication, conflict resolution), global load balancing, region-aware client routing. Not a single-cluster stretch — fundamentally different architecture. Phase 2 adds zones within a region but not cross-region.
 

@@ -45,7 +45,7 @@ public class CstNullableParameterRule implements CstLintRule {
         if (!ctx.shouldLint(packageName)) {
             return Stream.empty();
         }
-        return findAll(root, RuleId.MethodDecl.class).stream()
+        return findAllMethods(root).stream()
                       .flatMap(method -> analyzeMethod(method, source, ctx));
     }
 

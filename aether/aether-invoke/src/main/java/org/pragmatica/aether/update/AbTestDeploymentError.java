@@ -11,8 +11,7 @@ public sealed interface AbTestDeploymentError extends Cause {
             return new TestNotFound(testId);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "A/B test not found: " + testId;
         }
     }
@@ -23,8 +22,7 @@ public sealed interface AbTestDeploymentError extends Cause {
             return new TestAlreadyExists(artifactBase);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "A/B test already in progress for " + artifactBase;
         }
     }
@@ -35,8 +33,7 @@ public sealed interface AbTestDeploymentError extends Cause {
             return new InvalidTestState(from, to);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Invalid A/B test state transition from " + from + " to " + to;
         }
     }
@@ -47,8 +44,7 @@ public sealed interface AbTestDeploymentError extends Cause {
             return new InitialDeployment(artifactBase);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Initial deployment for " + artifactBase + " (no previous version)";
         }
     }
@@ -59,8 +55,7 @@ public sealed interface AbTestDeploymentError extends Cause {
             return new VariantNotFound(testId, variant);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Variant '" + variant + "' not found in A/B test " + testId;
         }
     }
@@ -68,8 +63,7 @@ public sealed interface AbTestDeploymentError extends Cause {
     /// Not the leader node.
     enum NotLeader implements AbTestDeploymentError {
         INSTANCE;
-        @Override
-        public String message() {
+        @Override public String message() {
             return "A/B test operations can only be performed by the leader node";
         }
     }

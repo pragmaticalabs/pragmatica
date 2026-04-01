@@ -98,6 +98,18 @@ public sealed interface JsonError extends Cause {
         }
     }
 
+    /// Path not found during field extraction.
+    record PathNotFound(String path) implements JsonError {
+        public static PathNotFound pathNotFound(String path) {
+            return new PathNotFound(path);
+        }
+
+        @Override
+        public String message() {
+            return "Path not found: " + path;
+        }
+    }
+
     /// Maps Jackson exceptions to typed JsonError causes.
     ///
     /// @param throwable Exception to map

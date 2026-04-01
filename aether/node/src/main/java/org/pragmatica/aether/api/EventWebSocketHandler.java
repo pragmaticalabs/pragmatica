@@ -21,9 +21,8 @@ public class EventWebSocketHandler implements WebSocketHandler {
         this.authenticator = authenticator;
     }
 
-    @Override
-    public void handle(WebSocketSession session, WebSocketMessage message) {
-        switch (message) {
+    @Override public void handle(WebSocketSession session, WebSocketMessage message) {
+        switch ( message) {
             case WebSocketMessage.Open _ -> onOpen(session);
             case WebSocketMessage.Text text -> onText(session, text.content());
             case WebSocketMessage.Binary _ -> {}
@@ -49,22 +48,18 @@ public class EventWebSocketHandler implements WebSocketHandler {
 
     /// Broadcast a message to all connected and authenticated clients.
     public void broadcast(String message) {
-        sessions.values()
-                .removeIf(session -> !session.isOpen());
-        sessions.values()
-                .forEach(session -> sendIfAuthenticated(session, message));
+        sessions.values().removeIf(session -> !session.isOpen());
+        sessions.values().forEach(session -> sendIfAuthenticated(session, message));
     }
 
     private void sendIfAuthenticated(WebSocketSession session, String message) {
-        if (authenticator.isAuthenticated(session.id())) {
-            session.send(message);
-        }
+        if ( authenticator.isAuthenticated(session.id())) {
+        session.send(message);}
     }
 
     /// Get the number of connected clients.
     public int connectedClients() {
-        sessions.values()
-                .removeIf(session -> !session.isOpen());
+        sessions.values().removeIf(session -> !session.isOpen());
         return sessions.size();
     }
 }

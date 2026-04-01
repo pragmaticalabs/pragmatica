@@ -52,13 +52,9 @@ public enum DatabaseType {
         var actualPort = port > 0
                          ? port
                          : defaultPort;
-        return switch (this) {
-            case SQLITE -> "jdbc:sqlite:" + database;
-            case H2 -> database.startsWith("mem:")
-                       ? "jdbc:h2:" + database
-                       : "jdbc:h2:tcp://" + host + ":" + actualPort + "/" + database;
-            default -> "jdbc:" + jdbcProtocol + "://" + host + ":" + actualPort + "/" + database;
-        };
+        return switch (this) {case SQLITE -> "jdbc:sqlite:" + database;case H2 -> database.startsWith("mem:")
+                                                                                 ? "jdbc:h2:" + database
+                                                                                 : "jdbc:h2:tcp://" + host + ":" + actualPort + "/" + database;default -> "jdbc:" + jdbcProtocol + "://" + host + ":" + actualPort + "/" + database;};
     }
     /// Builds an R2DBC URL for this database type.
     ///
@@ -70,17 +66,9 @@ public enum DatabaseType {
         var actualPort = port > 0
                          ? port
                          : defaultPort;
-        return switch (this) {
-            case H2 -> database.startsWith("mem:")
-                       ? "r2dbc:h2:" + database
-                       : "r2dbc:h2:tcp://" + host + ":" + actualPort + "/" + database;
-            case POSTGRESQL, COCKROACHDB -> "r2dbc:postgresql://" + host + ":" + actualPort + "/" + database;
-            case MYSQL -> "r2dbc:mysql://" + host + ":" + actualPort + "/" + database;
-            case MARIADB -> "r2dbc:mariadb://" + host + ":" + actualPort + "/" + database;
-            case SQLSERVER -> "r2dbc:mssql://" + host + ":" + actualPort + "/" + database;
-            case ORACLE -> "r2dbc:oracle://" + host + ":" + actualPort + "/" + database;
-            default -> "r2dbc:" + name + "://" + host + ":" + actualPort + "/" + database;
-        };
+        return switch (this) {case H2 -> database.startsWith("mem:")
+                                        ? "r2dbc:h2:" + database
+                                        : "r2dbc:h2:tcp://" + host + ":" + actualPort + "/" + database;case POSTGRESQL, COCKROACHDB -> "r2dbc:postgresql://" + host + ":" + actualPort + "/" + database;case MYSQL -> "r2dbc:mysql://" + host + ":" + actualPort + "/" + database;case MARIADB -> "r2dbc:mariadb://" + host + ":" + actualPort + "/" + database;case SQLSERVER -> "r2dbc:mssql://" + host + ":" + actualPort + "/" + database;case ORACLE -> "r2dbc:oracle://" + host + ":" + actualPort + "/" + database;default -> "r2dbc:" + name + "://" + host + ":" + actualPort + "/" + database;};
     }
     /// Parse database type from string name.
     ///
@@ -92,14 +80,10 @@ public enum DatabaseType {
                      .flatMap(DatabaseType::lookupByName);
     }
     private static Result<DatabaseType> lookupByName(String name) {
-        var normalized = name.trim()
-                             .toLowerCase();
-        for (var type : values()) {
-            if (type.name.equals(normalized) || type.name()
-                                                    .equalsIgnoreCase(normalized)) {
-                return success(type);
-            }
-        }
+        var normalized = name.trim().toLowerCase();
+        for ( var type : values()) {
+        if ( type.name.equals(normalized) || type.name().equalsIgnoreCase(normalized)) {
+        return success(type);}}
         return cause("Unknown database type: " + name).result();
     }
     /// Try to detect database type from JDBC URL.
@@ -136,28 +120,21 @@ public enum DatabaseType {
     public static Option<DatabaseType> fromAnyUrl(Option<String> jdbcUrl,
                                                   Option<String> r2dbcUrl,
                                                   Option<String> asyncUrl) {
-        return jdbcUrl.flatMap(DatabaseType::fromJdbcUrl)
-                      .orElse(() -> r2dbcUrl.flatMap(DatabaseType::fromR2dbcUrl))
-                      .orElse(() -> asyncUrl.flatMap(DatabaseType::fromAsyncUrl));
+        return jdbcUrl.flatMap(DatabaseType::fromJdbcUrl).orElse(() -> r2dbcUrl.flatMap(DatabaseType::fromR2dbcUrl))
+                              .orElse(() -> asyncUrl.flatMap(DatabaseType::fromAsyncUrl));
     }
     private static Option<DatabaseType> matchByProtocol(String url) {
         var urlLower = url.toLowerCase();
-        for (var type : values()) {
-            if (urlLower.contains(":" + type.jdbcProtocol + ":")) {
-                return some(type);
-            }
-        }
+        for ( var type : values()) {
+        if ( urlLower.contains(":" + type.jdbcProtocol + ":")) {
+        return some(type);}}
         return none();
     }
     private static Option<DatabaseType> matchByScheme(String url) {
-        var schemePart = url.substring(0,
-                                       url.indexOf("://"))
-                            .toLowerCase();
-        for (var type : values()) {
-            if (type.name.equals(schemePart) || type.jdbcProtocol.equals(schemePart)) {
-                return some(type);
-            }
-        }
+        var schemePart = url.substring(0, url.indexOf("://")).toLowerCase();
+        for ( var type : values()) {
+        if ( type.name.equals(schemePart) || type.jdbcProtocol.equals(schemePart)) {
+        return some(type);}}
         return none();
     }
 }

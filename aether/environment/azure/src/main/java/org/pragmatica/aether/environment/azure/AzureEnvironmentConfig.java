@@ -9,17 +9,17 @@ import static org.pragmatica.lang.Result.success;
 
 /// Configuration for the Azure environment integration.
 /// Contains Azure API credentials and default VM provisioning parameters.
-public record AzureEnvironmentConfig(AzureConfig azureConfig,
-                                     String vmSize,
-                                     String image,
-                                     String adminUsername,
-                                     String sshPublicKey,
-                                     String vnetSubnetId,
-                                     String userData,
-                                     Option<AzureLbConfig> loadBalancer,
-                                     Option<String> clusterName,
-                                     Option<String> selfVmName,
-                                     long discoveryPollIntervalMs) {
+public record AzureEnvironmentConfig( AzureConfig azureConfig,
+                                      String vmSize,
+                                      String image,
+                                      String adminUsername,
+                                      String sshPublicKey,
+                                      String vnetSubnetId,
+                                      String userData,
+                                      Option<AzureLbConfig> loadBalancer,
+                                      Option<String> clusterName,
+                                      Option<String> selfVmName,
+                                      long discoveryPollIntervalMs) {
     private static final long DEFAULT_POLL_INTERVAL_MS = 30_000L;
 
     /// Load balancer configuration for Azure environment.
@@ -77,7 +77,38 @@ public record AzureEnvironmentConfig(AzureConfig azureConfig,
 
     /// Return a copy with discovery enabled for the specified cluster name.
     @SuppressWarnings("JBCT-VO-02") // Copy-with-change builder -- direct constructor is intentional
-    public AzureEnvironmentConfig withDiscovery(String clusterLabel) {
+    public// Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    AzureEnvironmentConfig withDiscovery(String clusterLabel) {
         return new AzureEnvironmentConfig(azureConfig,
                                           vmSize,
                                           image,
@@ -93,7 +124,38 @@ public record AzureEnvironmentConfig(AzureConfig azureConfig,
 
     /// Return a copy with the self VM name set.
     @SuppressWarnings("JBCT-VO-02") // Copy-with-change builder -- direct constructor is intentional
-    public AzureEnvironmentConfig withSelfVmName(String vmName) {
+    public// Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    AzureEnvironmentConfig withSelfVmName(String vmName) {
         return new AzureEnvironmentConfig(azureConfig,
                                           vmSize,
                                           image,
@@ -109,7 +171,38 @@ public record AzureEnvironmentConfig(AzureConfig azureConfig,
 
     /// Return a copy with the discovery poll interval set.
     @SuppressWarnings("JBCT-VO-02") // Copy-with-change builder -- direct constructor is intentional
-    public AzureEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
+    public// Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    // Copy-with-change builder -- direct constructor is intentional
+    AzureEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
         return new AzureEnvironmentConfig(azureConfig,
                                           vmSize,
                                           image,

@@ -26,42 +26,34 @@ public interface ClusterController {
                           List<NodeId> activeNodes) {
         /// Get average value of a metric across all nodes.
         public double avgMetric(String metricName) {
-            var values = metrics.values()
-                                .stream()
-                                .map(m -> m.get(metricName))
-                                .flatMap(v -> Option.option(v)
-                                                    .stream())
-                                .mapToDouble(Double::doubleValue)
-                                .toArray();
-            if (values.length == 0) {
-                return 0.0;
-            }
-            return java.util.Arrays.stream(values)
-                       .average()
-                       .orElse(0.0);
+            var values = metrics.values().stream()
+                                       .map(m -> m.get(metricName))
+                                       .flatMap(v -> Option.option(v).stream())
+                                       .mapToDouble(Double::doubleValue)
+                                       .toArray();
+            if ( values.length == 0) {
+            return 0.0;}
+            return java.util.Arrays.stream(values).average()
+                                          .orElse(0.0);
         }
 
         /// Get max value of a metric across all nodes.
         public double maxMetric(String metricName) {
-            return metrics.values()
-                          .stream()
-                          .map(m -> m.get(metricName))
-                          .flatMap(v -> Option.option(v)
-                                              .stream())
-                          .mapToDouble(Double::doubleValue)
-                          .max()
-                          .orElse(0.0);
+            return metrics.values().stream()
+                                 .map(m -> m.get(metricName))
+                                 .flatMap(v -> Option.option(v).stream())
+                                 .mapToDouble(Double::doubleValue)
+                                 .max()
+                                 .orElse(0.0);
         }
 
         /// Get total calls for a method across all nodes.
         public double totalCalls(String methodName) {
-            return metrics.values()
-                          .stream()
-                          .map(m -> m.get("method." + methodName + ".calls"))
-                          .flatMap(v -> Option.option(v)
-                                              .stream())
-                          .mapToDouble(Double::doubleValue)
-                          .sum();
+            return metrics.values().stream()
+                                 .map(m -> m.get("method." + methodName + ".calls"))
+                                 .flatMap(v -> Option.option(v).stream())
+                                 .mapToDouble(Double::doubleValue)
+                                 .sum();
         }
     }
 
@@ -69,7 +61,7 @@ public interface ClusterController {
     /// @param artifact the artifact to deploy
     /// @param instances current desired instance count (may be adjusted by auto-scaler)
     /// @param minInstances minimum instance count from original blueprint (hard floor for scale-down)
-    record Blueprint(Artifact artifact, int instances, int minInstances) {}
+    record Blueprint(Artifact artifact, int instances, int minInstances){}
 
     /// Decisions produced by the controller.
     record ControlDecisions(List<BlueprintChange> changes) {
@@ -87,9 +79,9 @@ public interface ClusterController {
         Artifact artifact();
 
         /// Scale up: add more instances.
-        record ScaleUp(Artifact artifact, int additionalInstances) implements BlueprintChange {}
+        record ScaleUp(Artifact artifact, int additionalInstances) implements BlueprintChange{}
 
         /// Scale down: remove instances.
-        record ScaleDown(Artifact artifact, int reduceBy) implements BlueprintChange {}
+        record ScaleDown(Artifact artifact, int reduceBy) implements BlueprintChange{}
     }
 }

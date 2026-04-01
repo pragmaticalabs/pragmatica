@@ -26,16 +26,16 @@ import org.pragmatica.lang.Option;
 /// Executed by NodeLifecycleManager, which delegates to the appropriate ComputeProvider calls.
 public sealed interface NodeAction {
     /// Provision a new cloud instance with the given specification.
-    record StartNode(ProvisionSpec spec) implements NodeAction {}
+    record StartNode(ProvisionSpec spec) implements NodeAction{}
 
     /// Terminate the cloud instance associated with the given node ID.
     /// Uses tag-based lookup (aether-node-id) to find the instance.
-    record StopNode(NodeId nodeId) implements NodeAction {}
+    record StopNode(NodeId nodeId) implements NodeAction{}
 
     /// Restart the cloud instance associated with the given node ID.
-    record RestartNode(NodeId nodeId) implements NodeAction {}
+    record RestartNode(NodeId nodeId) implements NodeAction{}
 
     /// Migrate slices from a source node to an optional target node.
     /// If target is empty, CDM selects the target automatically.
-    record MigrateSlices(NodeId sourceNode, Option<NodeId> targetNode) implements NodeAction {}
+    record MigrateSlices(NodeId sourceNode, Option<NodeId> targetNode) implements NodeAction{}
 }

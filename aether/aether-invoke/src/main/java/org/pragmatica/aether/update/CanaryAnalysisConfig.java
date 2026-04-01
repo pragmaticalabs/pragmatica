@@ -1,12 +1,5 @@
 package org.pragmatica.aether.update;
-/// Configuration for canary health analysis.
-///
-/// Determines how canary metrics are compared against baseline (old version)
-/// or absolute thresholds.
-///
-/// @param mode comparison mode for health evaluation
-/// @param relativeThresholdPercent maximum allowed degradation relative to baseline (e.g., 10 means 10% worse is tolerable)
-public record CanaryAnalysisConfig(ComparisonMode mode, int relativeThresholdPercent) {
+public record CanaryAnalysisConfig( ComparisonMode mode, int relativeThresholdPercent) {
     /// How canary health metrics are compared.
     public enum ComparisonMode {
         /// Only compare against absolute thresholds from HealthThresholds.
@@ -19,7 +12,38 @@ public record CanaryAnalysisConfig(ComparisonMode mode, int relativeThresholdPer
 
     /// Default: absolute-only comparison (simplest mode).
     @SuppressWarnings("JBCT-VO-02") // Static constant uses pre-validated values
-    public static final CanaryAnalysisConfig DEFAULT = new CanaryAnalysisConfig(ComparisonMode.ABSOLUTE_ONLY, 0);
+    public static final// Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    // Static constant uses pre-validated values
+    CanaryAnalysisConfig DEFAULT = new CanaryAnalysisConfig(ComparisonMode.ABSOLUTE_ONLY, 0);
 
     /// Factory method following JBCT naming convention.
     public static CanaryAnalysisConfig canaryAnalysisConfig(ComparisonMode mode, int relativeThresholdPercent) {

@@ -27,6 +27,8 @@ import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
 import org.bouncycastle.jce.ECNamedCurveTable;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
+import org.bouncycastle.jce.spec.ECPrivateKeySpec;
+import org.bouncycastle.jce.spec.ECPublicKeySpec;
 import org.bouncycastle.openssl.jcajce.JcaPEMWriter;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.pragmatica.lang.Option;
@@ -40,17 +42,15 @@ import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
-import java.security.PrivateKey;
-import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Security;
 import java.security.cert.X509Certificate;
-import java.security.spec.ECPrivateKeySpec;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.Date;
 
-import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 /// Self-signed certificate provider using BouncyCastle.
 ///
@@ -63,22 +63,28 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
     private static final Duration NODE_CERT_VALIDITY = Duration.ofDays(7);
     private static final byte[] HKDF_SALT = "aether-ca-seed".getBytes(StandardCharsets.UTF_8);
     private static final byte[] CA_KEY_INFO = "aether-ca-key-v1".getBytes(StandardCharsets.UTF_8);
-    private static final byte[] GOSSIP_KEY_INFO = "aether-gossip-key-v1".getBytes(StandardCharsets.UTF_8);
+    private static final String GOSSIP_KEY_PREFIX = "aether-gossip-key-v";
     private static final byte[] KEY_ID_LABEL = "key-id".getBytes(StandardCharsets.UTF_8);
 
     private final KeyPair caKeyPair;
     private final X509Certificate caCert;
     private final byte[] caCertPem;
-    private final GossipKey gossipKey;
+    private final GossipKey currentKey;
+    private final GossipKey previousKey;
+    private final byte[] clusterSecret;
 
     private SelfSignedCertificateProvider(KeyPair caKeyPair,
                                           X509Certificate caCert,
                                           byte[] caCertPem,
-                                          GossipKey gossipKey) {
+                                          GossipKey currentKey,
+                                          GossipKey previousKey,
+                                          byte[] clusterSecret) {
         this.caKeyPair = caKeyPair;
         this.caCert = caCert;
         this.caCertPem = caCertPem;
-        this.gossipKey = gossipKey;
+        this.currentKey = currentKey;
+        this.previousKey = previousKey;
+        this.clusterSecret = clusterSecret;
     }
 
     /// Create a self-signed certificate provider from a cluster secret.
@@ -108,12 +114,22 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
 
     @Override
     public Result<GossipKey> currentGossipKey() {
-        return Result.success(gossipKey);
+        return Result.success(currentKey);
     }
 
     @Override
     public Option<GossipKey> previousGossipKey() {
-        return none();
+        return some(previousKey);
+    }
+
+    /// Derive a gossip key for an arbitrary version label.
+    /// Used by gossip key rotation to generate new keys from the cluster secret.
+    ///
+    /// @param version version label appended to the HKDF info parameter
+    /// @return derived gossip key or error
+    public Result<GossipKey> deriveVersionedGossipKey(String version) {
+        return Result.lift(CertificateProviderError.CaGenerationFailed::new,
+                           () -> deriveGossipKeyWithLabel(clusterSecret, GOSSIP_KEY_PREFIX + version));
     }
 
     // ===== Provider Initialization =====
@@ -124,9 +140,11 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
         var caKeyPair = deriveKeyPair(clusterSecret);
         var caCert = generateCaCertificate(caKeyPair);
         var caCertPem = toPem(caCert);
-        var gossipKey = deriveGossipKey(clusterSecret);
+        var today = LocalDate.now().toEpochDay();
+        var currentKey = deriveGossipKeyWithLabel(clusterSecret, GOSSIP_KEY_PREFIX + today);
+        var previousKey = deriveGossipKeyWithLabel(clusterSecret, GOSSIP_KEY_PREFIX + (today - 1));
 
-        return new SelfSignedCertificateProvider(caKeyPair, caCert, caCertPem, gossipKey);
+        return new SelfSignedCertificateProvider(caKeyPair, caCert, caCertPem, currentKey, previousKey, clusterSecret);
     }
 
     // ===== Certificate Generation =====
@@ -211,41 +229,23 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
     }
 
     private static KeyPair keyPairFromSeed(byte[] seed) throws Exception {
-        var ecSpec = org.bouncycastle.jce.ECNamedCurveTable.getParameterSpec(EC_CURVE);
+        var ecSpec = ECNamedCurveTable.getParameterSpec(EC_CURVE);
         var privateKeyScalar = new BigInteger(1, seed).mod(ecSpec.getN().subtract(BigInteger.ONE)).add(BigInteger.ONE);
         var publicKeyPoint = ecSpec.getG().multiply(privateKeyScalar).normalize();
 
         var keyFactory = KeyFactory.getInstance("EC", "BC");
 
-        var javaEcSpec = new java.security.spec.ECParameterSpec(
-            new java.security.spec.EllipticCurve(
-                new java.security.spec.ECFieldFp(ecSpec.getCurve().getField().getCharacteristic()),
-                ecSpec.getCurve().getA().toBigInteger(),
-                ecSpec.getCurve().getB().toBigInteger()
-            ),
-            new java.security.spec.ECPoint(
-                ecSpec.getG().normalize().getAffineXCoord().toBigInteger(),
-                ecSpec.getG().normalize().getAffineYCoord().toBigInteger()
-            ),
-            ecSpec.getN(),
-            ecSpec.getH().intValue()
-        );
-
-        var privateKey = keyFactory.generatePrivate(new ECPrivateKeySpec(privateKeyScalar, javaEcSpec));
-
-        var publicPoint = new java.security.spec.ECPoint(
-            publicKeyPoint.getAffineXCoord().toBigInteger(),
-            publicKeyPoint.getAffineYCoord().toBigInteger()
-        );
-        var publicKey = keyFactory.generatePublic(new java.security.spec.ECPublicKeySpec(publicPoint, javaEcSpec));
+        var privateKey = keyFactory.generatePrivate(new ECPrivateKeySpec(privateKeyScalar, ecSpec));
+        var publicKey = keyFactory.generatePublic(new ECPublicKeySpec(publicKeyPoint, ecSpec));
 
         return new KeyPair(publicKey, privateKey);
     }
 
     // ===== Gossip Key Derivation =====
 
-    private static GossipKey deriveGossipKey(byte[] clusterSecret) throws Exception {
-        var key = hkdfDerive(clusterSecret, HKDF_SALT, GOSSIP_KEY_INFO, 32);
+    private static GossipKey deriveGossipKeyWithLabel(byte[] clusterSecret, String label) throws Exception {
+        var info = label.getBytes(StandardCharsets.UTF_8);
+        var key = hkdfDerive(clusterSecret, HKDF_SALT, info, 32);
         var keyIdBytes = hmacSha256(key, KEY_ID_LABEL);
         var keyId = ((keyIdBytes[0] & 0xFF) << 24)
                     | ((keyIdBytes[1] & 0xFF) << 16)

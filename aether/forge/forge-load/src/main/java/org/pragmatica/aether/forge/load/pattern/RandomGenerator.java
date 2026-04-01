@@ -21,48 +21,40 @@ import static org.pragmatica.lang.Result.success;
 ///
 ///
 /// Example: `${random:SKU-#####`} generates "SKU-48291"
-public record RandomGenerator(String template) implements PatternGenerator {
+public record RandomGenerator( String template) implements PatternGenerator {
     public static final String TYPE = "random";
 
     private static final Cause EMPTY_TEMPLATE = Causes.cause("Random generator template cannot be empty");
 
     public static Result<RandomGenerator> randomGenerator(String template) {
-        return Verify.ensure(template, Verify.Is::notNull, EMPTY_TEMPLATE)
-                     .filter(EMPTY_TEMPLATE,
-                             s -> !s.isEmpty())
-                     .map(RandomGenerator::new);
+        return Verify.ensure(template, Verify.Is::notNull, EMPTY_TEMPLATE).filter(EMPTY_TEMPLATE,
+                                                                                  s -> !s.isEmpty())
+                            .map(RandomGenerator::new);
     }
 
     private static final String DIGITS = "0123456789";
     private static final String LETTERS = "abcdefghijklmnopqrstuvwxyz";
     private static final String ALPHANUMERIC = LETTERS + DIGITS;
 
-    @Override
-    public String generate() {
+    @Override public String generate() {
         var random = ThreadLocalRandom.current();
         var chars = IntStream.range(0,
-                                    template.length())
-                             .mapToObj(i -> generateChar(template.charAt(i),
-                                                         random))
-                             .collect(StringBuilder::new, StringBuilder::append, StringBuilder::append);
+                                    template.length()).mapToObj(i -> generateChar(template.charAt(i),
+                                                                                  random))
+                                   .collect(StringBuilder::new, StringBuilder::append, StringBuilder::append);
         return chars.toString();
     }
 
     private static char generateChar(char c, ThreadLocalRandom random) {
-        return switch (c) {
-            case '#' -> randomFrom(DIGITS, random);
-            case '?' -> randomFrom(LETTERS, random);
-            case '*' -> randomFrom(ALPHANUMERIC, random);
-            default -> c;
-        };
+        return switch (c) {case '#' -> randomFrom(DIGITS, random);case '?' -> randomFrom(LETTERS, random);case '*' -> randomFrom(ALPHANUMERIC,
+                                                                                                                                 random);default -> c;};
     }
 
     private static char randomFrom(String source, ThreadLocalRandom random) {
         return source.charAt(random.nextInt(source.length()));
     }
 
-    @Override
-    public String pattern() {
+    @Override public String pattern() {
         return "${random:" + template + "}";
     }
 }

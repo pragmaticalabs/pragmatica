@@ -18,20 +18,17 @@ public interface LoadBalancerProvider {
 
     /// Create a new load balancer with the given specification.
     default Promise<LoadBalancerInfo> createLoadBalancer(LoadBalancerSpec spec) {
-        return EnvironmentError.operationNotSupported("createLoadBalancer")
-                               .promise();
+        return EnvironmentError.operationNotSupported("createLoadBalancer").promise();
     }
 
     /// Delete a load balancer by its provider-assigned ID.
     default Promise<Unit> deleteLoadBalancer(String loadBalancerId) {
-        return EnvironmentError.operationNotSupported("deleteLoadBalancer")
-                               .promise();
+        return EnvironmentError.operationNotSupported("deleteLoadBalancer").promise();
     }
 
     /// Get current load balancer info (targets, health, algorithm).
     default Promise<LoadBalancerInfo> loadBalancerInfo() {
-        return EnvironmentError.operationNotSupported("loadBalancerInfo")
-                               .promise();
+        return EnvironmentError.operationNotSupported("loadBalancerInfo").promise();
     }
 
     /// Configure health check parameters for the load balancer. Default: no-op.
@@ -53,7 +50,6 @@ public interface LoadBalancerProvider {
 
     /// Configure TLS termination on the load balancer.
     default Promise<Unit> configureTls(TlsTerminationConfig tlsConfig) {
-        return EnvironmentError.operationNotSupported("configureTls")
-                               .promise();
+        return EnvironmentError.operationNotSupported("configureTls").promise();
     }
 }

@@ -122,20 +122,16 @@ public final class SuppressionExtractor {
         for (int i = path.size() - 1; i >= 0; i--) {
             var node = path.get(i);
             var rule = node.rule();
-            // Type declarations
+            // Type declarations (TypeKind wraps ClassDecl/InterfaceDecl/EnumDecl/RecordDecl)
             if (rule instanceof RuleId.TypeDecl ||
-            rule instanceof RuleId.ClassDecl ||
-            rule instanceof RuleId.InterfaceDecl ||
-            rule instanceof RuleId.EnumDecl ||
-            rule instanceof RuleId.RecordDecl) {
+            rule instanceof RuleId.TypeKind) {
                 return Option.some(node);
             }
-            // Class members
+            // Class members — when nested ClassMember nodes exist (e.g. annotations + method),
+            // walk up to the outermost ClassMember to get the full method span
             if (rule instanceof RuleId.ClassMember ||
-            rule instanceof RuleId.MethodDecl ||
-            rule instanceof RuleId.FieldDecl ||
-            rule instanceof RuleId.ConstructorDecl) {
-                return Option.some(node);
+            rule instanceof RuleId.Member) {
+                return Option.some(outermostClassMember(path, i));
             }
             // Local declarations
             if (rule instanceof RuleId.LocalVar ||
@@ -144,6 +140,20 @@ public final class SuppressionExtractor {
             }
         }
         return Option.none();
+    }
+
+    private static CstNode outermostClassMember(List<CstNode> path, int startIndex) {
+        var result = path.get(startIndex);
+        for (int i = startIndex - 1; i >= 0; i--) {
+            var parentRule = path.get(i).rule();
+            if (parentRule instanceof RuleId.ClassMember ||
+            parentRule instanceof RuleId.Member) {
+                result = path.get(i);
+            } else {
+                break;
+            }
+        }
+        return result;
     }
 
     private static int endLine(CstNode node) {

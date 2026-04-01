@@ -15,8 +15,7 @@ public sealed interface LoadConfigError extends Cause {
             return success(new ParseFailed(details));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Failed to parse load config: " + details;
         }
     }
@@ -27,8 +26,7 @@ public sealed interface LoadConfigError extends Cause {
             return success(new ValidationFailed(errors));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Load config validation failed: " + String.join("; ", errors);
         }
     }
@@ -39,8 +37,7 @@ public sealed interface LoadConfigError extends Cause {
             return success(new FileReadFailed(path, cause));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Cannot read load config file: " + path + " - " + cause.getMessage();
         }
     }
@@ -51,15 +48,13 @@ public sealed interface LoadConfigError extends Cause {
             return success(new PatternInvalid(pattern, reason));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Invalid pattern '" + pattern + "': " + reason;
         }
     }
 
     record unused() implements LoadConfigError {
-        @Override
-        public String message() {
+        @Override public String message() {
             return "";
         }
     }

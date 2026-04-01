@@ -32,7 +32,7 @@ public class CstConstructorReferenceRule implements CstLintRule {
         if (!ctx.shouldLint(packageName)) {
             return Stream.empty();
         }
-        return findAll(root, RuleId.Lambda.class).stream()
+        return findAllLambdas(root).stream()
                       .filter(lambda -> isConstructorLambda(lambda, source))
                       .map(lambda -> createDiagnostic(lambda, ctx));
     }

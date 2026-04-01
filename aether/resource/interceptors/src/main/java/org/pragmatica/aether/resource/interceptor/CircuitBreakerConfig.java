@@ -13,7 +13,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param failureThreshold Number of failures before opening the circuit
 /// @param resetTimeout     Time to wait before attempting to close the circuit
 /// @param testAttempts     Number of successful calls in half-open state before closing
-public record CircuitBreakerConfig(int failureThreshold, TimeSpan resetTimeout, int testAttempts) {
+public record CircuitBreakerConfig( int failureThreshold, TimeSpan resetTimeout, int testAttempts) {
     @SuppressWarnings("JBCT-VO-02")
     private static final CircuitBreakerConfig DEFAULTS = new CircuitBreakerConfig(5, timeSpan(30).seconds(), 3);
 

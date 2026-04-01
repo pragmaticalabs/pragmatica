@@ -1,0 +1,11 @@
+prefix = "/api/v1/notifications"
+
+[security]
+default = "authenticated"
+override_policy = "strengthen_only"
+
+[routes]
+health = ["GET /health", "public"]
+send = "POST /"
+broadcast = ["POST /broadcast", "role:admin"]
+list = "GET /"

@@ -35,6 +35,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.routing.HttpStatus;
@@ -86,31 +87,28 @@ public interface AppHttpServer {
 
     Promise<Unit> stop();
 
+    /// Rotate TLS certificate by restarting HTTP servers with the new bundle.
+    Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle);
+
     Option<Integer> boundPort();
 
     /// Handle KV-Store updates to rebuild router when routes change.
-    @MessageReceiver
-    void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut);
+    @MessageReceiver void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut);
 
     /// Handle KV-Store removals to rebuild router when routes change.
-    @MessageReceiver
-    void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove);
+    @MessageReceiver void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove);
 
     /// Handle compound NodeRoutesKey put — triggers router rebuild.
-    @SuppressWarnings("JBCT-RET-01") // Event callback
-    void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
+    @SuppressWarnings("JBCT-RET-01") void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
 
     /// Handle compound NodeRoutesKey remove — triggers router rebuild.
-    @SuppressWarnings("JBCT-RET-01") // Event callback
-    void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
+    @SuppressWarnings("JBCT-RET-01") void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
 
     /// Handle incoming HTTP forward request from another node.
-    @MessageReceiver
-    void onHttpForwardRequest(HttpForwardRequest request);
+    @MessageReceiver void onHttpForwardRequest(HttpForwardRequest request);
 
     /// Handle HTTP forward response from another node.
-    @MessageReceiver
-    void onHttpForwardResponse(HttpForwardResponse response);
+    @MessageReceiver void onHttpForwardResponse(HttpForwardResponse response);
 
     /// Trigger router rebuild (called when local slices deploy/undeploy).
     void rebuildRouter();
@@ -119,13 +117,15 @@ public interface AppHttpServer {
     /// Returns true if at least one route update has been processed, or if running in standalone mode.
     boolean isRouteReady();
 
+    /// Handle quorum state changes. When quorum is established, mark route sync as complete
+    /// because the KV store is operational — if no route entries exist, that IS the synced state.
+    @SuppressWarnings("JBCT-RET-01") void onQuorumStateChange(QuorumStateNotification notification);
+
     /// Handle node removal for immediate retry of pending forwards.
-    @MessageReceiver
-    void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved);
+    @MessageReceiver void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved);
 
     /// Handle node down for immediate retry of pending forwards.
-    @MessageReceiver
-    void onNodeDown(TopologyChangeNotification.NodeDown nodeDown);
+    @MessageReceiver void onNodeDown(TopologyChangeNotification.NodeDown nodeDown);
 
     /// Get the HttpForwarder used by this server, if configured.
     Option<HttpForwarder> httpForwarder();
@@ -136,19 +136,11 @@ public interface AppHttpServer {
 
     /// Create a MapSubscription adapter for DHT events.
     default MapSubscription<HttpNodeRouteKey, HttpNodeRouteValue> asHttpRouteSubscription() {
-        return new MapSubscription<>() {
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onPut(HttpNodeRouteKey key, HttpNodeRouteValue value) {
-                onRoutePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
-            }
-
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onRemove(HttpNodeRouteKey key) {
-                onRouteRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
-            }
-        };
+        return new MapSubscription<>() {@Override@SuppressWarnings("JBCT-RET-01") public void onPut(HttpNodeRouteKey key, HttpNodeRouteValue value) {
+            onRoutePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
+        }@Override@SuppressWarnings("JBCT-RET-01") public void onRemove(HttpNodeRouteKey key) {
+            onRouteRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
+        }};
     }
 
     static AppHttpServer appHttpServer(AppHttpConfig config,
@@ -207,8 +199,7 @@ public interface AppHttpServer {
     }
 }
 
-@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
-class AppHttpServerImpl implements AppHttpServer {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) class AppHttpServerImpl implements AppHttpServer {
     private static final Logger log = LoggerFactory.getLogger(AppHttpServerImpl.class);
 
     private final AppHttpConfig config;
@@ -267,13 +258,8 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     private static SecurityValidator buildSecurityValidator(AppHttpConfig config) {
-        return switch (config.securityMode()) {
-            case API_KEY -> SecurityValidator.apiKeyValidator(config.apiKeys());
-            case JWT -> config.jwtConfig()
-                              .map(SecurityValidator::jwtValidator)
-                              .or(SecurityValidator.noOpValidator());
-            case NONE -> SecurityValidator.noOpValidator();
-        };
+        return switch (config.securityMode()) {case API_KEY -> SecurityValidator.apiKeyValidator(config.apiKeys());case JWT -> config.jwtConfig().map(SecurityValidator::jwtValidator)
+                                                                                                                                               .or(SecurityValidator.noOpValidator());case NONE -> SecurityValidator.noOpValidator();};
     }
 
     private static Option<HttpForwarder> buildHttpForwarder(NodeId selfNodeId,
@@ -290,30 +276,26 @@ class AppHttpServerImpl implements AppHttpServer {
                                                                                                                            config.forwardTimeout()))));
     }
 
-    @Override
-    public Option<HttpForwarder> httpForwarder() {
+    @Override public Option<HttpForwarder> httpForwarder() {
         return httpForwarder;
     }
 
-    @Override
-    public Option<HttpRoutePublisher> httpRoutePublisher() {
+    @Override public Option<HttpRoutePublisher> httpRoutePublisher() {
         return httpRoutePublisher;
     }
 
-    @Override
-    public Promise<Unit> start() {
-        if (!config.enabled()) {
+    @Override public Promise<Unit> start() {
+        if ( !config.enabled()) {
             log.info("App HTTP server is disabled");
             return Promise.success(unit());
         }
         log.info("Starting App HTTP server on port {} (protocol: {})", config.port(), config.httpProtocol());
         rebuildRouter();
         var protocol = config.httpProtocol();
-        if (protocol.includesH1()) {
-            return startH1Server().flatMap(_ -> protocol.includesH3()
-                                                ? startH3Server()
-                                                : Promise.success(unit()));
-        }
+        if ( protocol.includesH1()) {
+        return startH1Server().flatMap(_ -> protocol.includesH3()
+                                           ? startH3Server()
+                                           : Promise.success(unit()));}
         return startH3Server();
     }
 
@@ -326,35 +308,28 @@ class AppHttpServerImpl implements AppHttpServer {
                                                                                                 handler,
                                                                                                 bg,
                                                                                                 wg)))
-                                     .or(HttpServer.httpServer(serverConfig, handler));
+        .or(HttpServer.httpServer(serverConfig, handler));
         return serverPromise.map(this::registerStartedH1Server)
-                            .onFailure(cause -> log.error("Failed to start App HTTP server on port {}: {}",
-                                                          config.port(),
-                                                          cause.message()));
+        .onFailure(cause -> log.error("Failed to start App HTTP server on port {}: {}", config.port(), cause.message()));
     }
 
     private Promise<Unit> startH3Server() {
-        var quicTls = tls.map(QuicSslContextFactory::createServer)
-                         .or(QuicSslContextFactory.createSelfSignedServer());
+        var quicTls = tls.map(QuicSslContextFactory::createServer).or(QuicSslContextFactory.createSelfSignedServer());
         return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context: {}",
-                                                    cause.message()))
-                      .map(this::startH3WithSslContext)
-                      .or(Promise.success(unit()));
+                                                    cause.message())).map(this::startH3WithSslContext)
+                                .or(Promise.success(unit()));
     }
 
     private Promise<Unit> startH3WithSslContext(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
-        var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3",
-                                                             config.port())
-                                           .withMaxContentLength(config.maxRequestSize());
+        var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3", config.port())
+        .withMaxContentLength(config.maxRequestSize());
         var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
                                                                          quicSslContext,
                                                                          this::handleRequest,
                                                                          wg))
-                                       .or(HttpServer.http3Server(serverConfig, quicSslContext, this::handleRequest));
+        .or(HttpServer.http3Server(serverConfig, quicSslContext, this::handleRequest));
         return serverPromise.map(this::registerStartedH3Server)
-                            .onFailure(cause -> log.error("Failed to start App HTTP/3 server on port {}: {}",
-                                                          config.port(),
-                                                          cause.message()));
+        .onFailure(cause -> log.error("Failed to start App HTTP/3 server on port {}: {}", config.port(), cause.message()));
     }
 
     private void handleRequestWithAltSvc(org.pragmatica.http.server.RequestContext request,
@@ -364,9 +339,8 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     private HttpServerConfig buildServerConfig() {
-        var serverConfig = HttpServerConfig.httpServerConfig("app-http",
-                                                             config.port())
-                                           .withMaxContentLength(config.maxRequestSize());
+        var serverConfig = HttpServerConfig.httpServerConfig("app-http", config.port())
+        .withMaxContentLength(config.maxRequestSize());
         return tls.fold(() -> serverConfig, serverConfig::withTls);
     }
 
@@ -382,70 +356,119 @@ class AppHttpServerImpl implements AppHttpServer {
         return unit();
     }
 
-    @Override
-    public Promise<Unit> stop() {
-        var h1Stop = Option.option(serverRef.get())
-                           .map(server -> server.stop()
-                                                .onSuccessRun(() -> log.info("App HTTP/1.1 server stopped")))
-                           .or(Promise.success(unit()));
-        var h3Stop = Option.option(h3ServerRef.get())
-                           .map(server -> server.stop()
-                                                .onSuccessRun(() -> log.info("App HTTP/3 server stopped")))
-                           .or(Promise.success(unit()));
+    @Override public Promise<Unit> stop() {
+        var h1Stop = Option.option(serverRef.get()).map(server -> server.stop()
+        .onSuccessRun(() -> log.info("App HTTP/1.1 server stopped")))
+                                  .or(Promise.success(unit()));
+        var h3Stop = Option.option(h3ServerRef.get()).map(server -> server.stop()
+        .onSuccessRun(() -> log.info("App HTTP/3 server stopped")))
+                                  .or(Promise.success(unit()));
         return h1Stop.flatMap(_ -> h3Stop);
     }
 
-    @Override
-    public Option<Integer> boundPort() {
-        return Option.option(serverRef.get())
-                     .map(HttpServer::port);
+    @Override public Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
+        if ( !config.enabled()) {
+        return Promise.success(unit());}
+        log.info("Rotating app HTTP server TLS certificate");
+        return stopHttpServers().flatMap(_ -> restartWithNewBundle(newBundle));
+    }
+
+    private Promise<Unit> stopHttpServers() {
+        var h1Stop = Option.option(serverRef.getAndSet(null)).map(HttpServer::stop)
+                                  .or(Promise.success(unit()));
+        var h3Stop = Option.option(h3ServerRef.getAndSet(null)).map(HttpServer::stop)
+                                  .or(Promise.success(unit()));
+        return h1Stop.flatMap(_ -> h3Stop);
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") // Lifecycle: rebuild TLS from bundle and restart
+    private Promise<Unit> restartWithNewBundle(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
+        var newTlsConfig = buildTlsFromBundle(newBundle);
+        var protocol = config.httpProtocol();
+        if ( protocol.includesH1()) {
+        return restartH1WithTls(newTlsConfig).flatMap(_ -> protocol.includesH3()
+                                                          ? restartH3WithBundle(newBundle)
+                                                          : Promise.success(unit()));}
+        return restartH3WithBundle(newBundle);
+    }
+
+    private Promise<Unit> restartH1WithTls(Option<TlsConfig> newTls) {
+        var serverConfig = HttpServerConfig.httpServerConfig("app-http", config.port())
+        .withMaxContentLength(config.maxRequestSize());
+        var finalConfig = newTls.map(serverConfig::withTls).or(serverConfig);
+        java.util.function.BiConsumer<RequestContext, ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
+                                                                                ? this::handleRequestWithAltSvc
+                                                                                : this::handleRequest;
+        var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(finalConfig,
+                                                                                                handler,
+                                                                                                bg,
+                                                                                                wg)))
+        .or(HttpServer.httpServer(finalConfig, handler));
+        return serverPromise.map(this::registerStartedH1Server).onSuccess(_ -> log.info("App HTTP/1.1 server restarted with new certificate"))
+                                .onFailure(cause -> log.error("Failed to restart app HTTP/1.1 server: {}",
+                                                              cause.message()));
+    }
+
+    private Promise<Unit> restartH3WithBundle(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
+        var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle);
+        return quicTls.map(this::startH3WithSslContext).onFailure(cause -> log.error("Failed to create QUIC SSL context for app server rotation: {}",
+                                                                                     cause.message()))
+                          .or(Promise.success(unit()));
+    }
+
+    private static Option<TlsConfig> buildTlsFromBundle(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
+        var identity = new TlsConfig.Identity.FromProvider(newBundle.certificatePem(), newBundle.privateKeyPem());
+        var trust = new TlsConfig.Trust.FromCaBytes(newBundle.caCertificatePem());
+        return Option.some(new TlsConfig.Server(identity, Option.some(trust)));
+    }
+
+    @Override public Option<Integer> boundPort() {
+        return Option.option(serverRef.get()).map(HttpServer::port);
     }
 
     // ================== Router Rebuild ==================
-    @Override
-    public void rebuildRouter() {
-        var localRoutes = httpRoutePublisher.map(HttpRoutePublisher::allLocalRoutes)
-                                            .or(Set.of());
-        var localIdentities = localRoutes.stream()
-                                         .map(HttpNodeRouteKey::routeIdentity)
-                                         .collect(java.util.stream.Collectors.toSet());
-        var remoteRoutes = routeRegistry.allRoutes()
-                                        .stream()
-                                        .filter(route -> !localIdentities.contains(route.httpMethod() + ":" + route.pathPrefix()))
-                                        .toList();
+    @Override public void rebuildRouter() {
+        var localRoutes = httpRoutePublisher.map(HttpRoutePublisher::allLocalRoutes).or(Set.of());
+        var localIdentities = localRoutes.stream().map(HttpNodeRouteKey::routeIdentity)
+                                                .collect(java.util.stream.Collectors.toSet());
+        var remoteRoutes = routeRegistry.allRoutes().stream()
+                                                  .filter(route -> !localIdentities.contains(route.httpMethod() + ":" + route.pathPrefix()))
+                                                  .toList();
         var newTable = RouteTable.routeTable(localRoutes, remoteRoutes);
         routeTableRef.set(newTable);
         log.debug("Router rebuilt: {} local routes, {} remote routes", localRoutes.size(), remoteRoutes.size());
     }
 
-    @Override
-    public boolean isRouteReady() {
+    @Override public boolean isRouteReady() {
         return routeSyncReceived.get() || httpRoutePublisher.isEmpty();
     }
 
-    @Override
-    public void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut) {
+    @Override public void onQuorumStateChange(QuorumStateNotification notification) {
+        if ( notification.state() == QuorumStateNotification.State.ESTABLISHED) {
+            routeSyncReceived.set(true);
+            log.info("Quorum established — marking route sync complete");
+        }
+    }
+
+    @Override public void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut) {
         routeSyncReceived.set(true);
         log.debug("HttpNodeRouteKey added, rebuilding router");
         rebuildRouter();
     }
 
-    @Override
-    public void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove) {
+    @Override public void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove) {
         routeSyncReceived.set(true);
         log.debug("HttpNodeRouteKey removed, rebuilding router");
         rebuildRouter();
     }
 
-    @Override
-    public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
+    @Override public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
         routeSyncReceived.set(true);
         log.debug("NodeRoutesKey added, rebuilding router");
         rebuildRouter();
     }
 
-    @Override
-    public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
+    @Override public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
         routeSyncReceived.set(true);
         log.debug("NodeRoutesKey removed, rebuilding router");
         rebuildRouter();
@@ -459,36 +482,35 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     private void handleRequestInScope(RequestContext request, ResponseWriter response, String requestId) {
-        var method = request.method()
-                            .name();
+        var method = request.method().name();
         var path = request.path();
         log.trace("Received {} {} [{}]", method, path, requestId);
         var routeTable = routeTableRef.get();
         var normalizedPath = normalizePath(path);
         // Health endpoint — always returns 200 (no route table dependency)
-        if (isHealthEndpoint(normalizedPath)) {
+        if ( isHealthEndpoint(normalizedPath)) {
             sendHealthResponse(response, requestId);
             return;
         }
         // Route lookup FIRST — then security based on per-route policy
         var effectivePolicy = resolveEffectivePolicy(method, normalizedPath, routeTable);
         // If policy requires auth but no validator is configured (SecurityMode=NONE), reject immediately
-        if (requiresAuthentication(effectivePolicy) && config.securityMode() == SecurityMode.NONE) {
+        if ( requiresAuthentication(effectivePolicy) && config.securityMode() == SecurityMode.NONE) {
             handleSecurityFailure(response, SecurityError.NO_VALIDATOR_CONFIGURED, path, requestId, method);
             return;
         }
         var httpContext = toHttpRequestContext(request, requestId);
-        securityValidator.validate(httpContext, effectivePolicy)
-                         .flatMap(ctx -> enforceRoleIfRequired(ctx, effectivePolicy))
-                         .apply(cause -> handleSecurityFailure(response, cause, path, requestId, method),
-                                ctx -> dispatchAuthenticated(request,
-                                                             response,
-                                                             routeTable,
-                                                             ctx,
-                                                             method,
-                                                             normalizedPath,
-                                                             path,
-                                                             requestId));
+        securityValidator.validate(httpContext, effectivePolicy).flatMap(ctx -> enforceRoleIfRequired(ctx,
+                                                                                                      effectivePolicy))
+                                  .apply(cause -> handleSecurityFailure(response, cause, path, requestId, method),
+                                         ctx -> dispatchAuthenticated(request,
+                                                                      response,
+                                                                      routeTable,
+                                                                      ctx,
+                                                                      method,
+                                                                      normalizedPath,
+                                                                      path,
+                                                                      requestId));
     }
 
     /// Resolves the effective security policy for a request.
@@ -503,12 +525,10 @@ class AppHttpServerImpl implements AppHttpServer {
                                                            String normalizedPath,
                                                            RouteTable routeTable) {
         // Try local route first
-        var localPolicy = httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method, normalizedPath))
-                                            .map(LocalRouteInfo::security)
-                                            .filter(AppHttpServerImpl::isExplicitPolicy);
-        if (localPolicy.isPresent()) {
-            return localPolicy;
-        }
+        var localPolicy = httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method, normalizedPath)).map(LocalRouteInfo::security)
+                                                    .filter(AppHttpServerImpl::isExplicitPolicy);
+        if ( localPolicy.isPresent()) {
+        return localPolicy;}
         // Try remote route — security is carried in RouteInfo
         return findMatchingRemoteRoute(routeTable.remoteRoutes(),
                                        method,
@@ -521,11 +541,7 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     private SecurityPolicy globalSecurityPolicy() {
-        return switch (config.securityMode()) {
-            case API_KEY -> SecurityPolicy.apiKeyRequired();
-            case JWT -> SecurityPolicy.bearerTokenRequired();
-            case NONE -> SecurityPolicy.publicRoute();
-        };
+        return switch (config.securityMode()) {case API_KEY -> SecurityPolicy.apiKeyRequired();case JWT -> SecurityPolicy.bearerTokenRequired();case NONE -> SecurityPolicy.publicRoute();};
     }
 
     private static boolean requiresAuthentication(SecurityPolicy policy) {
@@ -533,11 +549,10 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     private static Result<SecurityContext> enforceRoleIfRequired(SecurityContext context, SecurityPolicy policy) {
-        if (policy instanceof SecurityPolicy.RoleRequired(var roleName)) {
-            return context.hasRole(roleName)
-                   ? Result.success(context)
-                   : new SecurityError.InsufficientRole("Access denied: role '" + roleName + "' required").result();
-        }
+        if ( policy instanceof SecurityPolicy.RoleRequired(var roleName)) {
+        return context.hasRole(roleName)
+               ? Result.success(context)
+               : new SecurityError.InsufficientRole("Access denied: role '" + roleName + "' required").result();}
         return Result.success(context);
     }
 
@@ -550,24 +565,21 @@ class AppHttpServerImpl implements AppHttpServer {
                                        String normalizedPath,
                                        String path,
                                        String requestId) {
-        var principal = securityContext.principal()
-                                       .value();
-        if (config.securityEnabled()) {
-            AuditLog.authSuccess(requestId, principal, method, path);
-        }
-        ScopedValue.where(SecurityContextHolder.scopedValue(),
-                          securityContext)
-                   .run(() -> InvocationContext.runWithContext(requestId,
-                                                               principal,
-                                                               selfNodeId.id(),
-                                                               0,
-                                                               true,
-                                                               () -> dispatchToRoute(request,
-                                                                                     response,
-                                                                                     routeTable,
-                                                                                     method,
-                                                                                     normalizedPath,
-                                                                                     requestId)));
+        var principal = securityContext.principal().value();
+        if ( config.securityEnabled()) {
+        AuditLog.authSuccess(requestId, principal, method, path);}
+        ScopedValue.where(SecurityContextHolder.scopedValue(), securityContext)
+        .run(() -> InvocationContext.runWithContext(requestId,
+                                                    principal,
+                                                    selfNodeId.id(),
+                                                    0,
+                                                    true,
+                                                    () -> dispatchToRoute(request,
+                                                                          response,
+                                                                          routeTable,
+                                                                          method,
+                                                                          normalizedPath,
+                                                                          requestId)));
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Dispatcher method — decomposition would scatter routing logic
@@ -578,13 +590,13 @@ class AppHttpServerImpl implements AppHttpServer {
                                  String normalizedPath,
                                  String requestId) {
         // Try local route first
-        if (httpRoutePublisher.isPresent()) {
+        if ( httpRoutePublisher.isPresent()) {
             var localRouteOpt = findMatchingLocalRoute(routeTable.localRoutes(), method, normalizedPath);
-            if (localRouteOpt.isPresent()) {
+            if ( localRouteOpt.isPresent()) {
                 // Check deployment strategy routing before serving locally
-                if (shouldForwardForStrategy(localRouteOpt.unwrap(), method, normalizedPath, routeTable)) {
+                if ( shouldForwardForStrategy(localRouteOpt.unwrap(), method, normalizedPath, routeTable)) {
                     var remoteRouteOpt = findMatchingRemoteRoute(routeTable.remoteRoutes(), method, normalizedPath);
-                    if (remoteRouteOpt.isPresent()) {
+                    if ( remoteRouteOpt.isPresent()) {
                         log.debug("Deployment strategy routing — forwarding {} {} to remote [{}]",
                                   method,
                                   normalizedPath,
@@ -599,12 +611,12 @@ class AppHttpServerImpl implements AppHttpServer {
         }
         // Try remote route
         var remoteRouteOpt = findMatchingRemoteRoute(routeTable.remoteRoutes(), method, normalizedPath);
-        if (remoteRouteOpt.isPresent()) {
+        if ( remoteRouteOpt.isPresent()) {
             handleRemoteRoute(request, response, remoteRouteOpt.unwrap(), requestId);
             return;
         }
         // No route found — distinguish between "not synced yet" and "genuinely missing"
-        if (!routeSyncReceived.get() && httpRoutePublisher.isPresent()) {
+        if ( !routeSyncReceived.get() && httpRoutePublisher.isPresent()) {
             log.debug("Route not yet available for {} {} [{}] — node starting, routes not synchronized",
                       method,
                       request.path(),
@@ -614,7 +626,12 @@ class AppHttpServerImpl implements AppHttpServer {
                         "Node starting, routes not yet synchronized",
                         request.path(),
                         requestId);
-        } else {
+        } else
+
+
+
+
+        {
             log.warn("No route found for {} {} [{}]", method, request.path(), requestId);
             sendProblem(response,
                         HttpStatus.NOT_FOUND,
@@ -630,24 +647,18 @@ class AppHttpServerImpl implements AppHttpServer {
                                              String method,
                                              String normalizedPath,
                                              RouteTable routeTable) {
-        if (strategyCoordinator.isEmpty()) {
-            return false;
-        }
+        if ( strategyCoordinator.isEmpty()) {
+        return false;}
         var localRouteInfo = httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method, normalizedPath));
-        if (localRouteInfo.isEmpty()) {
-            return false;
-        }
-        var artifactResult = Artifact.artifact(localRouteInfo.unwrap()
-                                                             .artifactCoord());
-        if (artifactResult.isFailure()) {
-            return false;
-        }
+        if ( localRouteInfo.isEmpty()) {
+        return false;}
+        var artifactResult = Artifact.artifact(localRouteInfo.unwrap().artifactCoord());
+        if ( artifactResult.isFailure()) {
+        return false;}
         var artifact = artifactResult.unwrap();
-        var strategyOpt = strategyCoordinator.unwrap()
-                                             .getActiveStrategyWithRouting(artifact.base());
-        if (strategyOpt.isEmpty()) {
-            return false;
-        }
+        var strategyOpt = strategyCoordinator.unwrap().getActiveStrategyWithRouting(artifact.base());
+        if ( strategyOpt.isEmpty()) {
+        return false;}
         return evaluateRoutingDecision(artifact, strategyOpt.unwrap(), method, normalizedPath, routeTable);
     }
 
@@ -659,16 +670,14 @@ class AppHttpServerImpl implements AppHttpServer {
         var routing = strategy.routing();
         var localVersion = artifact.version();
         // If all traffic goes to one version, deterministic decision
-        if (routing.isAllOld()) {
-            return localVersion.equals(strategy.newVersion()) && hasMatchingRemoteRoute(routeTable.remoteRoutes(),
-                                                                                        method,
-                                                                                        normalizedPath);
-        }
-        if (routing.isAllNew()) {
-            return localVersion.equals(strategy.oldVersion()) && hasMatchingRemoteRoute(routeTable.remoteRoutes(),
-                                                                                        method,
-                                                                                        normalizedPath);
-        }
+        if ( routing.isAllOld()) {
+        return localVersion.equals(strategy.newVersion()) && hasMatchingRemoteRoute(routeTable.remoteRoutes(),
+                                                                                    method,
+                                                                                    normalizedPath);}
+        if ( routing.isAllNew()) {
+        return localVersion.equals(strategy.oldVersion()) && hasMatchingRemoteRoute(routeTable.remoteRoutes(),
+                                                                                    method,
+                                                                                    normalizedPath);}
         // Weighted random decision
         return evaluateWeightedRouting(localVersion, strategy, routing, method, normalizedPath, routeTable);
     }
@@ -680,8 +689,7 @@ class AppHttpServerImpl implements AppHttpServer {
                                             String normalizedPath,
                                             RouteTable routeTable) {
         boolean localIsNew = localVersion.equals(strategy.newVersion());
-        int random = ThreadLocalRandom.current()
-                                      .nextInt(routing.totalWeight());
+        int random = ThreadLocalRandom.current().nextInt(routing.totalWeight());
         boolean shouldRouteToNew = random < routing.newWeight();
         // Forward only if weighted decision says "route to other version" and a remote route exists
         boolean shouldForward = localIsNew
@@ -705,43 +713,32 @@ class AppHttpServerImpl implements AppHttpServer {
         var statusAndMessage = mapSecurityError(cause);
         AuditLog.authFailure(requestId, cause.message(), method, path);
         requestObserver.onPresent(obs -> obs.recordSecurityDenial(classifyDenialType(cause), method, path));
-        if (statusAndMessage.status() == HttpStatus.UNAUTHORIZED) {
-            addAuthenticateHeader(response);
-        }
+        if ( statusAndMessage.status() == HttpStatus.UNAUTHORIZED) {
+        addAuthenticateHeader(response);}
         sendProblem(response, statusAndMessage.status(), statusAndMessage.clientMessage(), path, requestId);
     }
 
     private static String classifyDenialType(Cause cause) {
-        if (cause == SecurityError.NO_VALIDATOR_CONFIGURED) {
-            return "no_validator";
-        }
-        return switch (cause) {
-            case SecurityError.InsufficientRole _ -> "insufficient_role";
-            case SecurityError.AccessDenied _ -> "insufficient_role";
-            default -> "auth_failure";
-        };
+        if ( cause == SecurityError.NO_VALIDATOR_CONFIGURED) {
+        return "no_validator";}
+        return switch (cause) {case SecurityError.InsufficientRole _ -> "insufficient_role";case SecurityError.AccessDenied _ -> "insufficient_role";default -> "auth_failure";};
     }
 
-    private record SecurityStatusMessage(HttpStatus status, String clientMessage) {}
+    private record SecurityStatusMessage(HttpStatus status, String clientMessage){}
 
     private static SecurityStatusMessage mapSecurityError(Cause cause) {
-        return switch (cause) {
-            case SecurityError.MissingCredentials mc -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, mc.message());
-            case SecurityError.TokenExpired _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Token expired");
-            case SecurityError.SignatureInvalid _, SecurityError.IssuerMismatch _,
-            SecurityError.AudienceMismatch _, SecurityError.KeyNotFound _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
-                                                                                                       "Invalid token");
-            case SecurityError.InvalidCredentials _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
-                                                                                 "Invalid credentials");
-            case SecurityError.InsufficientRole _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN, cause.message());
-            case SecurityError.JwksFetchFailed _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
-                                                                              "Authentication temporarily unavailable");
-            default -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Authentication failed");
-        };
+        return switch (cause) {case SecurityError.MissingCredentials mc -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
+                                                                                                     mc.message());case SecurityError.TokenExpired _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
+                                                                                                                                                                                  "Token expired");case SecurityError.SignatureInvalid _, SecurityError.IssuerMismatch _, SecurityError.AudienceMismatch _, SecurityError.KeyNotFound _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
+                                                                                                                                                                                                                                                                                                                                                                     "Invalid token");case SecurityError.InvalidCredentials _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                           "Invalid credentials");case SecurityError.InsufficientRole _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     cause.message());case SecurityError.JwksFetchFailed _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        "Authentication temporarily unavailable");default -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       "Authentication failed");};
     }
 
     private void addAuthenticateHeader(ResponseWriter response) {
-        switch (config.securityMode()) {
+        switch ( config.securityMode()) {
             case JWT -> response.header("WWW-Authenticate", "Bearer realm=\"Aether\"");
             case API_KEY -> response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"");
             case NONE -> {}
@@ -751,23 +748,19 @@ class AppHttpServerImpl implements AppHttpServer {
     private Option<HttpNodeRouteKey> findMatchingLocalRoute(Set<HttpNodeRouteKey> localRoutes,
                                                             String method,
                                                             String normalizedPath) {
-        return Option.from(localRoutes.stream()
-                                      .filter(key -> key.httpMethod()
-                                                        .equalsIgnoreCase(method))
-                                      .filter(key -> pathMatchesPrefix(normalizedPath,
-                                                                       key.pathPrefix()))
-                                      .findFirst());
+        return Option.from(localRoutes.stream().filter(key -> key.httpMethod().equalsIgnoreCase(method))
+                                             .filter(key -> pathMatchesPrefix(normalizedPath,
+                                                                              key.pathPrefix()))
+                                             .findFirst());
     }
 
     private Option<HttpRouteRegistry.RouteInfo> findMatchingRemoteRoute(List<HttpRouteRegistry.RouteInfo> remoteRoutes,
                                                                         String method,
                                                                         String normalizedPath) {
-        return Option.from(remoteRoutes.stream()
-                                       .filter(route -> route.httpMethod()
-                                                             .equalsIgnoreCase(method))
-                                       .filter(route -> pathMatchesPrefix(normalizedPath,
-                                                                          route.pathPrefix()))
-                                       .findFirst());
+        return Option.from(remoteRoutes.stream().filter(route -> route.httpMethod().equalsIgnoreCase(method))
+                                              .filter(route -> pathMatchesPrefix(normalizedPath,
+                                                                                 route.pathPrefix()))
+                                              .findFirst());
     }
 
     private boolean pathMatchesPrefix(String normalizedPath, String pathPrefix) {
@@ -779,16 +772,13 @@ class AppHttpServerImpl implements AppHttpServer {
 
     @SuppressWarnings("JBCT-NULL-01") // Adapter boundary: path may be null from external HTTP request parsing
     private String normalizePath(String path) {
-        if (path == null || path.isBlank()) {
-            return "/";
-        }
+        if ( path == null || path.isBlank()) {
+        return "/";}
         var normalized = path.strip();
-        if (!normalized.startsWith("/")) {
-            normalized = "/" + normalized;
-        }
-        if (!normalized.endsWith("/")) {
-            normalized = normalized + "/";
-        }
+        if ( !normalized.startsWith("/")) {
+        normalized = "/" + normalized;}
+        if ( !normalized.endsWith("/")) {
+        normalized = normalized + "/";}
         return normalized;
     }
 
@@ -799,12 +789,11 @@ class AppHttpServerImpl implements AppHttpServer {
 
     private void sendHealthResponse(ResponseWriter response, String requestId) {
         var body = "{\"status\":\"UP\",\"nodeId\":\"" + selfNodeId.id() + "\"}";
-        response.header(ResponseWriter.X_REQUEST_ID, requestId)
-                .header("X-Node-Id",
-                        selfNodeId.id())
-                .write(org.pragmatica.http.HttpStatus.OK,
-                       body.getBytes(StandardCharsets.UTF_8),
-                       CommonContentType.APPLICATION_JSON);
+        response.header(ResponseWriter.X_REQUEST_ID, requestId).header("X-Node-Id",
+                                                                       selfNodeId.id())
+                       .write(org.pragmatica.http.HttpStatus.OK,
+                              body.getBytes(StandardCharsets.UTF_8),
+                              CommonContentType.APPLICATION_JSON);
     }
 
     // ================== Local Route Handling ==================
@@ -814,12 +803,11 @@ class AppHttpServerImpl implements AppHttpServer {
                                   String requestId) {
         log.trace("Handling local route {} {} [{}]", routeKey.httpMethod(), routeKey.pathPrefix(), requestId);
         httpRoutePublisher.flatMap(pub -> pub.findLocalRouter(routeKey.httpMethod(),
-                                                              routeKey.pathPrefix()))
-                          .onEmpty(() -> handleMissingLocalRouter(response,
-                                                                  request.path(),
-                                                                  routeKey,
-                                                                  requestId))
-                          .onPresent(router -> invokeLocalRouter(request, response, router, routeKey, requestId));
+                                                              routeKey.pathPrefix())).onEmpty(() -> handleMissingLocalRouter(response,
+                                                                                                                             request.path(),
+                                                                                                                             routeKey,
+                                                                                                                             requestId))
+                                  .onPresent(router -> invokeLocalRouter(request, response, router, routeKey, requestId));
     }
 
     private void handleMissingLocalRouter(ResponseWriter response,
@@ -839,20 +827,19 @@ class AppHttpServerImpl implements AppHttpServer {
         var routeInfo = resolveRouteInfo(routeKey.httpMethod(), routeKey.pathPrefix());
         var startTime = System.nanoTime();
         routeInfo.onPresent(info -> recordMetricsStart(info));
-        router.handle(context)
-              .onSuccess(responseData -> handleLocalRouterSuccess(response,
-                                                                  responseData,
+        router.handle(context).onSuccess(responseData -> handleLocalRouterSuccess(response,
+                                                                                  responseData,
+                                                                                  requestId,
+                                                                                  routeInfo,
+                                                                                  startTime,
+                                                                                  context))
+                     .onFailure(cause -> handleLocalRouterFailure(response,
+                                                                  request.path(),
                                                                   requestId,
+                                                                  cause,
                                                                   routeInfo,
                                                                   startTime,
-                                                                  context))
-              .onFailure(cause -> handleLocalRouterFailure(response,
-                                                           request.path(),
-                                                           requestId,
-                                                           cause,
-                                                           routeInfo,
-                                                           startTime,
-                                                           context));
+                                                                  context));
     }
 
     private void handleLocalRouterSuccess(ResponseWriter response,
@@ -890,12 +877,9 @@ class AppHttpServerImpl implements AppHttpServer {
 
     private HttpRequestContext toHttpRequestContext(RequestContext request, String requestId) {
         return HttpRequestContext.httpRequestContext(request.path(),
-                                                     request.method()
-                                                            .name(),
-                                                     request.queryParams()
-                                                            .asMap(),
-                                                     request.headers()
-                                                            .asMap(),
+                                                     request.method().name(),
+                                                     request.queryParams().asMap(),
+                                                     request.headers().asMap(),
                                                      request.body(),
                                                      requestId);
     }
@@ -908,10 +892,9 @@ class AppHttpServerImpl implements AppHttpServer {
         log.trace("Handling remote route {} {} -> {} nodes [{}]",
                   route.httpMethod(),
                   route.pathPrefix(),
-                  route.nodes()
-                       .size(),
+                  route.nodes().size(),
                   requestId);
-        if (httpForwarder.isEmpty()) {
+        if ( httpForwarder.isEmpty()) {
             log.error("HTTP forwarding not configured [{}]", requestId);
             sendProblem(response,
                         HttpStatus.SERVICE_UNAVAILABLE,
@@ -921,24 +904,22 @@ class AppHttpServerImpl implements AppHttpServer {
             return;
         }
         var context = toHttpRequestContext(request, requestId);
-        httpForwarder.unwrap()
-                     .forward(context,
-                              route.httpMethod(),
-                              route.pathPrefix(),
-                              requestId)
-                     .onSuccess(responseData -> sendResponse(response, responseData, requestId))
-                     .onFailure(cause -> sendProblem(response,
-                                                     HttpStatus.GATEWAY_TIMEOUT,
-                                                     cause.message(),
-                                                     request.path(),
-                                                     requestId));
+        httpForwarder.unwrap().forward(context,
+                                       route.httpMethod(),
+                                       route.pathPrefix(),
+                                       requestId)
+                            .onSuccess(responseData -> sendResponse(response, responseData, requestId))
+                            .onFailure(cause -> sendProblem(response,
+                                                            HttpStatus.GATEWAY_TIMEOUT,
+                                                            cause.message(),
+                                                            request.path(),
+                                                            requestId));
     }
 
     // ================== Forward Message Handlers ==================
-    @Override
-    public void onHttpForwardRequest(HttpForwardRequest request) {
+    @Override public void onHttpForwardRequest(HttpForwardRequest request) {
         log.trace("Received HttpForwardRequest [{}] correlationId={}", request.requestId(), request.correlationId());
-        if (deserializer.isEmpty() || serializer.isEmpty() || clusterNetwork.isEmpty()) {
+        if ( deserializer.isEmpty() || serializer.isEmpty() || clusterNetwork.isEmpty()) {
             log.error("[{}] Cannot handle forward request - missing dependencies", request.requestId());
             return;
         }
@@ -946,8 +927,8 @@ class AppHttpServerImpl implements AppHttpServer {
         var ser = serializer.unwrap();
         var network = clusterNetwork.unwrap();
         // Deserialize the request context
-        Result.<HttpRequestContext, byte[]> lift1(des::decode,
-                                                  request.requestData())
+        Result.<HttpRequestContext, byte[]>lift1(des::decode,
+                                                 request.requestData())
               .onFailure(cause -> logAndSendForwardError(network, request, "Deserialization failed", cause))
               .onSuccess(context -> dispatchForwardedRequest(context, request, network, ser));
     }
@@ -969,7 +950,7 @@ class AppHttpServerImpl implements AppHttpServer {
         var path = context.path();
         var normalizedPath = normalizePath(path);
         var routerOpt = httpRoutePublisher.flatMap(pub -> findLocalRouterForPath(pub, method, normalizedPath));
-        if (routerOpt.isEmpty()) {
+        if ( routerOpt.isEmpty()) {
             log.warn("No local router for forwarded request {} {} [{}]", method, path, request.requestId());
             sendForwardError(network, request, "Route not found locally");
             return;
@@ -977,16 +958,15 @@ class AppHttpServerImpl implements AppHttpServer {
         var routeInfo = resolveRouteInfo(method, normalizedPath);
         var startTime = System.nanoTime();
         routeInfo.onPresent(this::recordMetricsStart);
-        routerOpt.unwrap()
-                 .handle(context)
-                 .onSuccess(responseData -> handleForwardSuccess(network,
-                                                                 request,
-                                                                 ser,
-                                                                 responseData,
-                                                                 routeInfo,
-                                                                 startTime,
-                                                                 context))
-                 .onFailure(cause -> handleForwardFailure(network, request, cause, routeInfo, startTime, context));
+        routerOpt.unwrap().handle(context)
+                        .onSuccess(responseData -> handleForwardSuccess(network,
+                                                                        request,
+                                                                        ser,
+                                                                        responseData,
+                                                                        routeInfo,
+                                                                        startTime,
+                                                                        context))
+                        .onFailure(cause -> handleForwardFailure(network, request, cause, routeInfo, startTime, context));
     }
 
     private void handleForwardSuccess(ClusterNetwork network,
@@ -1024,9 +1004,8 @@ class AppHttpServerImpl implements AppHttpServer {
                                     HttpForwardRequest request,
                                     Serializer ser,
                                     HttpResponseData responseData) {
-        Result.lift1(ser::encode, responseData)
-              .onSuccess(payload -> sendForwardPayload(network, request, payload))
-              .onFailure(cause -> logAndSendForwardError(network, request, "Response serialization failed", cause));
+        Result.lift1(ser::encode, responseData).onSuccess(payload -> sendForwardPayload(network, request, payload))
+                    .onFailure(cause -> logAndSendForwardError(network, request, "Response serialization failed", cause));
     }
 
     private void sendForwardPayload(ClusterNetwork network,
@@ -1053,18 +1032,15 @@ class AppHttpServerImpl implements AppHttpServer {
         log.trace("Sent forward error response [{}]: {}", request.requestId(), errorMessage);
     }
 
-    @Override
-    public void onHttpForwardResponse(HttpForwardResponse response) {
+    @Override public void onHttpForwardResponse(HttpForwardResponse response) {
         httpForwarder.onPresent(fwd -> fwd.onHttpForwardResponse(response));
     }
 
-    @Override
-    public void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved) {
+    @Override public void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved) {
         httpForwarder.onPresent(fwd -> fwd.onNodeRemoved(nodeRemoved));
     }
 
-    @Override
-    public void onNodeDown(TopologyChangeNotification.NodeDown nodeDown) {
+    @Override public void onNodeDown(TopologyChangeNotification.NodeDown nodeDown) {
         httpForwarder.onPresent(fwd -> fwd.onNodeDown(nodeDown));
     }
 
@@ -1123,14 +1099,15 @@ class AppHttpServerImpl implements AppHttpServer {
                              String instance,
                              String requestId) {
         var problem = ProblemDetail.problemDetail(status, detail, instance, requestId);
-        JSON_MAPPER.writeAsString(problem)
-                   .onSuccess(json -> response.header(ResponseWriter.X_REQUEST_ID, requestId)
-                                              .header("X-Node-Id",
-                                                      selfNodeId.id())
-                                              .write(toServerStatus(status.code()),
-                                                     json.getBytes(StandardCharsets.UTF_8),
-                                                     CONTENT_TYPE_PROBLEM))
-                   .onFailure(cause -> handleProblemSerializationFailure(response, status, requestId, cause));
+        JSON_MAPPER.writeAsString(problem).onSuccess(json -> response.header(ResponseWriter.X_REQUEST_ID, requestId).header("X-Node-Id",
+                                                                                                                            selfNodeId.id())
+                                                                            .write(toServerStatus(status.code()),
+                                                                                   json.getBytes(StandardCharsets.UTF_8),
+                                                                                   CONTENT_TYPE_PROBLEM))
+                                 .onFailure(cause -> handleProblemSerializationFailure(response,
+                                                                                       status,
+                                                                                       requestId,
+                                                                                       cause));
     }
 
     private void handleProblemSerializationFailure(ResponseWriter response,
@@ -1144,60 +1121,55 @@ class AppHttpServerImpl implements AppHttpServer {
     private static final int MAX_WARN_BODY_LENGTH = 200;
 
     private void sendResponse(ResponseWriter response, HttpResponseData responseData, String requestId) {
-        if (responseData.statusCode() >= 400) {
+        if ( responseData.statusCode() >= 400) {
             var fullBody = new String(responseData.body(), StandardCharsets.UTF_8);
             var truncatedBody = fullBody.length() > MAX_WARN_BODY_LENGTH
                                 ? fullBody.substring(0, MAX_WARN_BODY_LENGTH) + "...(truncated)"
                                 : fullBody;
             log.warn("HTTP error response [{}]: {} body={}", requestId, responseData.statusCode(), truncatedBody);
             log.debug("HTTP error response full body [{}]: {}", requestId, fullBody);
-        } else {
-            log.trace("Sending response [{}]: {} {}", requestId, responseData.statusCode(), responseData.headers());
-        }
-        var writer = response.header(ResponseWriter.X_REQUEST_ID, requestId)
-                             .header("X-Node-Id",
-                                     selfNodeId.id());
-        for (var entry : responseData.headers()
-                                     .entrySet()) {
-            writer = writer.header(entry.getKey(), entry.getValue());
-        }
-        var contentType = Option.option(responseData.headers()
-                                                    .get("Content-Type"))
-                                .map(ct -> org.pragmatica.http.ContentType.contentType(ct,
-                                                                                       org.pragmatica.http.ContentCategory.JSON))
-                                .or(CommonContentType.APPLICATION_JSON);
+        } else
+
+
+
+
+        {
+        log.trace("Sending response [{}]: {} {}", requestId, responseData.statusCode(), responseData.headers());}
+        var writer = response.header(ResponseWriter.X_REQUEST_ID, requestId).header("X-Node-Id", selfNodeId.id());
+        for ( var entry : responseData.headers().entrySet()) {
+        writer = writer.header(entry.getKey(), entry.getValue());}
+        var contentType = Option.option(responseData.headers().get("Content-Type")).map(ct -> org.pragmatica.http.ContentType.contentType(ct,
+                                                                                                                                          org.pragmatica.http.ContentCategory.JSON))
+                                       .or(CommonContentType.APPLICATION_JSON);
         writer.write(toServerStatus(responseData.statusCode()), responseData.body(), contentType);
     }
 
     private void sendPlainError(ResponseWriter response, HttpStatus status, String requestId) {
         var content = "{\"error\":\"" + status.message() + "\"}";
-        response.header(ResponseWriter.X_REQUEST_ID, requestId)
-                .header("X-Node-Id",
-                        selfNodeId.id())
-                .write(toServerStatus(status.code()),
-                       content.getBytes(StandardCharsets.UTF_8),
-                       CommonContentType.APPLICATION_JSON);
+        response.header(ResponseWriter.X_REQUEST_ID, requestId).header("X-Node-Id",
+                                                                       selfNodeId.id())
+                       .write(toServerStatus(status.code()),
+                              content.getBytes(StandardCharsets.UTF_8),
+                              CommonContentType.APPLICATION_JSON);
     }
 
     private static org.pragmatica.http.HttpStatus toServerStatus(int code) {
-        return Option.option(STATUS_MAP.get(code))
-                     .or(org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR);
+        return Option.option(STATUS_MAP.get(code)).or(org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR);
     }
 
     // ================== Invocation Metrics ==================
     /// Resolved artifact and method name for metrics recording.
-    record ResolvedRoute(Artifact artifact, MethodName method) {}
+    record ResolvedRoute(Artifact artifact, MethodName method){}
 
     private Option<ResolvedRoute> resolveRouteInfo(String httpMethod, String path) {
         return metricsCollector.flatMap(_ -> httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(httpMethod, path))
-                                                               .flatMap(this::toResolvedRoute));
+        .flatMap(this::toResolvedRoute));
     }
 
     private Option<ResolvedRoute> toResolvedRoute(LocalRouteInfo info) {
-        return Artifact.artifact(info.artifactCoord())
-                       .flatMap(artifact -> MethodName.methodName(info.sliceMethod())
-                                                      .map(method -> new ResolvedRoute(artifact, method)))
-                       .option();
+        return Artifact.artifact(info.artifactCoord()).flatMap(artifact -> MethodName.methodName(info.sliceMethod())
+        .map(method -> new ResolvedRoute(artifact, method)))
+                                .option();
     }
 
     private void recordMetricsStart(ResolvedRoute route) {
@@ -1220,8 +1192,7 @@ class AppHttpServerImpl implements AppHttpServer {
 
     private void recordMetricsFailure(ResolvedRoute route, long startTime, int requestBytes, Cause cause) {
         var durationNs = System.nanoTime() - startTime;
-        var errorType = cause.getClass()
-                             .getSimpleName();
+        var errorType = cause.getClass().getSimpleName();
         metricsCollector.onPresent(mc -> recordFailureMetrics(mc, route, durationNs, requestBytes, errorType));
     }
 

@@ -72,16 +72,14 @@ public final class EntryPointMetrics {
 
     /// Reset all metrics.
     public Result<Unit> reset() {
-        stats.values()
-             .forEach(EntryPointStats::reset);
+        stats.values().forEach(EntryPointStats::reset);
         lastSnapshotTime.set(System.currentTimeMillis());
         return unitResult();
     }
 
     private EntryPointStats getOrCreate(String entryPoint) {
         return stats.computeIfAbsent(entryPoint,
-                                     _ -> EntryPointStats.entryPointStats()
-                                                         .unwrap());
+                                     _ -> EntryPointStats.entryPointStats().unwrap());
     }
 
     /// Per-entry-point statistics.
@@ -94,9 +92,8 @@ public final class EntryPointMetrics {
                                    AtomicLong windowLatencyNanos,
                                    AtomicLong[] histogram) {
         static Result<EntryPointStats> entryPointStats() {
-            var hist = IntStream.range(0, BUCKET_BOUNDARIES_MS.length + 1)
-                                .mapToObj(_ -> new AtomicLong())
-                                .toArray(AtomicLong[]::new);
+            var hist = IntStream.range(0, BUCKET_BOUNDARIES_MS.length + 1).mapToObj(_ -> new AtomicLong())
+                                      .toArray(AtomicLong[]::new);
             return success(new EntryPointStats(new AtomicLong(),
                                                new AtomicLong(),
                                                new AtomicLong(),
@@ -132,10 +129,9 @@ public final class EntryPointMetrics {
         }
 
         private int findBucket(long latencyMs) {
-            return IntStream.range(0, BUCKET_BOUNDARIES_MS.length)
-                            .filter(i -> latencyMs <= BUCKET_BOUNDARIES_MS[i])
-                            .findFirst()
-                            .orElse(BUCKET_BOUNDARIES_MS.length);
+            return IntStream.range(0, BUCKET_BOUNDARIES_MS.length).filter(i -> latencyMs <= BUCKET_BOUNDARIES_MS[i])
+                                  .findFirst()
+                                  .orElse(BUCKET_BOUNDARIES_MS.length);
         }
 
         EntryPointSnapshot snapshotAndReset(String name, long elapsedMs) {
@@ -167,51 +163,45 @@ public final class EntryPointMetrics {
                                                          rates.rps(),
                                                          p50,
                                                          p99)
-                                     .unwrap();
+            .unwrap();
         }
 
         private SnapshotRates calculateRates(long total, long windowCnt, long elapsedMs) {
             var successRate = calculateSuccessRate(total);
             var avgLatencyMs = calculateAvgLatency(windowCnt);
             var rps = calculateRps(windowCnt, elapsedMs);
-            return SnapshotRates.snapshotRates(successRate, avgLatencyMs, rps)
-                                .unwrap();
+            return SnapshotRates.snapshotRates(successRate, avgLatencyMs, rps).unwrap();
         }
 
         private double calculateSuccessRate(long total) {
-            if (Verify.Is.nonPositive(total)) {
-                return 100.0;
-            }
+            if ( Verify.Is.nonPositive(total)) {
+            return 100.0;}
             return successCount.get() * 100.0 / total;
         }
 
         private double calculateAvgLatency(long windowCnt) {
-            if (Verify.Is.nonPositive(windowCnt)) {
-                return 0.0;
-            }
+            if ( Verify.Is.nonPositive(windowCnt)) {
+            return 0.0;}
             return (windowLatencyNanos.get() / windowCnt) / 1_000_000.0;
         }
 
         private static double calculateRps(long windowCnt, long elapsedMs) {
-            if (Verify.Is.nonPositive(elapsedMs)) {
-                return 0.0;
-            }
+            if ( Verify.Is.nonPositive(elapsedMs)) {
+            return 0.0;}
             return windowCnt * 1000.0 / elapsedMs;
         }
 
         private double estimatePercentile(int percentile, long total) {
-            if (total == 0) {
-                return 0.0;
-            }
+            if ( total == 0) {
+            return 0.0;}
             var targetCount = (long)(total * percentile / 100.0);
             return findBucketForPercentile(targetCount);
         }
 
         private double findBucketForPercentile(long targetCount) {
             var cumulative = new AtomicLong(0);
-            var matchingBucket = IntStream.range(0, histogram.length)
-                                          .filter(i -> cumulative.addAndGet(histogram[i].get()) >= targetCount)
-                                          .findFirst();
+            var matchingBucket = IntStream.range(0, histogram.length).filter(i -> cumulative.addAndGet(histogram[i].get()) >= targetCount)
+                                                .findFirst();
             return matchingBucket.isPresent()
                    ? bucketBoundary(matchingBucket.getAsInt())
                    : 10000.0;
@@ -230,8 +220,7 @@ public final class EntryPointMetrics {
             totalLatencyNanos.set(0);
             windowCount.set(0);
             windowLatencyNanos.set(0);
-            Arrays.stream(histogram)
-                  .forEach(bucket -> bucket.set(0));
+            Arrays.stream(histogram).forEach(bucket -> bucket.set(0));
         }
     }
 
@@ -276,9 +265,7 @@ public final class EntryPointMetrics {
         }
 
         public String toJson() {
-            return String.format("{\"name\":\"%s\",\"rate\":%d,\"totalCalls\":%d,\"successCalls\":%d,"
-                                 + "\"failureCalls\":%d,\"successRate\":%.2f,\"avgLatencyMs\":%.2f,"
-                                 + "\"requestsPerSecond\":%.1f,\"p50LatencyMs\":%.1f,\"p99LatencyMs\":%.1f}",
+            return String.format("{\"name\":\"%s\",\"rate\":%d,\"totalCalls\":%d,\"successCalls\":%d," + "\"failureCalls\":%d,\"successRate\":%.2f,\"avgLatencyMs\":%.2f," + "\"requestsPerSecond\":%.1f,\"p50LatencyMs\":%.1f,\"p99LatencyMs\":%.1f}",
                                  name,
                                  rate,
                                  totalCalls,

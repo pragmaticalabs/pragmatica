@@ -2,6 +2,7 @@ package org.pragmatica.aether;
 
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.config.Environment;
@@ -11,8 +12,10 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.security.CertificateProvider;
 import org.pragmatica.net.tcp.security.SelfSignedCertificateProvider;
 
@@ -46,7 +49,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// When --config is provided, values from the config file are used as defaults,
 /// but can be overridden by command-line arguments.
 @SuppressWarnings("JBCT-RET-01")
-public record Main(String[] args) {
+public record Main( String[] args) {
     private static final Logger log = LoggerFactory.getLogger(Main.class);
     private static final int DEFAULT_CLUSTER_PORT = 8090;
 
@@ -72,31 +75,38 @@ public record Main(String[] args) {
                                                        managementPort,
                                                        dhtConfig,
                                                        coreMax);
-        var withConfig = wireConfigProvider(config);
+        var withBackup = wireBackupIfConfigured(config, aetherConfig);
+        var withConfig = wireConfigProvider(withBackup);
         var withAppHttp = wireAppHttpIfConfigured(withConfig, aetherConfig);
         var withMgmtProtocol = wireManagementHttpProtocol(withAppHttp, aetherConfig);
         var withTls = wireTlsIfEnabled(withMgmtProtocol, aetherConfig);
-        var finalConfig = wireCloudIfConfigured(withTls, aetherConfig);
-        var node = AetherNode.aetherNode(finalConfig)
-                             .unwrap();
+        warnInsecureTlsInNonLocal(withTls, aetherConfig);
+        var withStorage = wireStorageIfConfigured(withTls, aetherConfig);
+        var finalConfig = wireCloudIfConfigured(withStorage, aetherConfig);
+        var node = AetherNode.aetherNode(finalConfig).unwrap();
         registerShutdownHook(node);
         startNodeAndWait(node, nodeId);
     }
 
     private AetherNodeConfig wireCloudIfConfigured(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
-        return aetherConfig.flatMap(AetherConfig::cloud)
-                           .flatMap(cloudConfig -> EnvironmentIntegrationFactory.createFromConfig(cloudConfig)
-                                                                                .onFailure(cause -> log.error("Failed to create cloud environment: {}",
-                                                                                                              cause.message()))
-                                                                                .option())
-                           .map(config::withEnvironment)
-                           .or(config);
+        return aetherConfig.flatMap(AetherConfig::cloud).flatMap(cloudConfig -> EnvironmentIntegrationFactory.createFromConfig(cloudConfig).onFailure(cause -> log.error("Failed to create cloud environment: {}",
+                                                                                                                                                                         cause.message()))
+                                                                                                                              .option())
+                                   .map(config::withEnvironment)
+                                   .or(config);
+    }
+
+    private static AetherNodeConfig wireBackupIfConfigured(AetherNodeConfig config,
+                                                           Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(AetherConfig::backup).filter(BackupConfig::enabled)
+                               .filter(b -> !b.path().isBlank())
+                               .map(config::withBackupConfig)
+                               .or(config);
     }
 
     private AetherNodeConfig wireConfigProvider(AetherNodeConfig config) {
         return findArg("--config=").map(Path::of)
-                      .filter(p -> p.toFile()
-                                    .exists())
+                      .filter(p -> p.toFile().exists())
                       .map(this::buildConfigProvider)
                       .map(config::withConfigProvider)
                       .or(config);
@@ -111,93 +121,93 @@ public record Main(String[] args) {
     }
 
     private AetherNodeConfig wireAppHttpIfConfigured(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
-        return aetherConfig.map(AetherConfig::appHttp)
-                           .filter(AppHttpConfig::enabled)
-                           .map(config::withAppHttp)
-                           .or(config);
+        return aetherConfig.map(AetherConfig::appHttp).filter(AppHttpConfig::enabled)
+                               .map(config::withAppHttp)
+                               .or(config);
     }
 
     private static AetherNodeConfig wireManagementHttpProtocol(AetherNodeConfig config,
                                                                Option<AetherConfig> aetherConfig) {
-        return aetherConfig.map(cfg -> cfg.cluster()
-                                          .ports()
-                                          .managementHttpProtocol())
-                           .map(config::withManagementHttpProtocol)
-                           .or(config);
+        return aetherConfig.map(cfg -> cfg.cluster().ports()
+                                                  .managementHttpProtocol()).map(config::withManagementHttpProtocol)
+                               .or(config);
+    }
+
+    private static AetherNodeConfig wireStorageIfConfigured(AetherNodeConfig config,
+                                                            Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(AetherConfig::storage).filter(m -> !m.isEmpty())
+                               .map(config::withStorage)
+                               .or(config);
+    }
+
+    private void warnInsecureTlsInNonLocal(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
+        var isNonLocal = aetherConfig.map(AetherConfig::environment).filter(env -> env != Environment.LOCAL)
+                                         .isPresent();
+        if ( isNonLocal && config.tls().isEmpty()) {
+        log.warn("*** SECURITY WARNING: Running without TLS in non-LOCAL environment. " + "Cluster transport will use insecure self-signed certificates with no mutual authentication. " + "Configure TLS via [tls] section in aether.toml for production deployments. ***");}
     }
 
     private AetherNodeConfig wireTlsIfEnabled(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
-        return aetherConfig.filter(AetherConfig::tlsEnabled)
-                           .flatMap(AetherConfig::tls)
-                           .filter(org.pragmatica.aether.config.TlsConfig::autoGenerate)
-                           .map(tlsCfg -> wireAutoTls(config, tlsCfg))
-                           .or(config);
+        return aetherConfig.filter(AetherConfig::tlsEnabled).flatMap(AetherConfig::tls)
+                                  .filter(org.pragmatica.aether.config.TlsConfig::autoGenerate)
+                                  .map(tlsCfg -> wireAutoTls(config, tlsCfg))
+                                  .or(config);
     }
 
-    private AetherNodeConfig wireAutoTls(AetherNodeConfig config, org.pragmatica.aether.config.TlsConfig tlsCfg) {
-        var secret = resolveClusterSecret(tlsCfg);
-        return SelfSignedCertificateProvider.selfSignedCertificateProvider(secret)
-                                            .flatMap(provider -> wireProviderToConfig(config, provider))
-                                            .onFailure(cause -> log.error("Failed to setup TLS: {}",
-                                                                          cause.message()))
-                                            .or(config);
+    private AetherNodeConfig wireAutoTls(AetherNodeConfig config,
+                                         org.pragmatica.aether.config.TlsConfig tlsCfg) {
+        return resolveClusterSecret(tlsCfg).flatMap(SelfSignedCertificateProvider::selfSignedCertificateProvider)
+                                   .flatMap(provider -> wireProviderToConfig(config, provider))
+                                   .onFailure(cause -> log.error("Failed to setup TLS: {}",
+                                                                 cause.message()))
+                                   .or(config);
     }
 
-    private static byte[] resolveClusterSecret(org.pragmatica.aether.config.TlsConfig tlsCfg) {
-        return Option.option(tlsCfg.clusterSecret())
-                     .filter(s -> !s.isBlank())
-                     .orElse(Option.option(System.getenv("AETHER_CLUSTER_SECRET"))
-                                   .filter(s -> !s.isBlank()))
-                     .map(s -> s.getBytes(StandardCharsets.UTF_8))
-                     .or("aether-dev-cluster-secret".getBytes(StandardCharsets.UTF_8));
+    private static Result<byte[]> resolveClusterSecret(org.pragmatica.aether.config.TlsConfig tlsCfg) {
+        return Option.option(tlsCfg.clusterSecret()).filter(s -> !s.isBlank())
+                            .orElse(Option.option(System.getenv("AETHER_CLUSTER_SECRET")).filter(s -> !s.isBlank()))
+                            .map(s -> s.getBytes(StandardCharsets.UTF_8))
+                            .toResult(MISSING_CLUSTER_SECRET);
     }
+
+    private static final Cause MISSING_CLUSTER_SECRET = Causes.cause("No cluster secret configured. Set 'cluster_secret' in [tls] section " + "or AETHER_CLUSTER_SECRET environment variable. " + "A cluster secret is required for TLS certificate generation.");
 
     private static Result<AetherNodeConfig> wireProviderToConfig(AetherNodeConfig config,
                                                                  CertificateProvider provider) {
-        var nodeId = config.self()
-                           .id();
+        var nodeId = config.self().id();
         var hostname = findHostname(config);
         return org.pragmatica.net.tcp.TlsConfig.fromProvider(provider, nodeId, hostname)
-                  .map(tlsConfig -> config.withTls(tlsConfig)
-                                          .withCertificateProvider(provider));
+        .map(tlsConfig -> config.withTls(tlsConfig).withCertificateProvider(provider));
     }
 
     private static String findHostname(AetherNodeConfig config) {
-        return Option.from(config.topology()
-                                 .coreNodes()
-                                 .stream()
-                                 .filter(n -> n.id()
-                                               .equals(config.self()))
-                                 .findFirst())
-                     .map(n -> n.address()
-                                .host())
-                     .or("localhost");
+        return Option.from(config.topology().coreNodes()
+                                          .stream()
+                                          .filter(n -> n.id().equals(config.self()))
+                                          .findFirst()).map(n -> n.address().host())
+                          .or("localhost");
     }
 
     private SliceConfig parseSliceConfig(Option<AetherConfig> aetherConfig) {
-        return aetherConfig.map(AetherConfig::slice)
-                           .or(SliceConfig.sliceConfig());
+        return aetherConfig.map(AetherConfig::slice).or(SliceConfig.sliceConfig());
     }
 
     private org.pragmatica.dht.DHTConfig parseDhtConfig(Option<AetherConfig> aetherConfig) {
-        return aetherConfig.map(AetherConfig::dhtReplication)
-                           .map(dhtRepl -> org.pragmatica.dht.DHTConfig.withReplication(dhtRepl.targetRf()))
-                           .flatMap(Result::option)
-                           .or(org.pragmatica.dht.DHTConfig.DEFAULT);
+        return aetherConfig.map(AetherConfig::dhtReplication).map(dhtRepl -> org.pragmatica.dht.DHTConfig.withReplication(dhtRepl.targetRf()))
+                               .flatMap(Result::option)
+                               .or(org.pragmatica.dht.DHTConfig.DEFAULT);
     }
 
     private Option<AetherConfig> loadConfig() {
         return findArg("--config=").map(Path::of)
-                      .filter(p -> p.toFile()
-                                    .exists())
+                      .filter(p -> p.toFile().exists())
                       .flatMap(this::loadConfigFile);
     }
 
     private Option<AetherConfig> loadConfigFile(Path path) {
-        return ConfigLoader.load(path)
-                           .onFailure(cause -> log.error("Failed to load config: {}",
-                                                         cause.message()))
-                           .option();
+        return ConfigLoader.load(path).onFailure(cause -> log.error("Failed to load config: {}",
+                                                                    cause.message()))
+                                .option();
     }
 
     private void logStartupInfo(NodeId nodeId,
@@ -215,31 +225,25 @@ public record Main(String[] args) {
 
     private void logConfigDetails(AetherConfig cfg) {
         log.info("Config: environment={}, nodes={}, heap={}",
-                 cfg.environment()
-                    .displayName(),
-                 cfg.cluster()
-                    .nodes(),
-                 cfg.node()
-                    .heap());
+                 cfg.environment().displayName(),
+                 cfg.cluster().nodes(),
+                 cfg.node().heap());
     }
 
     private void registerShutdownHook(AetherNode node) {
-        Runtime.getRuntime()
-               .addShutdownHook(new Thread(() -> shutdownNode(node)));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> shutdownNode(node)));
     }
 
     private void shutdownNode(AetherNode node) {
         log.info("Shutdown requested, stopping node...");
-        node.stop()
-            .await();
+        node.stop().await();
         log.info("Node stopped");
     }
 
     private void startNodeAndWait(AetherNode node, NodeId nodeId) {
-        node.start()
-            .onSuccess(_ -> log.info("Node {} is running. Press Ctrl+C to stop.", nodeId))
-            .onFailure(cause -> exitWithError(cause.message()))
-            .await();
+        node.start().onSuccess(_ -> log.info("Node {} is running. Press Ctrl+C to stop.", nodeId))
+                  .onFailure(cause -> exitWithError(cause.message()))
+                  .await();
         waitForInterrupt();
     }
 
@@ -249,20 +253,21 @@ public record Main(String[] args) {
     }
 
     private void waitForInterrupt() {
-        try{
-            Thread.currentThread()
-                  .join();
-        } catch (InterruptedException e) {
-            Thread.currentThread()
-                  .interrupt();
+        try {
+            Thread.currentThread().join();
+        }
+
+
+
+
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
     private NodeId parseNodeId(Option<AetherConfig> aetherConfig) {
-        return findArg("--node-id=").flatMap(id -> NodeId.nodeId(id)
-                                                         .option())
-                      .orElse(findEnv("NODE_ID").flatMap(id -> NodeId.nodeId(id)
-                                                                     .option()))
+        return findArg("--node-id=").flatMap(id -> NodeId.nodeId(id).option())
+                      .orElse(findEnv("NODE_ID").flatMap(id -> NodeId.nodeId(id).option()))
                       .or(NodeId::randomNodeId);
     }
 
@@ -273,10 +278,8 @@ public record Main(String[] args) {
     }
 
     private int portFromConfig(Option<AetherConfig> aetherConfig) {
-        return aetherConfig.map(cfg -> cfg.cluster()
-                                          .ports()
-                                          .cluster())
-                           .or(DEFAULT_CLUSTER_PORT);
+        return aetherConfig.map(cfg -> cfg.cluster().ports()
+                                                  .cluster()).or(DEFAULT_CLUSTER_PORT);
     }
 
     private int parseManagementPort(Option<AetherConfig> aetherConfig) {
@@ -286,18 +289,15 @@ public record Main(String[] args) {
     }
 
     private int parseCoreMax(Option<AetherConfig> aetherConfig) {
-        return findEnv("CORE_MAX").flatMap(s -> Result.lift(() -> Integer.parseInt(s))
-                                                      .option())
-                      .orElse(aetherConfig.map(cfg -> cfg.cluster()
-                                                         .coreMax()))
+        return findEnv("CORE_MAX").flatMap(s -> Result.lift(() -> Integer.parseInt(s)).option())
+                      .orElse(aetherConfig.map(cfg -> cfg.cluster().coreMax()))
                       .or(0);
     }
 
     private int managementPortFromConfig(Option<AetherConfig> aetherConfig) {
-        return aetherConfig.map(cfg -> cfg.cluster()
-                                          .ports()
-                                          .management())
-                           .or(AetherNodeConfig.DEFAULT_MANAGEMENT_PORT);
+        return aetherConfig.map(cfg -> cfg.cluster().ports()
+                                                  .management())
+        .or(AetherNodeConfig.DEFAULT_MANAGEMENT_PORT);
     }
 
     private List<NodeInfo> parsePeers(NodeId self, int selfPort, Option<AetherConfig> aetherConfig) {
@@ -309,15 +309,12 @@ public record Main(String[] args) {
     }
 
     private List<NodeInfo> generatePeersFromConfig(AetherConfig aetherConfig) {
-        var nodes = aetherConfig.cluster()
-                                .nodes();
-        var clusterPort = aetherConfig.cluster()
-                                      .ports()
-                                      .cluster();
+        var nodes = aetherConfig.cluster().nodes();
+        var clusterPort = aetherConfig.cluster().ports()
+                                              .cluster();
         var env = aetherConfig.environment();
-        return IntStream.range(0, nodes)
-                        .mapToObj(i -> createNodeInfoForIndex(i, clusterPort, env))
-                        .toList();
+        return IntStream.range(0, nodes).mapToObj(i -> createNodeInfoForIndex(i, clusterPort, env))
+                              .toList();
     }
 
     private NodeInfo createNodeInfoForIndex(int index, int clusterPort, Environment env) {
@@ -327,25 +324,21 @@ public record Main(String[] args) {
         var port = clusterPort + (env == Environment.LOCAL
                                   ? index
                                   : 0);
-        return NodeInfo.nodeInfo(NodeId.nodeId("node-" + index)
-                                       .unwrap(),
+        return NodeInfo.nodeInfo(NodeId.nodeId("node-" + index).unwrap(),
                                  nodeAddress(host, port).unwrap());
     }
 
     private List<NodeInfo> parsePeersFromString(String peersStr, NodeId self, NodeInfo selfInfo) {
-        var peers = Arrays.stream(peersStr.split(","))
-                          .map(String::trim)
-                          .filter(s -> !s.isEmpty())
-                          .flatMap(peerStr -> parsePeerAddress(peerStr).stream())
-                          .toList();
+        var peers = Arrays.stream(peersStr.split(",")).map(String::trim)
+                                 .filter(s -> !s.isEmpty())
+                                 .flatMap(peerStr -> parsePeerAddress(peerStr).stream())
+                                 .toList();
         return ensureSelfIncluded(peers, self, selfInfo);
     }
 
     private List<NodeInfo> ensureSelfIncluded(List<NodeInfo> peers, NodeId self, NodeInfo selfInfo) {
-        var selfMissing = peers.stream()
-                               .noneMatch(p -> p.id()
-                                                .equals(self));
-        if (selfMissing) {
+        var selfMissing = peers.stream().noneMatch(p -> p.id().equals(self));
+        if ( selfMissing) {
             var allPeers = new ArrayList<>(peers);
             allPeers.add(selfInfo);
             return List.copyOf(allPeers);
@@ -355,18 +348,13 @@ public record Main(String[] args) {
 
     private Option<NodeInfo> parsePeerAddress(String peerStr) {
         var parts = peerStr.split(":");
-        return switch (parts.length) {
-            case 2 -> parseHostPortPeer(parts);
-            case 3 -> parseIdHostPortPeer(parts);
-            default -> logInvalidPeerFormat(peerStr);
-        };
+        return switch (parts.length) {case 2 -> parseHostPortPeer(parts);case 3 -> parseIdHostPortPeer(parts);default -> logInvalidPeerFormat(peerStr);};
     }
 
     private Option<NodeInfo> parseHostPortPeer(String[] parts) {
         var host = parts[0];
         var port = Integer.parseInt(parts[1]);
-        var nodeId = NodeId.nodeId("node-" + host + "-" + port)
-                           .unwrap();
+        var nodeId = NodeId.nodeId("node-" + host + "-" + port).unwrap();
         return nodeAddress(host, port).map(addr -> NodeInfo.nodeInfo(nodeId, addr))
                           .option();
     }
@@ -374,9 +362,9 @@ public record Main(String[] args) {
     private Option<NodeInfo> parseIdHostPortPeer(String[] parts) {
         var host = parts[1];
         var port = Integer.parseInt(parts[2]);
-        return NodeId.nodeId(parts[0])
-                     .flatMap(nodeId -> nodeAddress(host, port).map(addr -> NodeInfo.nodeInfo(nodeId, addr)))
-                     .option();
+        return NodeId.nodeId(parts[0]).flatMap(nodeId -> nodeAddress(host, port).map(addr -> NodeInfo.nodeInfo(nodeId,
+                                                                                                               addr)))
+                            .option();
     }
 
     private Option<NodeInfo> logInvalidPeerFormat(String peerStr) {
@@ -385,14 +373,12 @@ public record Main(String[] args) {
     }
 
     private Option<String> findArg(String prefix) {
-        return Option.from(Arrays.stream(args)
-                                 .filter(arg -> arg.startsWith(prefix))
-                                 .map(arg -> arg.substring(prefix.length()))
-                                 .findFirst());
+        return Option.from(Arrays.stream(args).filter(arg -> arg.startsWith(prefix))
+                                        .map(arg -> arg.substring(prefix.length()))
+                                        .findFirst());
     }
 
     private Option<String> findEnv(String name) {
-        return Option.option(System.getenv(name))
-                     .filter(s -> !s.isBlank());
+        return Option.option(System.getenv(name)).filter(s -> !s.isBlank());
     }
 }

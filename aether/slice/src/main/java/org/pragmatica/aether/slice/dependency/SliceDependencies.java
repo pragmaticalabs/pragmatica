@@ -40,10 +40,9 @@ public interface SliceDependencies {
     static Result<List<DependencyDescriptor>> load(String sliceClassName, ClassLoader classLoader) {
         var resourcePath = "META-INF/dependencies/" + sliceClassName;
         var resource = classLoader.getResourceAsStream(resourcePath);
-        if (resource == null) {
-            // No dependencies file means no dependencies - this is valid
-            return success(List.of());
-        }
+        if ( resource == null) {
+        // No dependencies file means no dependencies - this is valid
+        return success(List.of());}
         return Result.lift(Causes::fromThrowable, () -> readDependencies(resource));
     }
 
@@ -52,10 +51,8 @@ public interface SliceDependencies {
         try (var reader = new BufferedReader(new InputStreamReader(resource))) {
             var dependencies = new ArrayList<DependencyDescriptor>();
             String line;
-            while ((line = reader.readLine()) != null) {
-                DependencyDescriptor.dependencyDescriptor(line)
-                                    .onSuccess(dependencies::add);
-            }
+            while ( (line = reader.readLine()) != null) {
+            DependencyDescriptor.dependencyDescriptor(line).onSuccess(dependencies::add);}
             return dependencies;
         }
     }

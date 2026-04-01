@@ -14,7 +14,7 @@ import static org.pragmatica.lang.Option.option;
 /// alphanumeric plus underscore/hyphen, 8-64 characters.
 ///
 /// @param value the API key value
-public record ApiKey(String value) {
+public record ApiKey( String value) {
     private static final Pattern VALID_KEY = Pattern.compile("^[a-zA-Z0-9_-]{8,64}$");
 
     /// Validation errors for ApiKey.
@@ -25,8 +25,7 @@ public record ApiKey(String value) {
             General(String message) {
                 this.message = message;
             }
-            @Override
-            public String message() {
+            @Override public String message() {
                 return message;
             }
         }
@@ -37,16 +36,13 @@ public record ApiKey(String value) {
                 return value.map(InvalidFormat::new);
             }
 
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Invalid API key format: must be 8-64 alphanumeric characters with _ or -";
             }
         }
 
-        @SuppressWarnings("unused")
-        record unused() implements ApiKeyError {
-            @Override
-            public String message() {
+        @SuppressWarnings("unused") record unused() implements ApiKeyError {
+            @Override public String message() {
                 return "";
             }
         }

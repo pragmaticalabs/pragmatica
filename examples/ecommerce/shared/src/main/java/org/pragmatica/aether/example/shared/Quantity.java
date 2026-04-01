@@ -5,19 +5,16 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
-/// Non-negative quantity value (0 to MAX_QUANTITY).
-public record Quantity(int value) {
+public record Quantity( int value) {
     public sealed interface QuantityError extends Cause {
         record Negative(int value) implements QuantityError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Quantity cannot be negative: " + value;
             }
         }
 
         record ExceedsMax(int value, int max) implements QuantityError {
-            @Override
-            public String message() {
+            @Override public String message() {
                 return "Quantity " + value + " exceeds maximum " + max;
             }
         }
@@ -29,10 +26,10 @@ public record Quantity(int value) {
     public static Result<Quantity> quantity(int value) {
         return Verify.ensure(value,
                              v -> v >= 0,
-                             _ -> new QuantityError.Negative(value))
-                     .filter(_ -> new QuantityError.ExceedsMax(value, MAX_QUANTITY),
-                             v -> v <= MAX_QUANTITY)
-                     .map(Quantity::new);
+                             _ -> new QuantityError.Negative(value)).filter(_ -> new QuantityError.ExceedsMax(value,
+                                                                                                              MAX_QUANTITY),
+                                                                            v -> v <= MAX_QUANTITY)
+                            .map(Quantity::new);
     }
 
     public Result<Quantity> add(Quantity other) {
@@ -44,7 +41,7 @@ public record Quantity(int value) {
     }
 
     public boolean isPositive() {
-        return value > 0;
+        return value >0;
     }
 
     public boolean isZero() {

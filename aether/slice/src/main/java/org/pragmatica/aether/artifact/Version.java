@@ -18,16 +18,13 @@ import static org.pragmatica.lang.Verify.ensure;
 
 @Codec
 @SuppressWarnings({"JBCT-NAM-01", "JBCT-UTIL-02"})
-public record Version(int major, int minor, int patch, String qualifier) {
+public record Version( int major, int minor, int patch, String qualifier) {
     public static Result<Version> version(String versionString) {
         var parts = versionString.split("\\.");
-        if (parts.length < 3 || parts.length > 4) {
-            return FORMAT_ERROR.apply(versionString)
-                               .result();
-        }
-        if (parts.length == 4) {
-            return parseFourPartVersion(parts);
-        }
+        if ( parts.length < 3 || parts.length > 4) {
+        return FORMAT_ERROR.apply(versionString).result();}
+        if ( parts.length == 4) {
+        return parseFourPartVersion(parts);}
         return parseThreePartVersion(parts, versionString);
     }
 
@@ -36,15 +33,13 @@ public record Version(int major, int minor, int patch, String qualifier) {
                           Number.parseInt(parts[1]),
                           Number.parseInt(parts[2]),
                           success(option(parts[3])))
-                     .flatMap(Version::version);
+        .flatMap(Version::version);
     }
 
     private static Result<Version> parseThreePartVersion(String[] parts, String versionString) {
         int dashIndex = parts[2].indexOf('-');
-        if (dashIndex > 0 && (dashIndex + 1) == parts[2].length()) {
-            return FORMAT_ERROR.apply(versionString)
-                               .result();
-        }
+        if ( dashIndex > 0 && (dashIndex + 1) == parts[2].length()) {
+        return FORMAT_ERROR.apply(versionString).result();}
         var qualifier = (dashIndex > 0)
                         ? option(parts[2].substring(dashIndex + 1))
                         : Option.<String>none();
@@ -55,7 +50,7 @@ public record Version(int major, int minor, int patch, String qualifier) {
                           Number.parseInt(parts[1]),
                           Number.parseInt(patchStr),
                           success(qualifier))
-                     .flatMap(Version::version);
+        .flatMap(Version::version);
     }
 
     public static Result<Version> version(int major, int minor, int patch, Option<String> qualifier) {
@@ -64,7 +59,7 @@ public record Version(int major, int minor, int patch, String qualifier) {
                           ensure(minor, Is::greaterThanOrEqualTo, 0),
                           ensure(patch, Is::greaterThanOrEqualTo, 0),
                           ensure(innerQualifier, Is::matches, QUALIFIER_PATTERN))
-                     .map(Version::new);
+        .map(Version::new);
     }
 
     public String bareVersion() {

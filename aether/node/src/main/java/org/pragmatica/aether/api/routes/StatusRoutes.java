@@ -1,6 +1,7 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.ClusterEvent;
+import org.pragmatica.aether.api.ManagementApiResponses.CertificateStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.ComponentHealth;
 import org.pragmatica.aether.api.ManagementApiResponses.EnrichedNodeInfo;
@@ -11,6 +12,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.NodeInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.NodesResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ReadinessResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.StatusResponse;
+import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -48,30 +50,29 @@ public final class StatusRoutes implements RouteSource {
         return new StatusRoutes(nodeSupplier, appHttpServerSupplier);
     }
 
-    @Override
-    public Stream<Route<?>> routes() {
-        return Stream.of(Route.<StatusResponse> get("/api/status")
+    @Override public Stream<Route<?>> routes() {
+        return Stream.of(Route.<StatusResponse>get("/api/status")
                               .toJson(this::buildStatusResponse),
-                         Route.<NodesResponse> get("/api/nodes")
+                         Route.<NodesResponse>get("/api/nodes")
                               .toJson(this::buildNodesResponse),
-                         Route.<HealthResponse> get("/api/health")
+                         Route.<HealthResponse>get("/api/health")
                               .toJson(this::buildHealthResponse),
-                         Route.<LivenessResponse> get("/health/live")
+                         Route.<LivenessResponse>get("/health/live")
                               .toJson(this::buildLivenessResponse),
-                         Route.<ReadinessResponse> get("/health/ready")
+                         Route.<ReadinessResponse>get("/health/ready")
                               .toJson(this::buildReadinessResponse),
-                         Route.<List<ClusterEvent>> get("/api/events")
-                              .<String> withQuery(QueryParameter.aString("since"))
+                         Route.<List<ClusterEvent>>get("/api/events")
+                              .<String>withQuery(QueryParameter.aString("since"))
                               .toValue(this::buildEventsResponse)
-                              .asJson());
+                              .asJson(),
+                         Route.<CertificateStatusResponse>get("/api/certificate")
+                              .toJson(this::buildCertificateStatusResponse));
     }
 
     private List<ClusterEvent> buildEventsResponse(Option<String> sinceParam) {
-        var aggregator = nodeSupplier.get()
-                                     .eventAggregator();
-        return sinceParam.map(StatusRoutes::parseInstant)
-                         .map(aggregator::eventsSince)
-                         .or(aggregator.events());
+        var aggregator = nodeSupplier.get().eventAggregator();
+        return sinceParam.map(StatusRoutes::parseInstant).map(aggregator::eventsSince)
+                             .or(aggregator.events());
     }
 
     private static Instant parseInstant(String raw) {
@@ -81,32 +82,25 @@ public final class StatusRoutes implements RouteSource {
     private StatusResponse buildStatusResponse() {
         var node = nodeSupplier.get();
         var uptimeSeconds = node.uptimeSeconds();
-        var allMetrics = node.metricsCollector()
-                             .allMetrics();
+        var allMetrics = node.metricsCollector().allMetrics();
         var connectedNodes = allMetrics.keySet();
-        var leaderId = node.leader()
-                           .map(NodeId::id)
-                           .or("none");
-        var nodeInfos = connectedNodes.stream()
-                                      .map(nodeId -> new NodeInfo(nodeId.id(),
-                                                                  node.leader()
-                                                                      .map(l -> l.equals(nodeId))
-                                                                      .or(false)))
-                                      .toList();
+        var leaderId = node.leader().map(NodeId::id)
+                                  .or("none");
+        var nodeInfos = connectedNodes.stream().map(nodeId -> new NodeInfo(nodeId.id(),
+                                                                           node.leader().map(l -> l.equals(nodeId))
+                                                                                      .or(false)))
+                                             .toList();
         var cluster = new ClusterInfo(connectedNodes.size(), leaderId, nodeInfos);
-        var derived = node.snapshotCollector()
-                          .derivedMetrics();
+        var derived = node.snapshotCollector().derivedMetrics();
         var metrics = new MetricsSummary(derived.requestRate(),
                                          100.0 - derived.errorRate() * 100.0,
                                          derived.latencyP50());
         return new StatusResponse(uptimeSeconds,
                                   cluster,
-                                  node.sliceStore()
-                                      .loaded()
-                                      .size(),
+                                  node.sliceStore().loaded()
+                                                 .size(),
                                   metrics,
-                                  node.self()
-                                      .id(),
+                                  node.self().id(),
                                   "running",
                                   node.isLeader(),
                                   leaderId);
@@ -114,42 +108,33 @@ public final class StatusRoutes implements RouteSource {
 
     private NodesResponse buildNodesResponse() {
         var node = nodeSupplier.get();
-        var metrics = node.metricsCollector()
-                          .allMetrics();
+        var metrics = node.metricsCollector().allMetrics();
         var nodeIds = new LinkedHashSet<String>();
         // Always include self
-        nodeIds.add(node.self()
-                        .id());
+        nodeIds.add(node.self().id());
         // Add connected peers (live view, reflects node departures)
-        node.connectedPeerIds()
-            .forEach(nid -> nodeIds.add(nid.id()));
+        node.connectedPeerIds().forEach(nid -> nodeIds.add(nid.id()));
         // Add nodes from metrics
-        for (NodeId nodeId : metrics.keySet()) {
-            nodeIds.add(nodeId.id());
-        }
+        for ( NodeId nodeId : metrics.keySet()) {
+        nodeIds.add(nodeId.id());}
         // Add nodes from KV-Store slice entries
-        node.kvStore()
-            .forEach(SliceNodeKey.class,
-                     SliceNodeValue.class,
-                     (key, _) -> nodeIds.add(key.nodeId()
-                                                .id()));
+        node.kvStore().forEach(SliceNodeKey.class,
+                               SliceNodeValue.class,
+                               (key, _) -> nodeIds.add(key.nodeId().id()));
         var roleMap = collectNodeRoles(node);
-        var leaderId = node.leader()
-                           .map(NodeId::id);
-        var enrichedNodes = nodeIds.stream()
-                                   .map(id -> toEnrichedNodeInfo(id, roleMap, leaderId))
-                                   .toList();
+        var leaderId = node.leader().map(NodeId::id);
+        var enrichedNodes = nodeIds.stream().map(id -> toEnrichedNodeInfo(id, roleMap, leaderId))
+                                          .toList();
         return new NodesResponse(enrichedNodes);
     }
 
     private static Map<String, String> collectNodeRoles(AetherNode node) {
         var roleMap = new HashMap<String, String>();
         node.kvStore()
-            .forEach(ActivationDirectiveKey.class,
-                     ActivationDirectiveValue.class,
-                     (key, value) -> roleMap.put(key.nodeId()
-                                                    .id(),
-                                                 value.role()));
+        .forEach(ActivationDirectiveKey.class,
+                 ActivationDirectiveValue.class,
+                 (key, value) -> roleMap.put(key.nodeId().id(),
+                                             value.role()));
         return roleMap;
     }
 
@@ -157,20 +142,17 @@ public final class StatusRoutes implements RouteSource {
                                                        Map<String, String> roleMap,
                                                        Option<String> leaderId) {
         var role = roleMap.getOrDefault(id, ActivationDirectiveValue.CORE);
-        var isLeader = leaderId.map(id::equals)
-                               .or(false);
+        var isLeader = leaderId.map(id::equals).or(false);
         return new EnrichedNodeInfo(id, role, isLeader);
     }
 
     private HealthResponse buildHealthResponse() {
         var node = nodeSupplier.get();
-        var metrics = node.metricsCollector()
-                          .allMetrics();
+        var metrics = node.metricsCollector().allMetrics();
         var metricsNodeCount = metrics.size();
         var connectedNodeCount = node.connectedNodeCount();
-        var sliceCount = node.sliceStore()
-                             .loaded()
-                             .size();
+        var sliceCount = node.sliceStore().loaded()
+                                        .size();
         var ready = node.isReady();
         var totalNodes = connectedNodeCount + 1;
         var hasQuorum = totalNodes >= 2;
@@ -182,9 +164,8 @@ public final class StatusRoutes implements RouteSource {
 
     /// Build liveness response. Public for direct use from ManagementServer.
     public LivenessResponse buildLivenessResponse() {
-        var nodeId = nodeSupplier.get()
-                                 .self()
-                                 .id();
+        var nodeId = nodeSupplier.get().self()
+                                     .id();
         return new LivenessResponse("UP", nodeId);
     }
 
@@ -192,14 +173,12 @@ public final class StatusRoutes implements RouteSource {
     @SuppressWarnings("JBCT-PAT-01")
     public ReadinessResponse buildReadinessResponse() {
         var node = nodeSupplier.get();
-        var nodeId = node.self()
-                         .id();
+        var nodeId = node.self().id();
         var components = new ArrayList<ComponentHealth>();
         components.add(buildConsensusHealth(node));
         components.add(buildRoutesHealth());
         components.add(buildQuorumHealth(node));
-        var allUp = components.stream()
-                              .allMatch(c -> "UP".equals(c.status()));
+        var allUp = components.stream().allMatch(c -> "UP".equals(c.status()));
         var status = allUp
                      ? "UP"
                      : "DOWN";
@@ -218,8 +197,7 @@ public final class StatusRoutes implements RouteSource {
     }
 
     private ComponentHealth buildRoutesHealth() {
-        var routesReady = appHttpServerSupplier.get()
-                                               .isRouteReady();
+        var routesReady = appHttpServerSupplier.get().isRouteReady();
         return new ComponentHealth("routes",
                                    routesReady
                                    ? "UP"
@@ -227,6 +205,19 @@ public final class StatusRoutes implements RouteSource {
                                    routesReady
                                    ? "Route sync received"
                                    : "Awaiting initial route sync");
+    }
+
+    private CertificateStatusResponse buildCertificateStatusResponse() {
+        return nodeSupplier.get().certRenewalScheduler()
+                               .map(StatusRoutes::toCertificateStatus)
+                               .or(new CertificateStatusResponse("N/A", 0, "N/A", "NOT_CONFIGURED"));
+    }
+
+    private static CertificateStatusResponse toCertificateStatus(CertificateRenewalScheduler scheduler) {
+        return new CertificateStatusResponse(scheduler.currentNotAfter().toString(),
+                                             scheduler.secondsUntilExpiry(),
+                                             scheduler.lastRenewalAt().toString(),
+                                             scheduler.renewalStatus().name());
     }
 
     private static ComponentHealth buildQuorumHealth(AetherNode node) {

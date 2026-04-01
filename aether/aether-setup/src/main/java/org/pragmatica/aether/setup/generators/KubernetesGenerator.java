@@ -34,13 +34,11 @@ import static org.pragmatica.lang.Result.success;
 public final class KubernetesGenerator implements Generator {
     private static final Logger log = LoggerFactory.getLogger(KubernetesGenerator.class);
 
-    @Override
-    public boolean supports(AetherConfig config) {
+    @Override public boolean supports(AetherConfig config) {
         return config.environment() == Environment.KUBERNETES;
     }
 
-    @Override
-    public Result<GeneratorOutput> generate(AetherConfig config, Path outputDir) {
+    @Override public Result<GeneratorOutput> generate(AetherConfig config, Path outputDir) {
         return Result.lift(KubernetesGenerator::toIoError, () -> generateManifests(config, outputDir));
     }
 
@@ -76,8 +74,7 @@ public final class KubernetesGenerator implements Generator {
 
     private GeneratorOutput buildOutput(AetherConfig config, Path outputDir, List<Path> generatedFiles) {
         var k8s = k8sConfig(config);
-        var nodes = config.cluster()
-                          .nodes();
+        var nodes = config.cluster().nodes();
         var instructions = formatInstructions(outputDir, k8s.namespace(), nodes, k8s.serviceType());
         return GeneratorOutput.generatorOutput(outputDir, generatedFiles, instructions);
     }
@@ -107,8 +104,7 @@ public final class KubernetesGenerator implements Generator {
     }
 
     private KubernetesConfig k8sConfig(AetherConfig config) {
-        return config.kubernetes()
-                     .expect("Kubernetes config expected");
+        return config.kubernetes().expect("Kubernetes config expected");
     }
 
     private String generateNamespace(AetherConfig config) {
@@ -126,29 +122,24 @@ public final class KubernetesGenerator implements Generator {
 
     private String generateConfigMap(AetherConfig config) {
         var namespace = k8sConfig(config).namespace();
-        var nodes = config.cluster()
-                          .nodes();
-        var clusterPort = config.cluster()
-                                .ports()
-                                .cluster();
-        var mgmtPort = config.cluster()
-                             .ports()
-                             .management();
+        var nodes = config.cluster().nodes();
+        var clusterPort = config.cluster().ports()
+                                        .cluster();
+        var mgmtPort = config.cluster().ports()
+                                     .management();
         var peerList = buildPeerList(nodes, namespace, clusterPort);
         return formatConfigMap(namespace,
                                peerList,
                                mgmtPort,
                                clusterPort,
-                               config.node()
-                                     .heap(),
+                               config.node().heap(),
                                gcFlag(config));
     }
 
     private String buildPeerList(int nodes, String namespace, int clusterPort) {
-        return IntStream.range(0, nodes)
-                        .mapToObj(i -> peerAddress(i, namespace, clusterPort))
-                        .reduce((a, b) -> a + "," + b)
-                        .orElse("");
+        return IntStream.range(0, nodes).mapToObj(i -> peerAddress(i, namespace, clusterPort))
+                              .reduce((a, b) -> a + "," + b)
+                              .orElse("");
     }
 
     private String peerAddress(int index, String namespace, int clusterPort) {
@@ -182,27 +173,22 @@ public final class KubernetesGenerator implements Generator {
     }
 
     private String gcFlag(AetherConfig config) {
-        return config.node()
-                     .gc()
-                     .toUpperCase()
-                     .equals("ZGC")
+        return config.node().gc()
+                          .toUpperCase()
+                          .equals("ZGC")
                ? "ZGC"
                : "G1GC";
     }
 
     private String generateStatefulSet(AetherConfig config) {
         var namespace = k8sConfig(config).namespace();
-        var resources = config.node()
-                              .resources()
-                              .or(ResourcesConfig.resourcesConfig());
-        var nodes = config.cluster()
-                          .nodes();
-        var mgmtPort = config.cluster()
-                             .ports()
-                             .management();
-        var clusterPort = config.cluster()
-                                .ports()
-                                .cluster();
+        var resources = config.node().resources()
+                                   .or(ResourcesConfig.resourcesConfig());
+        var nodes = config.cluster().nodes();
+        var mgmtPort = config.cluster().ports()
+                                     .management();
+        var clusterPort = config.cluster().ports()
+                                        .cluster();
         return formatStatefulSet(namespace, nodes, mgmtPort, clusterPort, resources);
     }
 
@@ -278,12 +264,10 @@ public final class KubernetesGenerator implements Generator {
 
     private String generateHeadlessService(AetherConfig config) {
         var k8s = k8sConfig(config);
-        var mgmtPort = config.cluster()
-                             .ports()
-                             .management();
-        var clusterPort = config.cluster()
-                                .ports()
-                                .cluster();
+        var mgmtPort = config.cluster().ports()
+                                     .management();
+        var clusterPort = config.cluster().ports()
+                                        .cluster();
         return String.format("""
             apiVersion: v1
             kind: Service
@@ -311,9 +295,8 @@ public final class KubernetesGenerator implements Generator {
 
     private String generateService(AetherConfig config) {
         var k8s = k8sConfig(config);
-        var mgmtPort = config.cluster()
-                             .ports()
-                             .management();
+        var mgmtPort = config.cluster().ports()
+                                     .management();
         return String.format("""
             apiVersion: v1
             kind: Service
@@ -397,12 +380,22 @@ public final class KubernetesGenerator implements Generator {
 
     @SuppressWarnings("JBCT-SEQ-01")
     private void makeExecutable(Path path) {
-        try{
+        try {
             Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rwxr-xr-x"));
-        } catch (UnsupportedOperationException e) {
+        }
+
+
+
+
+        catch (UnsupportedOperationException e) {
             // POSIX permissions not supported on this filesystem (e.g., Windows)
             log.debug("Cannot set POSIX permissions on {}: {}", path, e.getMessage());
-        } catch (Exception e) {
+        }
+
+
+
+
+        catch (Exception e) {
             log.debug("Failed to set permissions on {}: {}", path, e.getMessage());
         }
     }

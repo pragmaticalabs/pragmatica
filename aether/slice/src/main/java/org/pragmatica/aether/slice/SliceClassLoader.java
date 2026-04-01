@@ -39,27 +39,29 @@ public class SliceClassLoader extends URLClassLoader {
 
     /// JDK override — kept as throws per ClassLoader contract.
     @SuppressWarnings("JBCT-EX-01")
-    @Override
-    protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-        synchronized (getClassLoadingLock(name)) {
+    @Override protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+        synchronized ( getClassLoadingLock(name)) {
             // Check if already loaded
             var loaded = findLoadedClass(name);
-            if (loaded != null) {
-                return loaded;
-            }
+            if ( loaded != null) {
+            return loaded;}
             // Parent-first for JDK classes (mandatory - cannot be overridden)
-            if (isJdkClass(name)) {
-                return super.loadClass(name, resolve);
-            }
+            if ( isJdkClass(name)) {
+            return super.loadClass(name, resolve);}
             // Child-first for everything else (slice isolation)
             // This allows slice code and conflict overrides to shadow parent classes
-            try{
+            try {
                 var clazz = findClass(name);
-                if (resolve) {
-                    resolveClass(clazz);
-                }
+                if ( resolve) {
+                resolveClass(clazz);}
                 return clazz;
-            } catch (ClassNotFoundException e) {
+            }
+
+
+
+
+
+            catch (ClassNotFoundException e) {
                 // Fall back to parent (SharedLibraryClassLoader -> Node ClassLoader)
                 return super.loadClass(name, resolve);
             }
@@ -85,8 +87,7 @@ public class SliceClassLoader extends URLClassLoader {
 
     /// JDK override — kept as void/throws per URLClassLoader contract.
     @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
-    @Override
-    public void close() throws IOException {
+    @Override public void close() throws IOException {
         super.close();
     }
 }

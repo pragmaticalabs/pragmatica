@@ -81,17 +81,15 @@ public final class AetherPassiveLB {
         // Include self in coreNodes — TopologyObserver requires self to be present
         var allNodes = new ArrayList<>(config.clusterNodes());
         allNodes.add(config.selfInfo());
-        var topologyConfig = new TopologyConfig(config.selfInfo()
-                                                      .id(),
+        var topologyConfig = new TopologyConfig(config.selfInfo().id(),
                                                 config.clusterSize(),
                                                 timeSpan(1).seconds(),
                                                 timeSpan(10).seconds(),
                                                 List.copyOf(allNodes));
-        var passiveNode = PassiveNode.<AetherKey, AetherValue> passiveNode(topologyConfig, serializer, deserializer)
+        var passiveNode = PassiveNode.<AetherKey, AetherValue>passiveNode(topologyConfig, serializer, deserializer)
                                      .unwrap();
         var routeRegistry = HttpRouteRegistry.httpRouteRegistry();
-        var httpForwarder = HttpForwarder.httpForwarder(config.selfInfo()
-                                                              .id(),
+        var httpForwarder = HttpForwarder.httpForwarder(config.selfInfo().id(),
                                                         routeRegistry,
                                                         passiveNode.network(),
                                                         serializer,
@@ -105,15 +103,13 @@ public final class AetherPassiveLB {
     public Promise<Unit> start() {
         log.info("Starting passive LB on HTTP port {}, cluster port {}",
                  config.httpPort(),
-                 config.selfInfo()
-                       .address()
-                       .port());
-        return passiveNode.start()
-                          .flatMap(_ -> startHttpServer())
-                          .onSuccess(_ -> log.info("Passive LB started on port {}",
-                                                   config.httpPort()))
-                          .onFailure(cause -> log.error("Failed to start passive LB: {}",
-                                                        cause.message()));
+                 config.selfInfo().address()
+                                .port());
+        return passiveNode.start().flatMap(_ -> startHttpServer())
+                                .onSuccess(_ -> log.info("Passive LB started on port {}",
+                                                         config.httpPort()))
+                                .onFailure(cause -> log.error("Failed to start passive LB: {}",
+                                                              cause.message()));
     }
 
     /// Stop the passive LB.
@@ -129,64 +125,55 @@ public final class AetherPassiveLB {
     }
 
     private Promise<Unit> startHttpServer() {
-        var serverConfig = HttpServerConfig.httpServerConfig("passive-lb",
-                                                             config.httpPort())
-                                           .withMaxContentLength(MAX_CONTENT_LENGTH);
+        var serverConfig = HttpServerConfig.httpServerConfig("passive-lb", config.httpPort())
+        .withMaxContentLength(MAX_CONTENT_LENGTH);
         // Use own event loop groups — QUIC transport does not provide a TCP Server
         var serverPromise = Option.some(HttpServer.httpServer(serverConfig, this::handleRequest))
-                                  .or(HttpServer.httpServer(serverConfig, this::handleRequest));
-        return serverPromise.onSuccess(server -> httpServer = Option.some(server))
-                            .mapToUnit();
+        .or(HttpServer.httpServer(serverConfig, this::handleRequest));
+        return serverPromise.onSuccess(server -> httpServer = Option.some(server)).mapToUnit();
     }
 
     private Promise<Unit> stopHttpServer() {
-        return httpServer.map(HttpServer::stop)
-                         .or(Promise.success(Unit.unit()));
+        return httpServer.map(HttpServer::stop).or(Promise.success(Unit.unit()));
     }
 
     // ================== Request Handling ==================
     private void handleRequest(RequestContext request, ResponseWriter response) {
-        var method = request.method()
-                            .name();
+        var method = request.method().name();
         var path = request.path();
         var requestId = request.requestId();
-        if (isHealthEndpoint(path)) {
+        if ( isHealthEndpoint(path)) {
             sendHealthResponse(response, requestId);
             return;
         }
         log.debug("Route lookup: {} {} — registry has {} routes",
                   method,
                   path,
-                  routeRegistry.allRoutes()
-                               .size());
+                  routeRegistry.allRoutes().size());
         var routeOpt = routeRegistry.findRoute(method, path);
-        if (routeOpt.isEmpty()) {
+        if ( routeOpt.isEmpty()) {
             log.warn("No route found for {} {} — available routes: {}",
                      method,
                      path,
-                     routeRegistry.allRoutes()
-                                  .stream()
-                                  .map(r -> r.httpMethod() + " " + r.pathPrefix() + " -> " + r.nodes())
-                                  .toList());
+                     routeRegistry.allRoutes().stream()
+                                            .map(r -> r.httpMethod() + " " + r.pathPrefix() + " -> " + r.nodes())
+                                            .toList());
             response.error(HttpStatus.NOT_FOUND, "No route found for " + method + " " + path);
             return;
         }
         var route = routeOpt.unwrap();
         var context = HttpRequestContext.httpRequestContext(path,
                                                             method,
-                                                            request.queryParams()
-                                                                   .asMap(),
-                                                            request.headers()
-                                                                   .asMap(),
+                                                            request.queryParams().asMap(),
+                                                            request.headers().asMap(),
                                                             request.body(),
                                                             requestId);
         httpForwarder.forward(context,
                               route.httpMethod(),
                               route.pathPrefix(),
-                              requestId)
-                     .onSuccess(responseData -> sendResponse(response, responseData, requestId))
-                     .onFailure(cause -> response.error(HttpStatus.BAD_GATEWAY,
-                                                        cause.message()));
+                              requestId).onSuccess(responseData -> sendResponse(response, responseData, requestId))
+                             .onFailure(cause -> response.error(HttpStatus.BAD_GATEWAY,
+                                                                cause.message()));
     }
 
     // ================== Response Helpers ==================
@@ -195,21 +182,18 @@ public final class AetherPassiveLB {
     }
 
     private static void sendHealthResponse(ResponseWriter response, String requestId) {
-        response.header(ResponseWriter.X_REQUEST_ID, requestId)
-                .ok("{\"status\":\"UP\",\"type\":\"passive-lb\"}");
+        response.header(ResponseWriter.X_REQUEST_ID, requestId).ok("{\"status\":\"UP\",\"type\":\"passive-lb\"}");
     }
 
     private static void sendResponse(ResponseWriter response, HttpResponseData responseData, String requestId) {
         response.header(ResponseWriter.X_REQUEST_ID, requestId);
-        responseData.headers()
-                    .forEach(response::header);
+        responseData.headers().forEach(response::header);
         var status = HttpStatus.OK;
-        for (var s : HttpStatus.values()) {
-            if (s.code() == responseData.statusCode()) {
-                status = s;
-                break;
-            }
-        }
+        for ( var s : HttpStatus.values()) {
+        if ( s.code() == responseData.statusCode()) {
+            status = s;
+            break;
+        }}
         response.respond(status, new String(responseData.body(), StandardCharsets.UTF_8));
     }
 
@@ -218,14 +202,12 @@ public final class AetherPassiveLB {
                                    HttpRouteRegistry routeRegistry,
                                    HttpForwarder httpForwarder) {
         var topologyChangeRoutes = SealedBuilder.from(TopologyChangeNotification.class)
-                                                .route(route(TopologyChangeNotification.NodeAdded.class,
-                                                             (TopologyChangeNotification.NodeAdded msg) -> {}),
-                                                       route(TopologyChangeNotification.NodeRemoved.class,
-                                                             httpForwarder::onNodeRemoved),
-                                                       route(TopologyChangeNotification.NodeDown.class,
-                                                             httpForwarder::onNodeDown));
+        .route(route(TopologyChangeNotification.NodeAdded.class,
+                     (TopologyChangeNotification.NodeAdded msg) -> {}),
+               route(TopologyChangeNotification.NodeRemoved.class, httpForwarder::onNodeRemoved),
+               route(TopologyChangeNotification.NodeDown.class, httpForwarder::onNodeDown));
         // KV notification router for NodeRoutesKey — receives committed KV decisions
-        var kvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+        var kvRouter = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
                                            .onPut(NodeRoutesKey.class, routeRegistry::onNodeRoutesPut)
                                            .onRemove(NodeRoutesKey.class, routeRegistry::onNodeRoutesRemove)
                                            .build();
@@ -234,10 +216,9 @@ public final class AetherPassiveLB {
         allEntries.addAll(kvRouter.asRouteEntries());
         allEntries.add(route(HttpForwardResponse.class, httpForwarder::onHttpForwardResponse));
         RabiaNode.buildAndWireRouter(passiveNode.delegateRouter(),
-                                     allEntries)
-                 .onFailure(cause -> log.error("FATAL: Failed to wire passive LB routes: {}",
-                                               cause.message()))
-                 .onSuccess(_ -> log.info("Passive LB routes wired successfully ({} entries)",
-                                          allEntries.size()));
+                                     allEntries).onFailure(cause -> log.error("FATAL: Failed to wire passive LB routes: {}",
+                                                                              cause.message()))
+                                    .onSuccess(_ -> log.info("Passive LB routes wired successfully ({} entries)",
+                                                             allEntries.size()));
     }
 }

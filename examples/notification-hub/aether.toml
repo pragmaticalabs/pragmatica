@@ -1,0 +1,7 @@
+# Aether runtime configuration
+
+[streams.notifications]
+partitions = 4
+retention = "time"
+retention-value = "5m"
+max-event-size = "64KB"

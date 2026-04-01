@@ -30,14 +30,10 @@ public sealed interface InstanceStatus {
         }
     }
 
-    InstanceStatus PROVISIONING = Provisioning.provisioning()
-                                             .unwrap();
-    InstanceStatus RUNNING = Running.running()
-                                   .unwrap();
-    InstanceStatus STOPPING = Stopping.stopping()
-                                     .unwrap();
-    InstanceStatus TERMINATED = Terminated.terminated()
-                                         .unwrap();
+    InstanceStatus PROVISIONING = Provisioning.provisioning().unwrap();
+    InstanceStatus RUNNING = Running.running().unwrap();
+    InstanceStatus STOPPING = Stopping.stopping().unwrap();
+    InstanceStatus TERMINATED = Terminated.terminated().unwrap();
 
     record unused() implements InstanceStatus {
         public static Result<unused> unused() {

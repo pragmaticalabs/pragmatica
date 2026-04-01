@@ -21,6 +21,7 @@ import org.pragmatica.postgres.message.backend.DataRow;
 import org.pragmatica.postgres.message.frontend.*;
 import org.pragmatica.postgres.net.Connection;
 import org.pragmatica.postgres.net.Listening;
+import org.pragmatica.postgres.net.NotificationHandler;
 import org.pragmatica.postgres.net.PreparedStatement;
 import org.pragmatica.postgres.net.Transaction;
 import org.pragmatica.lang.Cause;
@@ -321,6 +322,17 @@ public class PgConnection implements Connection {
         return completeScript("LISTEN " + channel)
             .map(_ -> {
                 var unsubscribe = stream.subscribe(channel, onNotification);
+
+                return () -> completeScript("UNLISTEN " + channel).withSuccess(_ -> unsubscribe.run())
+                                                                  .mapToUnit();
+            });
+    }
+
+    @Override
+    public Promise<Listening> subscribe(String channel, NotificationHandler onNotification) {
+        return completeScript("LISTEN " + channel)
+            .map(_ -> {
+                var unsubscribe = stream.subscribeWithDetails(channel, onNotification);
 
                 return () -> completeScript("UNLISTEN " + channel).withSuccess(_ -> unsubscribe.run())
                                                                   .mapToUnit();

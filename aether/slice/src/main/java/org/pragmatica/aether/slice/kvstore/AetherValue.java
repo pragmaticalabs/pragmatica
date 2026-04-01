@@ -14,6 +14,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -42,9 +43,8 @@ public sealed interface AetherValue {
 
         /// Compact constructor: normalize null/empty placement at construction time.
         public SliceTargetValue {
-            if (placement == null || placement.isEmpty()) {
-                placement = DEFAULT_PLACEMENT;
-            }
+            if ( placement == null || placement.isEmpty()) {
+            placement = DEFAULT_PLACEMENT;}
         }
 
         /// Creates a new slice target value with current timestamp.
@@ -774,8 +774,7 @@ public sealed interface AetherValue {
     ///                    ←────────────┘
     ///           any KV state ──────────→ SHUTTING_DOWN
     /// ```
-    @Codec
-    enum NodeLifecycleState {
+    @Codec enum NodeLifecycleState {
         JOINING,
         ON_DUTY,
         DRAINING,
@@ -794,9 +793,8 @@ public sealed interface AetherValue {
     record NodeLifecycleValue(NodeLifecycleState state, long updatedAt, String host, int port) implements AetherValue {
         /// Compact constructor: normalize null host for backward compatibility with old serialization.
         public NodeLifecycleValue {
-            if (host == null) {
-                host = "";
-            }
+            if ( host == null) {
+            host = "";}
         }
 
         /// Creates a new lifecycle value with current timestamp (no address).
@@ -860,9 +858,8 @@ public sealed interface AetherValue {
 
         /// Returns a new value with updated state, preserving endpoint info if transitioning to ACTIVE.
         public NodeArtifactValue withState(SliceState newState) {
-            if (newState == SliceState.ACTIVE) {
-                return new NodeArtifactValue(newState, Option.none(), false, instanceNumber, methods);
-            }
+            if ( newState == SliceState.ACTIVE) {
+            return new NodeArtifactValue(newState, Option.none(), false, instanceNumber, methods);}
             return new NodeArtifactValue(newState, Option.none(), false, 0, List.of());
         }
 
@@ -1022,8 +1019,7 @@ public sealed interface AetherValue {
     }
 
     /// Schema migration status.
-    @Codec
-    enum SchemaStatus {
+    @Codec enum SchemaStatus {
         PENDING,
         MIGRATING,
         COMPLETED,
@@ -1178,6 +1174,202 @@ public sealed interface AetherValue {
                                                                       boolean batchMode,
                                                                       String eventType) {
             return new StreamRegistrationValue(nodeId, consumerGroup, batchMode, eventType);
+        }
+    }
+
+    /// Canonical cluster configuration stored in consensus KV-Store.
+    ///
+    /// The TOML content is stored as a string for human readability and
+    /// round-trip fidelity (comments are stripped, but field ordering is preserved).
+    /// Structured fields are extracted for quick access without parsing.
+    ///
+    /// @param tomlContent full TOML string (comments stripped)
+    /// @param clusterName extracted from [cluster].name
+    /// @param version extracted from [cluster].version
+    /// @param coreCount extracted from [cluster.core].count
+    /// @param coreMin extracted from [cluster.core].min
+    /// @param coreMax extracted from [cluster.core].max
+    /// @param deploymentType extracted from [deployment].type
+    /// @param configVersion monotonically increasing version for optimistic concurrency
+    /// @param updatedAt epoch millis
+    /// Storage block lifecycle value — tracks tier presence, reference count, and access timestamps.
+    /// Tier names are stored as strings to avoid coupling to the storage module's TierLevel enum.
+    ///
+    /// @param blockIdHex hex-encoded SHA-256 block ID
+    /// @param presentIn tier level names where the block is stored (e.g., "MEMORY", "LOCAL_DISK")
+    /// @param refCount number of named references pointing to this block
+    /// @param lastAccessedAt timestamp of last read access
+    /// @param createdAt timestamp when first stored
+    /// @param accessCount total number of read accesses (for frequency-based eviction)
+    record StorageBlockValue(String blockIdHex,
+                             Set<String> presentIn,
+                             int refCount,
+                             long lastAccessedAt,
+                             long createdAt,
+                             int accessCount) implements AetherValue {
+        public static StorageBlockValue storageBlockValue(String blockIdHex,
+                                                          Set<String> presentIn,
+                                                          int refCount,
+                                                          long lastAccessedAt,
+                                                          long createdAt,
+                                                          int accessCount) {
+            return new StorageBlockValue(blockIdHex,
+                                         Set.copyOf(presentIn),
+                                         refCount,
+                                         lastAccessedAt,
+                                         createdAt,
+                                         accessCount);
+        }
+
+        public StorageBlockValue withTierAdded(String tier) {
+            var tiers = new HashSet<>(presentIn);
+            tiers.add(tier);
+            return new StorageBlockValue(blockIdHex, Set.copyOf(tiers), refCount, lastAccessedAt, createdAt, accessCount);
+        }
+
+        public StorageBlockValue withRefCountIncremented() {
+            return new StorageBlockValue(blockIdHex, presentIn, refCount + 1, lastAccessedAt, createdAt, accessCount);
+        }
+
+        public StorageBlockValue withRefCountDecremented() {
+            return new StorageBlockValue(blockIdHex,
+                                         presentIn,
+                                         Math.max(0, refCount - 1),
+                                         lastAccessedAt,
+                                         createdAt,
+                                         accessCount);
+        }
+
+        public StorageBlockValue withAccessTimestamp() {
+            return new StorageBlockValue(blockIdHex,
+                                         presentIn,
+                                         refCount,
+                                         System.currentTimeMillis(),
+                                         createdAt,
+                                         accessCount + 1);
+        }
+    }
+
+    /// Storage named reference value — maps a reference name to a block ID.
+    ///
+    /// @param blockIdHex hex-encoded SHA-256 block ID this reference points to
+    /// @param updatedAt timestamp of last update
+    record StorageRefValue(String blockIdHex, long updatedAt) implements AetherValue {
+        public static StorageRefValue storageRefValue(String blockIdHex) {
+            return new StorageRefValue(blockIdHex, System.currentTimeMillis());
+        }
+    }
+
+    /// Per-node storage instance status — tier utilization, readiness, snapshot epoch.
+    /// Each node publishes this for each storage instance; cluster routes aggregate across nodes.
+    ///
+    /// @param instanceName storage instance name
+    /// @param tiers tier utilization details
+    /// @param readinessState current readiness state name
+    /// @param isReadReady whether reads are available
+    /// @param isWriteReady whether writes are available
+    /// @param lastSnapshotEpoch epoch number of the last snapshot
+    /// @param lastSnapshotTimestamp epoch millis of the last snapshot
+    /// @param updatedAt timestamp of last update
+    record StorageStatusValue(String instanceName,
+                              List<TierStatus> tiers,
+                              String readinessState,
+                              boolean isReadReady,
+                              boolean isWriteReady,
+                              long lastSnapshotEpoch,
+                              long lastSnapshotTimestamp,
+                              long updatedAt) implements AetherValue {
+        /// Tier utilization detail within a storage status.
+        ///
+        /// @param level tier level name
+        /// @param usedBytes bytes currently used
+        /// @param maxBytes maximum capacity in bytes
+        public record TierStatus(String level, long usedBytes, long maxBytes) {
+            public static TierStatus tierStatus(String level, long usedBytes, long maxBytes) {
+                return new TierStatus(level, usedBytes, maxBytes);
+            }
+        }
+
+        /// Creates a storage status value with current timestamp.
+        public static StorageStatusValue storageStatusValue(String instanceName,
+                                                            List<TierStatus> tiers,
+                                                            String readinessState,
+                                                            boolean isReadReady,
+                                                            boolean isWriteReady,
+                                                            long lastSnapshotEpoch,
+                                                            long lastSnapshotTimestamp) {
+            return new StorageStatusValue(instanceName,
+                                          List.copyOf(tiers),
+                                          readinessState,
+                                          isReadReady,
+                                          isWriteReady,
+                                          lastSnapshotEpoch,
+                                          lastSnapshotTimestamp,
+                                          System.currentTimeMillis());
+        }
+    }
+
+    record ClusterConfigValue(String tomlContent,
+                              String clusterName,
+                              String version,
+                              int coreCount,
+                              int coreMin,
+                              int coreMax,
+                              String deploymentType,
+                              long configVersion,
+                              long updatedAt) implements AetherValue {
+        /// Factory method with current timestamp.
+        public static ClusterConfigValue clusterConfigValue(String tomlContent,
+                                                            String clusterName,
+                                                            String version,
+                                                            int coreCount,
+                                                            int coreMin,
+                                                            int coreMax,
+                                                            String deploymentType,
+                                                            long configVersion) {
+            return new ClusterConfigValue(tomlContent,
+                                          clusterName,
+                                          version,
+                                          coreCount,
+                                          coreMin,
+                                          coreMax,
+                                          deploymentType,
+                                          configVersion,
+                                          System.currentTimeMillis());
+        }
+
+        /// Factory method with explicit timestamp.
+        public static ClusterConfigValue clusterConfigValue(String tomlContent,
+                                                            String clusterName,
+                                                            String version,
+                                                            int coreCount,
+                                                            int coreMin,
+                                                            int coreMax,
+                                                            String deploymentType,
+                                                            long configVersion,
+                                                            long updatedAt) {
+            return new ClusterConfigValue(tomlContent,
+                                          clusterName,
+                                          version,
+                                          coreCount,
+                                          coreMin,
+                                          coreMax,
+                                          deploymentType,
+                                          configVersion,
+                                          updatedAt);
+        }
+
+        /// Returns a copy with incremented config version and updated timestamp.
+        public ClusterConfigValue withIncrementedVersion() {
+            return new ClusterConfigValue(tomlContent,
+                                          clusterName,
+                                          version,
+                                          coreCount,
+                                          coreMin,
+                                          coreMax,
+                                          deploymentType,
+                                          configVersion + 1,
+                                          System.currentTimeMillis());
         }
     }
 }

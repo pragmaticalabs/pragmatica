@@ -10,10 +10,9 @@ import org.pragmatica.serialization.Codec;
 /// @param sender      requesting core node ID
 /// @param communityId target community
 /// @param requestId   correlation ID for matching response
-@Codec
-public record CommunityMetricsSnapshotRequest(NodeId sender,
-                                              String communityId,
-                                              long requestId) implements Message.Wired {
+@Codec public record CommunityMetricsSnapshotRequest( NodeId sender,
+                                                      String communityId,
+                                                      long requestId) implements Message.Wired {
     /// Factory following JBCT naming convention.
     public static CommunityMetricsSnapshotRequest communityMetricsSnapshotRequest(NodeId sender,
                                                                                   String communityId,

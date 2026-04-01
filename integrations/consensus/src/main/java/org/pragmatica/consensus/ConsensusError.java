@@ -55,6 +55,13 @@ public sealed interface ConsensusError extends Cause {
         }
     }
 
+    record BackpressureExceeded(int pending, int limit) implements ConsensusError {
+        @Override
+        public String message() {
+            return "Backpressure exceeded: " + pending + " pending batches (limit: " + limit + ")";
+        }
+    }
+
     static ConsensusError commandBatchIsEmpty() {
         return new CommandBatchIsEmpty();
     }
@@ -73,5 +80,9 @@ public sealed interface ConsensusError extends Cause {
 
     static ConsensusError restoreFailed(String reason) {
         return new RestoreFailed(reason);
+    }
+
+    static ConsensusError backpressureExceeded(int pending, int limit) {
+        return new BackpressureExceeded(pending, limit);
     }
 }

@@ -5,7 +5,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>pragmatica</artifactId>
-        <version>0.24.1</version>
+        <version>0.25.0</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -34,5 +34,6 @@
         <module>hlc</module>
         <module>email-http</module>
         <module>xml</module>
+        <module>storage</module>
     </modules>
 </project>

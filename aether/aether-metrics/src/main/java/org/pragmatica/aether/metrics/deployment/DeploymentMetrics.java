@@ -11,18 +11,18 @@ import java.util.Map;
 
 /// Deployment timing metrics for a single slice deployment.
 /// Tracks timestamps for each state transition to calculate latencies.
-public record DeploymentMetrics(Artifact artifact,
-                                NodeId nodeId,
-                                long startTime,
-                                // T0: Blueprint change / LOAD command issued
+public record DeploymentMetrics( Artifact artifact,
+                                 NodeId nodeId,
+                                 long startTime,
+                                 // T0: Blueprint change / LOAD command issued
 long loadTime,
-                                // T1: LOAD state received by node
+                                 // T1: LOAD state received by node
 long loadedTime,
-                                // T2: LOADED state committed
+                                 // T2: LOADED state committed
 long activateTime,
-                                // T3: ACTIVATE state committed
+                                 // T3: ACTIVATE state committed
 long activeTime,
-                                // T4: ACTIVE state committed (0 if not reached)
+                                 // T4: ACTIVE state committed (0 if not reached)
 DeploymentStatus status) {
     public enum DeploymentStatus {
         IN_PROGRESS,
@@ -30,13 +30,7 @@ DeploymentStatus status) {
         FAILED_LOADING,
         FAILED_ACTIVATING;
         public static DeploymentStatus deploymentStatus(String value) {
-            return switch (value) {
-                case "IN_PROGRESS" -> IN_PROGRESS;
-                case "SUCCESS" -> SUCCESS;
-                case "FAILED_LOADING" -> FAILED_LOADING;
-                case "FAILED_ACTIVATING" -> FAILED_ACTIVATING;
-                default -> IN_PROGRESS;
-            };
+            return switch (value) {case "IN_PROGRESS" -> IN_PROGRESS;case "SUCCESS" -> SUCCESS;case "FAILED_LOADING" -> FAILED_LOADING;case "FAILED_ACTIVATING" -> FAILED_ACTIVATING;default -> IN_PROGRESS;};
         }
     }
 
@@ -59,18 +53,14 @@ DeploymentStatus status) {
     /// Time spent in each transition.
     public Map<String, Long> transitionLatencies() {
         var latencies = new LinkedHashMap<String, Long>();
-        if (loadTime > 0 && startTime > 0) {
-            latencies.put("START_TO_LOAD", loadTime - startTime);
-        }
-        if (loadedTime > 0 && loadTime > 0) {
-            latencies.put("LOAD_TO_LOADED", loadedTime - loadTime);
-        }
-        if (activateTime > 0 && loadedTime > 0) {
-            latencies.put("LOADED_TO_ACTIVATE", activateTime - loadedTime);
-        }
-        if (activeTime > 0 && activateTime > 0) {
-            latencies.put("ACTIVATE_TO_ACTIVE", activeTime - activateTime);
-        }
+        if ( loadTime > 0 && startTime > 0) {
+        latencies.put("START_TO_LOAD", loadTime - startTime);}
+        if ( loadedTime > 0 && loadTime > 0) {
+        latencies.put("LOAD_TO_LOADED", loadedTime - loadTime);}
+        if ( activateTime > 0 && loadedTime > 0) {
+        latencies.put("LOADED_TO_ACTIVATE", activateTime - loadedTime);}
+        if ( activeTime > 0 && activateTime > 0) {
+        latencies.put("ACTIVATE_TO_ACTIVE", activeTime - activateTime);}
         return latencies;
     }
 
@@ -89,33 +79,125 @@ DeploymentStatus status) {
     /// Create from protocol message entry.
     /// Returns empty Option if artifact or nodeId parsing fails (should not happen with valid entries).
     public static Option<DeploymentMetrics> fromEntry(DeploymentMetricsEntry entry) {
-        return Artifact.artifact(entry.artifact())
-                       .flatMap(artifact -> buildFromEntry(artifact, entry))
-                       .option();
+        return Artifact.artifact(entry.artifact()).flatMap(artifact -> buildFromEntry(artifact, entry))
+                                .option();
     }
 
     @SuppressWarnings("JBCT-VO-02") // Record copy construction from parsed data
-    private static Result<DeploymentMetrics> buildFromEntry(Artifact artifact, DeploymentMetricsEntry entry) {
+    private static// Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    // Record copy construction from parsed data
+    Result<DeploymentMetrics> buildFromEntry(Artifact artifact, DeploymentMetricsEntry entry) {
         return NodeId.nodeId(entry.nodeId())
-                     .map(nodeId -> new DeploymentMetrics(artifact,
-                                                          nodeId,
-                                                          entry.startTime(),
-                                                          entry.loadTime(),
-                                                          entry.loadedTime(),
-                                                          entry.activateTime(),
-                                                          entry.activeTime(),
-                                                          DeploymentStatus.deploymentStatus(entry.status())));
+        .map(nodeId -> new DeploymentMetrics(artifact,
+                                             nodeId,
+                                             entry.startTime(),
+                                             entry.loadTime(),
+                                             entry.loadedTime(),
+                                             entry.activateTime(),
+                                             entry.activeTime(),
+                                             DeploymentStatus.deploymentStatus(entry.status())));
     }
 
     /// Create a new in-progress deployment starting now.
     @SuppressWarnings("JBCT-VO-02") // Factory method - direct construction is intentional
-    public static DeploymentMetrics deploymentMetrics(Artifact artifact, NodeId nodeId, long timestamp) {
+    public static// Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    // Factory method - direct construction is intentional
+    DeploymentMetrics deploymentMetrics(Artifact artifact, NodeId nodeId, long timestamp) {
         return new DeploymentMetrics(artifact, nodeId, timestamp, 0, 0, 0, 0, DeploymentStatus.IN_PROGRESS);
     }
 
     /// Update with LOAD state timestamp.
     @SuppressWarnings("JBCT-VO-02") // Record copy method
-    public DeploymentMetrics withLoadTime(long timestamp) {
+    public// Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    DeploymentMetrics withLoadTime(long timestamp) {
         return new DeploymentMetrics(artifact,
                                      nodeId,
                                      startTime,
@@ -128,19 +210,112 @@ DeploymentStatus status) {
 
     /// Update with LOADED state timestamp.
     @SuppressWarnings("JBCT-VO-02") // Record copy method
-    public DeploymentMetrics withLoadedTime(long timestamp) {
+    public// Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    DeploymentMetrics withLoadedTime(long timestamp) {
         return new DeploymentMetrics(artifact, nodeId, startTime, loadTime, timestamp, activateTime, activeTime, status);
     }
 
     /// Update with ACTIVATE state timestamp.
     @SuppressWarnings("JBCT-VO-02") // Record copy method
-    public DeploymentMetrics withActivateTime(long timestamp) {
+    public// Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    DeploymentMetrics withActivateTime(long timestamp) {
         return new DeploymentMetrics(artifact, nodeId, startTime, loadTime, loadedTime, timestamp, activeTime, status);
     }
 
     /// Mark as completed with ACTIVE state timestamp.
     @SuppressWarnings("JBCT-VO-02") // Record copy method
-    public DeploymentMetrics completed(long timestamp) {
+    public// Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    DeploymentMetrics completed(long timestamp) {
         return new DeploymentMetrics(artifact,
                                      nodeId,
                                      startTime,
@@ -153,7 +328,38 @@ DeploymentStatus status) {
 
     /// Mark as failed during loading.
     @SuppressWarnings("JBCT-VO-02") // Record copy method
-    public DeploymentMetrics failedLoading(long timestamp) {
+    public// Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    DeploymentMetrics failedLoading(long timestamp) {
         return new DeploymentMetrics(artifact,
                                      nodeId,
                                      startTime,
@@ -166,7 +372,38 @@ DeploymentStatus status) {
 
     /// Mark as failed during activation.
     @SuppressWarnings("JBCT-VO-02") // Record copy method
-    public DeploymentMetrics failedActivating(long timestamp) {
+    public// Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    // Record copy method
+    DeploymentMetrics failedActivating(long timestamp) {
         return new DeploymentMetrics(artifact,
                                      nodeId,
                                      startTime,

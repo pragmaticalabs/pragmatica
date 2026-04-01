@@ -13,8 +13,7 @@ public sealed interface ExpanderError extends Cause {
             return new ArtifactMismatch(requested, declared);
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Artifact mismatch: requested " + requested.asString() + " but JAR manifest declares " + declared.asString();
         }
     }
@@ -25,15 +24,13 @@ public sealed interface ExpanderError extends Cause {
             return new OrphanPublishers(List.copyOf(topics));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Publisher topics with no subscribers in blueprint: " + String.join(", ", topics);
         }
     }
 
     record unused() implements ExpanderError {
-        @Override
-        public String message() {
+        @Override public String message() {
             return "unused";
         }
     }

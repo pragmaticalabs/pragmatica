@@ -1,5 +1,4 @@
 package examples;
-// Basic enum
 public enum Status {
     ACTIVE,
     INACTIVE,
@@ -33,14 +32,12 @@ enum Color {
 // Enum with body on constants
 enum Operation {
     PLUS {
-        @Override
-        public int apply(int a, int b) {
+        @Override public int apply(int a, int b) {
             return a + b;
         }
     },
     MINUS {
-        @Override
-        public int apply(int a, int b) {
+        @Override public int apply(int a, int b) {
             return a - b;
         }
     };

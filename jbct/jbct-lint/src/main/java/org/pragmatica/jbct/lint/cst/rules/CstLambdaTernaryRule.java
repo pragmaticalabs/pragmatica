@@ -28,7 +28,7 @@ public class CstLambdaTernaryRule implements CstLintRule {
         if (!ctx.shouldLint(packageName)) {
             return Stream.empty();
         }
-        return findAll(root, RuleId.Lambda.class).stream()
+        return findAllLambdas(root).stream()
                       .filter(this::containsActualTernary)
                       .map(lambda -> createDiagnostic(lambda, ctx));
     }

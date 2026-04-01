@@ -42,53 +42,42 @@ public final class EmberInstance {
     static EmberInstance emberInstance(EmberConfig config) {
         var instance = new EmberInstance(config);
         instance.startH2();
-        instance.cluster.start()
-                .await(TimeSpan.timeSpan(60)
-                               .seconds())
-                .onFailure(cause -> log.error("Failed to start cluster: {}",
-                                              cause.message()))
-                .onSuccess(_ -> instance.startLoadBalancer());
+        instance.cluster.start().await(TimeSpan.timeSpan(60).seconds())
+                              .onFailure(cause -> log.error("Failed to start cluster: {}",
+                                                            cause.message()))
+                              .onSuccess(_ -> instance.startLoadBalancer());
         return instance;
     }
 
     private void startH2() {
-        if (!config.h2Config()
-                   .enabled()) {
-            return;
-        }
+        if ( !config.h2Config().enabled()) {
+        return;}
         var server = EmberH2Server.emberH2Server(config.h2Config());
-        server.start()
-              .await(TimeSpan.timeSpan(10)
-                             .seconds())
-              .onSuccess(_ -> {
-                             h2Server = Option.some(server);
-                             log.info("H2 database available at: {}",
-                                      server.jdbcUrl());
-                         })
-              .onFailure(cause -> log.error("Failed to start H2 server: {}",
-                                            cause.message()));
+        server.start().await(TimeSpan.timeSpan(10).seconds())
+                    .onSuccess(_ -> {
+                                   h2Server = Option.some(server);
+                                   log.info("H2 database available at: {}",
+                                            server.jdbcUrl());
+                               })
+                    .onFailure(cause -> log.error("Failed to start H2 server: {}",
+                                                  cause.message()));
     }
 
     private void startLoadBalancer() {
-        if (!config.lbEnabled()) {
-            return;
-        }
-        var selfNodeId = NodeId.nodeId("lb-passive")
-                               .unwrap();
+        if ( !config.lbEnabled()) {
+        return;}
+        var selfNodeId = NodeId.nodeId("lb-passive").unwrap();
         var lbClusterPort = EmberCluster.DEFAULT_BASE_PORT + config.nodes() + 10;
         var selfInfo = NodeInfo.nodeInfo(selfNodeId,
-                                         NodeAddress.nodeAddress("localhost", lbClusterPort)
-                                                    .unwrap(),
+                                         NodeAddress.nodeAddress("localhost", lbClusterPort).unwrap(),
                                          NodeRole.PASSIVE);
         var clusterNodeInfos = cluster.getNodeInfos();
         var lbConfig = PassiveLBConfig.passiveLBConfig(config.lbPort(), selfInfo, clusterNodeInfos, config.nodes());
         var lb = AetherPassiveLB.aetherPassiveLB(lbConfig);
-        lb.start()
-          .await(TimeSpan.timeSpan(30)
-                         .seconds())
-          .onSuccess(_ -> registerLoadBalancer(lb, lbClusterPort))
-          .onFailure(cause -> log.error("Failed to start passive LB: {}",
-                                        cause.message()));
+        lb.start().await(TimeSpan.timeSpan(30).seconds())
+                .onSuccess(_ -> registerLoadBalancer(lb, lbClusterPort))
+                .onFailure(cause -> log.error("Failed to start passive LB: {}",
+                                              cause.message()));
     }
 
     private void registerLoadBalancer(AetherPassiveLB lb, int lbClusterPort) {
@@ -108,8 +97,7 @@ public final class EmberInstance {
 
     /// Get the H2 JDBC URL if H2 is enabled and running.
     public Option<String> h2JdbcUrl() {
-        return h2Server.filter(EmberH2Server::isRunning)
-                       .map(EmberH2Server::jdbcUrl);
+        return h2Server.filter(EmberH2Server::isRunning).map(EmberH2Server::jdbcUrl);
     }
 
     /// Get the load balancer if enabled and running.
@@ -124,12 +112,10 @@ public final class EmberInstance {
     }
 
     private Promise<Unit> stopLoadBalancer() {
-        return loadBalancer.map(AetherPassiveLB::stop)
-                           .or(Promise.success(Unit.unit()));
+        return loadBalancer.map(AetherPassiveLB::stop).or(Promise.success(Unit.unit()));
     }
 
     private Promise<Unit> stopH2() {
-        return h2Server.map(EmberH2Server::stop)
-                       .or(Promise.success(Unit.unit()));
+        return h2Server.map(EmberH2Server::stop).or(Promise.success(Unit.unit()));
     }
 }

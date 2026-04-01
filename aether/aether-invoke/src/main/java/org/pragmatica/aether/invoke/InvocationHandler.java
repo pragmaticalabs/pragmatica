@@ -34,18 +34,15 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 public interface InvocationHandler {
     /// Handle incoming invocation request.
     @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
-    void onInvokeRequest(InvokeRequest request);
+    @SuppressWarnings("JBCT-RET-01") void onInvokeRequest(InvokeRequest request);
 
     /// Register a slice bridge for handling invocations.
     /// Called when a slice becomes active.
-    @SuppressWarnings("JBCT-RET-01") // Fire-and-forget state mutation
-    void registerSlice(Artifact artifact, SliceBridge bridge);
+    @SuppressWarnings("JBCT-RET-01") void registerSlice(Artifact artifact, SliceBridge bridge);
 
     /// Unregister a slice.
     /// Called when a slice is deactivated.
-    @SuppressWarnings("JBCT-RET-01") // Fire-and-forget state mutation
-    void unregisterSlice(Artifact artifact);
+    @SuppressWarnings("JBCT-RET-01") void unregisterSlice(Artifact artifact);
 
     /// Get a local slice bridge for direct invocation.
     ///
@@ -223,37 +220,32 @@ class InvocationHandlerImpl implements InvocationHandler {
     @SuppressWarnings("JBCT-RET-01")
     public void unregisterSlice(Artifact artifact) {
         var bridge = localSlices.remove(artifact);
-        if (bridge != null) {
-            classLoaderBridges.remove(bridge.classLoader());
-        }
+        if ( bridge != null) {
+        classLoaderBridges.remove(bridge.classLoader());}
         log.debug("Unregistered slice from invocation: {}", artifact);
     }
 
-    @Override
-    public Option<SliceBridge> localSlice(Artifact artifact) {
+    @Override public Option<SliceBridge> localSlice(Artifact artifact) {
         return Option.option(localSlices.get(artifact));
     }
 
-    @Override
-    public Option<SliceBridge> findBridgeByClassLoader(ClassLoader classLoader) {
+    @Override public Option<SliceBridge> findBridgeByClassLoader(ClassLoader classLoader) {
         return Option.option(classLoaderBridges.get(classLoader));
     }
 
-    @Override
-    public Option<InvocationMetricsCollector> metricsCollector() {
+    @Override public Option<InvocationMetricsCollector> metricsCollector() {
         return metricsCollector;
     }
 
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onInvokeRequest(InvokeRequest request) {
-        if (log.isDebugEnabled()) {
-            log.debug("[requestId={}] Received InvokeRequest [{}]: {}.{}",
-                      request.requestId(),
-                      request.correlationId(),
-                      request.targetSlice(),
-                      request.method());
-        }
+        if ( log.isDebugEnabled()) {
+        log.debug("[requestId={}] Received InvokeRequest [{}]: {}.{}",
+                  request.requestId(),
+                  request.correlationId(),
+                  request.targetSlice(),
+                  request.method());}
         // Run within full invocation context scope for chain propagation
         InvocationContext.runWithContext(request.requestId(),
                                          null,
@@ -264,16 +256,14 @@ class InvocationHandlerImpl implements InvocationHandler {
     }
 
     private void processInvokeRequest(InvokeRequest request) {
-        Option.option(localSlices.get(request.targetSlice()))
-              .onEmpty(() -> handleSliceNotFound(request))
-              .onPresent(bridge -> invokeSliceMethod(request, bridge));
+        Option.option(localSlices.get(request.targetSlice())).onEmpty(() -> handleSliceNotFound(request))
+                     .onPresent(bridge -> invokeSliceMethod(request, bridge));
     }
 
     private void handleSliceNotFound(InvokeRequest request) {
         log.warn("[requestId={}] Slice not found for invocation: {}", request.requestId(), request.targetSlice());
-        if (request.expectResponse()) {
-            sendErrorResponse(request, "Slice not found: " + request.targetSlice());
-        }
+        if ( request.expectResponse()) {
+        sendErrorResponse(request, "Slice not found: " + request.targetSlice());}
     }
 
     private void invokeSliceMethod(InvokeRequest request, SliceBridge bridge) {
@@ -288,10 +278,15 @@ class InvocationHandlerImpl implements InvocationHandler {
                                            request.depth(),
                                            true,
                                            // local=true for server-side handler
-        () -> invokeWithHttpRouting(request, bridge))
-                                .timeout(invocationTimeout)
-                                .onSuccess(data -> handleInvocationSuccess(request, data, startTime, requestBytes))
-                                .onFailure(cause -> handleInvocationFailure(request, cause, startTime, requestBytes));
+        () -> invokeWithHttpRouting(request, bridge)).timeout(invocationTimeout)
+                                          .onSuccess(data -> handleInvocationSuccess(request,
+                                                                                     data,
+                                                                                     startTime,
+                                                                                     requestBytes))
+                                          .onFailure(cause -> handleInvocationFailure(request,
+                                                                                      cause,
+                                                                                      startTime,
+                                                                                      requestBytes));
     }
 
     /// Invoke a method on the target slice via its bridge.
@@ -299,17 +294,15 @@ class InvocationHandlerImpl implements InvocationHandler {
     /// HTTP forwarding between nodes uses the dedicated HttpForwardMessage mechanism
     /// (AppHttpServer), so this method delegates directly to the SliceBridge.
     private Promise<byte[]> invokeWithHttpRouting(InvokeRequest request, SliceBridge bridge) {
-        return bridge.invoke(request.method()
-                                    .name(),
+        return bridge.invoke(request.method().name(),
                              request.payload());
     }
 
     private void handleInvocationSuccess(InvokeRequest request, byte[] responseData, long startTime, int requestBytes) {
         var durationNs = System.nanoTime() - startTime;
         var responseBytes = responseData.length;
-        if (request.expectResponse()) {
-            sendSuccessResponse(request, responseData);
-        }
+        if ( request.expectResponse()) {
+        sendSuccessResponse(request, responseData);}
         log.debug("[requestId={}] Invocation completed in {}ms: {}.{}",
                   request.requestId(),
                   durationNs / 1_000_000,
@@ -332,15 +325,13 @@ class InvocationHandlerImpl implements InvocationHandler {
                                          long startTime,
                                          int requestBytes) {
         var durationNs = System.nanoTime() - startTime;
-        var errorType = cause.getClass()
-                             .getSimpleName();
+        var errorType = cause.getClass().getSimpleName();
         log.error("[requestId={}] Failed to complete invocation [{}]: {}",
                   request.requestId(),
                   request.correlationId(),
                   cause.message());
-        if (request.expectResponse()) {
-            sendErrorResponse(request, cause.message());
-        }
+        if ( request.expectResponse()) {
+        sendErrorResponse(request, cause.message());}
         metricsCollector.onPresent(mc -> recordFailureMetrics(mc, request, durationNs, requestBytes, errorType));
     }
 

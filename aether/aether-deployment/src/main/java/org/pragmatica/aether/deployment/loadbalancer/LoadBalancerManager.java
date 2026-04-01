@@ -38,19 +38,15 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
 /// Only active on the leader node — follows the same Dormant/Active pattern as ClusterDeploymentManager.
 @SuppressWarnings("JBCT-RET-01") // MessageReceiver callbacks — void required by messaging framework
 public interface LoadBalancerManager {
-    @MessageReceiver
-    void onLeaderChange(LeaderChange leaderChange);
+    @MessageReceiver void onLeaderChange(LeaderChange leaderChange);
 
-    @MessageReceiver
-    void onTopologyChange(TopologyChangeNotification topologyChange);
+    @MessageReceiver void onTopologyChange(TopologyChangeNotification topologyChange);
 
     /// Handle compound NodeRoutesKey put — extracts individual routes and processes each.
-    @MessageReceiver
-    void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
+    @MessageReceiver void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
 
     /// Handle compound NodeRoutesKey remove.
-    @MessageReceiver
-    void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
+    @MessageReceiver void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
 
     sealed interface LoadBalancerManagerState {
         default void onTopologyChange(TopologyChangeNotification topologyChange) {}
@@ -59,7 +55,7 @@ public interface LoadBalancerManager {
 
         default void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {}
 
-        record Dormant() implements LoadBalancerManagerState {}
+        record Dormant() implements LoadBalancerManagerState{}
 
         record Active(LoadBalancerProvider provider,
                       TopologyManager topologyManager,
@@ -69,56 +65,49 @@ public interface LoadBalancerManager {
                       Map<String, Set<NodeId>> routeNodes) implements LoadBalancerManagerState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
 
-            @Override
-            public void onTopologyChange(TopologyChangeNotification topologyChange) {
-                switch (topologyChange) {
+            @Override public void onTopologyChange(TopologyChangeNotification topologyChange) {
+                switch ( topologyChange) {
                     case NodeRemoved(NodeId removedNode, _) -> handleNodeDeparture(removedNode);
                     case NodeDown(NodeId downNode, _) -> handleNodeDeparture(downNode);
                     default -> {}
                 }
             }
 
-            @Override
-            public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
-                var key = valuePut.cause()
-                                  .key();
-                var value = valuePut.cause()
-                                    .value();
+            @Override public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
+                var key = valuePut.cause().key();
+                var value = valuePut.cause().value();
                 var nodeId = key.nodeId();
-                for (var route : value.routes()) {
-                    if (!route.isRoutable()) {
-                        continue;
-                    }
+                for ( var route : value.routes()) {
+                    if ( !route.isRoutable()) {
+                    continue;}
                     var routeIdentity = route.httpMethod() + ":" + route.pathPrefix();
-                    routeNodes.computeIfAbsent(routeIdentity,
-                                               _ -> new HashSet<>())
-                              .add(nodeId);
+                    routeNodes.computeIfAbsent(routeIdentity, _ -> new HashSet<>()).add(nodeId);
                     handleRouteChange(route.httpMethod(), route.pathPrefix(), routeNodes.get(routeIdentity));
                 }
             }
 
-            @Override
-            public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
-                var key = valueRemove.cause()
-                                     .key();
+            @Override public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
+                var key = valueRemove.cause().key();
                 var nodeId = key.nodeId();
                 // Remove this node from all routes
-                var affectedRoutes = routeNodes.entrySet()
-                                               .stream()
-                                               .filter(e -> e.getValue()
-                                                             .contains(nodeId))
-                                               .map(Map.Entry::getKey)
-                                               .toList();
-                for (var routeIdentity : affectedRoutes) {
+                var affectedRoutes = routeNodes.entrySet().stream()
+                                                        .filter(e -> e.getValue().contains(nodeId))
+                                                        .map(Map.Entry::getKey)
+                                                        .toList();
+                for ( var routeIdentity : affectedRoutes) {
                     var nodes = routeNodes.get(routeIdentity);
                     nodes.remove(nodeId);
                     var parts = routeIdentity.split(":", 2);
-                    if (nodes.isEmpty()) {
+                    if ( nodes.isEmpty()) {
                         routeNodes.remove(routeIdentity);
                         handleRouteRemoval(parts[0], parts[1]);
-                    } else {
-                        handleRouteChange(parts[0], parts[1], nodes);
-                    }
+                    } else
+
+
+
+
+                    {
+                    handleRouteChange(parts[0], parts[1], nodes);}
                 }
             }
 
@@ -138,8 +127,8 @@ public interface LoadBalancerManager {
                 replaceTrackedIps(allNodeIps);
                 log.info("Reconciling load balancer: {} routes, {} node IPs", routes.size(), allNodeIps.size());
                 loadBalancerState(allNodeIps, routes).onSuccess(state -> provider.reconcile(state)
-                                                                                 .onFailure(cause -> log.error("Load balancer reconciliation failed: {}",
-                                                                                                               cause.message())))
+                .onFailure(cause -> log.error("Load balancer reconciliation failed: {}",
+                                              cause.message())))
                                  .onFailure(cause -> log.error("Failed to build load balancer state: {}",
                                                                cause.message()));
             }
@@ -156,12 +145,11 @@ public interface LoadBalancerManager {
                 var parts = routeIdentity.split(":", 2);
                 var nodeIps = resolveNodeIps(nodeIds);
                 allNodeIps.addAll(nodeIps);
-                if (!nodeIps.isEmpty()) {
-                    routeChange(parts[0], parts[1], nodeIps).onSuccess(routes::add)
-                               .onFailure(cause -> log.warn("Failed to create route change for {}: {}",
-                                                            routeIdentity,
-                                                            cause.message()));
-                }
+                if ( !nodeIps.isEmpty()) {
+                routeChange(parts[0], parts[1], nodeIps).onSuccess(routes::add)
+                           .onFailure(cause -> log.warn("Failed to create route change for {}: {}",
+                                                        routeIdentity,
+                                                        cause.message()));}
             }
 
             private void handleRouteRemoval(String httpMethod, String pathPrefix) {
@@ -169,10 +157,10 @@ public interface LoadBalancerManager {
                 routeChange(httpMethod,
                             pathPrefix,
                             Set.of()).onSuccess(change -> provider.onRouteChanged(change)
-                                                                  .onFailure(cause -> log.error("Failed to remove load balancer route {} {}: {}",
-                                                                                                httpMethod,
-                                                                                                pathPrefix,
-                                                                                                cause.message())))
+                .onFailure(cause -> log.error("Failed to remove load balancer route {} {}: {}",
+                                              httpMethod,
+                                              pathPrefix,
+                                              cause.message())))
                            .onFailure(cause -> log.error("Failed to create route change for removal of {} {}: {}",
                                                          httpMethod,
                                                          pathPrefix,
@@ -187,10 +175,10 @@ public interface LoadBalancerManager {
                           pathPrefix,
                           nodeIps.size());
                 routeChange(httpMethod, pathPrefix, nodeIps).onSuccess(change -> provider.onRouteChanged(change)
-                                                                                         .onFailure(cause -> log.error("Failed to update load balancer route {} {}: {}",
-                                                                                                                       httpMethod,
-                                                                                                                       pathPrefix,
-                                                                                                                       cause.message())))
+                .onFailure(cause -> log.error("Failed to update load balancer route {} {}: {}",
+                                              httpMethod,
+                                              pathPrefix,
+                                              cause.message())))
                            .onFailure(cause -> log.error("Failed to create route change for {} {}: {}",
                                                          httpMethod,
                                                          pathPrefix,
@@ -198,42 +186,34 @@ public interface LoadBalancerManager {
             }
 
             private void handleNodeDeparture(NodeId departedNode) {
-                topologyManager.get(departedNode)
-                               .map(NodeInfo::address)
-                               .map(addr -> addr.host())
-                               .onPresent(this::removeNodeIp);
+                topologyManager.get(departedNode).map(NodeInfo::address)
+                                   .map(addr -> addr.host())
+                                   .onPresent(this::removeNodeIp);
             }
 
             private void removeNodeIp(String ip) {
-                if (trackedNodeIps.remove(ip)) {
+                if ( trackedNodeIps.remove(ip)) {
                     log.info("Node departed, removing IP {} from load balancer", ip);
                     provider.onNodeRemoved(ip)
-                            .onFailure(cause -> log.error("Failed to remove node {} from load balancer: {}",
-                                                          ip,
-                                                          cause.message()));
+                    .onFailure(cause -> log.error("Failed to remove node {} from load balancer: {}", ip, cause.message()));
                 }
             }
 
             private Set<String> resolveNodeIps(Set<NodeId> nodeIds) {
-                return nodeIds.stream()
-                              .flatMap(nodeId -> topologyManager.get(nodeId)
-                                                                .map(NodeInfo::address)
-                                                                .map(addr -> addr.host())
-                                                                .stream())
-                              .collect(Collectors.toSet());
+                return nodeIds.stream().flatMap(nodeId -> topologyManager.get(nodeId).map(NodeInfo::address)
+                                                                             .map(addr -> addr.host())
+                                                                             .stream())
+                                     .collect(Collectors.toSet());
             }
 
             private static void aggregateNodeRoutes(NodeRoutesKey key,
                                                     NodeRoutesValue value,
                                                     Map<String, Set<NodeId>> aggregated) {
-                for (var route : value.routes()) {
-                    if (!route.isRoutable()) {
-                        continue;
-                    }
+                for ( var route : value.routes()) {
+                    if ( !route.isRoutable()) {
+                    continue;}
                     var routeIdentity = route.httpMethod() + ":" + route.pathPrefix();
-                    aggregated.computeIfAbsent(routeIdentity,
-                                               _ -> new HashSet<>())
-                              .add(key.nodeId());
+                    aggregated.computeIfAbsent(routeIdentity, _ -> new HashSet<>()).add(key.nodeId());
                 }
             }
         }
@@ -244,17 +224,16 @@ public interface LoadBalancerManager {
                                                    TopologyManager topologyManager,
                                                    LoadBalancerProvider provider,
                                                    int appHttpPort) {
-        record loadBalancerManager(NodeId self,
-                                   KVStore<AetherKey, AetherValue> kvStore,
-                                   TopologyManager topologyManager,
-                                   LoadBalancerProvider provider,
-                                   int appHttpPort,
-                                   AtomicReference<LoadBalancerManagerState> state) implements LoadBalancerManager {
+        record loadBalancerManager( NodeId self,
+                                    KVStore<AetherKey, AetherValue> kvStore,
+                                    TopologyManager topologyManager,
+                                    LoadBalancerProvider provider,
+                                    int appHttpPort,
+                                    AtomicReference<LoadBalancerManagerState> state) implements LoadBalancerManager {
             private static final Logger log = LoggerFactory.getLogger(loadBalancerManager.class);
 
-            @Override
-            public void onLeaderChange(LeaderChange leaderChange) {
-                if (leaderChange.localNodeIsLeader()) {
+            @Override public void onLeaderChange(LeaderChange leaderChange) {
+                if ( leaderChange.localNodeIsLeader()) {
                     log.info("Node {} became leader, activating load balancer manager", self);
                     var activeState = new LoadBalancerManagerState.Active(provider,
                                                                           topologyManager,
@@ -264,28 +243,27 @@ public interface LoadBalancerManager {
                                                                           new ConcurrentHashMap<>());
                     state.set(activeState);
                     activeState.reconcile();
-                } else {
+                } else
+
+
+
+
+                {
                     log.info("Node {} is not leader, deactivating load balancer manager", self);
                     state.set(new LoadBalancerManagerState.Dormant());
                 }
             }
 
-            @Override
-            public void onTopologyChange(TopologyChangeNotification topologyChange) {
-                state.get()
-                     .onTopologyChange(topologyChange);
+            @Override public void onTopologyChange(TopologyChangeNotification topologyChange) {
+                state.get().onTopologyChange(topologyChange);
             }
 
-            @Override
-            public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
-                state.get()
-                     .onNodeRoutesPut(valuePut);
+            @Override public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
+                state.get().onNodeRoutesPut(valuePut);
             }
 
-            @Override
-            public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
-                state.get()
-                     .onNodeRoutesRemove(valueRemove);
+            @Override public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
+                state.get().onNodeRoutesRemove(valueRemove);
             }
         }
         return new loadBalancerManager(self,

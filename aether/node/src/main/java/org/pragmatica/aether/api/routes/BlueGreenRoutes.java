@@ -46,36 +46,35 @@ public final class BlueGreenRoutes implements RouteSource {
                                   Double maxErrorRate,
                                   Long maxLatencyMs,
                                   Long drainTimeoutMs,
-                                  String cleanupPolicy) {}
+                                  String cleanupPolicy){}
 
-    @Override
-    public Stream<Route<?>> routes() {
+    @Override public Stream<Route<?>> routes() {
         return Stream.of(// GET /api/blue-green-deployments - List all
-        Route.<BlueGreenListResponse> get("/api/blue-green-deployments")
+        Route.<BlueGreenListResponse>get("/api/blue-green-deployments")
              .toJson(this::buildBlueGreenListResponse),
         // GET /api/blue-green/{deploymentId} - Single deployment by ID
-        Route.<BlueGreenInfo> get("/api/blue-green")
+        Route.<BlueGreenInfo>get("/api/blue-green")
              .withPath(aString())
              .to(this::buildBlueGreenResponse)
              .asJson(),
         // POST /api/blue-green/deploy - Deploy green version
-        Route.<BlueGreenInfo> post("/api/blue-green/deploy")
+        Route.<BlueGreenInfo>post("/api/blue-green/deploy")
              .withBody(BlueGreenDeployRequest.class)
              .toJson(this::handleBlueGreenDeploy),
         // POST /api/blue-green/{deploymentId}/switch - Switch to green
-        Route.<BlueGreenInfo> post("/api/blue-green")
+        Route.<BlueGreenInfo>post("/api/blue-green")
              .withPath(aString(),
                        spacer("switch"))
              .to((deploymentId, _) -> handleBlueGreenSwitch(deploymentId))
              .asJson(),
         // POST /api/blue-green/{deploymentId}/switch-back - Switch back to blue
-        Route.<BlueGreenInfo> post("/api/blue-green")
+        Route.<BlueGreenInfo>post("/api/blue-green")
              .withPath(aString(),
                        spacer("switch-back"))
              .to((deploymentId, _) -> handleBlueGreenSwitchBack(deploymentId))
              .asJson(),
         // POST /api/blue-green/{deploymentId}/complete - Complete deployment
-        Route.<BlueGreenInfo> post("/api/blue-green")
+        Route.<BlueGreenInfo>post("/api/blue-green")
              .withPath(aString(),
                        spacer("complete"))
              .to((deploymentId, _) -> handleBlueGreenComplete(deploymentId))
@@ -84,14 +83,13 @@ public final class BlueGreenRoutes implements RouteSource {
 
     private Promise<BlueGreenInfo> handleBlueGreenDeploy(BlueGreenDeployRequest request) {
         return requireLeader().flatMap(_ -> parseDeployRequest(request))
-                            .flatMap(parsed -> nodeSupplier.get()
-                                                           .blueGreenDeploymentManager()
-                                                           .deployGreen(parsed.artifactBase(),
-                                                                        parsed.version(),
-                                                                        parsed.instances(),
-                                                                        parsed.thresholds(),
-                                                                        parsed.drainTimeoutMs(),
-                                                                        parsed.cleanupPolicy()))
+                            .flatMap(parsed -> nodeSupplier.get().blueGreenDeploymentManager()
+                                                               .deployGreen(parsed.artifactBase(),
+                                                                            parsed.version(),
+                                                                            parsed.instances(),
+                                                                            parsed.thresholds(),
+                                                                            parsed.drainTimeoutMs(),
+                                                                            parsed.cleanupPolicy()))
                             .map(this::toBlueGreenInfo)
                             .onSuccess(info -> AuditLog.deploymentStart("blue-green",
                                                                         info.deploymentId(),
@@ -101,9 +99,8 @@ public final class BlueGreenRoutes implements RouteSource {
     }
 
     private Promise<BlueGreenInfo> handleBlueGreenSwitch(String deploymentId) {
-        return requireLeader().flatMap(_ -> nodeSupplier.get()
-                                                        .blueGreenDeploymentManager()
-                                                        .switchToGreen(deploymentId))
+        return requireLeader().flatMap(_ -> nodeSupplier.get().blueGreenDeploymentManager()
+                                                            .switchToGreen(deploymentId))
                             .map(this::toBlueGreenInfo)
                             .onSuccess(info -> AuditLog.deploymentPromote("blue-green",
                                                                           info.deploymentId(),
@@ -112,9 +109,8 @@ public final class BlueGreenRoutes implements RouteSource {
     }
 
     private Promise<BlueGreenInfo> handleBlueGreenSwitchBack(String deploymentId) {
-        return requireLeader().flatMap(_ -> nodeSupplier.get()
-                                                        .blueGreenDeploymentManager()
-                                                        .switchBack(deploymentId))
+        return requireLeader().flatMap(_ -> nodeSupplier.get().blueGreenDeploymentManager()
+                                                            .switchBack(deploymentId))
                             .map(this::toBlueGreenInfo)
                             .onSuccess(info -> AuditLog.deploymentRollback("blue-green",
                                                                            info.deploymentId(),
@@ -123,9 +119,8 @@ public final class BlueGreenRoutes implements RouteSource {
     }
 
     private Promise<BlueGreenInfo> handleBlueGreenComplete(String deploymentId) {
-        return requireLeader().flatMap(_ -> nodeSupplier.get()
-                                                        .blueGreenDeploymentManager()
-                                                        .completeDeployment(deploymentId))
+        return requireLeader().flatMap(_ -> nodeSupplier.get().blueGreenDeploymentManager()
+                                                            .completeDeployment(deploymentId))
                             .map(this::toBlueGreenInfo)
                             .onSuccess(info -> AuditLog.deploymentComplete("blue-green",
                                                                            info.deploymentId(),
@@ -134,12 +129,10 @@ public final class BlueGreenRoutes implements RouteSource {
 
     private Promise<org.pragmatica.lang.Unit> requireLeader() {
         var node = nodeSupplier.get();
-        if (!node.isLeader()) {
-            var leaderInfo = node.leader()
-                                 .map(id -> " Current leader: " + id.id())
-                                 .or("");
-            return Causes.cause(NOT_LEADER.message() + leaderInfo)
-                         .promise();
+        if ( !node.isLeader()) {
+            var leaderInfo = node.leader().map(id -> " Current leader: " + id.id())
+                                        .or("");
+            return Causes.cause(NOT_LEADER.message() + leaderInfo).promise();
         }
         return Promise.unitPromise();
     }
@@ -149,67 +142,53 @@ public final class BlueGreenRoutes implements RouteSource {
                                           int instances,
                                           HealthThresholds thresholds,
                                           long drainTimeoutMs,
-                                          CleanupPolicy cleanupPolicy) {}
+                                          CleanupPolicy cleanupPolicy){}
 
     private Promise<ParsedBlueGreenRequest> parseDeployRequest(BlueGreenDeployRequest request) {
-        if (request.artifactBase() == null || request.version() == null) {
-            return MISSING_ARTIFACT_BASE_OR_VERSION.promise();
-        }
-        var instances = Option.option(request.instances())
-                              .or(1);
-        var maxErrorRate = Option.option(request.maxErrorRate())
-                                 .or(0.01);
-        var maxLatencyMs = Option.option(request.maxLatencyMs())
-                                 .or(500L);
-        var drainTimeoutMs = Option.option(request.drainTimeoutMs())
-                                   .or(30_000L);
+        if ( request.artifactBase() == null || request.version() == null) {
+        return MISSING_ARTIFACT_BASE_OR_VERSION.promise();}
+        var instances = Option.option(request.instances()).or(1);
+        var maxErrorRate = Option.option(request.maxErrorRate()).or(0.01);
+        var maxLatencyMs = Option.option(request.maxLatencyMs()).or(500L);
+        var drainTimeoutMs = Option.option(request.drainTimeoutMs()).or(30_000L);
         var cleanupPolicy = request.cleanupPolicy() != null
                             ? CleanupPolicy.valueOf(request.cleanupPolicy())
                             : CleanupPolicy.GRACE_PERIOD;
         return Result.all(ArtifactBase.artifactBase(request.artifactBase()),
                           Version.version(request.version()),
-                          HealthThresholds.healthThresholds(maxErrorRate, maxLatencyMs, false))
-                     .map((artifactBase, version, thresholds) -> new ParsedBlueGreenRequest(artifactBase,
-                                                                                            version,
-                                                                                            instances,
-                                                                                            thresholds,
-                                                                                            drainTimeoutMs,
-                                                                                            cleanupPolicy))
-                     .async();
+                          HealthThresholds.healthThresholds(maxErrorRate, maxLatencyMs, false)).map((artifactBase, version, thresholds) -> new ParsedBlueGreenRequest(artifactBase,
+                                                                                                                                                                      version,
+                                                                                                                                                                      instances,
+                                                                                                                                                                      thresholds,
+                                                                                                                                                                      drainTimeoutMs,
+                                                                                                                                                                      cleanupPolicy))
+                         .async();
     }
 
     private BlueGreenListResponse buildBlueGreenListResponse() {
-        var deployments = nodeSupplier.get()
-                                      .blueGreenDeploymentManager()
-                                      .allDeployments()
-                                      .stream()
-                                      .map(this::toBlueGreenInfo)
-                                      .toList();
+        var deployments = nodeSupplier.get().blueGreenDeploymentManager()
+                                          .allDeployments()
+                                          .stream()
+                                          .map(this::toBlueGreenInfo)
+                                          .toList();
         return new BlueGreenListResponse(deployments);
     }
 
     private Promise<BlueGreenInfo> buildBlueGreenResponse(String deploymentId) {
-        return nodeSupplier.get()
-                           .blueGreenDeploymentManager()
-                           .getDeployment(deploymentId)
-                           .map(this::toBlueGreenInfo)
-                           .async(DEPLOYMENT_NOT_FOUND);
+        return nodeSupplier.get().blueGreenDeploymentManager()
+                               .getDeployment(deploymentId)
+                               .map(this::toBlueGreenInfo)
+                               .async(DEPLOYMENT_NOT_FOUND);
     }
 
     private BlueGreenInfo toBlueGreenInfo(BlueGreenDeployment deployment) {
         return new BlueGreenInfo(deployment.deploymentId(),
-                                 deployment.artifactBase()
-                                           .asString(),
-                                 deployment.blueVersion()
-                                           .toString(),
-                                 deployment.greenVersion()
-                                           .toString(),
-                                 deployment.state()
-                                           .name(),
-                                 deployment.activeEnvironment()
-                                           .name(),
-                                 deployment.routing()
-                                           .toString(),
+                                 deployment.artifactBase().asString(),
+                                 deployment.blueVersion().toString(),
+                                 deployment.greenVersion().toString(),
+                                 deployment.state().name(),
+                                 deployment.activeEnvironment().name(),
+                                 deployment.routing().toString(),
                                  deployment.blueInstances(),
                                  deployment.greenInstances(),
                                  deployment.createdAt(),

@@ -20,14 +20,12 @@ public interface ComputeProvider {
 
     /// Restart an instance. Default implementation returns not-supported error.
     default Promise<Unit> restart(InstanceId id) {
-        return EnvironmentError.operationNotSupported("restart")
-                               .promise();
+        return EnvironmentError.operationNotSupported("restart").promise();
     }
 
     /// Apply tags to an instance. Default implementation returns not-supported error.
     default Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
-        return EnvironmentError.operationNotSupported("applyTags")
-                               .promise();
+        return EnvironmentError.operationNotSupported("applyTags").promise();
     }
 
     /// List instances filtered by tags. Default implementation delegates to listInstances()
@@ -47,16 +45,12 @@ public interface ComputeProvider {
     }
 
     private static List<InstanceInfo> filterByTags(List<InstanceInfo> instances, Map<String, String> tagFilter) {
-        return instances.stream()
-                        .filter(instance -> matchesTags(instance, tagFilter))
-                        .toList();
+        return instances.stream().filter(instance -> matchesTags(instance, tagFilter))
+                               .toList();
     }
 
     private static boolean matchesTags(InstanceInfo instance, Map<String, String> tagFilter) {
-        return tagFilter.entrySet()
-                        .stream()
-                        .allMatch(entry -> entry.getValue()
-                                                .equals(instance.tags()
-                                                                .get(entry.getKey())));
+        return tagFilter.entrySet().stream()
+                                 .allMatch(entry -> entry.getValue().equals(instance.tags().get(entry.getKey())));
     }
 }

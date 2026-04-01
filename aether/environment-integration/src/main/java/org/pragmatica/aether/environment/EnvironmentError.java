@@ -12,8 +12,7 @@ public sealed interface EnvironmentError extends Cause {
             return success(new ProvisionFailed(cause));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Node provisioning failed: " + cause.getMessage();
         }
     }
@@ -23,8 +22,7 @@ public sealed interface EnvironmentError extends Cause {
             return success(new TerminateFailed(instanceId, cause));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Instance termination failed for '" + instanceId.value() + "': " + cause.getMessage();
         }
     }
@@ -34,8 +32,7 @@ public sealed interface EnvironmentError extends Cause {
             return success(new InstanceNotFound(instanceId));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Instance not found: " + instanceId.value();
         }
     }
@@ -45,8 +42,7 @@ public sealed interface EnvironmentError extends Cause {
             return success(new ListInstancesFailed(cause));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Failed to list instances: " + cause.getMessage();
         }
     }
@@ -56,8 +52,7 @@ public sealed interface EnvironmentError extends Cause {
             return success(new SecretResolutionFailed(path, cause));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Secret resolution failed for '" + path + "': " + cause.getMessage();
         }
     }
@@ -67,8 +62,7 @@ public sealed interface EnvironmentError extends Cause {
             return success(new DiscoveryFailed(detail, cause));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Discovery failed: " + detail + " — " + cause.getMessage();
         }
     }
@@ -78,8 +72,7 @@ public sealed interface EnvironmentError extends Cause {
             return success(new OperationNotSupported(operation));
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "Operation not supported: " + operation;
         }
     }
@@ -89,44 +82,36 @@ public sealed interface EnvironmentError extends Cause {
             return success(new unused());
         }
 
-        @Override
-        public String message() {
+        @Override public String message() {
             return "";
         }
     }
 
     static EnvironmentError provisionFailed(Throwable cause) {
-        return ProvisionFailed.provisionFailed(cause)
-                              .unwrap();
+        return ProvisionFailed.provisionFailed(cause).unwrap();
     }
 
     static EnvironmentError terminateFailed(InstanceId instanceId, Throwable cause) {
-        return TerminateFailed.terminateFailed(instanceId, cause)
-                              .unwrap();
+        return TerminateFailed.terminateFailed(instanceId, cause).unwrap();
     }
 
     static EnvironmentError instanceNotFound(InstanceId instanceId) {
-        return InstanceNotFound.instanceNotFound(instanceId)
-                               .unwrap();
+        return InstanceNotFound.instanceNotFound(instanceId).unwrap();
     }
 
     static EnvironmentError listInstancesFailed(Throwable cause) {
-        return ListInstancesFailed.listInstancesFailed(cause)
-                                  .unwrap();
+        return ListInstancesFailed.listInstancesFailed(cause).unwrap();
     }
 
     static EnvironmentError secretResolutionFailed(String path, Throwable cause) {
-        return SecretResolutionFailed.secretResolutionFailed(path, cause)
-                                     .unwrap();
+        return SecretResolutionFailed.secretResolutionFailed(path, cause).unwrap();
     }
 
     static EnvironmentError discoveryFailed(String detail, Throwable cause) {
-        return DiscoveryFailed.discoveryFailed(detail, cause)
-                              .unwrap();
+        return DiscoveryFailed.discoveryFailed(detail, cause).unwrap();
     }
 
     static EnvironmentError operationNotSupported(String operation) {
-        return OperationNotSupported.operationNotSupported(operation)
-                                    .unwrap();
+        return OperationNotSupported.operationNotSupported(operation).unwrap();
     }
 }

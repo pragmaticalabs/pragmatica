@@ -116,8 +116,11 @@ curl -s http://localhost:5150/api/status
 # Nodes
 curl -s http://localhost:5150/api/nodes
 
-# Slices
+# Slices (cluster-wide view)
 curl -s http://localhost:5150/api/slices
+
+# Slices (per-node flat list)
+curl -s http://localhost:5150/api/node/slices
 
 # Health
 curl -s http://localhost:5150/api/health

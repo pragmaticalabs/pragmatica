@@ -1,9 +1,11 @@
 package org.pragmatica.aether.node;
 
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.config.RollbackConfig;
+import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.TimeoutsConfig;
@@ -30,6 +32,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.net.tcp.security.CertificateProvider;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -58,29 +61,33 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param workerConfig              Worker configuration for worker-role nodes (empty for core-only nodes)
 /// @param deploymentDefaults        Node-level deployment defaults (canary evaluation interval, default stages)
 /// @param managementHttpProtocol    HTTP protocol for management server (H1, H3, BOTH) — default H1
-public record AetherNodeConfig(TopologyConfig topology,
-                               ProtocolConfig protocol,
-                               SliceActionConfig sliceAction,
-                               SliceConfig sliceConfig,
-                               int managementPort,
-                               DHTConfig artifactRepo,
-                               DHTConfig cache,
-                               Option<TlsConfig> tls,
-                               TtmConfig ttm,
-                               RollbackConfig rollback,
-                               AppHttpConfig appHttp,
-                               ControllerConfig controllerConfig,
-                               Option<ConfigurationProvider> configProvider,
-                               Option<EnvironmentIntegration> environment,
-                               AutoHealConfig autoHeal,
-                               ObservabilityConfig observability,
-                               DeploymentAtomicity atomicity,
-                               boolean activationGated,
-                               TimeoutsConfig timeouts,
-                               Option<CertificateProvider> certificateProvider,
-                               Option<WorkerConfig> workerConfig,
-                               DeploymentDefaults deploymentDefaults,
-                               HttpProtocol managementHttpProtocol) {
+/// @param storageConfig            Named hierarchical storage instance configurations (empty map for defaults)
+/// @param backupConfig             Consensus state backup configuration (empty for in-memory only)
+public record AetherNodeConfig( TopologyConfig topology,
+                                ProtocolConfig protocol,
+                                SliceActionConfig sliceAction,
+                                SliceConfig sliceConfig,
+                                int managementPort,
+                                DHTConfig artifactRepo,
+                                DHTConfig cache,
+                                Option<TlsConfig> tls,
+                                TtmConfig ttm,
+                                RollbackConfig rollback,
+                                AppHttpConfig appHttp,
+                                ControllerConfig controllerConfig,
+                                Option<ConfigurationProvider> configProvider,
+                                Option<EnvironmentIntegration> environment,
+                                AutoHealConfig autoHeal,
+                                ObservabilityConfig observability,
+                                DeploymentAtomicity atomicity,
+                                boolean activationGated,
+                                TimeoutsConfig timeouts,
+                                Option<CertificateProvider> certificateProvider,
+                                Option<WorkerConfig> workerConfig,
+                                DeploymentDefaults deploymentDefaults,
+                                HttpProtocol managementHttpProtocol,
+                                Map<String, StorageConfig> storageConfig,
+                                Option<BackupConfig> backupConfig) {
     /// Node-level deployment defaults applied when a blueprint does not specify its own configuration.
     ///
     /// @param canaryEvaluationIntervalMs interval between canary health evaluations in milliseconds
@@ -203,7 +210,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     Option.empty(),
                                     Option.empty(),
                                     DeploymentDefaults.DEFAULT,
-                                    HttpProtocol.H1);
+                                    HttpProtocol.H1,
+                                    Map.of(),
+                                    Option.empty());
     }
 
     public static AetherNodeConfig testConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
@@ -235,7 +244,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     Option.empty(),
                                     Option.empty(),
                                     DeploymentDefaults.DEFAULT,
-                                    HttpProtocol.H1);
+                                    HttpProtocol.H1,
+                                    Map.of(),
+                                    Option.empty());
     }
 
     /// Create a test configuration for Forge simulation environment.
@@ -269,7 +280,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     Option.empty(),
                                     Option.empty(),
                                     DeploymentDefaults.DEFAULT,
-                                    HttpProtocol.H1);
+                                    HttpProtocol.H1,
+                                    Map.of(),
+                                    Option.empty());
     }
 
     /// Create a new configuration with TLS enabled for all components (HTTP and cluster).
@@ -308,7 +321,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     certificateProvider,
                                     workerConfig,
                                     deploymentDefaults,
-                                    managementHttpProtocol);
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig);
     }
 
     /// Create a new configuration with TTM enabled.
@@ -335,7 +350,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     certificateProvider,
                                     workerConfig,
                                     deploymentDefaults,
-                                    managementHttpProtocol);
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig);
     }
 
     /// Create a new configuration with rollback settings.
@@ -362,7 +379,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     certificateProvider,
                                     workerConfig,
                                     deploymentDefaults,
-                                    managementHttpProtocol);
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig);
     }
 
     /// Create a new configuration with different slice configuration.
@@ -389,7 +408,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     certificateProvider,
                                     workerConfig,
                                     deploymentDefaults,
-                                    managementHttpProtocol);
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig);
     }
 
     /// Create a new configuration with application HTTP server enabled.
@@ -416,7 +437,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     certificateProvider,
                                     workerConfig,
                                     deploymentDefaults,
-                                    managementHttpProtocol);
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig);
     }
 
     /// Create a new configuration with different controller configuration.
@@ -443,7 +466,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     certificateProvider,
                                     workerConfig,
                                     deploymentDefaults,
-                                    managementHttpProtocol);
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig);
     }
 
     /// Create a new configuration with a ConfigurationProvider for resource provisioning.
@@ -470,7 +495,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     certificateProvider,
                                     workerConfig,
                                     deploymentDefaults,
-                                    managementHttpProtocol);
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig);
     }
 
     /// Create a new configuration with an EnvironmentIntegration for compute/secrets.
@@ -497,7 +524,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     certificateProvider,
                                     workerConfig,
                                     deploymentDefaults,
-                                    managementHttpProtocol);
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig);
     }
 
     /// Create a new configuration with custom auto-heal settings.
@@ -524,7 +553,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     certificateProvider,
                                     workerConfig,
                                     deploymentDefaults,
-                                    managementHttpProtocol);
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig);
     }
 
     /// Create a new configuration with deployment atomicity mode.
@@ -551,7 +582,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     certificateProvider,
                                     workerConfig,
                                     deploymentDefaults,
-                                    managementHttpProtocol);
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig);
     }
 
     /// Create a new configuration with activation gating enabled or disabled.
@@ -578,7 +611,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     certificateProvider,
                                     workerConfig,
                                     deploymentDefaults,
-                                    managementHttpProtocol);
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig);
     }
 
     /// Create a new configuration with custom timeouts.
@@ -605,7 +640,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     certificateProvider,
                                     workerConfig,
                                     deploymentDefaults,
-                                    managementHttpProtocol);
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig);
     }
 
     /// Create a new configuration with a certificate provider for mTLS and gossip encryption.
@@ -632,7 +669,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     Option.some(provider),
                                     workerConfig,
                                     deploymentDefaults,
-                                    managementHttpProtocol);
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig);
     }
 
     /// Create a new configuration with worker configuration for worker-role nodes.
@@ -659,7 +698,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     certificateProvider,
                                     Option.some(config),
                                     deploymentDefaults,
-                                    managementHttpProtocol);
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig);
     }
 
     /// Create a new configuration with custom deployment defaults.
@@ -686,7 +727,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     certificateProvider,
                                     workerConfig,
                                     defaults,
-                                    managementHttpProtocol);
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig);
     }
 
     /// Create a new configuration with management HTTP protocol.
@@ -713,7 +756,67 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     certificateProvider,
                                     workerConfig,
                                     deploymentDefaults,
-                                    protocol);
+                                    protocol,
+                                    storageConfig,
+                                    backupConfig);
+    }
+
+    /// Create a new configuration with named hierarchical storage instances.
+    public AetherNodeConfig withStorage(Map<String, StorageConfig> newStorageConfig) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    cache,
+                                    tls,
+                                    ttm,
+                                    rollback,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    environment,
+                                    autoHeal,
+                                    observability,
+                                    atomicity,
+                                    activationGated,
+                                    timeouts,
+                                    certificateProvider,
+                                    workerConfig,
+                                    deploymentDefaults,
+                                    managementHttpProtocol,
+                                    newStorageConfig,
+                                    backupConfig);
+    }
+
+    /// Create a new configuration with backup configuration for consensus state persistence.
+    public AetherNodeConfig withBackupConfig(BackupConfig backup) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    cache,
+                                    tls,
+                                    ttm,
+                                    rollback,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    environment,
+                                    autoHeal,
+                                    observability,
+                                    atomicity,
+                                    activationGated,
+                                    timeouts,
+                                    certificateProvider,
+                                    workerConfig,
+                                    deploymentDefaults,
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    Option.some(backup));
     }
 
     public NodeId self() {
@@ -724,15 +827,10 @@ public record AetherNodeConfig(TopologyConfig topology,
     ///
     /// @return success if valid, failure with cause otherwise
     public Result<Unit> validate() {
-        if (managementPort < 0 || managementPort > 65535) {
-            return Causes.cause("Invalid management port: " + managementPort)
-                         .result();
-        }
-        if (managementPort != MANAGEMENT_DISABLED && topology.coreNodes()
-                                                             .isEmpty()) {
-            return Causes.cause("At least one core node required when management is enabled")
-                         .result();
-        }
+        if ( managementPort < 0 || managementPort > 65535) {
+        return Causes.cause("Invalid management port: " + managementPort).result();}
+        if ( managementPort != MANAGEMENT_DISABLED && topology.coreNodes().isEmpty()) {
+        return Causes.cause("At least one core node required when management is enabled").result();}
         return Result.unitResult();
     }
 }

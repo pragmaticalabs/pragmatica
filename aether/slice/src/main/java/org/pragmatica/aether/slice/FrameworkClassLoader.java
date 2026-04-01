@@ -70,9 +70,8 @@ public class FrameworkClassLoader extends URLClassLoader {
     /// @param frameworkJars URLs to framework JAR files
     public FrameworkClassLoader(URL[] frameworkJars) {
         super(frameworkJars, ClassLoader.getPlatformClassLoader());
-        for (URL jar : frameworkJars) {
-            loadedJars.add(extractJarName(jar));
-        }
+        for ( URL jar : frameworkJars) {
+        loadedJars.add(extractJarName(jar));}
         log.info("FrameworkClassLoader created with {} JARs: {}", frameworkJars.length, loadedJars);
     }
 
@@ -81,21 +80,23 @@ public class FrameworkClassLoader extends URLClassLoader {
     /// @param frameworkDir Path to directory containing framework JARs
     /// @return Result containing FrameworkClassLoader, or error if directory invalid
     public static Result<FrameworkClassLoader> fromDirectory(Path frameworkDir) {
-        if (!Files.isDirectory(frameworkDir)) {
-            return cause("Framework directory does not exist: " + frameworkDir).result();
-        }
+        if ( !Files.isDirectory(frameworkDir)) {
+        return cause("Framework directory does not exist: " + frameworkDir).result();}
         try (Stream<Path> jarStream = Files.list(frameworkDir)) {
-            var jarUrls = jarStream.filter(path -> path.toString()
-                                                       .endsWith(".jar"))
-                                   .map(FrameworkClassLoader::toUrl)
-                                   .filter(Result::isSuccess)
-                                   .map(Result::unwrap)
-                                   .toArray(URL[]::new);
-            if (jarUrls.length == 0) {
-                return cause("No JAR files found in framework directory: " + frameworkDir).result();
-            }
+            var jarUrls = jarStream.filter(path -> path.toString().endsWith(".jar")).map(FrameworkClassLoader::toUrl)
+                                          .filter(Result::isSuccess)
+                                          .map(Result::unwrap)
+                                          .toArray(URL[]::new);
+            if ( jarUrls.length == 0) {
+            return cause("No JAR files found in framework directory: " + frameworkDir).result();}
             return success(new FrameworkClassLoader(jarUrls));
-        } catch (IOException e) {
+        }
+
+
+
+
+
+        catch (IOException e) {
             return cause("Failed to scan framework directory: " + e.getMessage()).result();
         }
     }
@@ -107,17 +108,16 @@ public class FrameworkClassLoader extends URLClassLoader {
     public static Result<FrameworkClassLoader> fromJars(Path... jarPaths) {
         var urls = new ArrayList<URL>();
         var errors = new ArrayList<String>();
-        for (var jarPath : jarPaths) {
-            if (!Files.exists(jarPath)) {
+        for ( var jarPath : jarPaths) {
+            if ( !Files.exists(jarPath)) {
                 errors.add("JAR not found: " + jarPath);
                 continue;
             }
             toUrl(jarPath).onSuccess(urls::add)
                  .onFailure(cause -> errors.add(cause.message()));
         }
-        if (!errors.isEmpty()) {
-            return cause("Failed to load framework JARs: " + String.join(", ", errors)).result();
-        }
+        if ( !errors.isEmpty()) {
+        return cause("Failed to load framework JARs: " + String.join(", ", errors)).result();}
         return success(new FrameworkClassLoader(urls.toArray(URL[]::new)));
     }
 
@@ -130,8 +130,7 @@ public class FrameworkClassLoader extends URLClassLoader {
 
     /// JDK override — kept as void/throws per URLClassLoader contract.
     @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
-    @Override
-    public void close() throws IOException {
+    @Override public void close() throws IOException {
         log.info("Closing FrameworkClassLoader with {} JARs", loadedJars.size());
         loadedJars.clear();
         super.close();
@@ -139,8 +138,7 @@ public class FrameworkClassLoader extends URLClassLoader {
 
     private static Result<URL> toUrl(Path path) {
         return Result.lift(Causes::fromThrowable,
-                           () -> path.toUri()
-                                     .toURL());
+                           () -> path.toUri().toURL());
     }
 
     private static String extractJarName(URL url) {
