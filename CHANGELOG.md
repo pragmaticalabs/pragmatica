@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-alpha] - Unreleased
 
+### Added
+- **PostgreSQL persistence adapter** — `@PgSql` type-safe persistence with compile-time SQL validation. Annotation processor validates `@Query` SQL and generates CRUD from method names (Spring Data conventions: `findBy*`, `save`, `insert`, `deleteBy*`, `countBy*`, `existsBy*`). Named parameter rewriting (`:param` → `$N`), query narrowing (`SELECT *` → explicit columns), record expansion for INSERT/UPDATE
+- **PostgreSQL tooling (aether-pg-tools)** — SQL parser (PEG-based, ~500 rules), event-sourced schema model (25 event types), 41-rule migration linter (lock hazards, type design, schema design, migration practice), Java record/enum code generation from schema
+- **pg-maven-plugin** — standalone Maven plugin for generating Java records/enums from PostgreSQL migration SQL files (`mvn pg:generate`)
+- **`PgSqlConnector`** — PostgreSQL-specific marker interface extending `SqlConnector`, async-only factory routing (no JDBC/R2DBC fallback)
+- **`@PgSql` qualifier** — resource qualifier annotation for persistence interfaces and slice factory parameters
+- **`jbct add-persistence`** — CLI command to add PostgreSQL persistence support to existing projects
+- **`--with-persistence` flag** — option on `jbct init` to scaffold persistence from the start
+- **pg-showcase example** — demonstrates all persistence patterns: `@Query` with joins, CRUD auto-generation, record expansion, multi-table, projections
+- **PostgreSQL persistence guide** — comprehensive developer documentation with setup, examples, validation rules
+
+### Changed
+- **url-shortener examples** — migrated from raw `@Sql`/`SqlConnector` to typed `@PgSql` persistence interfaces
+- **Resource reference docs** — added `PgSqlConnector` section with link to persistence guide
+
 ## [0.25.0] - 2026-04-01
 
 ### Added
