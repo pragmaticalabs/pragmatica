@@ -1,0 +1,753 @@
+# ============================================================
+# PostgreSQL PEG Grammar
+# ============================================================
+
+# === Top Level ===
+Input           <- Statement (';' Statement)* ';'?
+Statement       <- DdlStatement / DmlStatement / PassthroughStatement / EmptyStatement
+EmptyStatement  <- &';' / !.
+
+# === DDL Dispatch ===
+DdlStatement    <- CreateStatement / AlterStatement / DropStatement / CommentStatement / GrantStatement / RevokeStatement
+
+CreateStatement <- CreateKW ^ (CreateTableStmt / CreateIndexStmt / CreateSequenceStmt / CreateTypeStmt / CreateSchemaStmt / CreateViewStmt / CreateMatViewStmt / CreateExtensionStmt / CreateFunctionPassthrough / CreateTriggerPassthrough)
+
+AlterStatement  <- AlterKW ^ (AlterTableStmt / AlterIndexStmt / AlterSequenceStmt / AlterTypeStmt / AlterSchemaStmt / AlterViewStmt / AlterDefaultPrivilegesPassthrough)
+
+DropStatement   <- DropKW ^ (DropTableStmt / DropIndexStmt / DropSequenceStmt / DropTypeStmt / DropSchemaStmt / DropViewStmt / DropMatViewStmt / DropExtensionStmt / DropFunctionPassthrough / DropTriggerPassthrough)
+
+# === DML Dispatch ===
+DmlStatement    <- SelectStmt / InsertStmt / UpdateStmt / DeleteStmt
+
+# ============================================================
+# DDL: CREATE TABLE
+# ============================================================
+CreateTableStmt <- TempKW? UnloggedKW? TableKW ^ IfNotExists? QualifiedName '(' TableElementList ')' TableOptions?
+
+IfNotExists     <- IfKW NotKW ExistsKW
+IfExists        <- IfKW ExistsKW
+
+TableElementList <- TableElement (',' TableElement)*
+TableElement     <- TableConstraint / ColumnDef
+
+ColumnDef       <- ColId DataType ColConstraint*
+ColConstraint   <- ConstraintName? ColConstraintElem
+ColConstraintElem <- NotNullConstraint / NullConstraint / UniqueColConstraint / PrimaryKeyColConstraint / CheckColConstraint / DefaultClause / ReferencesClause / GeneratedClause / IdentityClause / CollateClause
+
+NotNullConstraint       <- NotKW NullKW
+NullConstraint          <- NullKW
+UniqueColConstraint     <- UniqueKW
+PrimaryKeyColConstraint <- PrimaryKW KeyKW
+CheckColConstraint      <- CheckKW ^ '(' Expr ')'
+DefaultClause           <- DefaultKW ^ Expr
+CollateClause           <- CollateKW ^ QualifiedName
+
+ReferencesClause <- ReferencesKW ^ QualifiedName ('(' ColumnList ')')? FkActions?
+
+GeneratedClause <- GeneratedKW AlwaysKW AsKW ^ ('(' Expr ')' StoredKW / IdentitySpec)
+
+IdentityClause  <- GeneratedKW (AlwaysKW / ByKW DefaultKW) AsKW IdentityKW SequenceOptions?
+
+IdentitySpec    <- IdentityKW SequenceOptions?
+
+# Table constraints
+TableConstraint     <- ConstraintName? TableConstraintElem
+ConstraintName      <- ConstraintKW ^ ColId
+TableConstraintElem <- PrimaryKeyTblConstraint / UniqueTblConstraint / CheckTblConstraint / ForeignKeyTblConstraint / ExcludeTblConstraint
+
+PrimaryKeyTblConstraint <- PrimaryKW KeyKW ^ '(' ColumnList ')' IndexOptions?
+UniqueTblConstraint     <- UniqueKW ^ NullsDistinct? '(' ColumnList ')' IndexOptions?
+CheckTblConstraint      <- CheckKW ^ '(' Expr ')' NoInheritClause?
+NoInheritClause         <- NoKW InheritKW
+
+ForeignKeyTblConstraint <- ForeignKW KeyKW ^ '(' ColumnList ')' ReferencesKW QualifiedName ('(' ColumnList ')')? FkActions? FkDeferrable?
+
+FkActions       <- FkAction+
+FkAction        <- OnKW (UpdateKW / DeleteKW) FkActionType
+FkActionType    <- CascadeKW / RestrictKW / SetKW NullKW / SetKW DefaultKW / NoKW ActionKW
+FkDeferrable    <- NotKW? DeferrableKW (InitiallyKW (DeferredKW / ImmediateKW))?
+
+ExcludeTblConstraint <- ExcludeKW ^ UsingClause? '(' ExcludeElementList ')' WhereClause?
+ExcludeElementList   <- ExcludeElement (',' ExcludeElement)*
+ExcludeElement       <- IndexElem WithKW Operator
+
+NullsDistinct   <- NullsKW NotKW? DistinctKW
+
+IndexOptions    <- IncludeClause? WithStorageParams? UsingIndexTblspace?
+IncludeClause   <- IncludeKW '(' ColumnList ')'
+WithStorageParams <- WithKW '(' StorageParamList ')'
+StorageParamList  <- StorageParam (',' StorageParam)*
+StorageParam      <- ColId ('=' SignedNumericLiteral)?
+UsingIndexTblspace <- UsingKW IndexKW TablespaceKW ColId
+
+# Table options
+TableOptions    <- PartitionByClause? InheritsClause? TablespaceClause?
+PartitionByClause <- PartitionKW ByKW ^ PartitionStrategy '(' PartitionKeyList ')'
+PartitionStrategy <- RangeKW / ListKW / HashKW
+PartitionKeyList  <- PartitionKey (',' PartitionKey)*
+PartitionKey      <- Expr / '(' Expr ')'
+InheritsClause    <- InheritsKW '(' QualifiedNameList ')'
+TablespaceClause  <- TablespaceKW ColId
+
+ColumnList      <- ColId (',' ColId)*
+QualifiedNameList <- QualifiedName (',' QualifiedName)*
+
+# ============================================================
+# DDL: ALTER TABLE
+# ============================================================
+AlterTableStmt  <- TableKW ^ IfExists? OnlyKW? QualifiedName (AlterTableActions / RenameAction / SetSchemaAction / AttachPartition / DetachPartition)
+
+AlterTableActions <- AlterTableAction (',' AlterTableAction)*
+AlterTableAction  <- AddColumnAction / DropColumnAction / AlterColumnAction / AddConstraintAction / DropConstraintAction / ValidateConstraintAction / RenameConstraintAction / AlterOwnerAction / SetTablespaceAction
+
+AddColumnAction  <- AddKW ColumnKW? IfNotExists? ColumnDef
+DropColumnAction <- DropKW ColumnKW? IfExists? ColId DropBehavior?
+DropBehavior     <- CascadeKW / RestrictKW
+
+AlterColumnAction <- AlterKW ColumnKW? ColId AlterColumnCmd
+AlterColumnCmd    <- SetDataTypeCmd / SetDefaultCmd / DropDefaultCmd / SetNotNullCmd / DropNotNullCmd / SetStatisticsCmd / SetStorageCmd / AddIdentityCmd / DropIdentityCmd
+
+SetDataTypeCmd   <- SetKW? DataKW? TypeKW ^ DataType (UsingKW Expr)?
+SetDefaultCmd    <- SetKW DefaultKW ^ Expr
+DropDefaultCmd   <- DropKW DefaultKW
+SetNotNullCmd    <- SetKW NotKW NullKW
+DropNotNullCmd   <- DropKW NotKW NullKW
+SetStatisticsCmd <- SetKW StatisticsKW SignedNumericLiteral
+SetStorageCmd    <- SetKW StorageKW ColId
+AddIdentityCmd   <- AddKW GeneratedKW (AlwaysKW / ByKW DefaultKW) AsKW IdentityKW SequenceOptions?
+DropIdentityCmd  <- DropKW IdentityKW IfExists?
+
+AddConstraintAction   <- AddKW ^ TableConstraint NotValidClause?
+DropConstraintAction  <- DropKW ConstraintKW ^ IfExists? ColId DropBehavior?
+ValidateConstraintAction <- ValidateKW ConstraintKW ^ ColId
+RenameConstraintAction   <- RenameKW ConstraintKW ^ ColId ToKW ColId
+
+NotValidClause  <- NotKW ValidKW
+AlterOwnerAction <- OwnerKW ToKW ColId
+
+RenameAction    <- RenameKW (ColumnKW ColId ToKW ColId / ToKW ColId)
+SetSchemaAction <- SetKW SchemaKW ^ ColId
+SetTablespaceAction <- SetKW TablespaceKW ^ ColId
+
+AttachPartition <- AttachKW PartitionKW ^ QualifiedName ForValuesClause
+DetachPartition <- DetachKW PartitionKW ^ QualifiedName (ConcurrentlyKW / FinalizeKW)?
+
+ForValuesClause <- ForKW ValuesKW (InKW '(' ExprList ')' / FromKW '(' ExprList ')' ToKW '(' ExprList ')' / WithKW '(' ExprList ')' / DefaultKW)
+
+OnlyKW          <- < 'ONLY'i ![a-zA-Z0-9_$] >
+
+# ============================================================
+# DDL: DROP TABLE
+# ============================================================
+DropTableStmt   <- TableKW ^ IfExists? QualifiedNameList DropBehavior?
+
+# ============================================================
+# DDL: CREATE/ALTER/DROP INDEX
+# ============================================================
+CreateIndexStmt <- UniqueKW? IndexKW ^ ConcurrentlyKW? IfNotExists? (ColId OnKW / OnKW) OnlyKW? QualifiedName UsingClause? '(' IndexElemList ')' IncludeClause? NullsDistinct? WithStorageParams? TablespaceClause? WhereClause?
+
+UsingClause     <- UsingKW ^ IndexMethod
+IndexMethod     <- < ('btree'i / 'hash'i / 'gin'i / 'gist'i / 'brin'i / 'spgist'i) ![a-zA-Z0-9_$] >
+IndexElemList   <- IndexElem (',' IndexElem)*
+IndexElem       <- (FuncCall / ColId / '(' Expr ')') OpClass? OrderSpec? NullsOrder?
+OpClass         <- ColId ('(' StorageParamList ')')?
+
+OrderSpec       <- AscKW / DescKW
+NullsOrder      <- NullsKW (FirstKW / LastKW)
+ConcurrentlyKW  <- < 'CONCURRENTLY'i ![a-zA-Z0-9_$] >
+
+AlterIndexStmt  <- IndexKW ^ IfExists? QualifiedName (RenameKW ToKW ColId / SetKW TablespaceKW ColId / AlterColumnAction)
+
+DropIndexStmt   <- IndexKW ^ ConcurrentlyKW? IfExists? QualifiedNameList DropBehavior?
+
+# ============================================================
+# DDL: CREATE/ALTER/DROP SEQUENCE
+# ============================================================
+CreateSequenceStmt <- SequenceKW ^ IfNotExists? QualifiedName SequenceOptions?
+AlterSequenceStmt  <- SequenceKW ^ IfExists? QualifiedName SequenceOptions
+DropSequenceStmt   <- SequenceKW ^ IfExists? QualifiedNameList DropBehavior?
+
+SequenceOptions <- SequenceOption+
+SequenceOption  <- AsKW DataType / IncrementKW ByKW? SignedNumericLiteral / (MinvalueKW / MaxvalueKW) SignedNumericLiteral / NoKW (MinvalueKW / MaxvalueKW / CycleKW) / StartKW WithKW? SignedNumericLiteral / RestartKW (WithKW? SignedNumericLiteral)? / CacheKW SignedNumericLiteral / CycleKW / OwnedKW ByKW (QualifiedName / NoneKW)
+
+# ============================================================
+# DDL: CREATE/ALTER/DROP TYPE
+# ============================================================
+CreateTypeStmt  <- TypeKW ^ QualifiedName (AsKW EnumKW '(' EnumLabelList ')' / AsKW '(' CompositeFieldList ')' / AsKW RangeKW '(' RangeOptionList ')' / AsKW DataType DomainConstraint*)?
+
+EnumLabelList   <- StringLiteral (',' StringLiteral)*
+CompositeFieldList <- CompositeField (',' CompositeField)*
+CompositeField  <- ColId DataType CollateClause?
+RangeOptionList <- RangeOption (',' RangeOption)*
+RangeOption     <- ColId '=' (ColId / StringLiteral / FuncCall)
+DomainConstraint <- ConstraintName? (CheckColConstraint / NotNullConstraint / NullConstraint / DefaultClause / CollateClause)
+
+AlterTypeStmt   <- TypeKW ^ QualifiedName (AddKW ValueKW IfNotExists? StringLiteral (BeforeKW StringLiteral / AfterKW StringLiteral)? / RenameKW ValueKW StringLiteral ToKW StringLiteral / RenameKW ToKW ColId / SetKW SchemaKW ColId / AddKW AttributeKW ColId DataType CollateClause? DropBehavior? / DropKW AttributeKW IfExists? ColId DropBehavior? / AlterKW AttributeKW ColId SetDataTypeCmd)
+
+DropTypeStmt    <- TypeKW ^ IfExists? QualifiedNameList DropBehavior?
+
+# ============================================================
+# DDL: CREATE/ALTER/DROP SCHEMA
+# ============================================================
+CreateSchemaStmt <- SchemaKW ^ IfNotExists? (AuthorizationKW ColId / ColId (AuthorizationKW ColId)?)
+
+AlterSchemaStmt <- SchemaKW ^ ColId (RenameKW ToKW ColId / OwnerKW ToKW ColId)
+
+DropSchemaStmt  <- SchemaKW ^ IfExists? ColId (',' ColId)* DropBehavior?
+
+# ============================================================
+# DDL: CREATE/ALTER/DROP VIEW
+# ============================================================
+CreateViewStmt  <- (OrKW ReplaceKW)? TempKW? RecursiveKW? ViewKW ^ QualifiedName ('(' ColumnList ')')? AsKW SelectStmt CheckOptionClause?
+
+CheckOptionClause <- WithKW (CascadedKW / LocalKW)? CheckKW OptionKW
+
+CreateMatViewStmt <- MaterializedKW ViewKW ^ IfNotExists? QualifiedName ('(' ColumnList ')')? AsKW SelectStmt (WithKW NoKW? DataKW)?
+
+AlterViewStmt   <- MaterializedKW? ViewKW ^ IfExists? QualifiedName (RenameKW ToKW ColId / SetKW SchemaKW ColId / OwnerKW ToKW ColId)
+
+DropViewStmt    <- ViewKW ^ IfExists? QualifiedNameList DropBehavior?
+DropMatViewStmt <- MaterializedKW ViewKW ^ IfExists? QualifiedNameList DropBehavior?
+
+# ============================================================
+# DDL: CREATE EXTENSION
+# ============================================================
+CreateExtensionStmt <- ExtensionKW ^ IfNotExists? ColId ExtensionOptions?
+ExtensionOptions    <- ExtensionOption+
+ExtensionOption     <- WithKW? (SchemaKW ColId / VersionKW (StringLiteral / ColId) / FromKW (StringLiteral / ColId) / CascadeKW)
+
+DropExtensionStmt   <- ExtensionKW ^ IfExists? ColId (',' ColId)* DropBehavior?
+
+# ============================================================
+# DDL: COMMENT ON
+# ============================================================
+CommentStatement <- CommentKW OnKW ^ CommentTarget IsKW (StringLiteral / NullKW)
+CommentTarget    <- TableKW QualifiedName / ColumnKW QualifiedName / IndexKW QualifiedName / SchemaKW ColId / TypeKW QualifiedName / ExtensionKW ColId / SequenceKW QualifiedName / ViewKW QualifiedName / MaterializedKW ViewKW QualifiedName / ConstraintKW ColId OnKW QualifiedName / FunctionKW QualifiedName '(' FuncArgTypes? ')'
+
+FuncArgTypes    <- FuncArgType (',' FuncArgType)*
+FuncArgType     <- (InKW / OutKW / InoutKW / VariadicKW)? DataType
+
+# ============================================================
+# DDL: GRANT / REVOKE
+# ============================================================
+GrantStatement  <- GrantKW ^ PrivilegeList OnKW GrantTarget ToKW GranteeList (WithKW GrantKW OptionKW)?
+RevokeStatement <- RevokeKW ^ (GrantKW OptionKW ForKW)? PrivilegeList OnKW GrantTarget FromKW GranteeList DropBehavior?
+
+PrivilegeList   <- AllKW PrivilegesKW? / Privilege (',' Privilege)*
+Privilege       <- (SelectKW / InsertKW / UpdateKW / DeleteKW / TruncateKW / ReferencesKW / TriggerKW / CreateKW / ConnectKW / TemporaryKW / ExecuteKW / UsageKW) ('(' ColumnList ')')?
+GrantTarget     <- AllKW (TablesKW / SequencesKW / FunctionsKW / SchemasKW) InKW SchemaKW ColId / SchemaKW ColId (',' ColId)* / SequenceKW QualifiedNameList / TypeKW QualifiedNameList / TableKW? QualifiedNameList
+GranteeList     <- Grantee (',' Grantee)*
+Grantee         <- PublicKW / GroupKW? ColId
+
+# ============================================================
+# DDL: Passthrough (functions, triggers, default privileges)
+# ============================================================
+AlterDefaultPrivilegesPassthrough <- DefaultKW PrivilegesKW RestOfStatement
+CreateFunctionPassthrough <- (OrKW ReplaceKW)? (FunctionKW / ProcedureKW) RestOfStatement
+CreateTriggerPassthrough  <- ConstraintKW? TriggerKW RestOfStatement
+DropFunctionPassthrough   <- (FunctionKW / ProcedureKW / AggregateKW) RestOfStatement
+DropTriggerPassthrough    <- TriggerKW RestOfStatement
+
+# ============================================================
+# DML: SELECT
+# ============================================================
+SelectStmt      <- WithClause? SelectCore SetOp* OrderByClause? LimitClause? OffsetClause? FetchClause? / '(' SelectStmt ')'
+
+SelectCore      <- SelectKW ^ SetQuantifier? TargetList IntoClause? FromClause? WhereClause? GroupByClause? HavingClause? WindowClause? / ValuesClause
+
+SetQuantifier   <- AllKW / DistinctKW (OnKW '(' ExprList ')')?
+TargetList      <- TargetElem (',' TargetElem)*
+TargetElem      <- StarExpr / Expr (AsKW ColLabel / !ClauseKeyword ColLabel)?
+StarExpr        <- QualifiedName '.' '*' / '*'
+IntoClause      <- IntoKW (TempKW / TemporaryKW / UnloggedKW)? TableKW? QualifiedName
+
+# FROM clause
+FromClause      <- FromKW ^ FromList
+FromList        <- TableRef (',' TableRef)*
+TableRef        <- TableRefBase JoinClause*
+TableRefBase    <- LateralRef / SubqueryRef / FuncTableRef / BaseTableRef / '(' JoinExpr ')'
+BaseTableRef    <- QualifiedName '*'? Alias? TablesampleClause?
+SubqueryRef     <- LateralKW? '(' SelectStmt ')' Alias
+LateralRef      <- LateralKW (FuncTableRef / '(' SelectStmt ')') Alias?
+FuncTableRef    <- FuncCall WithOrdinality? Alias?
+WithOrdinality  <- WithKW OrdinalityKW
+Alias           <- AsKW ColId ('(' ColumnList ')')? / !ClauseKeyword ColId ('(' ColumnList ')')?
+TablesampleClause <- TablesampleKW FuncCall
+
+JoinExpr        <- TableRef JoinClause+
+JoinClause      <- NaturalKW? JoinType? JoinKW ^ TableRefBase JoinQual? / CrossKW JoinKW ^ TableRefBase / NaturalKW JoinType? JoinKW ^ TableRefBase
+JoinType        <- (LeftKW / RightKW / FullKW) OuterKW? / InnerKW
+JoinQual        <- OnKW Expr / UsingKW '(' ColumnList ')'
+
+# WHERE, GROUP BY, HAVING, WINDOW
+WhereClause     <- WhereKW ^ Expr
+GroupByClause   <- GroupKW ByKW ^ (AllKW / GroupByList)
+GroupByList     <- GroupByElem (',' GroupByElem)*
+GroupByElem     <- RollupKW '(' ExprList ')' / CubeKW '(' ExprList ')' / GroupingSetsKW '(' GroupByList ')' / '(' ')' / Expr
+HavingClause    <- HavingKW ^ Expr
+WindowClause    <- WindowKW ^ WindowDefList
+WindowDefList   <- WindowDef (',' WindowDef)*
+WindowDef       <- ColId AsKW '(' WindowSpec ')'
+WindowSpec      <- WindowName? PartitionClause? OrderByClause? FrameClause?
+WindowName      <- !PartitionKW !OrderKW !RowsKW !RangeKW !GroupsKW ColId
+PartitionClause <- PartitionKW ByKW ^ ExprList
+FrameClause     <- FrameType FrameExtent FrameExclusion?
+FrameType       <- RowsKW / RangeKW / GroupsKW
+FrameExtent     <- BetweenKW FrameBound AndKW FrameBound / FrameBound
+FrameBound      <- UnboundedKW (PrecedingKW / FollowingKW) / CurrentKW RowKW / Expr (PrecedingKW / FollowingKW)
+FrameExclusion  <- ExcludeKW (CurrentKW RowKW / GroupKW / TiesKW / NoKW OthersKW)
+
+# WITH clause (CTE)
+WithClause      <- WithKW ^ RecursiveKW? CteList
+CteList         <- CteDef (',' CteDef)*
+CteDef          <- ColId ('(' ColumnList ')')? AsKW (NotKW? MaterializedKW)? '(' DmlStatement ')'
+
+# Set operations
+SetOp           <- (UnionKW / IntersectKW / ExceptKW) (AllKW / DistinctKW)? SelectCore
+
+# ORDER BY, LIMIT, OFFSET, FETCH
+OrderByClause   <- OrderKW ByKW ^ OrderByList
+OrderByList     <- OrderByItem (',' OrderByItem)*
+OrderByItem     <- Expr OrderSpec? NullsOrder?
+LimitClause     <- LimitKW ^ (AllKW / Expr)
+OffsetClause    <- OffsetKW ^ Expr (RowKW / RowsKW)?
+FetchClause     <- FetchKW (FirstKW / NextKW) (Expr / NumericLiteral)? (RowKW / RowsKW) (OnlyKW / WithKW TiesKW)
+
+# ============================================================
+# DML: INSERT
+# ============================================================
+InsertStmt      <- WithClause? InsertKW IntoKW ^ QualifiedName Alias? ('(' ColumnList ')')? InsertSource OnConflictClause? ReturningClause?
+
+InsertSource    <- DefaultKW ValuesKW / SelectStmt / ValuesClause
+ValuesClause    <- ValuesKW ^ ValueRowList
+ValueRowList    <- '(' ExprOrDefaultList ')' (',' '(' ExprOrDefaultList ')')*
+ExprOrDefaultList <- ExprOrDefault (',' ExprOrDefault)*
+ExprOrDefault   <- DefaultKW / Expr
+
+OnConflictClause <- OnKW ConflictKW ^ ConflictTarget? ConflictAction
+ConflictTarget   <- '(' IndexElemList ')' WhereClause? / OnKW ConstraintKW ColId
+ConflictAction   <- DoKW NothingKW / DoKW UpdateKW SetKW UpdateSetList WhereClause?
+
+ReturningClause  <- ReturningKW ^ TargetList
+
+# ============================================================
+# DML: UPDATE
+# ============================================================
+UpdateStmt      <- WithClause? UpdateKW ^ OnlyKW? QualifiedName '*'? Alias? SetKW UpdateSetList FromClause? WhereClause? ReturningClause?
+
+UpdateSetList   <- UpdateSetItem (',' UpdateSetItem)*
+UpdateSetItem   <- ColId '=' ExprOrDefault / '(' ColumnList ')' '=' ('(' ExprOrDefaultList ')' / '(' SelectStmt ')')
+
+# ============================================================
+# DML: DELETE
+# ============================================================
+DeleteStmt      <- WithClause? DeleteKW FromKW ^ OnlyKW? QualifiedName '*'? Alias? UsingClauseDelete? WhereClause? ReturningClause?
+
+UsingClauseDelete <- UsingKW ^ FromList
+
+# ============================================================
+# Passthrough Statements
+# ============================================================
+PassthroughStatement <- TransactionStmt / SessionStmt / UtilityStmt / TruncateStmt / ExplainStmt / CopyStmt / RefreshMatViewStmt
+
+TransactionStmt <- (BeginKW / CommitKW / RollbackKW / EndKW / SavepointKW / ReleaseKW / PrepareKW) RestOfStatement
+SessionStmt     <- (SetKW / ShowKW / ResetKW) RestOfStatement
+UtilityStmt     <- (VacuumKW / AnalyzeKW / ReindexKW / ClusterKW / NotifyKW / ListenKW / UnlistenKW / LoadKW / SecurityLabelKW / DeallocateKW) RestOfStatement
+TruncateStmt    <- TruncateKW RestOfStatement
+ExplainStmt     <- ExplainKW RestOfStatement
+CopyStmt        <- CopyKW RestOfStatement
+RefreshMatViewStmt <- RefreshKW MaterializedKW ViewKW RestOfStatement
+
+RestOfStatement <- (!';' .)*
+
+# ============================================================
+# Expressions
+# ============================================================
+Expr            <- OrExpr
+OrExpr          <- AndExpr (OrKW AndExpr)*
+AndExpr         <- NotExpr (AndKW NotExpr)*
+NotExpr         <- NotKW NotExpr / CompareExpr
+CompareExpr     <- IsExpr (CompareOp IsExpr / NotKW? InExpr / NotKW? BetweenExpr / NotKW? LikeExpr / NotKW? SimilarToExpr / IsDistinctFrom)?
+
+CompareOp       <- '<=' / '>=' / '<>' / '!=' / !'<<' '<' / !'>>' '>' / '='
+
+IsExpr          <- AddExpr IsClause?
+IsClause        <- IsKW NotKW? (NullKW / TrueKW / FalseKW / UnknownKW / DistinctKW FromKW AddExpr) / IsnullKW / NotnullKW / NotKW NullKW
+
+InExpr          <- InKW '(' (SelectStmt / ExprList) ')'
+BetweenExpr     <- BetweenKW (SymmetricKW / AsymmetricKW)? AddExpr AndKW AddExpr
+LikeExpr        <- (LikeKW / IlikeKW) AddExpr (EscapeKW AddExpr)?
+SimilarToExpr   <- SimilarKW ToKW AddExpr (EscapeKW AddExpr)?
+IsDistinctFrom  <- IsKW NotKW? DistinctKW FromKW IsExpr
+
+AddExpr         <- MulExpr (('+' / !'->' '-') MulExpr)*
+MulExpr         <- UnaryExpr (('*' / '/' / '%') UnaryExpr)*
+UnaryExpr       <- ('+' / !'->' '-') UnaryExpr / ExponentExpr
+ExponentExpr    <- ConcatExpr ('^' ConcatExpr)?
+ConcatExpr      <- ArrayExpr ('||' ArrayExpr)*
+ArrayExpr       <- TypeCastExpr ('[' Expr (':' Expr)? ']')*
+TypeCastExpr    <- PostfixExpr ('::' DataType)*
+PostfixExpr     <- PrimaryExpr PostfixOp*
+PostfixOp       <- '.' '*' / '.' ColLabel / JsonOp PrimaryExpr / ArrayOverlapOp PrimaryExpr
+
+JsonOp          <- '->>' / '->' / '#>>' / '#>'
+ArrayOverlapOp  <- '@>' / '<@' / '&&'
+
+PrimaryExpr     <- ExistsExpr / ArrayExprConstructor / RowExpr / CastExpr / CaseExpr / CoalesceExpr / NullIfExpr / GreatestLeastExpr / ExtractExpr / PositionExpr / SubstringExpr / TrimExpr / OverlayExpr / AnyAllExpr / SubqueryExpr / TypedLiteral / FuncCall / Literal / ParamRef / '(' Expr ')' / ColRef
+
+ColRef          <- QualifiedName
+ParamRef        <- '$' < [0-9]+ >
+
+ExistsExpr      <- ExistsKW '(' SelectStmt ')'
+SubqueryExpr    <- '(' SelectStmt ')'
+AnyAllExpr      <- (AnyKW / AllKW / SomeKW) '(' (SelectStmt / ExprList) ')'
+RowExpr         <- RowKW '(' ExprList ')'
+ArrayExprConstructor <- ArrayKW ('[' ExprList? ']' / '(' SelectStmt ')')
+
+CastExpr        <- CastKW '(' Expr AsKW DataType ')'
+CaseExpr        <- CaseKW ^ Expr? WhenClause+ ElseClause? EndKW
+WhenClause      <- WhenKW Expr ThenKW Expr
+ElseClause      <- ElseKW Expr
+CoalesceExpr    <- CoalesceKW '(' ExprList ')'
+NullIfExpr      <- NullIfKW '(' Expr ',' Expr ')'
+GreatestLeastExpr <- (GreatestKW / LeastKW) '(' ExprList ')'
+ExtractExpr     <- ExtractKW '(' ColId FromKW Expr ')'
+PositionExpr    <- PositionKW '(' Expr InKW Expr ')'
+SubstringExpr   <- SubstringKW '(' Expr (FromKW Expr)? (ForKW Expr)? ')'
+TrimExpr        <- TrimKW '(' (LeadingKW / TrailingKW / BothKW)? Expr? FromKW Expr ')'
+OverlayExpr     <- OverlayKW '(' Expr PlacingKW Expr FromKW Expr (ForKW Expr)? ')'
+
+TypedLiteral    <- DataType StringLiteral
+
+# Function call with aggregate features
+FuncCall        <- FuncName '(' FuncCallArgs ')' FilterClause? OverClause? WithinGroupClause? / FuncName '(' '*' ')' FilterClause? OverClause? / FuncName '(' ')' FilterClause? OverClause?
+FuncCallArgs    <- (AllKW / DistinctKW)? ExprList OrderByClause?
+FuncName        <- QualifiedName
+FilterClause    <- FilterKW '(' WhereClause ')'
+OverClause      <- OverKW (ColId / '(' WindowSpec ')')
+WithinGroupClause <- WithinKW GroupKW '(' OrderByClause ')'
+
+ExprList        <- Expr (',' Expr)*
+
+Operator        <- CompareOp / '+' / '-' / '*' / '/' / '%' / '^' / '||' / '->>' / '->' / '#>>' / '#>' / '@>' / '<@' / '&&' / '@@' / '@?' / '?' / '?|' / '?&'
+
+# ============================================================
+# Data Types
+# ============================================================
+DataType        <- ArrayType
+ArrayType       <- ScalarType (('[' NumericLiteral? ']')+ / ArrayKW ('[' NumericLiteral ']')?)?
+ScalarType      <- NumericType / CharType / DateTimeType / BooleanType / JsonType / UuidType / ByteaType / XmlType / BitType / NetworkType / MoneyType / SerialType / TsvectorType / QualifiedTypeName TypeModifiers?
+
+NumericType     <- < ('double'i [ \t\r\n]+ 'precision'i / 'smallint'i / 'integer'i / 'bigint'i / 'int8'i / 'int4'i / 'int2'i / 'int'i / 'float8'i / 'float4'i / 'float'i / 'numeric'i / 'decimal'i / 'real'i) ![a-zA-Z0-9_$] > TypeModifiers?
+
+CharType        <- < ('character'i [ \t\r\n]+ 'varying'i / 'varchar'i / 'character'i / 'char'i / 'text'i / 'name'i / 'citext'i) ![a-zA-Z0-9_$] > TypeModifiers?
+
+DateTimeType    <- TimestampType / TimeType / DateType / IntervalType
+TimestampType   <- < 'timestamptz'i ![a-zA-Z0-9_$] > TypeModifiers? / < 'timestamp'i ![a-zA-Z0-9_$] > TypeModifiers? (WithKW TimeKW ZoneKW / WithoutKW TimeKW ZoneKW)?
+TimeType        <- < 'timetz'i ![a-zA-Z0-9_$] > TypeModifiers? / < 'time'i ![a-zA-Z0-9_$] > TypeModifiers? (WithKW TimeKW ZoneKW / WithoutKW TimeKW ZoneKW)?
+DateType        <- < 'date'i ![a-zA-Z0-9_$] >
+IntervalType    <- < 'interval'i ![a-zA-Z0-9_$] > IntervalField? TypeModifiers?
+IntervalField   <- YearKW (ToKW MonthKW)? / MonthKW / DayKW (ToKW (HourKW / MinuteKW / SecondKW))? / HourKW (ToKW (MinuteKW / SecondKW))? / MinuteKW (ToKW SecondKW)? / SecondKW
+
+BooleanType     <- < ('boolean'i / 'bool'i) ![a-zA-Z0-9_$] >
+JsonType        <- < ('jsonb'i / 'json'i) ![a-zA-Z0-9_$] >
+UuidType        <- < 'uuid'i ![a-zA-Z0-9_$] >
+ByteaType       <- < 'bytea'i ![a-zA-Z0-9_$] >
+XmlType         <- < 'xml'i ![a-zA-Z0-9_$] >
+MoneyType       <- < 'money'i ![a-zA-Z0-9_$] >
+SerialType      <- < ('bigserial'i / 'smallserial'i / 'serial8'i / 'serial4'i / 'serial2'i / 'serial'i) ![a-zA-Z0-9_$] >
+BitType         <- < ('varbit'i / 'bit'i [ \t\r\n]+ 'varying'i / 'bit'i) ![a-zA-Z0-9_$] > TypeModifiers?
+NetworkType     <- < ('inet'i / 'cidr'i / 'macaddr8'i / 'macaddr'i) ![a-zA-Z0-9_$] >
+TsvectorType    <- < ('tsvector'i / 'tsquery'i) ![a-zA-Z0-9_$] >
+
+TypeModifiers   <- '(' SignedNumericLiteral (',' SignedNumericLiteral)* ')'
+QualifiedTypeName <- QualifiedName
+
+# ============================================================
+# Identifiers
+# ============================================================
+ColId           <- !ReservedKeyword (QuotedIdentifier / UnicodeIdentifier / UnquotedIdentifier)
+ColLabel        <- QuotedIdentifier / UnicodeIdentifier / UnquotedIdentifier
+QualifiedName   <- ColId ('.' (ColId / '*'))*
+
+UnquotedIdentifier  <- < [a-zA-Z_] [a-zA-Z0-9_$]* >
+QuotedIdentifier    <- '"' < ('""' / [^"])+ > '"'
+UnicodeIdentifier   <- 'U&"'i < ([^"] / '""')+ > '"'
+
+# ============================================================
+# Literals
+# ============================================================
+Literal         <- BooleanLiteral / NullLiteral / NumericLiteral / StringLiteral
+NullLiteral     <- NullKW
+BooleanLiteral  <- TrueKW / FalseKW
+
+NumericLiteral  <- < HexNumber / DecimalNumber / IntegerNumber >
+HexNumber       <- '0' [xX] [0-9a-fA-F]+
+DecimalNumber   <- [0-9]+ '.' [0-9]* ([eE] [+\-]? [0-9]+)? / '.' [0-9]+ ([eE] [+\-]? [0-9]+)? / [0-9]+ [eE] [+\-]? [0-9]+
+IntegerNumber   <- [0-9]+
+
+SignedNumericLiteral <- [+\-]? NumericLiteral
+
+StringLiteral   <- EscapeString / DollarString / BasicString
+BasicString     <- '\'' < ('\'' '\'' / [^'])* > '\''
+EscapeString    <- [eE] '\'' < ('\\' . / [^'])* > '\''
+DollarString    <- '$$' < (!'$$' .)* > '$$'
+
+# ============================================================
+# Clause Keywords (not reserved but should not be consumed as aliases)
+# ============================================================
+ClauseKeyword <- ReservedKeyword / ('SET'i / 'ORDER'i / 'GROUP'i / 'HAVING'i / 'LIMIT'i / 'OFFSET'i / 'FETCH'i / 'UNION'i / 'INTERSECT'i / 'EXCEPT'i / 'JOIN'i / 'INNER'i / 'LEFT'i / 'RIGHT'i / 'FULL'i / 'CROSS'i / 'NATURAL'i / 'RETURNING'i / 'VALUES'i / 'WHERE'i / 'ON'i / 'WINDOW'i / 'PARTITION'i / 'ROWS'i / 'RANGE'i / 'GROUPS'i / 'DO'i / 'CONFLICT'i / 'OVER'i / 'FILTER'i / 'WITHIN'i) ![a-zA-Z0-9_$]
+
+# ============================================================
+# Reserved Keywords (truly reserved in PostgreSQL)
+# ============================================================
+ReservedKeyword <- ('ALL'i / 'ANALYSE'i / 'ANALYZE'i / 'AND'i / 'ANY'i / 'ARRAY'i / 'AS'i / 'ASC'i / 'ASYMMETRIC'i / 'BOTH'i / 'CASE'i / 'CAST'i / 'CHECK'i / 'COLLATE'i / 'COLUMN'i / 'CONSTRAINT'i / 'CREATE'i / 'CURRENT_CATALOG'i / 'CURRENT_DATE'i / 'CURRENT_ROLE'i / 'CURRENT_SCHEMA'i / 'CURRENT_TIME'i / 'CURRENT_TIMESTAMP'i / 'CURRENT_USER'i / 'DEFAULT'i / 'DEFERRABLE'i / 'DESC'i / 'DISTINCT'i / 'DO'i / 'ELSE'i / 'END'i / 'EXCEPT'i / 'FALSE'i / 'FETCH'i / 'FOR'i / 'FOREIGN'i / 'FROM'i / 'GRANT'i / 'GROUP'i / 'HAVING'i / 'IN'i / 'INITIALLY'i / 'INTERSECT'i / 'INTO'i / 'LATERAL'i / 'LEADING'i / 'LIMIT'i / 'LOCALTIME'i / 'LOCALTIMESTAMP'i / 'NOT'i / 'NULL'i / 'OFFSET'i / 'ON'i / 'ONLY'i / 'OR'i / 'ORDER'i / 'PLACING'i / 'PRIMARY'i / 'REFERENCES'i / 'RETURNING'i / 'SELECT'i / 'SESSION_USER'i / 'SOME'i / 'SYMMETRIC'i / 'TABLE'i / 'THEN'i / 'TO'i / 'TRAILING'i / 'TRUE'i / 'UNION'i / 'UNIQUE'i / 'USER'i / 'USING'i / 'VARIADIC'i / 'WHEN'i / 'WHERE'i / 'WINDOW'i / 'WITH'i) ![a-zA-Z0-9_$]
+
+# ============================================================
+# Keyword Helper Rules (case-insensitive + word boundary)
+# ============================================================
+CreateKW <- < 'CREATE'i ![a-zA-Z0-9_$] >
+AlterKW  <- < 'ALTER'i ![a-zA-Z0-9_$] >
+DropKW   <- < 'DROP'i ![a-zA-Z0-9_$] >
+SelectKW <- < 'SELECT'i ![a-zA-Z0-9_$] >
+InsertKW <- < 'INSERT'i ![a-zA-Z0-9_$] >
+UpdateKW <- < 'UPDATE'i ![a-zA-Z0-9_$] >
+DeleteKW <- < 'DELETE'i ![a-zA-Z0-9_$] >
+FromKW   <- < 'FROM'i ![a-zA-Z0-9_$] >
+WhereKW  <- < 'WHERE'i ![a-zA-Z0-9_$] >
+TableKW  <- < 'TABLE'i ![a-zA-Z0-9_$] >
+IndexKW  <- < 'INDEX'i ![a-zA-Z0-9_$] >
+ViewKW   <- < 'VIEW'i ![a-zA-Z0-9_$] >
+SchemaKW <- < 'SCHEMA'i ![a-zA-Z0-9_$] >
+SequenceKW <- < 'SEQUENCE'i ![a-zA-Z0-9_$] >
+TypeKW   <- < 'TYPE'i ![a-zA-Z0-9_$] >
+FunctionKW <- < 'FUNCTION'i ![a-zA-Z0-9_$] >
+ProcedureKW <- < 'PROCEDURE'i ![a-zA-Z0-9_$] >
+TriggerKW <- < 'TRIGGER'i ![a-zA-Z0-9_$] >
+ExtensionKW <- < 'EXTENSION'i ![a-zA-Z0-9_$] >
+
+PrimaryKW <- < 'PRIMARY'i ![a-zA-Z0-9_$] >
+KeyKW     <- < 'KEY'i ![a-zA-Z0-9_$] >
+ForeignKW <- < 'FOREIGN'i ![a-zA-Z0-9_$] >
+ReferencesKW <- < 'REFERENCES'i ![a-zA-Z0-9_$] >
+ConstraintKW <- < 'CONSTRAINT'i ![a-zA-Z0-9_$] >
+UniqueKW  <- < 'UNIQUE'i ![a-zA-Z0-9_$] >
+CheckKW   <- < 'CHECK'i ![a-zA-Z0-9_$] >
+NotKW     <- < 'NOT'i ![a-zA-Z0-9_$] >
+NullKW    <- < 'NULL'i ![a-zA-Z0-9_$] >
+DefaultKW <- < 'DEFAULT'i ![a-zA-Z0-9_$] >
+SetKW     <- < 'SET'i ![a-zA-Z0-9_$] >
+AddKW     <- < 'ADD'i ![a-zA-Z0-9_$] >
+ColumnKW  <- < 'COLUMN'i ![a-zA-Z0-9_$] >
+RenameKW  <- < 'RENAME'i ![a-zA-Z0-9_$] >
+ToKW      <- < 'TO'i ![a-zA-Z0-9_$] >
+IfKW      <- < 'IF'i ![a-zA-Z0-9_$] >
+ExistsKW  <- < 'EXISTS'i ![a-zA-Z0-9_$] >
+CascadeKW <- < 'CASCADE'i ![a-zA-Z0-9_$] >
+RestrictKW <- < 'RESTRICT'i ![a-zA-Z0-9_$] >
+NoKW      <- < 'NO'i ![a-zA-Z0-9_$] >
+ActionKW  <- < 'ACTION'i ![a-zA-Z0-9_$] >
+OnKW      <- < 'ON'i ![a-zA-Z0-9_$] >
+AsKW      <- < 'AS'i ![a-zA-Z0-9_$] >
+WithKW    <- < 'WITH'i ![a-zA-Z0-9_$] >
+WithoutKW <- < 'WITHOUT'i ![a-zA-Z0-9_$] >
+UsingKW   <- < 'USING'i ![a-zA-Z0-9_$] >
+InKW      <- < 'IN'i ![a-zA-Z0-9_$] >
+AndKW     <- < 'AND'i ![a-zA-Z0-9_$] >
+OrKW      <- < 'OR'i ![a-zA-Z0-9_$] >
+IsKW      <- < 'IS'i ![a-zA-Z0-9_$] >
+LikeKW    <- < 'LIKE'i ![a-zA-Z0-9_$] >
+IlikeKW   <- < 'ILIKE'i ![a-zA-Z0-9_$] >
+SimilarKW <- < 'SIMILAR'i ![a-zA-Z0-9_$] >
+BetweenKW <- < 'BETWEEN'i ![a-zA-Z0-9_$] >
+CaseKW    <- < 'CASE'i ![a-zA-Z0-9_$] >
+WhenKW    <- < 'WHEN'i ![a-zA-Z0-9_$] >
+ThenKW    <- < 'THEN'i ![a-zA-Z0-9_$] >
+ElseKW    <- < 'ELSE'i ![a-zA-Z0-9_$] >
+EndKW     <- < 'END'i ![a-zA-Z0-9_$] >
+CastKW    <- < 'CAST'i ![a-zA-Z0-9_$] >
+CoalesceKW <- < 'COALESCE'i ![a-zA-Z0-9_$] >
+NullIfKW  <- < 'NULLIF'i ![a-zA-Z0-9_$] >
+GreatestKW <- < 'GREATEST'i ![a-zA-Z0-9_$] >
+LeastKW   <- < 'LEAST'i ![a-zA-Z0-9_$] >
+ExtractKW <- < 'EXTRACT'i ![a-zA-Z0-9_$] >
+PositionKW <- < 'POSITION'i ![a-zA-Z0-9_$] >
+SubstringKW <- < 'SUBSTRING'i ![a-zA-Z0-9_$] >
+TrimKW    <- < 'TRIM'i ![a-zA-Z0-9_$] >
+OverlayKW <- < 'OVERLAY'i ![a-zA-Z0-9_$] >
+PlacingKW <- < 'PLACING'i ![a-zA-Z0-9_$] >
+TrueKW    <- < 'TRUE'i ![a-zA-Z0-9_$] >
+FalseKW   <- < 'FALSE'i ![a-zA-Z0-9_$] >
+UnknownKW <- < 'UNKNOWN'i ![a-zA-Z0-9_$] >
+IsnullKW  <- < 'ISNULL'i ![a-zA-Z0-9_$] >
+NotnullKW <- < 'NOTNULL'i ![a-zA-Z0-9_$] >
+DistinctKW <- < 'DISTINCT'i ![a-zA-Z0-9_$] >
+SymmetricKW <- < 'SYMMETRIC'i ![a-zA-Z0-9_$] >
+AsymmetricKW <- < 'ASYMMETRIC'i ![a-zA-Z0-9_$] >
+EscapeKW  <- < 'ESCAPE'i ![a-zA-Z0-9_$] >
+AllKW     <- < 'ALL'i ![a-zA-Z0-9_$] >
+AnyKW     <- < 'ANY'i ![a-zA-Z0-9_$] >
+SomeKW    <- < 'SOME'i ![a-zA-Z0-9_$] >
+ArrayKW   <- < 'ARRAY'i ![a-zA-Z0-9_$] >
+RowKW     <- < 'ROW'i ![a-zA-Z0-9_$] >
+RowsKW    <- < 'ROWS'i ![a-zA-Z0-9_$] >
+AscKW     <- < 'ASC'i ![a-zA-Z0-9_$] >
+DescKW    <- < 'DESC'i ![a-zA-Z0-9_$] >
+NullsKW   <- < 'NULLS'i ![a-zA-Z0-9_$] >
+FirstKW   <- < 'FIRST'i ![a-zA-Z0-9_$] >
+LastKW    <- < 'LAST'i ![a-zA-Z0-9_$] >
+FetchKW   <- < 'FETCH'i ![a-zA-Z0-9_$] >
+NextKW    <- < 'NEXT'i ![a-zA-Z0-9_$] >
+TiesKW    <- < 'TIES'i ![a-zA-Z0-9_$] >
+OrderKW   <- < 'ORDER'i ![a-zA-Z0-9_$] >
+ByKW      <- < 'BY'i ![a-zA-Z0-9_$] >
+GroupKW   <- < 'GROUP'i ![a-zA-Z0-9_$] >
+HavingKW  <- < 'HAVING'i ![a-zA-Z0-9_$] >
+LimitKW   <- < 'LIMIT'i ![a-zA-Z0-9_$] >
+OffsetKW  <- < 'OFFSET'i ![a-zA-Z0-9_$] >
+WindowKW  <- < 'WINDOW'i ![a-zA-Z0-9_$] >
+UnionKW   <- < 'UNION'i ![a-zA-Z0-9_$] >
+IntersectKW <- < 'INTERSECT'i ![a-zA-Z0-9_$] >
+ExceptKW  <- < 'EXCEPT'i ![a-zA-Z0-9_$] >
+JoinKW    <- < 'JOIN'i ![a-zA-Z0-9_$] >
+CrossKW   <- < 'CROSS'i ![a-zA-Z0-9_$] >
+InnerKW   <- < 'INNER'i ![a-zA-Z0-9_$] >
+LeftKW    <- < 'LEFT'i ![a-zA-Z0-9_$] >
+RightKW   <- < 'RIGHT'i ![a-zA-Z0-9_$] >
+FullKW    <- < 'FULL'i ![a-zA-Z0-9_$] >
+OuterKW   <- < 'OUTER'i ![a-zA-Z0-9_$] >
+NaturalKW <- < 'NATURAL'i ![a-zA-Z0-9_$] >
+LateralKW <- < 'LATERAL'i ![a-zA-Z0-9_$] >
+IntoKW    <- < 'INTO'i ![a-zA-Z0-9_$] >
+ValuesKW  <- < 'VALUES'i ![a-zA-Z0-9_$] >
+DoKW      <- < 'DO'i ![a-zA-Z0-9_$] >
+NothingKW <- < 'NOTHING'i ![a-zA-Z0-9_$] >
+ConflictKW <- < 'CONFLICT'i ![a-zA-Z0-9_$] >
+ReturningKW <- < 'RETURNING'i ![a-zA-Z0-9_$] >
+PartitionKW <- < 'PARTITION'i ![a-zA-Z0-9_$] >
+RangeKW   <- < 'RANGE'i ![a-zA-Z0-9_$] >
+ListKW    <- < 'LIST'i ![a-zA-Z0-9_$] >
+HashKW    <- < 'HASH'i ![a-zA-Z0-9_$] >
+AttachKW  <- < 'ATTACH'i ![a-zA-Z0-9_$] >
+DetachKW  <- < 'DETACH'i ![a-zA-Z0-9_$] >
+FinalizeKW <- < 'FINALIZE'i ![a-zA-Z0-9_$] >
+ForKW     <- < 'FOR'i ![a-zA-Z0-9_$] >
+InheritsKW <- < 'INHERITS'i ![a-zA-Z0-9_$] >
+TablespaceKW <- < 'TABLESPACE'i ![a-zA-Z0-9_$] >
+IncludeKW <- < 'INCLUDE'i ![a-zA-Z0-9_$] >
+ExcludeKW <- < 'EXCLUDE'i ![a-zA-Z0-9_$] >
+EnumKW    <- < 'ENUM'i ![a-zA-Z0-9_$] >
+DomainKW  <- < 'DOMAIN'i ![a-zA-Z0-9_$] >
+AttributeKW <- < 'ATTRIBUTE'i ![a-zA-Z0-9_$] >
+ValueKW   <- < 'VALUE'i ![a-zA-Z0-9_$] >
+BeforeKW  <- < 'BEFORE'i ![a-zA-Z0-9_$] >
+AfterKW   <- < 'AFTER'i ![a-zA-Z0-9_$] >
+IncrementKW <- < 'INCREMENT'i ![a-zA-Z0-9_$] >
+MinvalueKW <- < 'MINVALUE'i ![a-zA-Z0-9_$] >
+MaxvalueKW <- < 'MAXVALUE'i ![a-zA-Z0-9_$] >
+StartKW   <- < 'START'i ![a-zA-Z0-9_$] >
+CacheKW   <- < 'CACHE'i ![a-zA-Z0-9_$] >
+CycleKW   <- < 'CYCLE'i ![a-zA-Z0-9_$] >
+OwnedKW   <- < 'OWNED'i ![a-zA-Z0-9_$] >
+RestartKW <- < 'RESTART'i ![a-zA-Z0-9_$] >
+NoneKW    <- < 'NONE'i ![a-zA-Z0-9_$] >
+GeneratedKW <- < 'GENERATED'i ![a-zA-Z0-9_$] >
+AlwaysKW  <- < 'ALWAYS'i ![a-zA-Z0-9_$] >
+IdentityKW <- < 'IDENTITY'i ![a-zA-Z0-9_$] >
+StoredKW  <- < 'STORED'i ![a-zA-Z0-9_$] >
+CollateKW <- < 'COLLATE'i ![a-zA-Z0-9_$] >
+DeferrableKW <- < 'DEFERRABLE'i ![a-zA-Z0-9_$] >
+InitiallyKW <- < 'INITIALLY'i ![a-zA-Z0-9_$] >
+DeferredKW <- < 'DEFERRED'i ![a-zA-Z0-9_$] >
+ImmediateKW <- < 'IMMEDIATE'i ![a-zA-Z0-9_$] >
+ValidKW   <- < 'VALID'i ![a-zA-Z0-9_$] >
+ValidateKW <- < 'VALIDATE'i ![a-zA-Z0-9_$] >
+InheritKW <- < 'INHERIT'i ![a-zA-Z0-9_$] >
+CommentKW <- < 'COMMENT'i ![a-zA-Z0-9_$] >
+GrantKW   <- < 'GRANT'i ![a-zA-Z0-9_$] >
+RevokeKW  <- < 'REVOKE'i ![a-zA-Z0-9_$] >
+PrivilegesKW <- < 'PRIVILEGES'i ![a-zA-Z0-9_$] >
+PublicKW  <- < 'PUBLIC'i ![a-zA-Z0-9_$] >
+OptionKW  <- < 'OPTION'i ![a-zA-Z0-9_$] >
+TablesKW  <- < 'TABLES'i ![a-zA-Z0-9_$] >
+SequencesKW <- < 'SEQUENCES'i ![a-zA-Z0-9_$] >
+FunctionsKW <- < 'FUNCTIONS'i ![a-zA-Z0-9_$] >
+SchemasKW <- < 'SCHEMAS'i ![a-zA-Z0-9_$] >
+ExecuteKW <- < 'EXECUTE'i ![a-zA-Z0-9_$] >
+UsageKW   <- < 'USAGE'i ![a-zA-Z0-9_$] >
+ConnectKW <- < 'CONNECT'i ![a-zA-Z0-9_$] >
+TemporaryKW <- < 'TEMPORARY'i ![a-zA-Z0-9_$] >
+TempKW    <- < 'TEMP'i ![a-zA-Z0-9_$] >
+TruncateKW <- < 'TRUNCATE'i ![a-zA-Z0-9_$] >
+MaterializedKW <- < 'MATERIALIZED'i ![a-zA-Z0-9_$] >
+RecursiveKW <- < 'RECURSIVE'i ![a-zA-Z0-9_$] >
+ReplaceKW <- < 'REPLACE'i ![a-zA-Z0-9_$] >
+CascadedKW <- < 'CASCADED'i ![a-zA-Z0-9_$] >
+LocalKW   <- < 'LOCAL'i ![a-zA-Z0-9_$] >
+AuthorizationKW <- < 'AUTHORIZATION'i ![a-zA-Z0-9_$] >
+OwnerKW   <- < 'OWNER'i ![a-zA-Z0-9_$] >
+VersionKW <- < 'VERSION'i ![a-zA-Z0-9_$] >
+DataKW    <- < 'DATA'i ![a-zA-Z0-9_$] >
+StatisticsKW <- < 'STATISTICS'i ![a-zA-Z0-9_$] >
+StorageKW <- < 'STORAGE'i ![a-zA-Z0-9_$] >
+UnloggedKW <- < 'UNLOGGED'i ![a-zA-Z0-9_$] >
+FilterKW  <- < 'FILTER'i ![a-zA-Z0-9_$] >
+OverKW    <- < 'OVER'i ![a-zA-Z0-9_$] >
+WithinKW  <- < 'WITHIN'i ![a-zA-Z0-9_$] >
+OrdinalityKW <- < 'ORDINALITY'i ![a-zA-Z0-9_$] >
+TablesampleKW <- < 'TABLESAMPLE'i ![a-zA-Z0-9_$] >
+GroupingSetsKW <- < 'GROUPING'i [ \t\r\n]+ 'SETS'i ![a-zA-Z0-9_$] >
+RollupKW  <- < 'ROLLUP'i ![a-zA-Z0-9_$] >
+CubeKW    <- < 'CUBE'i ![a-zA-Z0-9_$] >
+PrecedingKW <- < 'PRECEDING'i ![a-zA-Z0-9_$] >
+FollowingKW <- < 'FOLLOWING'i ![a-zA-Z0-9_$] >
+CurrentKW <- < 'CURRENT'i ![a-zA-Z0-9_$] >
+UnboundedKW <- < 'UNBOUNDED'i ![a-zA-Z0-9_$] >
+GroupsKW  <- < 'GROUPS'i ![a-zA-Z0-9_$] >
+OthersKW  <- < 'OTHERS'i ![a-zA-Z0-9_$] >
+SearchKW  <- < 'SEARCH'i ![a-zA-Z0-9_$] >
+BreadthKW <- < 'BREADTH'i ![a-zA-Z0-9_$] >
+DepthKW   <- < 'DEPTH'i ![a-zA-Z0-9_$] >
+BeginKW   <- < 'BEGIN'i ![a-zA-Z0-9_$] >
+CommitKW  <- < 'COMMIT'i ![a-zA-Z0-9_$] >
+RollbackKW <- < 'ROLLBACK'i ![a-zA-Z0-9_$] >
+SavepointKW <- < 'SAVEPOINT'i ![a-zA-Z0-9_$] >
+ReleaseKW <- < 'RELEASE'i ![a-zA-Z0-9_$] >
+PrepareKW <- < 'PREPARE'i ![a-zA-Z0-9_$] >
+ShowKW    <- < 'SHOW'i ![a-zA-Z0-9_$] >
+ResetKW   <- < 'RESET'i ![a-zA-Z0-9_$] >
+VacuumKW  <- < 'VACUUM'i ![a-zA-Z0-9_$] >
+AnalyzeKW <- < 'ANALYZE'i ![a-zA-Z0-9_$] >
+ExplainKW <- < 'EXPLAIN'i ![a-zA-Z0-9_$] >
+CopyKW    <- < 'COPY'i ![a-zA-Z0-9_$] >
+ReindexKW <- < 'REINDEX'i ![a-zA-Z0-9_$] >
+ClusterKW <- < 'CLUSTER'i ![a-zA-Z0-9_$] >
+RefreshKW <- < 'REFRESH'i ![a-zA-Z0-9_$] >
+NotifyKW  <- < 'NOTIFY'i ![a-zA-Z0-9_$] >
+ListenKW  <- < 'LISTEN'i ![a-zA-Z0-9_$] >
+UnlistenKW <- < 'UNLISTEN'i ![a-zA-Z0-9_$] >
+LoadKW    <- < 'LOAD'i ![a-zA-Z0-9_$] >
+SecurityLabelKW <- < 'SECURITY'i [ \t\r\n]+ 'LABEL'i ![a-zA-Z0-9_$] >
+DeallocateKW <- < 'DEALLOCATE'i ![a-zA-Z0-9_$] >
+InoutKW   <- < 'INOUT'i ![a-zA-Z0-9_$] >
+OutKW     <- < 'OUT'i ![a-zA-Z0-9_$] >
+VariadicKW <- < 'VARIADIC'i ![a-zA-Z0-9_$] >
+AggregateKW <- < 'AGGREGATE'i ![a-zA-Z0-9_$] >
+YearKW    <- < 'YEAR'i ![a-zA-Z0-9_$] >
+MonthKW   <- < 'MONTH'i ![a-zA-Z0-9_$] >
+DayKW     <- < 'DAY'i ![a-zA-Z0-9_$] >
+HourKW    <- < 'HOUR'i ![a-zA-Z0-9_$] >
+MinuteKW  <- < 'MINUTE'i ![a-zA-Z0-9_$] >
+SecondKW  <- < 'SECOND'i ![a-zA-Z0-9_$] >
+TimeKW    <- < 'TIME'i ![a-zA-Z0-9_$] >
+ZoneKW    <- < 'ZONE'i ![a-zA-Z0-9_$] >
+LeadingKW <- < 'LEADING'i ![a-zA-Z0-9_$] >
+TrailingKW <- < 'TRAILING'i ![a-zA-Z0-9_$] >
+BothKW    <- < 'BOTH'i ![a-zA-Z0-9_$] >
+
+# ============================================================
+# Whitespace (auto-skipped, includes comments)
+# ============================================================
+%whitespace <- ([ \t\r\n]+ / LineComment / BlockComment)*
+LineComment <- '--' [^\n]*
+BlockComment <- '/*' (!'*/' .)* '*/'
