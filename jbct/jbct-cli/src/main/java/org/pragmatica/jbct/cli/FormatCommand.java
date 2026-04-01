@@ -54,7 +54,7 @@ public class FormatCommand implements Callable<Integer> {
         // Load configuration
         var config = ConfigLoader.load(Option.option(configPath), Option.none());
         formatter = JbctFormatter.jbctFormatter(config.formatter());
-        var filesToProcess = collectJavaFiles();
+        var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
         if (filesToProcess.isEmpty()) {
             System.out.println("No Java files found.");
             return 0;
@@ -78,10 +78,6 @@ public class FormatCommand implements Callable<Integer> {
             return 1;
         }
         return 0;
-    }
-
-    private List<Path> collectJavaFiles() {
-        return FileCollector.collectJavaFiles(paths, System.err::println);
     }
 
     private void processFile(Path file, int[] counters, List<Path> needsFormatting) {

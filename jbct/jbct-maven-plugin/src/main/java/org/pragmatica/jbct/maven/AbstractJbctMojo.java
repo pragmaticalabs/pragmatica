@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.maven;
 
 import org.pragmatica.jbct.config.ConfigLoader;
+import org.pragmatica.jbct.config.FilesConfig;
 import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.shared.FileCollector;
@@ -43,14 +44,15 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
         return LintContext.fromConfig(config);
     }
 
-    /// Collect Java files from source directories.
-    protected List<Path> collectJavaFiles() {
+    /// Collect Java files from source directories, applying file filters.
+    protected List<Path> collectJavaFiles(FilesConfig filesConfig) {
         return FileCollector.collectFromDirectories(Option.option(sourceDirectory)
                                                           .map(File::toPath),
                                                     Option.option(testSourceDirectory)
                                                           .map(File::toPath),
                                                     includeTests,
-                                                    msg -> getLog().warn(msg));
+                                                    filesConfig,
+                                                    msg -> getLog().info(msg));
     }
 
     /// Check if this mojo should be skipped.

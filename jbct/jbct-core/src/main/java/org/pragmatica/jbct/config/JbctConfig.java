@@ -17,6 +17,7 @@ import java.util.stream.Collectors;
 /// Combines formatter and linter configuration with project settings.
 public record JbctConfig(FormatterConfig formatter,
                          LintConfig lint,
+                         FilesConfig files,
                          List<String> sourceDirectories,
                          List<String> excludePackages,
                          List<String> slicePackages) {
@@ -30,6 +31,7 @@ public record JbctConfig(FormatterConfig formatter,
     /// Note: slicePackages is empty by default - must be configured for JBCT-SLICE-01 rule.
     public static final JbctConfig DEFAULT = jbctConfig(FormatterConfig.DEFAULT,
                                                         LintConfig.DEFAULT,
+                                                        FilesConfig.DEFAULT,
                                                         List.of("src/main/java"),
                                                         List.of(),
                                                         List.of());
@@ -37,10 +39,11 @@ public record JbctConfig(FormatterConfig formatter,
     /// Factory method for creating JbctConfig.
     public static JbctConfig jbctConfig(FormatterConfig formatter,
                                         LintConfig lint,
+                                        FilesConfig files,
                                         List<String> sourceDirectories,
                                         List<String> excludePackages,
                                         List<String> slicePackages) {
-        return new JbctConfig(formatter, lint, sourceDirectories, excludePackages, slicePackages);
+        return new JbctConfig(formatter, lint, files, sourceDirectories, excludePackages, slicePackages);
     }
 
     /// Create config from parsed TOML document.
@@ -88,6 +91,12 @@ public record JbctConfig(FormatterConfig formatter,
             }
         }
         var lintConfig = LintConfig.lintConfig(Map.copyOf(ruleSeverities), Set.copyOf(disabledRules), failOnWarning);
+        // Files section
+        var maxFileSize = toml.getLong("files", "maxFileSize")
+                              .or(FilesConfig.DEFAULT.maxFileSize());
+        var fileExcludes = toml.getStringList("files", "excludes")
+                               .or(FilesConfig.DEFAULT.excludes());
+        var filesConfig = new FilesConfig(maxFileSize, fileExcludes);
         // Project section
         var sourceDirectories = toml.getStringList("project", "sourceDirectories")
                                     .or(List.of("src/main/java"));
@@ -96,7 +105,7 @@ public record JbctConfig(FormatterConfig formatter,
         // Slice packages - empty by default, must be explicitly configured
         var slicePackages = toml.getStringList("lint", "slicePackages")
                                 .or(List.of());
-        return jbctConfig(formatterConfig, lintConfig, sourceDirectories, excludePackages, slicePackages);
+        return jbctConfig(formatterConfig, lintConfig, filesConfig, sourceDirectories, excludePackages, slicePackages);
     }
 
     /// Merge this config with another, with other taking precedence.
@@ -114,6 +123,10 @@ public record JbctConfig(FormatterConfig formatter,
         var mergedLint = other.lint.equals(LintConfig.DEFAULT)
                          ? this.lint
                          : other.lint;
+        // Merge files config (use other if different from default)
+        var mergedFiles = other.files.equals(FilesConfig.DEFAULT)
+                          ? this.files
+                          : other.files;
         // Merge source directories (use other if not default)
         var mergedSourceDirs = other.sourceDirectories.equals(List.of("src/main/java"))
                                ? this.sourceDirectories
@@ -126,7 +139,8 @@ public record JbctConfig(FormatterConfig formatter,
         var mergedSlicePackages = other.slicePackages.isEmpty()
                                   ? this.slicePackages
                                   : other.slicePackages;
-        return jbctConfig(mergedFormatter, mergedLint, mergedSourceDirs, mergedExcludePackages, mergedSlicePackages);
+        return jbctConfig(mergedFormatter, mergedLint, mergedFiles, mergedSourceDirs, mergedExcludePackages,
+                          mergedSlicePackages);
     }
 
     /// Generate TOML representation of this config.
@@ -156,6 +170,18 @@ public record JbctConfig(FormatterConfig formatter,
         sb.append("organizeImports = ")
           .append(formatter.organizeImports())
           .append("\n");
+        sb.append("\n");
+        // Files section
+        sb.append("[files]\n");
+        sb.append("maxFileSize = ")
+          .append(files.maxFileSize())
+          .append("\n");
+        sb.append("excludes = [");
+        sb.append(files.excludes()
+                       .stream()
+                       .map(s -> "\"" + s + "\"")
+                       .collect(Collectors.joining(", ")));
+        sb.append("]\n");
         sb.append("\n");
         // Lint section
         sb.append("[lint]\n");

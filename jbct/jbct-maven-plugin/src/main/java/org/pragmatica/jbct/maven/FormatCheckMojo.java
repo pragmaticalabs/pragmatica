@@ -28,7 +28,7 @@ public class FormatCheckMojo extends AbstractJbctMojo {
         }
         var config = loadConfig();
         var formatter = JbctFormatter.jbctFormatter(config.formatter());
-        var filesToProcess = collectJavaFiles();
+        var filesToProcess = collectJavaFiles(config.files());
         if (filesToProcess.isEmpty()) {
             getLog().info("No Java files found.");
             return;
