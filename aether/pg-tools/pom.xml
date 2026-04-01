@@ -21,6 +21,7 @@
         <module>pg-schema</module>
         <module>pg-codegen</module>
         <module>pg-test-corpus</module>
+        <module>pg-maven-plugin</module>
     </modules>
 
     <properties>
