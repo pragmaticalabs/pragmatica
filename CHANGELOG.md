@@ -17,9 +17,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **pg-showcase example** — demonstrates all persistence patterns: `@Query` with joins, CRUD auto-generation, record expansion, multi-table, projections
 - **PostgreSQL persistence guide** — comprehensive developer documentation with setup, examples, validation rules
 
+- **pg:lint Maven goal** — migration linting via `mvn pg:lint`, reports lock hazards, type design issues, schema design problems
+- **Unified blueprint-level deployment** — single `aether deploy` command and `/api/deploy` endpoint replacing separate canary/blue-green/rolling-update commands. All deployment strategies operate on entire blueprints (all slices atomically), not individual slices
+- **Unified deployment spec** — `aether/docs/specs/unified-deploy-spec.md` with complete API design
+
 ### Changed
 - **url-shortener examples** — migrated from raw `@Sql`/`SqlConnector` to typed `@PgSql` persistence interfaces
+- **Deployment CLI** — `aether deploy --canary`, `aether deploy --blue-green`, `aether deploy --rolling` replace `aether canary`, `aether blue-green`, `aether update`
+- **Deployment REST API** — `/api/deploy` replaces `/api/canary/*`, `/api/blue-green/*`, `/api/rolling-update/*`
 - **Resource reference docs** — added `PgSqlConnector` section with link to persistence guide
+
+### Removed
+- **Separate deployment commands** — `aether canary`, `aether blue-green`, `aether update` removed (use `aether deploy --strategy`)
+- **Separate deployment REST endpoints** — `/api/canary/*`, `/api/blue-green/*`, `/api/rolling-update/*` removed (use `/api/deploy`)
 
 ## [0.25.0] - 2026-04-01
 
