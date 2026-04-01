@@ -27,6 +27,11 @@ for test_script in "${SUITE_PATH}"/test-*.sh; do
         continue
     fi
     test_name="$(basename "$test_script")"
+    # Skip soak tests unless explicitly enabled
+    if [[ "${SKIP_SOAK:-true}" == "true" ]] && [[ "$test_name" == *soak* ]]; then
+        log_warn "SKIPPED (soak): ${test_name} — set SKIP_SOAK=false to enable"
+        continue
+    fi
     log_info "--- ${test_name} ---"
     if bash "$test_script"; then
         SUITE_PASSED=$((SUITE_PASSED + 1))

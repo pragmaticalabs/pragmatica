@@ -1,138 +1,171 @@
-# Aether On-Premises Docker Cluster Integration Tests
+# Aether Integration Tests
 
-Comprehensive test suite for running Aether clusters on a target machine via SSH + Docker.
-Tests cover cluster formation, stability, chaos engineering, scaling, streaming, security,
-deployment strategies, and cluster management.
+End-to-end integration tests that exercise a live Aether cluster deployed on a remote host.
 
 ## Prerequisites
 
-- **Target machine**: Linux host with SSH access and Docker installed
-- **SSH key**: Passwordless SSH key for the target machine
-- **Docker**: Installed on target (or run `scripts/setup.sh` to install)
-- **Network**: Ports 5150, 6000, 6100, 8070 accessible from test runner to target
-- **Tools on test runner**: `bash`, `curl`, `python3`, `ssh`
-- **Aether CLI** (optional): `aether` in PATH for bootstrap/destroy commands
+- **Remote host** with Docker installed (tested with Docker 29.x on Linux)
+- **SSH access** to the remote host (key-based authentication)
+- **Aether CLI** (`aether`) installed locally
+- **aether-node Docker image** built and available on the remote host
+- Python 3 (for JSON parsing in test assertions)
+- curl, bash 4+
 
 ## Environment Variables
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `TARGET_HOST` | Yes | — | IP or hostname of target machine |
-| `AETHER_SSH_USER` | Yes | — | SSH username on target |
+| `TARGET_HOST` | Yes | — | IP or hostname of the remote test machine |
+| `AETHER_SSH_USER` | Yes | — | SSH username for remote commands |
 | `AETHER_SSH_KEY` | Yes | — | Path to SSH private key |
-| `AETHER_CLUSTER_SECRET` | Yes | — | Cluster TLS secret |
-| `AETHER_API_KEY` | No | (empty) | API key for management endpoints |
-| `AETHER_ADMIN_API_KEY` | No | `$AETHER_API_KEY` | Admin-role API key |
-| `AETHER_VIEWER_API_KEY` | No | (empty) | Viewer-role API key (for RBAC tests) |
-| `AETHER_OPERATOR_API_KEY` | No | `$AETHER_API_KEY` | Operator-role API key |
-| `MGMT_PORT` | No | 5150 | Management API port |
-| `APP_PORT` | No | 8070 | App HTTP port |
-| `SKIP_BOOTSTRAP` | No | false | Skip cluster bootstrap (assume running) |
-| `SKIP_CLEANUP` | No | false | Skip cluster teardown after tests |
-| `COLLECT_METRICS` | No | false | Collect thread/heap/RSS metrics per test |
-| `METRICS_DIR` | No | `/tmp/aether-test-metrics` | Directory for metrics output files |
+| `AETHER_API_KEY` | No | `aether-integration-test-key` | API key for cluster authentication |
+| `MGMT_PORT` | No | `5150` | Base management port (nodes use 5150..5154) |
+| `APP_PORT` | No | `8070` | Application HTTP port |
+| `NODE_COUNT` | No | `5` | Number of cluster nodes |
+| `SKIP_SOAK` | No | `true` | Skip long-running soak tests |
+| `COLLECT_METRICS` | No | `false` | Collect thread/heap metrics before/after tests |
 
 ## Quick Start
 
+### 1. Build the node JAR
+
 ```bash
-# 1. Set environment
-export TARGET_HOST=192.168.1.100
-export AETHER_SSH_USER=ubuntu
-export AETHER_SSH_KEY=~/.ssh/id_rsa
-export AETHER_CLUSTER_SECRET=my-secret
-export AETHER_API_KEY=admin-key
+mvn install -DskipTests -Djbct.skip=true -q
+```
 
-# 2. One-time setup (installs Docker, pulls image)
-./scripts/setup.sh
+### 2. Upload and build Docker image on remote host
 
-# 3. Run all tests
-./scripts/run-all.sh
+```bash
+scp -i "$AETHER_SSH_KEY" aether/node/target/aether-node.jar \
+    aether/docker/aether-node/Dockerfile \
+    aether/docker/aether-node/aether.toml \
+    "${AETHER_SSH_USER}@${TARGET_HOST}:/tmp/"
 
-# 4. Or run a specific suite
-./scripts/run-suite.sh 02-chaos
+ssh -i "$AETHER_SSH_KEY" "${AETHER_SSH_USER}@${TARGET_HOST}" \
+    "cd /tmp && docker build -t aether-node:local \
+     --build-arg JAR_PATH=aether-node.jar \
+     --build-arg CONFIG_PATH=aether.toml \
+     -f Dockerfile ."
+```
+
+### 3. Start the 5-node cluster
+
+```bash
+ssh -i "$AETHER_SSH_KEY" "${AETHER_SSH_USER}@${TARGET_HOST}" '
+docker network create aether-network 2>/dev/null || true
+PEERS=""
+for i in $(seq 1 5); do
+    [ -n "$PEERS" ] && PEERS="${PEERS},"
+    PEERS="${PEERS}integration-test-${i}:aether-integration-test-${i}:6000"
+done
+for i in $(seq 1 5); do
+    docker run -d \
+        --name "aether-integration-test-${i}" \
+        --hostname "aether-integration-test-${i}" \
+        --network aether-network \
+        -p "$((5149 + i)):8080" \
+        -p "$((8069 + i)):8070" \
+        -e "NODE_ID=integration-test-${i}" \
+        -e "CLUSTER_PORT=6000" \
+        -e "MANAGEMENT_PORT=8080" \
+        -e "PEERS=${PEERS}" \
+        -e "CORE_MAX=5" \
+        aether-node:local
+done
+'
+```
+
+### 4. Run tests
+
+```bash
+# Run all suites (soak tests excluded by default)
+bash aether/tests/integration/scripts/run-all.sh
+
+# Run a single suite
+bash aether/tests/integration/scripts/run-suite.sh 02-chaos
+
+# Run a single test
+bash aether/tests/integration/suites/02-chaos/test-kill-leader.sh
+
+# Include soak tests (long-running)
+SKIP_SOAK=false bash aether/tests/integration/scripts/run-all.sh
+```
+
+### 5. Tear down
+
+```bash
+ssh -i "$AETHER_SSH_KEY" "${AETHER_SSH_USER}@${TARGET_HOST}" \
+    'docker rm -f $(docker ps -a --filter "name=aether-integration-test" -q) 2>/dev/null; \
+     docker network rm aether-network 2>/dev/null'
 ```
 
 ## Test Suites
 
-| Suite | Description | Duration |
-|-------|-------------|----------|
-| `00-smoke` | Cluster formation, slice deployment | ~5 min |
-| `01-stability` | 4-hour soak, streaming soak | ~5 hours |
-| `02-chaos` | Kill node, kill leader, kill multiple, kill under load | ~20 min |
-| `03-scaling` | Scale up/down under load, quorum safety | ~15 min |
-| `04-streaming` | Publish, consume, sustained stream load | ~10 min |
-| `05-security` | Route security, cert rotation, principal injection | ~5 min |
-| `06-deployment` | Rolling upgrade, canary, blue-green, schema migration | ~15 min |
-| `07-cluster-mgmt` | Bootstrap, config apply, export, destroy | ~10 min |
-| `08-resources` | SQL connector, HTTP client, pub/sub, scheduled tasks, streaming | ~15 min |
-| `09-artifacts` | Push/resolve, large artifacts (64KB-5MB), DHT replication | ~10 min |
-| `10-database` | Versioned schema, retry, baseline | ~5 min |
-| `11-observability` | Prometheus, transport metrics, traces, alerts, certificates | ~10 min |
-| `12-network` | QUIC connectivity, SWIM detection, gossip encryption | ~15 min |
-| `13-edge-cases` | Stale route cleanup, disruption budget, concurrent deploys | ~15 min |
+| Suite | Tests | Description |
+|-------|-------|-------------|
+| `00-smoke` | 2 | Cluster formation, slice deployment |
+| `01-stability` | 2 | 4-hour soak test, streaming soak (skipped by default) |
+| `02-chaos` | 4 | Kill leader, kill node, kill multiple, kill under load |
+| `03-scaling` | 3 | Scale up, scale down, quorum safety |
+| `04-streaming` | 4 | Publish, consume, replication, load |
+| `05-security` | 3 | Cert rotation, principal injection, route security |
+| `06-deployment` | 4 | Rolling upgrade, canary, blue-green, schema migration |
+| `07-cluster-mgmt` | 4 | Bootstrap, apply, export, destroy |
+| `08-resources` | 5 | SQL, HTTP client, pub-sub, scheduled tasks, streaming |
+| `09-artifacts` | 3 | Push/resolve, replication, large artifacts |
+| `10-database` | 3 | Schema baseline, versioned migration, retry |
+| `11-observability` | 5 | Metrics, alerts, traces, transport, certificates |
+| `12-network` | 3 | QUIC connectivity, SWIM detection, gossip encryption |
+| `13-edge-cases` | 3 | Concurrent deploys, disruption budget, stale routes |
+| `14-storage` | 2 | Storage CLI, storage management |
 
-Stability tests (`01-stability`) are long-running. Override duration with environment variables:
-
-```bash
-SOAK_DURATION=300 STREAM_DURATION=300 ./scripts/run-suite.sh 01-stability
-```
-
-## Metrics Collection
-
-Enable per-test thread count, RSS, and Java heap metrics with `COLLECT_METRICS=true`:
-
-```bash
-COLLECT_METRICS=true ./scripts/run-suite.sh 00-smoke
-```
-
-Each test produces before/after snapshots in `$METRICS_DIR` (default `/tmp/aether-test-metrics`).
-The test runner prints a delta summary (threads, RSS) after each test completes.
-
-Metrics files are named `<timestamp>_before-<test>.txt` and `<timestamp>_after-<test>.txt`.
-Each file contains per-node `/proc/1/status` fields (Threads, VmRSS, VmSize, VmPeak) and
-`jcmd 1 GC.heap_info` output.
-
-## Adding New Tests
-
-1. Create a new script in the appropriate `suites/XX-name/` directory
-2. Name it `test-<description>.sh`
-3. Source the shared libraries:
-   ```bash
-   source "${SCRIPT_DIR}/../../lib/common.sh"
-   source "${SCRIPT_DIR}/../../lib/cluster.sh"
-   ```
-4. Write test functions and register them with `run_test`
-5. End with `print_summary`
-6. Make executable: `chmod +x suites/XX-name/test-<description>.sh`
-
-## Directory Structure
+## Architecture
 
 ```
 integration/
-├── README.md                          # This file
-├── cluster-config.toml                # Default 5-node cluster config
-├── scripts/
-│   ├── setup.sh                       # One-time target machine setup
-│   ├── run-all.sh                     # Run all suites sequentially
-│   ├── run-suite.sh                   # Run a specific suite
-│   └── cleanup.sh                     # Tear down cluster
-├── suites/
-│   ├── 00-smoke/                      # Basic formation and deployment
-│   ├── 01-stability/                  # Long-running soak tests
-│   ├── 02-chaos/                      # Node failure and recovery
-│   ├── 03-scaling/                    # Scale up/down, quorum safety
-│   ├── 04-streaming/                  # Event streaming
-│   ├── 05-security/                   # Auth, RBAC, TLS
-│   ├── 06-deployment/                 # Rolling, canary, blue-green
-│   ├── 07-cluster-mgmt/              # Bootstrap, config, destroy
-│   ├── 08-resources/                 # SQL, HTTP, pub/sub, scheduled tasks, streaming
-│   ├── 09-artifacts/                 # Push, resolve, large artifacts, replication
-│   ├── 10-database/                  # Schema versioned, retry, baseline
-│   ├── 11-observability/             # Prometheus, transport, traces, alerts, certs
-│   ├── 12-network/                   # QUIC, SWIM detection, gossip encryption
-│   └── 13-edge-cases/               # Stale routes, disruption budget, concurrent deploy
-└── lib/
-    ├── common.sh                      # Logging, assertions, HTTP helpers
-    ├── cluster.sh                     # Cluster operations
-    └── load.sh                        # Load generation
+  lib/
+    common.sh      # Assertions, HTTP helpers, SSH, logging, test runner
+    cluster.sh     # Cluster queries, node ops, deploy, scaling, streams
+  scripts/
+    run-all.sh     # Run all suites sequentially
+    run-suite.sh   # Run a single suite by name
+  suites/
+    00-smoke/      # Tests ordered by dependency and risk
+    01-stability/
+    ...
+  cluster-config.toml   # Cluster topology for aether CLI bootstrap
+```
+
+Each test script:
+1. Sources `common.sh` and `cluster.sh` from `lib/`
+2. Defines test functions
+3. Calls `run_test "name" function_name` for each test
+4. Calls `print_summary` at the end (exit code reflects pass/fail)
+
+## Writing New Tests
+
+```bash
+#!/bin/bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/../../lib/common.sh"
+source "${SCRIPT_DIR}/../../lib/cluster.sh"
+
+test_my_feature() {
+    # Use assert_eq, assert_ne, assert_gt, assert_ge, assert_contains
+    local count
+    count=$(cluster_node_count)
+    assert_ge "$count" "3" "Cluster has quorum"
+
+    # Use wait_for for async conditions
+    wait_for "my condition" "some_check_command" 60
+
+    # Use api_get/api_post for raw HTTP
+    local response
+    response=$(api_get "/api/some-endpoint")
+    assert_contains "$response" "expected" "Response has expected content"
+}
+
+run_test "My feature test" test_my_feature
+print_summary
 ```

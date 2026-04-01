@@ -63,7 +63,7 @@ log_fail()  { echo -e "${RED}[FAIL]${NC}  $1"; }
 log_step()  { echo -e "${BLUE}[STEP]${NC}  $1"; }
 
 # ---------------------------------------------------------------------------
-# HTTP helpers — management API (port 5150)
+# HTTP helpers — management API
 # Retained for tests that need raw HTTP access (status codes, custom headers)
 # ---------------------------------------------------------------------------
 api_get() {
