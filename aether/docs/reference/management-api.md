@@ -1680,7 +1680,7 @@ Initiate a cluster version upgrade. Phase 1 updates the version in the KV-Store 
 ```json
 {
   "status": "INITIATED",
-  "from": "0.25.0",
+  "from": "1.0.0-alpha",
   "to": "0.26.0"
 }
 ```

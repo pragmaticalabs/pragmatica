@@ -312,13 +312,13 @@ Examples:
 aether artifact deploy target/my-slice.jar -g com.example -a my-slice -v 1.0.0
 
 # Push blueprint + all slices from local Maven repository
-aether artifact push org.pragmatica.aether.example:url-shortener:0.25.0
+aether artifact push org.pragmatica.aether.example:url-shortener:1.0.0-alpha
 
 # Example output:
 # Pushing url-shortener blueprint (3 artifacts):
-#   + org.pragmatica.aether.example:url-shortener:0.25.0:blueprint (65KB)
-#   + org.pragmatica.aether.example:url-shortener-url-shortener:0.25.0 (34KB)
-#   + org.pragmatica.aether.example:url-shortener-analytics:0.25.0 (32KB)
+#   + org.pragmatica.aether.example:url-shortener:1.0.0-alpha:blueprint (65KB)
+#   + org.pragmatica.aether.example:url-shortener-url-shortener:1.0.0-alpha (34KB)
+#   + org.pragmatica.aether.example:url-shortener-analytics:1.0.0-alpha (32KB)
 # All artifacts pushed successfully.
 
 # View artifact details
@@ -1253,7 +1253,7 @@ aether cluster upgrade --version 0.26.0
 
 # Output:
 # Upgrade initiated.
-# Version: 0.25.0 -> 0.26.0
+# Version: 1.0.0-alpha -> 0.26.0
 ```
 
 If the cluster is already at the target version:

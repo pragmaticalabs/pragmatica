@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 FORGE_JAR="$PROJECT_ROOT/aether/forge/forge-core/target/aether-forge.jar"
-BLUEPRINT_COORDS="org.pragmatica.aether.example:place-order:0.25.0:blueprint"
+BLUEPRINT_COORDS="org.pragmatica.aether.example:place-order:1.0.0-alpha:blueprint"
 
 WITH_LOAD=false
 SKIP_BUILD=false

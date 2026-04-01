@@ -69,7 +69,7 @@ import static org.pragmatica.lang.Option.some;
 /// ```
 @Command(name = "aether",
 mixinStandardHelpOptions = true,
-version = "Aether 0.25.0",
+version = "Aether 1.0.0-alpha",
 description = "Command-line interface for Aether cluster management",
 subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.UpdateCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.NodeCommand.class, AetherCli.TopologyStatusCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.SchemaCommand.class, AetherCli.CanaryCommand.class, AetherCli.BlueGreenCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.NodeSlicesCommand.class, AetherCli.RoutesCommand.class, AetherCli.NodeRoutesCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, GenerateCompletion.class})
 @Contract public class AetherCli implements Runnable {
@@ -247,7 +247,7 @@ subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, Aeth
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01", "JBCT-UTIL-02"})
     private void runRepl(CommandLine cmd) {
-        System.out.println("Aether v0.25.0 - Connected to " + nodeAddress);
+        System.out.println("Aether v1.0.0-alpha - Connected to " + nodeAddress);
         System.out.println("Type 'help' for available commands, 'exit' to quit.");
         System.out.println();
         try (var reader = new BufferedReader(new InputStreamReader(System.in))) {

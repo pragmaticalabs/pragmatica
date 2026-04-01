@@ -4,7 +4,9 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.25.0] - Unreleased
+## [1.0.0-alpha] - Unreleased
+
+## [0.25.0] - 2026-04-01
 
 ### Added
 - **Hierarchical Storage Engine (AHSE)** — Content-addressed block storage with tiered Memory + Disk hierarchy. Core library at `integrations/storage` (zero Aether deps), Aether adapter at `aether/aether-storage`. BlockId (SHA-256), MemoryTier (CAS-bounded), LocalDiskTier (sharded filesystem), StorageInstance (write-through + tier-waterfall reads), SingleFlightCache (read dedup), MetadataStore (in-memory + KV-Store backed), SnapshotManager (dual-trigger: mutation count + time interval, rolling pruning), StorageReadinessGate (startup sequencing with read/write barriers), per-instance TOML config (`[storage.*]` sections), ArtifactStore migration (chunks via StorageInstance), config-driven StorageFactory with node wiring, per-node REST API (`/api/storage`, `/api/storage/{name}`, `/api/storage/{name}/snapshot`), per-cluster REST API (`/api/cluster/storage`, `/api/cluster/storage/{name}`) with KV-Store status publishing, CLI commands (`aether storage list/status/snapshot`), 107 unit + integration tests

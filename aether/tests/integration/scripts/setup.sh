@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 
-AETHER_IMAGE="${AETHER_IMAGE:-ghcr.io/pragmaticalabs/aether-node:0.25.0}"
+AETHER_IMAGE="${AETHER_IMAGE:-ghcr.io/pragmaticalabs/aether-node:1.0.0-alpha}"
 
 log_info "Setting up target host: ${TARGET_HOST}"
 log_info "SSH user: ${AETHER_SSH_USER}"

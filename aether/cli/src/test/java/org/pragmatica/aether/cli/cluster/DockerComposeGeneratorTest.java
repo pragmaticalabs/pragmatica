@@ -31,7 +31,7 @@ class DockerComposeGeneratorTest {
                 DeploymentType.ON_PREMISES,
                 Map.of("core", "bare-metal"),
                 RuntimeConfig.runtimeConfig(RuntimeType.CONTAINER,
-                                            Option.some("ghcr.io/pragmaticalabs/aether-node:0.25.0"),
+                                            Option.some("ghcr.io/pragmaticalabs/aether-node:1.0.0-alpha"),
                                             Option.none()),
                 Map.of(),
                 PortMapping.portMapping(6000, 5150, 8070, 6100),
@@ -40,7 +40,7 @@ class DockerComposeGeneratorTest {
             ),
             ClusterSpec.clusterSpec(
                 "test-cluster",
-                "0.25.0",
+                "1.0.0-alpha",
                 CoreSpec.coreSpec(5, 3, 9),
                 WorkerSpec.workerSpec(0),
                 DistributionConfig.distributionConfig(DistributionStrategy.BALANCED, List.of()),
@@ -65,7 +65,7 @@ class DockerComposeGeneratorTest {
         @Test
         void generate_fiveNodes_correctImage() {
             var compose = DockerComposeGenerator.generate(fiveNodeConfig(), "test-api-key");
-            assertTrue(compose.contains("image: ghcr.io/pragmaticalabs/aether-node:0.25.0"));
+            assertTrue(compose.contains("image: ghcr.io/pragmaticalabs/aether-node:1.0.0-alpha"));
         }
 
         @Test

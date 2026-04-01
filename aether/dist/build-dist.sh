@@ -2,7 +2,7 @@
 # Build self-contained distribution archives for Aether components.
 # Each archive bundles a custom JRE (via jlink) so users need no JDK installed.
 #
-# Usage: ./build-dist.sh [--version 0.25.0] [--targets node,cli,forge]
+# Usage: ./build-dist.sh [--version 1.0.0-alpha] [--targets node,cli,forge]
 #
 # For cross-platform builds, set JAVA_HOME to a JDK for the target platform:
 #   Linux amd64:  default JDK on Linux x86_64

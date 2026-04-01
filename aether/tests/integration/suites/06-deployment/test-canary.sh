@@ -7,7 +7,7 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/load.sh"
 
-ARTIFACT_VERSION="${ARTIFACT_VERSION:-0.25.0}"
+ARTIFACT_VERSION="${ARTIFACT_VERSION:-1.0.0-alpha}"
 NEW_VERSION="${NEW_VERSION:-0.25.1}"
 ARTIFACT_BASE="org.pragmatica.aether.example:url-shortener-url-shortener"
 LOAD_RPS="${LOAD_RPS:-5}"

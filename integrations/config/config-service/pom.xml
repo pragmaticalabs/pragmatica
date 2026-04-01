@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>config</artifactId>
-        <version>0.25.0</version>
+        <version>1.0.0-alpha</version>
     </parent>
 
     <artifactId>config-service</artifactId>

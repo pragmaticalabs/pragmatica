@@ -297,4 +297,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-03-29 (v0.25.0)*
+*Last updated: 2026-03-29 (v1.0.0-alpha)*
