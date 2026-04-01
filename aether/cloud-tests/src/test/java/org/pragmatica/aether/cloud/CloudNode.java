@@ -64,7 +64,7 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
     /// Starts the aether node with the given peer list.
     public Result<Unit> startNode(String peerList) {
         log.info("[{}] Starting node on {} with peers: {}", nodeId, publicIp, peerList);
-        var command = "nohup java -Xmx256m -XX:+UseZGC -XX:+UseCompactObjectHeaders"
+        var command = "nohup java -Xmx256m -XX:+UseZGC"
                       + " -jar /opt/aether/aether-node.jar"
                       + " --node-id=" + nodeId
                       + " --port=" + CLUSTER_PORT

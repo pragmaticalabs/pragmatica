@@ -28,7 +28,6 @@ class SystemdUnitTemplateTest {
             var unit = SystemdUnitTemplate.generateDefault();
             assertTrue(unit.contains("-Xmx4g"), "Should have heap size");
             assertTrue(unit.contains("-XX:+UseZGC"), "Should have ZGC");
-            assertTrue(unit.contains("-XX:+ZGenerational"), "Should have ZGenerational");
         }
 
         @Test

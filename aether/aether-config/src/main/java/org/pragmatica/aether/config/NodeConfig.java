@@ -61,11 +61,11 @@ public record NodeConfig(String heap,
     /// Build JAVA_OPTS string for this configuration.
     public String javaOpts() {
         var gcOpt = switch (gc.toLowerCase()) {
-            case "zgc" -> "-XX:+UseZGC -XX:+ZGenerational";
+            case "zgc" -> "-XX:+UseZGC";
             case "g1" -> "-XX:+UseG1GC";
-            default -> "-XX:+UseZGC -XX:+ZGenerational";
+            default -> "-XX:+UseZGC";
         };
-        return "-Xmx" + heap + " " + gcOpt + " -XX:+UseCompactObjectHeaders";
+        return "-Xmx" + heap + " " + gcOpt;
     }
 
     private static Option<ResourcesConfig> resourcesFor(Environment env) {

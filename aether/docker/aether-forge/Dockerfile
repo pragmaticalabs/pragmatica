@@ -26,7 +26,7 @@ COPY --chown=aether:aether forge/forge-core/target/aether-forge.jar /app/aether-
 ENV FORGE_PORT="8888"
 ENV CLUSTER_SIZE="5"
 ENV LOAD_RATE="1000"
-ENV JAVA_OPTS="-Xmx1g -XX:+UseZGC -XX:+ZGenerational -XX:+UseCompactObjectHeaders"
+ENV JAVA_OPTS="-Xmx1g -XX:+UseZGC"
 
 # Dashboard port
 EXPOSE 8888

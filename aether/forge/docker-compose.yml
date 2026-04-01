@@ -16,7 +16,7 @@ services:
       - FORGE_PORT=8888
       - CLUSTER_SIZE=5
       - LOAD_RATE=1000
-      - JAVA_OPTS=-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -XX:+UseCompactObjectHeaders -Xms512m -Xmx2g
+      - JAVA_OPTS=-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -Xms512m -Xmx2g
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8888/api/status"]
       interval: 10s

@@ -246,7 +246,7 @@ if echo "$TARGETS" | grep -q "node"; then
         "aether-node" \
         "$AETHER_DIR/node/target/aether-node.jar" \
         "aether-node" \
-        "-XX:+UseZGC -XX:+ZGenerational -XX:+UseCompactObjectHeaders -Xmx512m" \
+        "-XX:+UseZGC -Xmx512m" \
         "Ports
 -----
     8090/udp    Cluster communication (QUIC)
@@ -259,7 +259,7 @@ if echo "$TARGETS" | grep -q "cli"; then
         "aether-cli" \
         "$AETHER_DIR/cli/target/aether.jar" \
         "aether" \
-        "-XX:+UseZGC -XX:+ZGenerational -XX:+UseCompactObjectHeaders -Xmx256m" \
+        "-XX:+UseZGC -Xmx256m" \
         "The Aether CLI manages clusters, deployments, and configuration."
 fi
 
@@ -268,7 +268,7 @@ if echo "$TARGETS" | grep -q "forge"; then
         "aether-forge" \
         "$AETHER_DIR/forge/forge-core/target/aether-forge.jar" \
         "aether-forge" \
-        "-XX:+UseZGC -XX:+ZGenerational -XX:+UseCompactObjectHeaders -Xmx1g" \
+        "-XX:+UseZGC -Xmx1g" \
         "Forge is the Aether testing simulator with a visual dashboard.
 
 Default port: 8888

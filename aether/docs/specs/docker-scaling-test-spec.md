@@ -230,7 +230,7 @@ services:
       PEERS: >-
         node-1:node-1:8090,node-2:node-2:8090,node-3:node-3:8090,
         node-4:node-4:8090,node-5:node-5:8090
-      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational -XX:+UseCompactObjectHeaders"
+      JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
     ports:
       - "8080:8080"
       - "8090:8090"
@@ -263,7 +263,7 @@ services:
       PEERS: >-
         node-1:node-1:8090,node-2:node-2:8090,node-3:node-3:8090,
         node-4:node-4:8090,node-5:node-5:8090
-      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational -XX:+UseCompactObjectHeaders"
+      JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
     ports:
       - "8081:8080"
     networks:
@@ -312,7 +312,7 @@ services:
       PEERS: >-
         node-1:node-1:8090,node-2:node-2:8090,node-3:node-3:8090,
         node-4:node-4:8090,node-5:node-5:8090
-      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational -XX:+UseCompactObjectHeaders"
+      JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
     ports:
       - "8085:8080"
     networks:

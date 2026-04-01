@@ -158,7 +158,7 @@ sealed interface SshBootstrapOrchestrator {
                      + " -e CLUSTER_PORT=" + ports.cluster()
                      + " -e MANAGEMENT_PORT=" + ports.management()
                      + " -e PEERS=" + peers
-                     + " -e JAVA_OPTS='-Xmx256m -XX:+UseZGC -XX:+UseCompactObjectHeaders'"
+                     + " -e JAVA_OPTS='-Xmx256m -XX:+UseZGC'"
                      + " -p " + mgmtHostPort + ":" + ports.management()
                      + " -p " + appHostPort + ":" + ports.appHttp()
                      + " " + image;
@@ -171,7 +171,7 @@ sealed interface SshBootstrapOrchestrator {
         var jvmArgs = config.deployment()
                             .runtime()
                             .jvmArgs()
-                            .or("-Xmx4g -XX:+UseZGC -XX:+ZGenerational -XX:+UseCompactObjectHeaders");
+                            .or("-Xmx4g -XX:+UseZGC");
         var cmd = "nohup java " + jvmArgs
                   + " -jar $HOME/aether/aether-node.jar --config=$HOME/aether/config/aether.toml > /var/log/aether.log 2>&1 &";
         System.out.printf("    Starting JVM node on %s...%n", host);

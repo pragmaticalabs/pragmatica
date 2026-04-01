@@ -120,7 +120,7 @@ EXPOSE 8090/udp 8190/udp 8080
 # JAR changes often — last layer for optimal caching
 COPY --chown=aether:aether aether-node.jar /app/aether-node.jar
 
-ENTRYPOINT ["sh", "-c", "exec java \${JAVA_OPTS:--Xmx512m -XX:+UseZGC -XX:+ZGenerational} -Djdk.virtualThreadScheduler.parallelism=\${VTHREAD_PARALLELISM:-\$(nproc)} -jar /app/aether-node.jar --config=\${CONFIG_PATH:-/app/aether.toml} --node-id=\${NODE_ID:-node-1} --port=\${CLUSTER_PORT:-8090} --management-port=\${MANAGEMENT_PORT:-8080} \${PEERS:+--peers=\$PEERS}"]
+ENTRYPOINT ["sh", "-c", "exec java \${JAVA_OPTS:--Xmx512m -XX:+UseZGC} -Djdk.virtualThreadScheduler.parallelism=\${VTHREAD_PARALLELISM:-\$(nproc)} -jar /app/aether-node.jar --config=\${CONFIG_PATH:-/app/aether.toml} --node-id=\${NODE_ID:-node-1} --port=\${CLUSTER_PORT:-8090} --management-port=\${MANAGEMENT_PORT:-8080} \${PEERS:+--peers=\$PEERS}"]
 DFILE
 echo "  Dockerfile created"
 fi
