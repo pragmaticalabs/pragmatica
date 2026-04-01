@@ -38,7 +38,12 @@ public final class FactoryGenerator {
     public record MethodParam(String name, String typeName) {}
 
     /// A column for the row mapper.
-    public record MapperColumn(String columnName, String accessorMethod, String fieldName) {}
+    /// `typeArg` is the class literal argument for `getObject()` calls, empty string if not needed.
+    public record MapperColumn(String columnName, String accessorMethod, String fieldName, String typeArg) {
+        public MapperColumn(String columnName, String accessorMethod, String fieldName) {
+            this(columnName, accessorMethod, fieldName, "");
+        }
+    }
 
     /// Generates the factory source code.
     public static String generate(
@@ -53,6 +58,7 @@ public final class FactoryGenerator {
 
         appendHeader(sb, packageName, interfaceName, methods, additionalImports);
         appendClassStart(sb, factoryClassName, factoryMethodName, interfaceName);
+        appendScalarMapperConstants(sb, methods);
         appendSqlConstants(sb, methods);
         appendMethodImplementations(sb, methods, factoryClassName);
         appendRecordClose(sb, factoryMethodName);
@@ -121,6 +127,10 @@ public final class FactoryGenerator {
         sb.append(interfaceName).append(" {\n\n");
     }
 
+    private static void appendScalarMapperConstants(StringBuilder sb, List<MethodInfo> methods) {
+        // Scalar mappers are placed inside the record, near the SQL constants
+    }
+
     private static void appendSqlConstants(StringBuilder sb, List<MethodInfo> methods) {
         for (var method : methods) {
             sb.append("            private static final String ").append(method.sqlConstantName);
@@ -141,19 +151,68 @@ public final class FactoryGenerator {
     }
 
     private static void appendMethodBody(StringBuilder sb, MethodInfo method, String factoryClassName) {
+        if (method.returnKind == MethodAnalyzer.ReturnKind.UNIT) {
+            appendUnitMethodBody(sb, method);
+            return;
+        }
+
         var connectorMethod = MethodAnalyzer.connectorMethod(method.returnKind);
         sb.append("                return db.").append(connectorMethod).append('(');
         sb.append(method.sqlConstantName);
 
         if (method.needsMapper) {
             sb.append(",\n                    ").append(factoryClassName).append("::map");
-            sb.append(method.innerTypeName);
+            sb.append(toMapperMethodSuffix(method.innerTypeName));
+        } else if (method.returnKind == MethodAnalyzer.ReturnKind.LONG
+                   || method.returnKind == MethodAnalyzer.ReturnKind.BOOLEAN) {
+            appendScalarMapper(sb, method.returnKind, method.sql);
         }
 
         for (var param : method.params) {
             sb.append(", ").append(param.name);
         }
         sb.append(");\n");
+    }
+
+    private static void appendUnitMethodBody(StringBuilder sb, MethodInfo method) {
+        sb.append("                return db.update(");
+        sb.append(method.sqlConstantName);
+        for (var param : method.params) {
+            sb.append(", ").append(param.name);
+        }
+        sb.append(").mapToUnit();\n");
+    }
+
+    private static void appendScalarMapper(StringBuilder sb, MethodAnalyzer.ReturnKind kind, String sql) {
+        var columnName = inferScalarColumnName(sql, kind);
+        switch (kind) {
+            case LONG -> sb.append(",\n                    row -> row.getLong(\"").append(columnName).append("\")");
+            case BOOLEAN -> sb.append(",\n                    row -> row.getBoolean(\"").append(columnName).append("\")");
+            default -> { /* no mapper needed */ }
+        }
+    }
+
+    /// Infers the result column name from the SQL for scalar queries.
+    /// COUNT(*) -> "count", COUNT(*) AS click_count -> "click_count", EXISTS(...) -> "exists".
+    private static String inferScalarColumnName(String sql, MethodAnalyzer.ReturnKind kind) {
+        var upper = sql.toUpperCase();
+
+        // Check for explicit AS alias: SELECT COUNT(*) AS alias_name
+        var asIdx = upper.indexOf(" AS ");
+        if (asIdx >= 0) {
+            var afterAs = sql.substring(asIdx + 4).trim();
+            var spaceIdx = afterAs.indexOf(' ');
+            return spaceIdx >= 0 ? afterAs.substring(0, spaceIdx).toLowerCase() : afterAs.toLowerCase();
+        }
+
+        if (kind == MethodAnalyzer.ReturnKind.BOOLEAN && upper.contains("EXISTS")) {
+            return "exists";
+        }
+        if (kind == MethodAnalyzer.ReturnKind.LONG && upper.contains("COUNT")) {
+            return "count";
+        }
+
+        return kind == MethodAnalyzer.ReturnKind.BOOLEAN ? "exists" : "count";
     }
 
     private static void appendRecordClose(StringBuilder sb, String factoryMethod) {
@@ -166,17 +225,22 @@ public final class FactoryGenerator {
         var generatedMappers = new LinkedHashSet<String>();
 
         for (var method : methods) {
-            if (!method.needsMapper || !generatedMappers.add(method.innerTypeName)) {
+            var mapperSuffix = toMapperMethodSuffix(method.innerTypeName);
+            if (!method.needsMapper || !generatedMappers.add(mapperSuffix)) {
                 continue;
             }
 
             sb.append("\n    private static Result<").append(method.innerTypeName);
-            sb.append("> map").append(method.innerTypeName).append("(RowMapper.RowAccessor row) {\n");
+            sb.append("> map").append(mapperSuffix).append("(RowMapper.RowAccessor row) {\n");
             sb.append("        return Result.all(\n");
 
             for (int i = 0; i < method.mapperColumns.size(); i++) {
                 var col = method.mapperColumns.get(i);
-                sb.append("            row.").append(col.accessorMethod).append("(\"").append(col.columnName).append("\")");
+                sb.append("            row.").append(col.accessorMethod()).append("(\"").append(col.columnName()).append("\"");
+                if (!col.typeArg().isEmpty()) {
+                    sb.append(", ").append(col.typeArg());
+                }
+                sb.append(')');
                 if (i < method.mapperColumns.size() - 1) {
                     sb.append(',');
                 }
@@ -214,5 +278,10 @@ public final class FactoryGenerator {
 
     private static String escapeSql(String sql) {
         return sql.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    /// Converts an inner type name (possibly qualified like "UserRepo.UserRow") to a valid mapper method suffix.
+    private static String toMapperMethodSuffix(String innerTypeName) {
+        return innerTypeName.replace(".", "");
     }
 }
