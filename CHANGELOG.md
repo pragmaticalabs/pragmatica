@@ -29,8 +29,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **AHSE Phase 3** — LZ4/ZSTD compression pipeline, AES-256-GCM block encryption, StorageBackedPersistence (ContentStore-backed RabiaPersistence)
 - **S3 REST client** — SigV4-signed S3-compatible client in `integrations/cloud/aws/s3` (PutObject/GetObject/DeleteObject/HeadObject/ListObjectsV2, path-style MinIO support)
 - **Architectural compliance** — dormant/active lifecycle on all background workers, KV-Store persistence abstractions (WatermarkStore, ReplicaAssignmentStore, TombstoneStore), SegmentIndex rebuild from storage refs, control-plane delegation investigation updated
-- **Compact object headers** — enabled `-XX:+UseCompactObjectHeaders` (Project Lilliput) across all JVM configurations: Docker, systemd, K8s, cloud, install scripts
 - **Integration test metrics** — opt-in thread/heap/RSS collection before+after each test (`COLLECT_METRICS=true`)
+- **Integration test README** — comprehensive setup guide, architecture docs, test-writing examples
+- **Soak test exclusion** — `SKIP_SOAK=true` (default) in `run-all.sh` and `run-suite.sh` to skip long-running soak tests
+
+### Removed
+- **`-XX:+ZGenerational`** — removed from all JVM configurations (Java 25 makes generational ZGC the default)
+- **`-XX:+UseCompactObjectHeaders`** — removed from all JVM configurations (no measurable impact in benchmarks)
 
 ### Changed
 - **java-peglib 0.2.1** — parser regenerated, all 35 lint rules updated for new CST shape (ordered-choice container wrapping)
