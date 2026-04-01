@@ -2147,6 +2147,33 @@ class CstLinterTest {
                 """);
             assertNoRule(diagnostics, "JBCT-RET-01");
         }
+
+        @Test
+        void recordScopedSuppressionCoversAllMethods() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                @SuppressWarnings("JBCT-RET-01")
+                public record Test(String name) {
+                    public void methodOne() {}
+                    public void methodTwo() {}
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-01");
+        }
+
+        @Test
+        void recordScopedSuppressionCoversPrivateMethods() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                @SuppressWarnings("JBCT-RET-01")
+                public record Test(String config) {
+                    private void helperOne() {}
+                    private void helperTwo() {}
+                    private void helperThree() {}
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-01");
+        }
     }
 
     // ========== @Contract Annotation Support ==========
