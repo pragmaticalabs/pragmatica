@@ -4,3 +4,14 @@ indentSize = 4
 
 [lint]
 failOnWarning = false
+
+[files]
+# Annotation processor files: javax.annotation.processing API mandates null/void patterns
+# that conflict with JBCT rules. @Contract suppression has a known bug with /// doc comments.
+excludes = [
+    "**/pg/codegen/processor/QueryAnnotationProcessor.java",
+    "**/pg/codegen/processor/TypeMirrorResolver.java",
+    "**/pg/codegen/processor/MethodNameParser.java",
+    "**/pg/maven/LintMojo.java",
+    "**/pg/maven/GenerateMojo.java"
+]
