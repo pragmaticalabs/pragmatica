@@ -20,39 +20,40 @@ public final class EnumGenerator {
 
     private String renderEnum(String className, PgType.EnumType enumType) {
         var sb = new StringBuilder();
-
-        sb.append("package ").append(config.targetPackage()).append(";\n\n");
+        sb.append("package ").append(config.targetPackage())
+                 .append(";\n\n");
         sb.append("import org.pragmatica.lang.Result;\n\n");
-
-        sb.append("/// Generated from PostgreSQL enum: ").append(enumType.name()).append("\n");
-        sb.append("public enum ").append(className).append(" {\n");
-
-        for (int i = 0; i < enumType.values().size(); i++) {
+        sb.append("/// Generated from PostgreSQL enum: ").append(enumType.name())
+                 .append("\n");
+        sb.append("public enum ").append(className)
+                 .append(" {\n");
+        for ( int i = 0; i < enumType.values().size(); i++) {
             var value = enumType.values().get(i);
             var constant = NamingConvention.toEnumConstant(value);
-            sb.append("    ").append(constant).append("(\"").append(escapeJavaString(value)).append("\")");
-            if (i < enumType.values().size() - 1) sb.append(",");
-            else sb.append(";");
+            sb.append("    ").append(constant)
+                     .append("(\"")
+                     .append(escapeJavaString(value))
+                     .append("\")");
+            if ( i < enumType.values().size() - 1) sb.append(",");else
+            sb.append(";");
             sb.append("\n");
         }
-
         sb.append("\n    private final String pgValue;\n\n");
-
-        sb.append("    ").append(className).append("(String pgValue) {\n");
+        sb.append("    ").append(className)
+                 .append("(String pgValue) {\n");
         sb.append("        this.pgValue = pgValue;\n");
         sb.append("    }\n\n");
-
         sb.append("    public String pgValue() {\n");
         sb.append("        return pgValue;\n");
         sb.append("    }\n\n");
-
-        sb.append("    public static Result<").append(className).append("> fromPgValue(String value) {\n");
+        sb.append("    public static Result<").append(className)
+                 .append("> fromPgValue(String value) {\n");
         sb.append("        for (var v : values()) {\n");
         sb.append("            if (v.pgValue.equals(value)) return Result.success(v);\n");
         sb.append("        }\n");
-        sb.append("        return Result.failure(() -> \"Unknown ").append(enumType.name()).append(" value: \" + value);\n");
+        sb.append("        return Result.failure(() -> \"Unknown ").append(enumType.name())
+                 .append(" value: \" + value);\n");
         sb.append("    }\n");
-
         sb.append("}\n");
         return sb.toString();
     }

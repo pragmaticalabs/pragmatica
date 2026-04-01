@@ -5,13 +5,18 @@ import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
 /// A SQL identifier that tracks quoting style.
 /// Unquoted identifiers are case-folded to lowercase per PostgreSQL rules.
 /// Quoted identifiers preserve their original case.
-public record Identifier(SourceSpan span, String value, QuoteStyle style) {
-
-    public enum QuoteStyle { UNQUOTED, DOUBLE_QUOTED, UNICODE_QUOTED }
+public record Identifier( SourceSpan span, String value, QuoteStyle style) {
+    public enum QuoteStyle {
+        UNQUOTED,
+        DOUBLE_QUOTED,
+        UNICODE_QUOTED
+    }
 
     /// Returns the normalized name as PostgreSQL would interpret it.
     public String normalized() {
-        return style == QuoteStyle.UNQUOTED ? value.toLowerCase() : value;
+        return style == QuoteStyle.UNQUOTED
+               ? value.toLowerCase()
+               : value;
     }
 
     public static Identifier unquoted(SourceSpan span, String value) {
@@ -22,8 +27,9 @@ public record Identifier(SourceSpan span, String value, QuoteStyle style) {
         return new Identifier(span, value, QuoteStyle.DOUBLE_QUOTED);
     }
 
-    @Override
-    public String toString() {
-        return style == QuoteStyle.UNQUOTED ? normalized() : "\"" + value + "\"";
+    @Override public String toString() {
+        return style == QuoteStyle.UNQUOTED
+               ? normalized()
+               : "\"" + value + "\"";
     }
 }

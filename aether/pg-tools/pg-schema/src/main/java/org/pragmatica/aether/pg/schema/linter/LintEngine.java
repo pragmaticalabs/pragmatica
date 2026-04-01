@@ -38,23 +38,20 @@ public final class LintEngine {
     public List<LintDiagnostic> lint(List<SchemaEvent> events) {
         var diagnostics = new ArrayList<LintDiagnostic>();
         var schema = Schema.empty();
-
-        for (var event : events) {
-            for (var rule : rules) {
-                if (!config.isEnabled(rule.id())) continue;
+        for ( var event : events) {
+            for ( var rule : rules) {
+                if ( !config.isEnabled(rule.id())) continue;
                 var findings = rule.check(event, schema);
-                for (var d : findings) {
+                for ( var d : findings) {
                     var severity = config.severity(d.ruleId(), d.severity());
                     diagnostics.add(new LintDiagnostic(d.ruleId(), severity, d.message(), d.span(), d.suggestion()));
                 }
             }
             // Apply event to advance schema state
             var result = SchemaBuilder.applyEvent(schema, event);
-            if (result.isSuccess()) {
-                schema = result.unwrap();
-            }
+            if ( result.isSuccess()) {
+            schema = result.unwrap();}
         }
-
         return diagnostics;
     }
 

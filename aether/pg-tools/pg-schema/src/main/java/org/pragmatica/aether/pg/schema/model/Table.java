@@ -7,27 +7,30 @@ import java.util.List;
 
 /// A table definition with columns, constraints, and metadata.
 public record Table(
-    String name,
-    String schema,
-    List<Column> columns,
-    List<Constraint> constraints,
-    List<Index> indexes,
-    Option<PartitionBy> partitioning,
-    Option<String> comment
-) {
-    public record PartitionBy(PartitionStrategy strategy, List<String> columns) {}
-    public enum PartitionStrategy { RANGE, LIST, HASH }
+ String name,
+ String schema,
+ List<Column> columns,
+ List<Constraint> constraints,
+ List<Index> indexes,
+ Option<PartitionBy> partitioning,
+ Option<String> comment) {
+    public record PartitionBy(PartitionStrategy strategy, List<String> columns){}
+
+    public enum PartitionStrategy {
+        RANGE,
+        LIST,
+        HASH
+    }
 
     public static Table table(String name, String schema, List<Column> columns, List<Constraint> constraints) {
         return new Table(name, schema, columns, constraints, List.of(), Option.empty(), Option.empty());
     }
 
     public Option<Column> column(String columnName) {
-        return columns.stream()
-                      .filter(c -> c.name().equals(columnName))
-                      .findFirst()
-                      .map(Option::present)
-                      .orElse(Option.empty());
+        return columns.stream().filter(c -> c.name().equals(columnName))
+                             .findFirst()
+                             .map(Option::present)
+                             .orElse(Option.empty());
     }
 
     public Table withColumn(Column col) {
@@ -37,14 +40,16 @@ public record Table(
     }
 
     public Table withoutColumn(String colName) {
-        var newCols = columns.stream().filter(c -> !c.name().equals(colName)).toList();
+        var newCols = columns.stream().filter(c -> !c.name().equals(colName))
+                                    .toList();
         return new Table(name, schema, newCols, constraints, indexes, partitioning, comment);
     }
 
     public Table withColumnReplaced(String colName, Column newCol) {
-        var newCols = columns.stream()
-                             .map(c -> c.name().equals(colName) ? newCol : c)
-                             .toList();
+        var newCols = columns.stream().map(c -> c.name().equals(colName)
+                                               ? newCol
+                                               : c)
+                                    .toList();
         return new Table(name, schema, newCols, constraints, indexes, partitioning, comment);
     }
 
@@ -55,9 +60,9 @@ public record Table(
     }
 
     public Table withoutConstraint(String constraintName) {
-        var newConstraints = constraints.stream()
-            .filter(c -> !c.name().isPresent() || !c.name().unwrap().equals(constraintName))
-            .toList();
+        var newConstraints = constraints.stream().filter(c -> !c.name().isPresent() || !c.name().unwrap()
+                                                                                              .equals(constraintName))
+                                               .toList();
         return new Table(name, schema, columns, newConstraints, indexes, partitioning, comment);
     }
 

@@ -20,9 +20,8 @@ public final class CodegenPipeline {
 
     /// Generate Java files from migration SQL scripts (in memory, no disk writes).
     public Result<List<GeneratedFile>> generate(List<String> migrationScripts) {
-        return MigrationProcessor.create()
-            .processAll(migrationScripts)
-            .flatMap(this::generateFromSchema);
+        return MigrationProcessor.create().processAll(migrationScripts)
+                                        .flatMap(this::generateFromSchema);
     }
 
     /// Generate Java files from a pre-built schema (in memory, no disk writes).
@@ -30,21 +29,18 @@ public final class CodegenPipeline {
         var files = new ArrayList<GeneratedFile>();
         var recordGen = new RecordGenerator(config);
         var enumGen = new EnumGenerator(config);
-
         // Generate records for tables
-        for (var table : schema.tables().values()) {
+        for ( var table : schema.tables().values()) {
             var result = recordGen.generate(table);
-            if (result.isFailure()) return result.map(f -> List.of(f));
+            if ( result.isFailure()) return result.map(f -> List.of(f));
             files.add(result.unwrap());
         }
-
         // Generate enums for enum types
-        for (var enumType : schema.enumTypes().values()) {
+        for ( var enumType : schema.enumTypes().values()) {
             var result = enumGen.generate(enumType);
-            if (result.isFailure()) return result.map(f -> List.of(f));
+            if ( result.isFailure()) return result.map(f -> List.of(f));
             files.add(result.unwrap());
         }
-
         return Result.success(files);
     }
 
@@ -55,15 +51,26 @@ public final class CodegenPipeline {
 
     /// Write generated files to disk.
     public Result<List<GeneratedFile>> writeFiles(List<GeneratedFile> files) {
-        for (var file : files) {
-            try {
-                Files.createDirectories(file.path().getParent());
-                Files.writeString(file.path(), file.content());
-            } catch (IOException e) {
-                return Result.failure(new CodegenError.IoError(
-                    "Failed to write " + file.path() + ": " + e.getMessage()));
-            }
+        for ( var file : files) {
+        try {
+            Files.createDirectories(file.path().getParent());
+            Files.writeString(file.path(), file.content());
         }
+
+
+
+
+
+
+
+
+
+
+
+
+        catch (IOException e) {
+            return new CodegenError.IoError("Failed to write " + file.path() + ": " + e.getMessage()).result();
+        }}
         return Result.success(files);
     }
 }

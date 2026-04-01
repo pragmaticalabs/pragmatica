@@ -1,6 +1,4 @@
 package org.pragmatica.aether.pg.codegen.processor;
-
-/// Error messages for compile-time validation, all prefixed with [PG-VALIDATE].
 public final class ProcessorError {
     private ProcessorError() {}
 
@@ -23,8 +21,7 @@ public final class ProcessorError {
     }
 
     public static String typeMismatch(String param, String javaType, String column, String table, String pgType) {
-        return PREFIX + "Type mismatch: parameter '" + param + "' is " + javaType
-               + " but column '" + table + "." + column + "' is " + pgType;
+        return PREFIX + "Type mismatch: parameter '" + param + "' is " + javaType + " but column '" + table + "." + column + "' is " + pgType;
     }
 
     public static String notNullColumnMissing(String column, String table, String recordType) {
@@ -36,8 +33,7 @@ public final class ProcessorError {
     }
 
     public static String invalidReturnType(String methodName) {
-        return PREFIX + "Method '" + methodName
-               + "' must return Promise<T>, Promise<Option<T>>, Promise<List<T>>, Promise<Unit>, Promise<Long>, or Promise<Boolean>";
+        return PREFIX + "Method '" + methodName + "' must return Promise<T>, Promise<Option<T>>, Promise<List<T>>, Promise<Unit>, Promise<Long>, or Promise<Boolean>";
     }
 
     public static String cannotInferTable(String methodName) {
@@ -57,7 +53,6 @@ public final class ProcessorError {
     }
 
     public static String sqlConnectorWithQueryAnnotation(String interfaceName) {
-        return PREFIX + "Interface '" + interfaceName + "' uses @Query but its qualifier references SqlConnector, "
-               + "not PgSqlConnector. Use a PgSqlConnector-based qualifier.";
+        return PREFIX + "Interface '" + interfaceName + "' uses @Query but its qualifier references SqlConnector, " + "not PgSqlConnector. Use a PgSqlConnector-based qualifier.";
     }
 }

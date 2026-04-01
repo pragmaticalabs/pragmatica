@@ -4,17 +4,19 @@ import org.pragmatica.lang.Option;
 
 /// A table column definition.
 public record Column(
-    String name,
-    PgType type,
-    boolean nullable,
-    Option<String> defaultExpr,
-    Option<String> generatedExpr,
-    Option<IdentitySpec> identity,
-    Option<String> comment
-) {
-    public record IdentitySpec(IdentityKind kind) {}
+ String name,
+ PgType type,
+ boolean nullable,
+ Option<String> defaultExpr,
+ Option<String> generatedExpr,
+ Option<IdentitySpec> identity,
+ Option<String> comment) {
+    public record IdentitySpec(IdentityKind kind){}
 
-    public enum IdentityKind { ALWAYS, BY_DEFAULT }
+    public enum IdentityKind {
+        ALWAYS,
+        BY_DEFAULT
+    }
 
     public static Column column(String name, PgType type, boolean nullable) {
         return new Column(name, type, nullable, Option.empty(), Option.empty(), Option.empty(), Option.empty());
@@ -34,6 +36,10 @@ public record Column(
 
     public Column withComment(String text) {
         return new Column(name, type, nullable, defaultExpr, generatedExpr, identity, Option.present(text));
+    }
+
+    public Column withoutDefault() {
+        return new Column(name, type, nullable, Option.empty(), generatedExpr, identity, comment);
     }
 
     public Column renamed(String newName) {

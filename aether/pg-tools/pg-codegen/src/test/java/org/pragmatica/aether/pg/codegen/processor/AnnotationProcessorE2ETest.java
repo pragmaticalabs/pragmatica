@@ -4,15 +4,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import javax.tools.DiagnosticCollector;
-import javax.tools.JavaFileObject;
-import javax.tools.SimpleJavaFileObject;
-import javax.tools.ToolProvider;
-import java.io.IOException;
-import java.net.URI;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -27,7 +19,7 @@ class AnnotationProcessorE2ETest {
     @Nested
     class QueryWithNamedParams {
         @Test
-        void queryMethod_generatesFactoryWithRewrittenParams() throws IOException {
+        void queryMethod_generatesFactoryWithRewrittenParams() throws Exception {
             var source = """
                 package test;
 
@@ -68,7 +60,7 @@ class AnnotationProcessorE2ETest {
     @Nested
     class CrudMethodGeneration {
         @Test
-        void findById_generatesFindSql() throws IOException {
+        void findById_generatesFindSql() throws Exception {
             var source = """
                 package test;
 
@@ -103,7 +95,7 @@ class AnnotationProcessorE2ETest {
     @Nested
     class ScalarReturn {
         @Test
-        void promiseLong_usesQueryOneConnectorMethod() throws IOException {
+        void promiseLong_usesQueryOneConnectorMethod() throws Exception {
             var source = """
                 package test;
 
@@ -137,7 +129,7 @@ class AnnotationProcessorE2ETest {
     @Nested
     class UnitReturn {
         @Test
-        void promiseUnit_usesUpdateConnectorMethod() throws IOException {
+        void promiseUnit_usesUpdateConnectorMethod() throws Exception {
             var source = """
                 package test;
 
@@ -165,76 +157,154 @@ class AnnotationProcessorE2ETest {
         }
     }
 
-    // --- Test infrastructure ---
+    @Nested
+    class RecordExpansion {
+        @Test
+        void insertRecordExpansion_expandsValuesPattern() throws Exception {
+            var source = """
+                package test;
 
-    private record CompilationResult(boolean success, String diagnostics, Path outputDir) {
-        String generatedSource(String qualifiedName) throws IOException {
-            var relativePath = qualifiedName.replace('.', '/') + ".java";
-            var generatedFile = outputDir.resolve(relativePath);
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
 
-            if (Files.exists(generatedFile)) {
-                return Files.readString(generatedFile);
-            }
-            return null;
+                @PgSql
+                public interface InsertRepo {
+
+                    record CreateUserRequest(String name, String email, boolean active) {}
+                    record UserRow(long id, String name, String email, boolean active) {}
+
+                    @Query("INSERT INTO users VALUES(:request) RETURNING *")
+                    Promise<UserRow> createUser(CreateUserRequest request);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/InsertRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.InsertRepoFactory");
+            assertThat(generated).isNotNull();
+            // Record expansion: VALUES(:request) -> (name, email, active) VALUES ($1, $2, $3)
+            assertThat(generated).contains("name, email, active");
+            assertThat(generated).contains("$1, $2, $3");
+            assertThat(generated).doesNotContain("VALUES($1)");
+            // Body should use accessor expressions: request.name(), request.email(), etc.
+            assertThat(generated).contains("request.name()");
+            assertThat(generated).contains("request.email()");
+            assertThat(generated).contains("request.active()");
+        }
+
+        @Test
+        void updateRecordExpansion_expandsSetPattern() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Unit;
+
+                @PgSql
+                public interface UpdateRepo {
+
+                    record UpdateRequest(String name, String email) {}
+
+                    @Query("UPDATE users SET :request WHERE id = :id")
+                    Promise<Unit> updateUser(long id, UpdateRequest request);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/UpdateRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.UpdateRepoFactory");
+            assertThat(generated).isNotNull();
+            // SET :request -> SET name = $N, email = $N+1
+            assertThat(generated).contains("SET name =");
+            assertThat(generated).contains("email =");
+            assertThat(generated).doesNotContain("SET $");
         }
     }
 
-    private CompilationResult compileWithProcessor(String sourceCode, String fileName) throws IOException {
-        var compiler = ToolProvider.getSystemJavaCompiler();
-        var diagnosticCollector = new DiagnosticCollector<JavaFileObject>();
+    @Nested
+    class CrudInsertWithRecord {
+        @Test
+        void insert_withRecordParam_expandsFields() throws Exception {
+            var source = """
+                package test;
 
-        var outputDir = tempDir.resolve("generated");
-        Files.createDirectories(outputDir);
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
 
-        var classOutputDir = tempDir.resolve("classes");
-        Files.createDirectories(classOutputDir);
+                @PgSql
+                public interface UserCrudRepo {
 
-        var sourceFile = new InMemoryJavaFileObject(fileName, sourceCode);
+                    record UserRow(long id, String name, String email) {}
 
-        // Build classpath from the current test classpath
-        var classpath = System.getProperty("java.class.path");
+                    Promise<UserRow> insert(UserRow user);
+                }
+                """;
 
-        var options = List.of(
-            "-d", classOutputDir.toString(),
-            "-s", outputDir.toString(),
-            "-classpath", classpath,
-            "-proc:only",
-            "-Xlint:none",
-            "--release", "25"
-        );
+            var result = compileWithProcessor(source, "test/UserCrudRepo.java");
 
-        try (var fileManager = compiler.getStandardFileManager(diagnosticCollector, null, null)) {
-            var task = compiler.getTask(
-                null,
-                fileManager,
-                diagnosticCollector,
-                options,
-                null,
-                List.of(sourceFile)
-            );
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
 
-            task.setProcessors(List.of(new QueryAnnotationProcessor()));
-
-            var success = task.call();
-            var diagMessages = diagnosticCollector.getDiagnostics().stream()
-                .map(d -> d.getKind() + ": " + d.getMessage(null))
-                .reduce("", (a, b) -> a + "\n" + b);
-
-            return new CompilationResult(success, diagMessages, outputDir);
+            var generated = result.generatedSource("test.UserCrudRepoFactory");
+            assertThat(generated).isNotNull();
+            // Should expand record fields, not use param name as column
+            assertThat(generated).contains("id, name, email");
+            assertThat(generated).doesNotContain("(user)");
+            // Body should use accessor expressions
+            assertThat(generated).contains("user.id()");
+            assertThat(generated).contains("user.name()");
+            assertThat(generated).contains("user.email()");
         }
     }
 
-    private static class InMemoryJavaFileObject extends SimpleJavaFileObject {
-        private final String code;
+    @Nested
+    class TypeNameSimplification {
+        @Test
+        void generatedCode_usesSimpleTypeNames() throws Exception {
+            var source = """
+                package test;
 
-        InMemoryJavaFileObject(String fileName, String code) {
-            super(URI.create("string:///" + fileName), Kind.SOURCE);
-            this.code = code;
-        }
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
 
-        @Override
-        public CharSequence getCharContent(boolean ignoreEncodingErrors) {
-            return code;
+                @PgSql
+                public interface TypeRepo {
+
+                    record Row(long id, String name) {}
+
+                    @Query("SELECT id, name FROM items WHERE id = :id")
+                    Promise<Option<Row>> findById(Long id);
+
+                    @Query("SELECT id, name FROM items WHERE name = :name")
+                    Promise<Option<Row>> findByName(String name);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/TypeRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.TypeRepoFactory");
+            assertThat(generated).isNotNull();
+            // Should use simple type names, not FQCN
+            assertThat(generated).doesNotContain("java.lang.Long");
+            assertThat(generated).doesNotContain("java.lang.String");
+            assertThat(generated).contains("Long id");
+            assertThat(generated).contains("String name");
         }
+    }
+
+    // --- Delegate to shared helper ---
+
+    private TestCompilationHelper.CompilationResult compileWithProcessor(String sourceCode, String fileName) throws Exception {
+        return TestCompilationHelper.compileWithProcessor(sourceCode, fileName, tempDir);
     }
 }

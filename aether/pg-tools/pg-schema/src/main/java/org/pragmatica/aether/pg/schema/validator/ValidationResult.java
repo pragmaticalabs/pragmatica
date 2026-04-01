@@ -3,8 +3,7 @@ package org.pragmatica.aether.pg.schema.validator;
 import java.util.List;
 
 /// Result of query validation — contains all found errors.
-public record ValidationResult(List<ValidationError> errors) {
-
+public record ValidationResult( List<ValidationError> errors) {
     public static ValidationResult empty() {
         return new ValidationResult(List.of());
     }
@@ -14,7 +13,7 @@ public record ValidationResult(List<ValidationError> errors) {
     }
 
     public boolean hasErrors() {
-        return !errors.isEmpty();
+        return ! errors.isEmpty();
     }
 
     public int errorCount() {
@@ -22,15 +21,12 @@ public record ValidationResult(List<ValidationError> errors) {
     }
 
     public List<ValidationError> tableErrors() {
-        return errors.stream()
-                     .filter(e -> e instanceof ValidationError.TableNotFound)
-                     .toList();
+        return errors.stream().filter(e -> e instanceof ValidationError.TableNotFound)
+                            .toList();
     }
 
     public List<ValidationError> columnErrors() {
-        return errors.stream()
-                     .filter(e -> e instanceof ValidationError.ColumnNotFound
-                               || e instanceof ValidationError.ColumnNotResolved)
-                     .toList();
+        return errors.stream().filter(e -> e instanceof ValidationError.ColumnNotFound || e instanceof ValidationError.ColumnNotResolved)
+                            .toList();
     }
 }
