@@ -74,10 +74,7 @@ import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
 import org.pragmatica.aether.ttm.TTMManager;
 import org.pragmatica.aether.update.AbTestManager;
-import org.pragmatica.aether.update.BlueGreenDeploymentManager;
-import org.pragmatica.aether.update.CanaryDeploymentManager;
-import org.pragmatica.aether.update.DeploymentStrategyCoordinator;
-import org.pragmatica.aether.update.RollingUpdateManager;
+import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.worker.bootstrap.WorkerBootstrap;
 import org.pragmatica.aether.worker.deployment.WorkerDeploymentManager;
 import org.pragmatica.aether.worker.governor.DecisionRelay;
@@ -205,14 +202,8 @@ public interface AetherNode {
     /// Get the cluster controller for scaling decisions.
     ClusterController controller();
 
-    /// Get the rolling update manager for managing version transitions.
-    RollingUpdateManager rollingUpdateManager();
-
-    /// Get the canary deployment manager for multi-stage progressive traffic shifting.
-    CanaryDeploymentManager canaryDeploymentManager();
-
-    /// Get the blue-green deployment manager for atomic traffic switching.
-    BlueGreenDeploymentManager blueGreenDeploymentManager();
+    /// Get the unified deployment manager for blueprint-level version transitions.
+    DeploymentManager deploymentManager();
 
     /// Get the A/B test manager for variant testing deployments.
     AbTestManager abTestManager();
@@ -476,9 +467,7 @@ public interface AetherNode {
                            ArtifactStore artifactStore,
                            InvocationMetricsCollector invocationMetrics,
                            DecisionTreeController controller,
-                           RollingUpdateManager rollingUpdateManager,
-                           CanaryDeploymentManager canaryDeploymentManager,
-                           BlueGreenDeploymentManager blueGreenDeploymentManager,
+                           DeploymentManager deploymentManager,
                            AbTestManager abTestManager,
                            AlertManager alertManager,
                            ObservabilityDepthRegistry observabilityDepthRegistry,
@@ -849,15 +838,8 @@ public interface AetherNode {
         var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, repository, artifactStore);
         // Create Maven protocol handler from artifact store (DHT created in createNode)
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
-        // Create rolling update manager
-        var rollingUpdateManager = RollingUpdateManager.rollingUpdateManager(clusterNode,
-                                                                             kvStore,
-                                                                             invocationMetrics,
-                                                                             config.timeouts().rollingUpdate()
-                                                                                            .kvOperation(),
-                                                                             config.timeouts().rollingUpdate()
-                                                                                            .terminalRetention()
-                                                                                            .millis());
+        // Create unified deployment manager
+        var deploymentManager = DeploymentManager.deploymentManager(clusterNode, kvStore);
         // Create alert manager with KV-Store persistence
         var alertManager = AlertManager.alertManager(clusterNode, kvStore);
         // Create dynamic config manager if dynamic provider is available
@@ -906,22 +888,9 @@ public interface AetherNode {
         var rollbackManager = config.rollback().enabled()
                               ? RollbackManager.rollbackManager(config.self(), config.rollback(), clusterNode, kvStore)
                               : RollbackManager.disabled();
-        // Create canary deployment manager
-        var canaryDeploymentManager = CanaryDeploymentManager.canaryDeploymentManager(clusterNode,
-                                                                                      kvStore,
-                                                                                      invocationMetrics);
-        // Create blue-green deployment manager
-        var blueGreenDeploymentManager = BlueGreenDeploymentManager.blueGreenDeploymentManager(clusterNode,
-                                                                                               kvStore,
-                                                                                               invocationMetrics);
         // Create A/B test manager
         var abTestManager = AbTestManager.abTestManager(clusterNode, kvStore, invocationMetrics);
-        // Create strategy coordinator for deployment routing decisions
-        var strategyCoordinator = DeploymentStrategyCoordinator.deploymentStrategyCoordinator(rollingUpdateManager,
-                                                                                              Option.some(canaryDeploymentManager),
-                                                                                              Option.some(blueGreenDeploymentManager),
-                                                                                              Option.some(abTestManager));
-        // Create slice invoker (needs strategyCoordinator for weighted routing during deployments)
+        // Create slice invoker (needs deploymentManager for weighted routing during deployments)
         var sliceInvoker = SliceInvoker.sliceInvoker(config.self(),
                                                      clusterNode.network(),
                                                      endpointRegistry,
@@ -934,7 +903,7 @@ public interface AetherNode {
                                                      config.timeouts().observability()
                                                                     .invocationCleanup()
                                                                     .millis(),
-                                                     strategyCoordinator,
+                                                     deploymentManager,
                                                      observabilityInterceptor);
         // Wire the deferred invoker facade to the actual SliceInvoker
         deferredInvoker.setDelegate(sliceInvoker);
@@ -980,7 +949,7 @@ public interface AetherNode {
                                                         Option.some(invocationMetrics),
                                                         serverBossGroup,
                                                         serverWorkerGroup,
-                                                        Option.some(strategyCoordinator));
+                                                        Option.some(deploymentManager));
         // DHT subscriptions removed — all control plane state flows through KV-Store notifications
         // Collect all route entries from RabiaNode and AetherNode components
         var aetherEntries = collectRouteEntries(kvStore,
@@ -1005,9 +974,7 @@ public interface AetherNode {
                                                 dynamicConfigManager,
                                                 ttmManager,
                                                 rabiaMetricsCollector,
-                                                rollingUpdateManager,
-                                                canaryDeploymentManager,
-                                                blueGreenDeploymentManager,
+                                                deploymentManager,
                                                 abTestManager,
                                                 rollbackManager,
                                                 artifactMetricsCollector,
@@ -1146,9 +1113,7 @@ public interface AetherNode {
                                   artifactStore,
                                   invocationMetrics,
                                   controller,
-                                  rollingUpdateManager,
-                                  canaryDeploymentManager,
-                                  blueGreenDeploymentManager,
+                                  deploymentManager,
                                   abTestManager,
                                   alertManager,
                                   depthRegistry,
@@ -1225,9 +1190,7 @@ public interface AetherNode {
                                            artifactStore,
                                            invocationMetrics,
                                            controller,
-                                           rollingUpdateManager,
-                                           canaryDeploymentManager,
-                                           blueGreenDeploymentManager,
+                                           deploymentManager,
                                            abTestManager,
                                            alertManager,
                                            depthRegistry,
@@ -1605,9 +1568,7 @@ public interface AetherNode {
                                                                     Option<DynamicConfigManager> dynamicConfigManager,
                                                                     TTMManager ttmManager,
                                                                     RabiaMetricsCollector rabiaMetricsCollector,
-                                                                    RollingUpdateManager rollingUpdateManager,
-                                                                    CanaryDeploymentManager canaryDeploymentManager,
-                                                                    BlueGreenDeploymentManager blueGreenDeploymentManager,
+                                                                    DeploymentManager deploymentManager,
                                                                     AbTestManager abTestManager,
                                                                     RollbackManager rollbackManager,
                                                                     ArtifactMetricsCollector artifactMetricsCollector,
@@ -1753,11 +1714,7 @@ public interface AetherNode {
         .map(NodeId::id))));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, ttmManager::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              rollingUpdateManager::onLeaderChange));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              canaryDeploymentManager::onLeaderChange));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              blueGreenDeploymentManager::onLeaderChange));
+                                              deploymentManager::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, abTestManager::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, rollbackManager::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
@@ -1839,12 +1796,7 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class, eventAggregator::onNodeDown));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, eventAggregator::onQuorumStateChange));
-        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
-                                              rollingUpdateManager::onDeploymentFailed));
-        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
-                                              canaryDeploymentManager::onDeploymentFailed));
-        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
-                                              blueGreenDeploymentManager::onDeploymentFailed));
+        // TODO: P3 — add DeploymentManager.onDeploymentFailed for auto-rollback
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               eventAggregator::onSliceFailure));

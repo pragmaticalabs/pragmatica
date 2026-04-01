@@ -5,8 +5,8 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SecurityMode;
-import org.pragmatica.aether.update.DeploymentStrategy;
-import org.pragmatica.aether.update.DeploymentStrategyCoordinator;
+import org.pragmatica.aether.update.DeploymentManager;
+import org.pragmatica.aether.update.DeploymentManager.ActiveRouting;
 import org.pragmatica.aether.update.VersionRouting;
 import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
 import org.pragmatica.aether.http.adapter.SliceRouter;
@@ -154,7 +154,7 @@ public interface AppHttpServer {
                                        Option<InvocationMetricsCollector> metricsCollector,
                                        Option<EventLoopGroup> bossGroup,
                                        Option<EventLoopGroup> workerGroup,
-                                       Option<DeploymentStrategyCoordinator> strategyCoordinator) {
+                                       Option<DeploymentManager> strategyCoordinator) {
         return appHttpServer(config,
                              selfNodeId,
                              routeRegistry,
@@ -181,7 +181,7 @@ public interface AppHttpServer {
                                        Option<InvocationMetricsCollector> metricsCollector,
                                        Option<EventLoopGroup> bossGroup,
                                        Option<EventLoopGroup> workerGroup,
-                                       Option<DeploymentStrategyCoordinator> strategyCoordinator,
+                                       Option<DeploymentManager> strategyCoordinator,
                                        Option<HttpRequestObserver> requestObserver) {
         return new AppHttpServerImpl(config,
                                      selfNodeId,
@@ -214,7 +214,7 @@ public interface AppHttpServer {
     private final Option<InvocationMetricsCollector> metricsCollector;
     private final Option<EventLoopGroup> bossGroup;
     private final Option<EventLoopGroup> workerGroup;
-    private final Option<DeploymentStrategyCoordinator> strategyCoordinator;
+    private final Option<DeploymentManager> strategyCoordinator;
     private final Option<HttpRequestObserver> requestObserver;
     private final Option<HttpForwarder> httpForwarder;
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
@@ -233,7 +233,7 @@ public interface AppHttpServer {
                       Option<InvocationMetricsCollector> metricsCollector,
                       Option<EventLoopGroup> bossGroup,
                       Option<EventLoopGroup> workerGroup,
-                      Option<DeploymentStrategyCoordinator> strategyCoordinator,
+                      Option<DeploymentManager> strategyCoordinator,
                       Option<HttpRequestObserver> requestObserver) {
         this.config = config;
         this.selfNodeId = selfNodeId;
@@ -656,39 +656,39 @@ public interface AppHttpServer {
         if ( artifactResult.isFailure()) {
         return false;}
         var artifact = artifactResult.unwrap();
-        var strategyOpt = strategyCoordinator.unwrap().getActiveStrategyWithRouting(artifact.base());
-        if ( strategyOpt.isEmpty()) {
+        var routingOpt = strategyCoordinator.unwrap().activeRouting(artifact.base());
+        if ( routingOpt.isEmpty()) {
         return false;}
-        return evaluateRoutingDecision(artifact, strategyOpt.unwrap(), method, normalizedPath, routeTable);
+        return evaluateRoutingDecision(artifact, routingOpt.unwrap(), method, normalizedPath, routeTable);
     }
 
     private boolean evaluateRoutingDecision(Artifact artifact,
-                                            DeploymentStrategy strategy,
+                                            ActiveRouting activeRouting,
                                             String method,
                                             String normalizedPath,
                                             RouteTable routeTable) {
-        var routing = strategy.routing();
+        var routing = activeRouting.routing();
         var localVersion = artifact.version();
         // If all traffic goes to one version, deterministic decision
         if ( routing.isAllOld()) {
-        return localVersion.equals(strategy.newVersion()) && hasMatchingRemoteRoute(routeTable.remoteRoutes(),
-                                                                                    method,
-                                                                                    normalizedPath);}
+        return localVersion.equals(activeRouting.newVersion()) && hasMatchingRemoteRoute(routeTable.remoteRoutes(),
+                                                                                         method,
+                                                                                         normalizedPath);}
         if ( routing.isAllNew()) {
-        return localVersion.equals(strategy.oldVersion()) && hasMatchingRemoteRoute(routeTable.remoteRoutes(),
-                                                                                    method,
-                                                                                    normalizedPath);}
+        return localVersion.equals(activeRouting.oldVersion()) && hasMatchingRemoteRoute(routeTable.remoteRoutes(),
+                                                                                         method,
+                                                                                         normalizedPath);}
         // Weighted random decision
-        return evaluateWeightedRouting(localVersion, strategy, routing, method, normalizedPath, routeTable);
+        return evaluateWeightedRouting(localVersion, activeRouting, routing, method, normalizedPath, routeTable);
     }
 
     private boolean evaluateWeightedRouting(Version localVersion,
-                                            DeploymentStrategy strategy,
+                                            ActiveRouting activeRouting,
                                             VersionRouting routing,
                                             String method,
                                             String normalizedPath,
                                             RouteTable routeTable) {
-        boolean localIsNew = localVersion.equals(strategy.newVersion());
+        boolean localIsNew = localVersion.equals(activeRouting.newVersion());
         int random = ThreadLocalRandom.current().nextInt(routing.totalWeight());
         boolean shouldRouteToNew = random < routing.newWeight();
         // Forward only if weighted decision says "route to other version" and a remote route exists

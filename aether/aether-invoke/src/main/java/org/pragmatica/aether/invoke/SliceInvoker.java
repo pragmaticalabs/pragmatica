@@ -10,8 +10,8 @@ import org.pragmatica.aether.slice.MethodHandle;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
-import org.pragmatica.aether.update.DeploymentStrategy;
-import org.pragmatica.aether.update.DeploymentStrategyCoordinator;
+import org.pragmatica.aether.update.DeploymentManager;
+import org.pragmatica.aether.update.DeploymentManager.ActiveRouting;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
@@ -225,7 +225,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                      InvocationHandler invocationHandler,
                                      Serializer serializer,
                                      Deserializer deserializer,
-                                     DeploymentStrategyCoordinator strategyCoordinator,
+                                     DeploymentManager deploymentManager,
                                      ObservabilityInterceptor observabilityInterceptor) {
         return sliceInvoker(self,
                             network,
@@ -235,7 +235,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                             deserializer,
                             DEFAULT_TIMEOUT_MS,
                             SliceInvokerImpl.DEFAULT_CLEANUP_INTERVAL_MS,
-                            strategyCoordinator,
+                            deploymentManager,
                             observabilityInterceptor);
     }
 
@@ -248,7 +248,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                      Deserializer deserializer,
                                      long timeoutMs,
                                      long cleanupIntervalMs,
-                                     DeploymentStrategyCoordinator strategyCoordinator,
+                                     DeploymentManager deploymentManager,
                                      ObservabilityInterceptor observabilityInterceptor) {
         return new SliceInvokerImpl(self,
                                     network,
@@ -258,7 +258,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                     deserializer,
                                     timeoutMs,
                                     cleanupIntervalMs,
-                                    strategyCoordinator,
+                                    deploymentManager,
                                     observabilityInterceptor);
     }
 }
@@ -279,7 +279,7 @@ class SliceInvokerImpl implements SliceInvoker {
     private final Deserializer deserializer;
     private final long timeoutMs;
     private volatile ScheduledFuture<?> cleanupTask;
-    private final DeploymentStrategyCoordinator strategyCoordinator;
+    private final DeploymentManager deploymentManager;
     private final ObservabilityInterceptor observabilityInterceptor;
 
     // Pending request-response invocations awaiting responses
@@ -308,7 +308,7 @@ class SliceInvokerImpl implements SliceInvoker {
                      Deserializer deserializer,
                      long timeoutMs,
                      long cleanupIntervalMs,
-                     DeploymentStrategyCoordinator strategyCoordinator,
+                     DeploymentManager deploymentManager,
                      ObservabilityInterceptor observabilityInterceptor) {
         this.self = self;
         this.network = network;
@@ -317,7 +317,7 @@ class SliceInvokerImpl implements SliceInvoker {
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.timeoutMs = timeoutMs;
-        this.strategyCoordinator = strategyCoordinator;
+        this.deploymentManager = deploymentManager;
         this.observabilityInterceptor = observabilityInterceptor;
         // Schedule periodic cleanup of stale pending invocations
         this.cleanupTask = SharedScheduler.scheduleAtFixedRate(this::cleanupStaleInvocations,
@@ -556,12 +556,12 @@ class SliceInvokerImpl implements SliceInvoker {
         if ( exclude.isEmpty()) {
             // First attempt - check for active deployment strategy routing
             var artifactBase = ArtifactBase.artifactBase(slice.groupId(), slice.artifactId());
-            var strategyEndpoint = strategyCoordinator.getActiveStrategyWithRouting(artifactBase)
-            .flatMap(strategy -> endpointRegistry.selectEndpointWithRouting(artifactBase,
-                                                                            method,
-                                                                            strategy.routing(),
-                                                                            strategy.oldVersion(),
-                                                                            strategy.newVersion()));
+            var strategyEndpoint = deploymentManager.activeRouting(artifactBase)
+            .flatMap(routing -> endpointRegistry.selectEndpointWithRouting(artifactBase,
+                                                                           method,
+                                                                           routing.routing(),
+                                                                           routing.oldVersion(),
+                                                                           routing.newVersion()));
             if ( strategyEndpoint.isPresent()) {
             return strategyEndpoint;}
             // Fall back to regular selection
@@ -880,11 +880,11 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private Promise<Endpoint> selectEndpoint(Artifact slice, MethodName method) {
         var artifactBase = ArtifactBase.artifactBase(slice.groupId(), slice.artifactId());
-        return strategyCoordinator.getActiveStrategyWithRouting(artifactBase).map(strategy -> selectEndpointWithWeightedRouting(slice,
-                                                                                                                                artifactBase,
-                                                                                                                                method,
-                                                                                                                                strategy))
-                                                               .or(() -> endpointRegistry.selectEndpoint(slice, method)
+        return deploymentManager.activeRouting(artifactBase).map(routing -> selectEndpointWithWeightedRouting(slice,
+                                                                                                             artifactBase,
+                                                                                                             method,
+                                                                                                             routing))
+                                                            .or(() -> endpointRegistry.selectEndpoint(slice, method)
         .async(NO_ENDPOINT_FOUND));
     }
 
@@ -900,17 +900,16 @@ class SliceInvokerImpl implements SliceInvoker {
     private Promise<Endpoint> selectEndpointWithWeightedRouting(Artifact slice,
                                                                 ArtifactBase artifactBase,
                                                                 MethodName method,
-                                                                DeploymentStrategy strategy) {
+                                                                ActiveRouting routing) {
         if ( log.isDebugEnabled()) {
-        log.debug("[requestId={}] Using weighted routing for {} during deployment strategy {}",
+        log.debug("[requestId={}] Using weighted routing for {} during active deployment",
                   InvocationContext.getOrGenerateRequestId(),
-                  slice,
-                  strategy.strategyId());}
+                  slice);}
         return endpointRegistry.selectEndpointWithRouting(artifactBase,
                                                           method,
-                                                          strategy.routing(),
-                                                          strategy.oldVersion(),
-                                                          strategy.newVersion())
+                                                          routing.routing(),
+                                                          routing.oldVersion(),
+                                                          routing.newVersion())
         .async(NO_ENDPOINT_FOUND);
     }
 

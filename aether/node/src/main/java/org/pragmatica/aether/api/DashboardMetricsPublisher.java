@@ -668,53 +668,28 @@ public class DashboardMetricsPublisher {
 
     private void appendStrategies(StringBuilder sb, AetherNode node) {
         sb.append("\"strategies\":{");
-        // Canaries
-        sb.append("\"canaries\":[");
-        var canaries = node.canaryDeploymentManager().allCanaries();
+        // Unified deployments
+        sb.append("\"deployments\":[");
+        var deployments = node.deploymentManager().list();
         boolean first = true;
-        for ( var canary : canaries) {
-            if ( !first) sb.append(",");
-            sb.append("{\"canaryId\":\"").append(escapeJson(canary.canaryId()))
-                     .append("\",\"artifactBase\":\"")
-                     .append(escapeJson(canary.artifactBase().asString()))
+        for (var deployment : deployments) {
+            if (!first) sb.append(",");
+            sb.append("{\"deploymentId\":\"").append(escapeJson(deployment.deploymentId()))
+                     .append("\",\"blueprintId\":\"")
+                     .append(escapeJson(deployment.blueprintId()))
                      .append("\",\"oldVersion\":\"")
-                     .append(escapeJson(canary.oldVersion().toString()))
+                     .append(escapeJson(deployment.oldVersion().toString()))
                      .append("\",\"newVersion\":\"")
-                     .append(escapeJson(canary.newVersion().toString()))
+                     .append(escapeJson(deployment.newVersion().toString()))
                      .append("\",\"state\":\"")
-                     .append(canary.state().name())
+                     .append(deployment.state().name())
+                     .append("\",\"strategy\":\"")
+                     .append(deployment.strategy().name())
                      .append("\",\"routing\":\"")
-                     .append(escapeJson(canary.routing().toString()))
-                     .append("\",\"currentStage\":")
-                     .append(canary.currentStageIndex() + 1)
-                     .append(",\"totalStages\":")
-                     .append(canary.stages().size())
-                     .append(",\"newInstances\":")
-                     .append(canary.newInstances())
+                     .append(escapeJson(deployment.routing().toString()))
+                     .append("\",\"newInstances\":")
+                     .append(deployment.newInstances())
                      .append("}");
-            first = false;
-        }
-        sb.append("],");
-        // Blue-green
-        sb.append("\"blueGreen\":[");
-        var blueGreenList = node.blueGreenDeploymentManager().allDeployments();
-        first = true;
-        for ( var bg : blueGreenList) {
-            if ( !first) sb.append(",");
-            sb.append("{\"deploymentId\":\"").append(escapeJson(bg.deploymentId()))
-                     .append("\",\"artifactBase\":\"")
-                     .append(escapeJson(bg.artifactBase().asString()))
-                     .append("\",\"blueVersion\":\"")
-                     .append(escapeJson(bg.blueVersion().toString()))
-                     .append("\",\"greenVersion\":\"")
-                     .append(escapeJson(bg.greenVersion().toString()))
-                     .append("\",\"state\":\"")
-                     .append(bg.state().name())
-                     .append("\",\"activeEnvironment\":\"")
-                     .append(bg.activeEnvironment().name())
-                     .append("\",\"routing\":\"")
-                     .append(escapeJson(bg.routing().toString()))
-                     .append("\"}");
             first = false;
         }
         sb.append("],");

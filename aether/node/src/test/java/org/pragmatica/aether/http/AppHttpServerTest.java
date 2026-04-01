@@ -52,7 +52,7 @@ class AppHttpServerTest {
                                              Option.none(),  // No InvocationMetricsCollector
                                              Option.none(),  // No shared boss group
                                              Option.none(),  // No shared worker group
-                                             Option.none()); // No DeploymentStrategyCoordinator
+                                             Option.<org.pragmatica.aether.update.DeploymentManager>none());
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();
@@ -119,7 +119,7 @@ class AppHttpServerTest {
                                                          Option.none(),
                                                          Option.none(),
                                                          Option.none(),
-                                                         Option.none());
+                                                         Option.<org.pragmatica.aether.update.DeploymentManager>none());
 
         disabledServer.start().await();
 
@@ -176,7 +176,7 @@ class AppHttpServerTest {
                                                        Option.none(),
                                                        Option.none(),
                                                        Option.none(),
-                                                       Option.none());
+                                                       Option.<org.pragmatica.aether.update.DeploymentManager>none());
         smallServer.start().await();
 
         // Send a request body larger than 1KB

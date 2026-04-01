@@ -296,194 +296,64 @@ public sealed interface AetherValue {
         }
     }
 
-    /// Rolling update state stored in consensus.
+    /// Persisted unified deployment state for blueprint-level deployments.
     ///
-    /// @param updateId unique identifier for this update
-    /// @param artifactBase the artifact being updated (version-agnostic)
-    /// @param oldVersion current version being replaced
-    /// @param newVersion new version being deployed
-    /// @param state current state name (stored as string for serialization)
-    /// @param newWeight current traffic weight for new version
-    /// @param oldWeight current traffic weight for old version
-    /// @param newInstances target number of new version instances
-    /// @param maxErrorRate health threshold for error rate
-    /// @param maxLatencyMs health threshold for latency
-    /// @param requireManualApproval whether manual approval is required
+    /// @param deploymentId unique identifier for this deployment
+    /// @param blueprintId blueprint identifier (e.g., "org.example:my-app:1.0")
+    /// @param oldVersion version being replaced (as string)
+    /// @param newVersion version being deployed (as string)
+    /// @param strategy deployment strategy name (CANARY, BLUE_GREEN, ROLLING)
+    /// @param state current deployment state name
+    /// @param routing traffic routing in "new:old" format
+    /// @param strategyConfig JSON string of strategy-specific configuration
+    /// @param thresholds JSON string of health thresholds
     /// @param cleanupPolicy cleanup policy name
-    /// @param createdAt timestamp when update was created
+    /// @param artifacts comma-separated artifact base strings
+    /// @param newInstances target instance count for new version
+    /// @param createdAt timestamp when deployment was created
     /// @param updatedAt timestamp of last state change
-    record RollingUpdateValue(String updateId,
-                              ArtifactBase artifactBase,
-                              Version oldVersion,
-                              Version newVersion,
-                              String state,
-                              int newWeight,
-                              int oldWeight,
-                              int newInstances,
-                              double maxErrorRate,
-                              long maxLatencyMs,
-                              boolean requireManualApproval,
-                              String cleanupPolicy,
-                              long createdAt,
-                              long updatedAt) implements AetherValue {
-        public static RollingUpdateValue rollingUpdateValue(String updateId,
-                                                            ArtifactBase artifactBase,
-                                                            Version oldVersion,
-                                                            Version newVersion,
-                                                            String state,
-                                                            int newWeight,
-                                                            int oldWeight,
-                                                            int newInstances,
-                                                            double maxErrorRate,
-                                                            long maxLatencyMs,
-                                                            boolean requireManualApproval,
-                                                            String cleanupPolicy,
-                                                            long createdAt,
-                                                            long updatedAt) {
-            return new RollingUpdateValue(updateId,
-                                          artifactBase,
-                                          oldVersion,
-                                          newVersion,
-                                          state,
-                                          newWeight,
-                                          oldWeight,
-                                          newInstances,
-                                          maxErrorRate,
-                                          maxLatencyMs,
-                                          requireManualApproval,
-                                          cleanupPolicy,
-                                          createdAt,
-                                          updatedAt);
-        }
-    }
-
-    /// Persisted canary deployment state.
-    record CanaryDeploymentValue(String canaryId,
-                                 ArtifactBase artifactBase,
-                                 Version oldVersion,
-                                 Version newVersion,
-                                 String state,
-                                 String stagesJson,
-                                 int currentStageIndex,
-                                 long stageEnteredAt,
-                                 int newWeight,
-                                 int oldWeight,
-                                 int newInstances,
-                                 double maxErrorRate,
-                                 long maxLatencyMs,
-                                 boolean requireManualApproval,
-                                 String analysisMode,
-                                 int relativeThresholdPercent,
-                                 String cleanupPolicy,
-                                 String blueprintId,
-                                 String artifactsJson,
-                                 long createdAt,
-                                 long updatedAt) implements AetherValue {
-        public static CanaryDeploymentValue canaryDeploymentValue(String canaryId,
-                                                                  ArtifactBase artifactBase,
-                                                                  Version oldVersion,
-                                                                  Version newVersion,
-                                                                  String state,
-                                                                  String stagesJson,
-                                                                  int currentStageIndex,
-                                                                  long stageEnteredAt,
-                                                                  int newWeight,
-                                                                  int oldWeight,
-                                                                  int newInstances,
-                                                                  double maxErrorRate,
-                                                                  long maxLatencyMs,
-                                                                  boolean requireManualApproval,
-                                                                  String analysisMode,
-                                                                  int relativeThresholdPercent,
-                                                                  String cleanupPolicy,
-                                                                  String blueprintId,
-                                                                  String artifactsJson,
-                                                                  long createdAt,
-                                                                  long updatedAt) {
-            return new CanaryDeploymentValue(canaryId,
-                                             artifactBase,
-                                             oldVersion,
-                                             newVersion,
-                                             state,
-                                             stagesJson,
-                                             currentStageIndex,
-                                             stageEnteredAt,
-                                             newWeight,
-                                             oldWeight,
-                                             newInstances,
-                                             maxErrorRate,
-                                             maxLatencyMs,
-                                             requireManualApproval,
-                                             analysisMode,
-                                             relativeThresholdPercent,
-                                             cleanupPolicy,
-                                             blueprintId,
-                                             artifactsJson,
-                                             createdAt,
-                                             updatedAt);
-        }
-    }
-
-    /// Persisted blue-green deployment state.
-    record BlueGreenDeploymentValue(String deploymentId,
-                                    ArtifactBase artifactBase,
-                                    Version blueVersion,
-                                    Version greenVersion,
-                                    String state,
-                                    String activeEnvironment,
-                                    int blueInstances,
-                                    int greenInstances,
-                                    long drainTimeoutMs,
-                                    double maxErrorRate,
-                                    long maxLatencyMs,
-                                    boolean requireManualApproval,
-                                    String cleanupPolicy,
-                                    int newWeight,
-                                    int oldWeight,
-                                    String blueprintId,
-                                    String artifactsJson,
-                                    long createdAt,
-                                    long updatedAt) implements AetherValue {
-        /// Factory method following JBCT naming convention.
-        @SuppressWarnings("JBCT-VO-02")
-        public static BlueGreenDeploymentValue blueGreenDeploymentValue(String deploymentId,
-                                                                        ArtifactBase artifactBase,
-                                                                        Version blueVersion,
-                                                                        Version greenVersion,
-                                                                        String state,
-                                                                        String activeEnvironment,
-                                                                        int blueInstances,
-                                                                        int greenInstances,
-                                                                        long drainTimeoutMs,
-                                                                        double maxErrorRate,
-                                                                        long maxLatencyMs,
-                                                                        boolean requireManualApproval,
-                                                                        String cleanupPolicy,
-                                                                        int newWeight,
-                                                                        int oldWeight,
-                                                                        String blueprintId,
-                                                                        String artifactsJson,
-                                                                        long createdAt,
-                                                                        long updatedAt) {
-            return new BlueGreenDeploymentValue(deploymentId,
-                                                artifactBase,
-                                                blueVersion,
-                                                greenVersion,
-                                                state,
-                                                activeEnvironment,
-                                                blueInstances,
-                                                greenInstances,
-                                                drainTimeoutMs,
-                                                maxErrorRate,
-                                                maxLatencyMs,
-                                                requireManualApproval,
-                                                cleanupPolicy,
-                                                newWeight,
-                                                oldWeight,
-                                                blueprintId,
-                                                artifactsJson,
-                                                createdAt,
-                                                updatedAt);
+    record DeploymentValue(String deploymentId,
+                           String blueprintId,
+                           String oldVersion,
+                           String newVersion,
+                           String strategy,
+                           String state,
+                           String routing,
+                           String strategyConfig,
+                           String thresholds,
+                           String cleanupPolicy,
+                           String artifacts,
+                           int newInstances,
+                           long createdAt,
+                           long updatedAt) implements AetherValue {
+        public static DeploymentValue deploymentValue(String deploymentId,
+                                                      String blueprintId,
+                                                      String oldVersion,
+                                                      String newVersion,
+                                                      String strategy,
+                                                      String state,
+                                                      String routing,
+                                                      String strategyConfig,
+                                                      String thresholds,
+                                                      String cleanupPolicy,
+                                                      String artifacts,
+                                                      int newInstances,
+                                                      long createdAt,
+                                                      long updatedAt) {
+            return new DeploymentValue(deploymentId,
+                                       blueprintId,
+                                       oldVersion,
+                                       newVersion,
+                                       strategy,
+                                       state,
+                                       routing,
+                                       strategyConfig,
+                                       thresholds,
+                                       cleanupPolicy,
+                                       artifacts,
+                                       newInstances,
+                                       createdAt,
+                                       updatedAt);
         }
     }
 

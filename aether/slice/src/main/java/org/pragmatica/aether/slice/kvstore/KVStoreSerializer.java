@@ -125,7 +125,7 @@ public final class KVStoreSerializer {
     }
 
     private static String sectionForKey(AetherKey key) {
-        return switch (key) {case SliceTargetKey _ -> "slice-target";case AppBlueprintKey _ -> "app-blueprint";case SliceNodeKey _ -> "slices";case EndpointKey _ -> "endpoints";case VersionRoutingKey _ -> "version-routing";case RollingUpdateKey _ -> "rolling-update";case CanaryDeploymentKey _ -> "canary-deployment";case BlueGreenDeploymentKey _ -> "blue-green-deployment";case PreviousVersionKey _ -> "previous-version";case HttpNodeRouteKey _ -> "http-node-routes";case LogLevelKey _ -> "log-level";case ObservabilityDepthKey _ -> "obs-depth";case AlertThresholdKey _ -> "alert-threshold";case TopicSubscriptionKey _ -> "topic-sub";case ScheduledTaskKey _ -> "scheduled-task";case ScheduledTaskStateKey _ -> "scheduled-task-state";case NodeLifecycleKey _ -> "node-lifecycle";case ConfigKey _ -> "config";case WorkerSliceDirectiveKey _ -> "worker-directive";case ActivationDirectiveKey _ -> "activation";case GossipKeyRotationKey _ -> "gossip-key-rotation";case GovernorAnnouncementKey _ -> "governor-announcement";case NodeArtifactKey _ -> "node-artifact";case NodeRoutesKey _ -> "node-routes";case BlueprintResourcesKey _ -> "blueprint-resources";case SchemaVersionKey _ -> "schema-version";case SchemaMigrationLockKey _ -> "schema-lock";case AbTestKey _ -> "ab-test";case AbTestRoutingKey _ -> "ab-test-routing";case StreamMetadataKey _ -> "stream-meta";case StreamPartitionAssignmentKey _ -> "stream-assign";case StreamCursorCheckpointKey _ -> "stream-cursor";case StreamRegistrationKey _ -> "stream-reg";case ClusterConfigKey _ -> "cluster-config";case StorageStatusKey _ -> "storage-status";case StorageBlockKey _ -> "storage-block";case StorageRefKey _ -> "storage-ref";};
+        return switch (key) {case SliceTargetKey _ -> "slice-target";case AppBlueprintKey _ -> "app-blueprint";case SliceNodeKey _ -> "slices";case EndpointKey _ -> "endpoints";case VersionRoutingKey _ -> "version-routing";case DeploymentKey _ -> "deployment";case PreviousVersionKey _ -> "previous-version";case HttpNodeRouteKey _ -> "http-node-routes";case LogLevelKey _ -> "log-level";case ObservabilityDepthKey _ -> "obs-depth";case AlertThresholdKey _ -> "alert-threshold";case TopicSubscriptionKey _ -> "topic-sub";case ScheduledTaskKey _ -> "scheduled-task";case ScheduledTaskStateKey _ -> "scheduled-task-state";case NodeLifecycleKey _ -> "node-lifecycle";case ConfigKey _ -> "config";case WorkerSliceDirectiveKey _ -> "worker-directive";case ActivationDirectiveKey _ -> "activation";case GossipKeyRotationKey _ -> "gossip-key-rotation";case GovernorAnnouncementKey _ -> "governor-announcement";case NodeArtifactKey _ -> "node-artifact";case NodeRoutesKey _ -> "node-routes";case BlueprintResourcesKey _ -> "blueprint-resources";case SchemaVersionKey _ -> "schema-version";case SchemaMigrationLockKey _ -> "schema-lock";case AbTestKey _ -> "ab-test";case AbTestRoutingKey _ -> "ab-test-routing";case StreamMetadataKey _ -> "stream-meta";case StreamPartitionAssignmentKey _ -> "stream-assign";case StreamCursorCheckpointKey _ -> "stream-cursor";case StreamRegistrationKey _ -> "stream-reg";case ClusterConfigKey _ -> "cluster-config";case StorageStatusKey _ -> "storage-status";case StorageBlockKey _ -> "storage-block";case StorageRefKey _ -> "storage-ref";};
     }
 
     private static String extractIdentity(String section, AetherKey key) {
@@ -143,7 +143,7 @@ public final class KVStoreSerializer {
     @SuppressWarnings("JBCT-PAT-01")
     private static String serializeValue(AetherValue value) {
         return switch (value) {case SliceTargetValue v -> serializeSliceTarget(v);case SliceNodeValue v -> serializeSliceNode(v);case EndpointValue v -> v.nodeId()
-        .id();case TopicSubscriptionValue v -> v.nodeId().id();case ScheduledTaskValue v -> serializeScheduledTask(v);case ScheduledTaskStateValue v -> serializeScheduledTaskState(v);case VersionRoutingValue v -> serializeVersionRouting(v);case RollingUpdateValue v -> serializeRollingUpdate(v);case CanaryDeploymentValue v -> serializeCanaryDeployment(v);case BlueGreenDeploymentValue v -> serializeBlueGreenDeployment(v);case PreviousVersionValue v -> serializePreviousVersion(v);case HttpNodeRouteValue v -> serializeHttpNodeRoute(v);case AlertThresholdValue v -> serializeAlertThreshold(v);case LogLevelValue v -> serializeLogLevel(v);case ObservabilityDepthValue v -> serializeObservabilityDepth(v);case ConfigValue v -> serializeConfig(v);case WorkerSliceDirectiveValue v -> serializeWorkerDirective(v);case ActivationDirectiveValue v -> v.role();case GossipKeyRotationValue v -> serializeGossipKeyRotation(v);case NodeLifecycleValue v -> serializeNodeLifecycle(v);case GovernorAnnouncementValue v -> serializeGovernorAnnouncement(v);case NodeArtifactValue v -> serializeNodeArtifact(v);case NodeRoutesValue v -> serializeNodeRoutes(v);case AppBlueprintValue _ -> "";case BlueprintResourcesValue v -> v.tomlContent();case SchemaVersionValue v -> serializeSchemaVersion(v);case SchemaMigrationLockValue v -> serializeSchemaMigrationLock(v);case AbTestValue v -> serializeAbTest(v);case AbTestRoutingValue v -> serializeAbTestRouting(v);case StreamMetadataValue v -> serializeStreamMetadata(v);case StreamPartitionAssignmentValue v -> serializeStreamPartitionAssignment(v);case StreamCursorCheckpointValue v -> serializeStreamCursorCheckpoint(v);case StreamRegistrationValue v -> serializeStreamRegistration(v);case ClusterConfigValue v -> serializeClusterConfig(v);case StorageStatusValue v -> serializeStorageStatus(v);case StorageBlockValue v -> serializeStorageBlock(v);case StorageRefValue v -> serializeStorageRef(v);};
+        .id();case TopicSubscriptionValue v -> v.nodeId().id();case ScheduledTaskValue v -> serializeScheduledTask(v);case ScheduledTaskStateValue v -> serializeScheduledTaskState(v);case VersionRoutingValue v -> serializeVersionRouting(v);case DeploymentValue v -> serializeDeployment(v);case PreviousVersionValue v -> serializePreviousVersion(v);case HttpNodeRouteValue v -> serializeHttpNodeRoute(v);case AlertThresholdValue v -> serializeAlertThreshold(v);case LogLevelValue v -> serializeLogLevel(v);case ObservabilityDepthValue v -> serializeObservabilityDepth(v);case ConfigValue v -> serializeConfig(v);case WorkerSliceDirectiveValue v -> serializeWorkerDirective(v);case ActivationDirectiveValue v -> v.role();case GossipKeyRotationValue v -> serializeGossipKeyRotation(v);case NodeLifecycleValue v -> serializeNodeLifecycle(v);case GovernorAnnouncementValue v -> serializeGovernorAnnouncement(v);case NodeArtifactValue v -> serializeNodeArtifact(v);case NodeRoutesValue v -> serializeNodeRoutes(v);case AppBlueprintValue _ -> "";case BlueprintResourcesValue v -> v.tomlContent();case SchemaVersionValue v -> serializeSchemaVersion(v);case SchemaMigrationLockValue v -> serializeSchemaMigrationLock(v);case AbTestValue v -> serializeAbTest(v);case AbTestRoutingValue v -> serializeAbTestRouting(v);case StreamMetadataValue v -> serializeStreamMetadata(v);case StreamPartitionAssignmentValue v -> serializeStreamPartitionAssignment(v);case StreamCursorCheckpointValue v -> serializeStreamCursorCheckpoint(v);case StreamRegistrationValue v -> serializeStreamRegistration(v);case ClusterConfigValue v -> serializeClusterConfig(v);case StorageStatusValue v -> serializeStorageStatus(v);case StorageBlockValue v -> serializeStorageBlock(v);case StorageRefValue v -> serializeStorageRef(v);};
     }
 
     private static String serializeSliceTarget(SliceTargetValue v) {
@@ -167,19 +167,8 @@ public final class KVStoreSerializer {
         return v.oldVersion().withQualifier() + PIPE + v.newVersion().withQualifier() + PIPE + v.newWeight() + PIPE + v.oldWeight() + PIPE + v.updatedAt();
     }
 
-    private static String serializeRollingUpdate(RollingUpdateValue v) {
-        return v.updateId() + PIPE + v.artifactBase().asString() + PIPE + v.oldVersion().withQualifier() + PIPE + v.newVersion()
-        .withQualifier() + PIPE + v.state() + PIPE + v.newWeight() + PIPE + v.oldWeight() + PIPE + v.newInstances() + PIPE + v.maxErrorRate() + PIPE + v.maxLatencyMs() + PIPE + v.requireManualApproval() + PIPE + v.cleanupPolicy() + PIPE + v.createdAt() + PIPE + v.updatedAt();
-    }
-
-    private static String serializeCanaryDeployment(CanaryDeploymentValue v) {
-        return v.canaryId() + PIPE + v.artifactBase().asString() + PIPE + v.oldVersion().withQualifier() + PIPE + v.newVersion()
-        .withQualifier() + PIPE + v.state() + PIPE + v.stagesJson() + PIPE + v.currentStageIndex() + PIPE + v.stageEnteredAt() + PIPE + v.newWeight() + PIPE + v.oldWeight() + PIPE + v.newInstances() + PIPE + v.maxErrorRate() + PIPE + v.maxLatencyMs() + PIPE + v.requireManualApproval() + PIPE + v.analysisMode() + PIPE + v.relativeThresholdPercent() + PIPE + v.cleanupPolicy() + PIPE + v.blueprintId() + PIPE + v.artifactsJson() + PIPE + v.createdAt() + PIPE + v.updatedAt();
-    }
-
-    private static String serializeBlueGreenDeployment(BlueGreenDeploymentValue v) {
-        return v.deploymentId() + PIPE + v.artifactBase().asString() + PIPE + v.blueVersion().withQualifier() + PIPE + v.greenVersion()
-        .withQualifier() + PIPE + v.state() + PIPE + v.activeEnvironment() + PIPE + v.blueInstances() + PIPE + v.greenInstances() + PIPE + v.drainTimeoutMs() + PIPE + v.maxErrorRate() + PIPE + v.maxLatencyMs() + PIPE + v.requireManualApproval() + PIPE + v.cleanupPolicy() + PIPE + v.newWeight() + PIPE + v.oldWeight() + PIPE + v.blueprintId() + PIPE + v.artifactsJson() + PIPE + v.createdAt() + PIPE + v.updatedAt();
+    private static String serializeDeployment(DeploymentValue v) {
+        return v.deploymentId() + PIPE + v.blueprintId() + PIPE + v.oldVersion() + PIPE + v.newVersion() + PIPE + v.strategy() + PIPE + v.state() + PIPE + v.routing() + PIPE + v.strategyConfig() + PIPE + v.thresholds() + PIPE + v.cleanupPolicy() + PIPE + v.artifacts() + PIPE + v.newInstances() + PIPE + v.createdAt() + PIPE + v.updatedAt();
     }
 
     private static String serializePreviousVersion(PreviousVersionValue v) {
@@ -282,10 +271,8 @@ public final class KVStoreSerializer {
         return switch (section) {case "slice-target" -> parseSliceTargetEntry(identity, rawValue);case "slices" -> parseSliceNodeEntry(identity,
                                                                                                                                        rawValue);case "endpoints" -> parseEndpointEntry(identity,
                                                                                                                                                                                         rawValue);case "version-routing" -> parseVersionRoutingEntry(identity,
-                                                                                                                                                                                                                                                     rawValue);case "rolling-update" -> parseRollingUpdateEntry(identity,
-                                                                                                                                                                                                                                                                                                                rawValue);case "canary-deployment" -> parseCanaryDeploymentEntry(identity,
-                                                                                                                                                                                                                                                                                                                                                                                 rawValue);case "blue-green-deployment" -> parseBlueGreenDeploymentEntry(identity,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                         rawValue);case "previous-version" -> parsePreviousVersionEntry(identity,
+                                                                                                                                                                                                                                                     rawValue);case "deployment" -> parseDeploymentEntry(identity,
+                                                                                                                                                                                                                                                                                                                rawValue);case "previous-version" -> parsePreviousVersionEntry(identity,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         rawValue);case "http-node-routes" -> parseHttpNodeRouteEntry(identity,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      rawValue);case "log-level" -> parseLogLevelEntry(identity,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       rawValue);case "obs-depth" -> parseObsDepthEntry(identity,
@@ -380,95 +367,29 @@ public final class KVStoreSerializer {
                                                      Long.parseLong(parts[4])));
     }
 
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseRollingUpdateEntry(String identity, String raw) {
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseDeploymentEntry(String identity, String raw) {
         var parts = raw.split("\\|", - 1);
         if ( parts.length != 14) {
-        return parseFailure("rolling-update value requires 14 fields, got " + parts.length);}
-        return RollingUpdateKey.rollingUpdateKey("rolling-update/" + identity)
-        .flatMap(key -> buildRollingUpdateValue(parts).map(val -> entry(key, val)));
+        return parseFailure("deployment value requires 14 fields, got " + parts.length);}
+        return DeploymentKey.parseDeploymentKey("deployment/" + identity)
+        .flatMap(key -> buildDeploymentValue(parts).map(val -> entry(key, val)));
     }
 
-    private static Result<AetherValue> buildRollingUpdateValue(String[] parts) {
-        return Result.all(ArtifactBase.artifactBase(parts[1]), Version.version(parts[2]), Version.version(parts[3]))
-        .map((ab, oldV, newV) -> new RollingUpdateValue(parts[0],
-                                                        ab,
-                                                        oldV,
-                                                        newV,
-                                                        parts[4],
-                                                        Integer.parseInt(parts[5]),
-                                                        Integer.parseInt(parts[6]),
-                                                        Integer.parseInt(parts[7]),
-                                                        Double.parseDouble(parts[8]),
-                                                        Long.parseLong(parts[9]),
-                                                        Boolean.parseBoolean(parts[10]),
-                                                        parts[11],
-                                                        Long.parseLong(parts[12]),
-                                                        Long.parseLong(parts[13])));
-    }
-
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseCanaryDeploymentEntry(String identity, String raw) {
-        var parts = raw.split("\\|", - 1);
-        if ( parts.length != 21) {
-        return parseFailure("canary-deployment value requires 21 fields, got " + parts.length);}
-        return CanaryDeploymentKey.canaryDeploymentKey("canary-deployment/" + identity)
-        .flatMap(key -> buildCanaryDeploymentValue(parts).map(val -> entry(key, val)));
-    }
-
-    private static Result<AetherValue> buildCanaryDeploymentValue(String[] parts) {
-        return Result.all(ArtifactBase.artifactBase(parts[1]), Version.version(parts[2]), Version.version(parts[3]))
-        .map((ab, oldV, newV) -> new CanaryDeploymentValue(parts[0],
-                                                           ab,
-                                                           oldV,
-                                                           newV,
-                                                           parts[4],
-                                                           parts[5],
-                                                           Integer.parseInt(parts[6]),
-                                                           Long.parseLong(parts[7]),
-                                                           Integer.parseInt(parts[8]),
-                                                           Integer.parseInt(parts[9]),
-                                                           Integer.parseInt(parts[10]),
-                                                           Double.parseDouble(parts[11]),
-                                                           Long.parseLong(parts[12]),
-                                                           Boolean.parseBoolean(parts[13]),
-                                                           parts[14],
-                                                           Integer.parseInt(parts[15]),
-                                                           parts[16],
-                                                           parts[17],
-                                                           parts[18],
-                                                           Long.parseLong(parts[19]),
-                                                           Long.parseLong(parts[20])));
-    }
-
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseBlueGreenDeploymentEntry(String identity,
-                                                                                           String raw) {
-        var parts = raw.split("\\|", - 1);
-        if ( parts.length != 19) {
-        return parseFailure("blue-green-deployment value requires 19 fields, got " + parts.length);}
-        return BlueGreenDeploymentKey.blueGreenDeploymentKey("blue-green-deployment/" + identity)
-        .flatMap(key -> buildBlueGreenDeploymentValue(parts).map(val -> entry(key, val)));
-    }
-
-    private static Result<AetherValue> buildBlueGreenDeploymentValue(String[] parts) {
-        return Result.all(ArtifactBase.artifactBase(parts[1]), Version.version(parts[2]), Version.version(parts[3]))
-        .map((ab, blueV, greenV) -> BlueGreenDeploymentValue.blueGreenDeploymentValue(parts[0],
-                                                                                      ab,
-                                                                                      blueV,
-                                                                                      greenV,
-                                                                                      parts[4],
-                                                                                      parts[5],
-                                                                                      Integer.parseInt(parts[6]),
-                                                                                      Integer.parseInt(parts[7]),
-                                                                                      Long.parseLong(parts[8]),
-                                                                                      Double.parseDouble(parts[9]),
-                                                                                      Long.parseLong(parts[10]),
-                                                                                      Boolean.parseBoolean(parts[11]),
-                                                                                      parts[12],
-                                                                                      Integer.parseInt(parts[13]),
-                                                                                      Integer.parseInt(parts[14]),
-                                                                                      parts[15],
-                                                                                      parts[16],
-                                                                                      Long.parseLong(parts[17]),
-                                                                                      Long.parseLong(parts[18])));
+    private static Result<AetherValue> buildDeploymentValue(String[] parts) {
+        return success(new DeploymentValue(parts[0],
+                                           parts[1],
+                                           parts[2],
+                                           parts[3],
+                                           parts[4],
+                                           parts[5],
+                                           parts[6],
+                                           parts[7],
+                                           parts[8],
+                                           parts[9],
+                                           parts[10],
+                                           Integer.parseInt(parts[11]),
+                                           Long.parseLong(parts[12]),
+                                           Long.parseLong(parts[13])));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parsePreviousVersionEntry(String identity, String raw) {

@@ -42,7 +42,9 @@ public record AbTestDeployment( String testId,
                                 Option<String> blueprintId,
                                 List<ArtifactBase> artifacts,
                                 long createdAt,
-                                long updatedAt) implements DeploymentStrategy {
+                                long updatedAt) {
+    // TODO: A/B testing uses its own mechanism separate from the unified Deployment model.
+    //       The old DeploymentStrategy sealed interface has been replaced by DeploymentStrategy enum.
     private static final Fn1<Cause, String> INVALID_TRANSITION = Causes.forOneValue("Invalid A/B test state transition: %s");
 
     /// Creates a new A/B test deployment in PENDING state.
@@ -257,28 +259,28 @@ public record AbTestDeployment( String testId,
                                     System.currentTimeMillis());
     }
 
-    @Override public String strategyId() {
+    public String strategyId() {
         return testId;
     }
 
     /// Returns the baseline version (old version being compared against).
-    @Override public Version oldVersion() {
+    public Version oldVersion() {
         return baselineVersion;
     }
 
     /// Returns the first variant version, or baseline if no variants exist.
-    @Override public Version newVersion() {
+    public Version newVersion() {
         return Option.from(variantVersions.values().stream()
                                                  .findFirst()).or(baselineVersion);
     }
 
     /// Checks if this deployment is in a terminal state.
-    @Override public boolean isTerminal() {
+    public boolean isTerminal() {
         return state.isTerminal();
     }
 
     /// Checks if this deployment is active (not terminal).
-    @Override public boolean isActive() {
+    public boolean isActive() {
         return ! isTerminal();
     }
 

@@ -183,63 +183,13 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    /// Rolling update key format:
+    /// Unified deployment key format:
     /// ```
-    /// rolling-update/{updateId}
+    /// deployment/{deploymentId}
     /// ```
-    /// Stores rolling update state for tracking update progress.
-    record RollingUpdateKey(String updateId) implements AetherKey {
-        private static final String PREFIX = "rolling-update/";
-
-        @Override public String asString() {
-            return PREFIX + updateId;
-        }
-
-        @Override public String toString() {
-            return asString();
-        }
-
-        public static Result<RollingUpdateKey> rollingUpdateKey(String key) {
-            if ( !key.startsWith(PREFIX)) {
-            return ROLLING_UPDATE_KEY_FORMAT_ERROR.apply(key).result();}
-            var updateId = key.substring(PREFIX.length());
-            if ( updateId.isEmpty()) {
-            return ROLLING_UPDATE_KEY_FORMAT_ERROR.apply(key).result();}
-            return success(new RollingUpdateKey(updateId));
-        }
-    }
-
-    /// Canary deployment key format:
-    /// ```
-    /// canary-deployment/{canaryId}
-    /// ```
-    record CanaryDeploymentKey(String canaryId) implements AetherKey {
-        private static final String PREFIX = "canary-deployment/";
-
-        @Override public String asString() {
-            return PREFIX + canaryId;
-        }
-
-        @Override public String toString() {
-            return asString();
-        }
-
-        public static Result<CanaryDeploymentKey> canaryDeploymentKey(String key) {
-            if ( !key.startsWith(PREFIX)) {
-            return CANARY_DEPLOYMENT_KEY_FORMAT_ERROR.apply(key).result();}
-            var canaryId = key.substring(PREFIX.length());
-            if ( canaryId.isEmpty()) {
-            return CANARY_DEPLOYMENT_KEY_FORMAT_ERROR.apply(key).result();}
-            return success(new CanaryDeploymentKey(canaryId));
-        }
-    }
-
-    /// Blue-green deployment key format:
-    /// ```
-    /// blue-green-deployment/{deploymentId}
-    /// ```
-    record BlueGreenDeploymentKey(String deploymentId) implements AetherKey {
-        private static final String PREFIX = "blue-green-deployment/";
+    /// Stores deployment state for tracking blueprint-level deployment progress.
+    record DeploymentKey(String deploymentId) implements AetherKey {
+        private static final String PREFIX = "deployment/";
 
         @Override public String asString() {
             return PREFIX + deploymentId;
@@ -249,13 +199,18 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
-        public static Result<BlueGreenDeploymentKey> blueGreenDeploymentKey(String key) {
+        @SuppressWarnings("JBCT-VO-02")
+        public static DeploymentKey deploymentKey(String deploymentId) {
+            return new DeploymentKey(deploymentId);
+        }
+
+        public static Result<DeploymentKey> parseDeploymentKey(String key) {
             if ( !key.startsWith(PREFIX)) {
-            return BLUE_GREEN_DEPLOYMENT_KEY_FORMAT_ERROR.apply(key).result();}
+            return DEPLOYMENT_KEY_FORMAT_ERROR.apply(key).result();}
             var id = key.substring(PREFIX.length());
             if ( id.isEmpty()) {
-            return BLUE_GREEN_DEPLOYMENT_KEY_FORMAT_ERROR.apply(key).result();}
-            return success(new BlueGreenDeploymentKey(id));
+            return DEPLOYMENT_KEY_FORMAT_ERROR.apply(key).result();}
+            return success(new DeploymentKey(id));
         }
     }
 
@@ -1028,9 +983,7 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> SLICE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice key format: %s");
     Fn1<Cause, String> ENDPOINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid endpoint key format: %s");
     Fn1<Cause, String> VERSION_ROUTING_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid version-routing key format: %s");
-    Fn1<Cause, String> ROLLING_UPDATE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid rolling-update key format: %s");
-    Fn1<Cause, String> CANARY_DEPLOYMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid canary-deployment key format: %s");
-    Fn1<Cause, String> BLUE_GREEN_DEPLOYMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid blue-green-deployment key format: %s");
+    Fn1<Cause, String> DEPLOYMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid deployment key format: %s");
     Fn1<Cause, String> PREVIOUS_VERSION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid previous-version key format: %s");
     Fn1<Cause, String> HTTP_NODE_ROUTE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid http-node-routes key format: %s");
     Fn1<Cause, String> ALERT_THRESHOLD_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid alert-threshold key format: %s");
