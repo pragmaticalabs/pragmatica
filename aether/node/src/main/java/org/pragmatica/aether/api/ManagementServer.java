@@ -7,6 +7,7 @@ import org.pragmatica.aether.api.routes.ClusterConfigRoutes;
 import org.pragmatica.aether.api.routes.ClusterTopologyRoutes;
 import org.pragmatica.aether.api.routes.ConfigRoutes;
 import org.pragmatica.aether.api.routes.ControllerRoutes;
+import org.pragmatica.aether.api.routes.DeployRoutes;
 import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.aether.api.routes.LogLevelRoutes;
 import org.pragmatica.aether.api.routes.ManagementRouter;
@@ -226,7 +227,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(ControllerRoutes.controllerRoutes(nodeSupplier));
         routeSources.add(SliceRoutes.sliceRoutes(nodeSupplier));
         routeSources.add(MetricsRoutes.metricsRoutes(nodeSupplier, observability));
-        // TODO: P3 — add unified DeploymentRoutes replacing old per-strategy routes
+        routeSources.add(DeployRoutes.deployRoutes(nodeSupplier));
         routeSources.add(AbTestRoutes.abTestRoutes(nodeSupplier));
         routeSources.add(NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier));
         routeSources.add(RepositoryRoutes.repositoryRoutes(nodeSupplier));
