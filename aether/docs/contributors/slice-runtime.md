@@ -384,9 +384,9 @@ autoscale.metric = "cpu"
 autoscale.threshold = 80
 ```
 
-### Rolling Updates
+### Rolling Deployments
 
-When deploying new version:
+When deploying a new version:
 
 1. New instances start
 2. Traffic gradually shifts

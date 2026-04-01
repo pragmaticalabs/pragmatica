@@ -398,165 +398,107 @@ aether blueprint deploy org.example:my-app:1.0.0
 aether blueprint upload my-app-1.0.0-blueprint.jar -g org.example -a my-app -v 1.0.0
 ```
 
-#### update
+#### deploy
 
-Rolling update management for zero-downtime deployments:
+Unified deployment management for zero-downtime deployments. Supports immediate, canary, blue-green, and rolling strategies through a single command.
 
 ```bash
-# Start a rolling update
-aether update start <group:artifact> <version> [options]
+# Immediate deployment (default)
+aether deploy <group:artifact:version>
 
-# Options:
+# Canary deployment — progressive traffic shift with health monitoring
+aether deploy <group:artifact:version> --canary [--traffic <percent>]
+
+# Blue-green deployment — atomic switchover with instant rollback
+aether deploy <group:artifact:version> --blue-green
+
+# Rolling deployment — gradual instance replacement with traffic control
+aether deploy <group:artifact:version> --rolling
+
+# Common options (all strategies):
 #   -n, --instances <n>      Number of new version instances (default: 1)
 #   --error-rate <rate>      Max error rate threshold 0.0-1.0 (default: 0.01)
 #   --latency <ms>           Max latency threshold in ms (default: 500)
 #   --manual-approval        Require manual approval for routing changes
 #   --cleanup <policy>       IMMEDIATE, GRACE_PERIOD, MANUAL (default: GRACE_PERIOD)
 
-# Get update status
-aether update status <updateId>
-
-# List active updates
-aether update list
-
-# Adjust traffic routing (ratio new:old)
-aether update routing <updateId> -r <ratio>
-
-# Manually approve routing configuration
-aether update approve <updateId>
-
-# Complete update (all traffic to new version)
-aether update complete <updateId>
-
-# Rollback to old version
-aether update rollback <updateId>
-
-# View version health metrics
-aether update health <updateId>
-```
-
-Example rolling update workflow:
-```bash
-# Start update: deploy 3 instances of v2.0.0 with 0% traffic
-aether update start org.example:order-processor 2.0.0 -n 3
-
-# Gradually shift traffic
-aether update routing abc123 -r 1:3    # 25% new, 75% old
-aether update routing abc123 -r 1:1    # 50% new, 50% old
-aether update routing abc123 -r 3:1    # 75% new, 25% old
-aether update routing abc123 -r 1:0    # 100% new
-
-# Complete and cleanup old version
-aether update complete abc123
-
-# Or rollback if issues detected
-aether update rollback abc123
-```
-
-#### canary
-
-Canary deployment management:
-
-```bash
-# Start a canary deployment
-aether canary start -a <artifact> -v <version> [-n <instances>]
-
-# List active canaries
-aether canary list
-
-# Show canary status
-aether canary status <canaryId>
-
-# Show health comparison between baseline and canary
-aether canary health <canaryId>
-
-# Promote to next traffic stage
-aether canary promote <canaryId>
-
-# Promote directly to 100% traffic
-aether canary promote-full <canaryId>
-
-# Rollback canary to baseline
-aether canary rollback <canaryId>
-```
-
-| Subcommand | Description |
-|------------|-------------|
-| `start -a <artifact> -v <version> [-n <instances>]` | Start canary deployment |
-| `list` | List active canaries |
-| `status <canaryId>` | Show canary status |
-| `health <canaryId>` | Show health comparison |
-| `promote <canaryId>` | Promote to next stage |
-| `promote-full <canaryId>` | Promote to 100% |
-| `rollback <canaryId>` | Rollback canary |
-
-Example workflow:
-```bash
-# Start canary: deploy v2.0.0 with 1% traffic
-aether canary start -a org.example:my-service -v 2.0.0 -n 3
-
-# Check health comparison
-aether canary health abc123
-
-# Promote through stages: 1% → 5% → 25% → 50% → 100%
-aether canary promote abc123
-aether canary promote abc123
-aether canary promote abc123
-aether canary promote-full abc123
-
-# Or rollback if issues detected
-aether canary rollback abc123
-```
-
-#### blue-green
-
-Blue-green deployment management:
-
-```bash
-# Deploy green version alongside current blue
-aether blue-green deploy -a <artifact> -v <version> [-n <instances>]
-
-# List active blue-green deployments
-aether blue-green list
+# List active deployments
+aether deploy list
 
 # Show deployment status
-aether blue-green status <id>
+aether deploy status <deploymentId>
 
-# Switch all traffic to green (atomic, ~100ms)
-aether blue-green switch <id>
+# Advance deployment (promote canary stage, switch blue-green, shift rolling traffic)
+aether deploy promote <deploymentId>
 
-# Switch back to blue (instant rollback)
-aether blue-green switch-back <id>
+# Rollback to previous version
+aether deploy rollback <deploymentId>
 
-# Complete deployment (drain inactive slot + cleanup)
-aether blue-green complete <id>
+# Finalize deployment (cleanup old version)
+aether deploy complete <deploymentId>
 ```
 
 | Subcommand | Description |
 |------------|-------------|
-| `deploy -a <artifact> -v <version> [-n <instances>]` | Deploy green version |
-| `list` | List deployments |
-| `status <id>` | Show status |
-| `switch <id>` | Switch to green |
-| `switch-back <id>` | Switch back to blue |
-| `complete <id>` | Complete (drain + cleanup) |
+| `<coords>` | Start immediate deployment |
+| `<coords> --canary` | Start canary deployment |
+| `<coords> --blue-green` | Start blue-green deployment |
+| `<coords> --rolling` | Start rolling deployment |
+| `list` | List active deployments |
+| `status <id>` | Show deployment status |
+| `promote <id>` | Advance deployment (next canary stage, switch traffic, shift routing) |
+| `rollback <id>` | Rollback to previous version |
+| `complete <id>` | Finalize and cleanup |
 
-Example workflow:
+Example canary workflow:
 ```bash
-# Deploy green version
-aether blue-green deploy -a org.example:my-service -v 2.0.0 -n 3
+# Start canary: deploy v2.0.0 with progressive traffic shift
+aether deploy org.example:my-service:2.0.0 --canary -n 3
+
+# Check deployment health
+aether deploy status abc123
+
+# Promote through stages: 1% -> 5% -> 25% -> 50% -> 100%
+aether deploy promote abc123
+aether deploy promote abc123
+aether deploy promote abc123
+aether deploy promote abc123
+
+# Or rollback if issues detected
+aether deploy rollback abc123
+```
+
+Example blue-green workflow:
+```bash
+# Deploy green version alongside current blue
+aether deploy org.example:my-service:2.0.0 --blue-green -n 3
 
 # Verify green is ready
-aether blue-green status bg-xyz
+aether deploy status bg-xyz
 
 # Switch traffic atomically
-aether blue-green switch bg-xyz
+aether deploy promote bg-xyz
 
 # If issues, instant rollback
-aether blue-green switch-back bg-xyz
+aether deploy rollback bg-xyz
 
 # When satisfied, complete and clean up
-aether blue-green complete bg-xyz
+aether deploy complete bg-xyz
+```
+
+Example rolling deployment workflow:
+```bash
+# Start rolling deployment: deploy 3 instances of v2.0.0 with 0% traffic
+aether deploy org.example:order-processor:2.0.0 --rolling -n 3
+
+# Gradually shift traffic
+aether deploy promote abc123    # shift to next traffic stage
+
+# Complete and cleanup old version
+aether deploy complete abc123
+
+# Or rollback if issues detected
+aether deploy rollback abc123
 ```
 
 #### ab-test

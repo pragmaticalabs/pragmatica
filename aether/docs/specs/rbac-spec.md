@@ -658,7 +658,7 @@ InvocationContext.runWithContext(requestId, 1, false, principal, originNode, () 
 | Category | Path Pattern | Default Policy (no security configured) | Default Policy (security enabled) |
 |----------|-------------|----------------------------------------|----------------------------------|
 | **Health** | `/health/*`, `/readiness/*`, `/liveness/*` | `Public` | `Public` |
-| **Management API** | `/api/*`, `/status`, `/nodes`, `/slices`, `/metrics`, `/scale`, `/repository/*`, `/alerts/*`, `/thresholds/*`, `/rolling-update/*`, `/invocation-metrics/*`, `/controller/*` | `Public` | `ApiKeyRequired` |
+| **Management API** | `/api/*`, `/status`, `/nodes`, `/slices`, `/metrics`, `/scale`, `/repository/*`, `/alerts/*`, `/thresholds/*`, `/deploy/*`, `/invocation-metrics/*`, `/controller/*` | `Public` | `ApiKeyRequired` |
 | **Dashboard** | `/dashboard`, `/dashboard/*` | `Public` | `ApiKeyRequired` |
 | **WebSocket** | `/ws/dashboard`, `/ws/status`, `/ws/events` | `Public` | `ApiKeyRequired` |
 | **Application routes** | Slice-defined paths | `Public` (or slice-declared) | `Public` (or slice-declared) |

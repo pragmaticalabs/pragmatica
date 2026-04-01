@@ -194,24 +194,24 @@ Pure event-driven component that:
 - Maintains local cache of all cluster endpoints
 - Provides endpoint discovery for remote slice calls
 - Supports round-robin load balancing for endpoint selection
-- Supports weighted routing for rolling updates via `selectEndpointWithRouting()`
+- Supports weighted routing for deployments via `selectEndpointWithRouting()`
 
 **Note**: Slices automatically publish/unpublish endpoints via consensus - no manual coordination needed.
 
-### RollingUpdateManager
+### DeploymentManager
 
 **Status**: ✅ Implemented (interface)
 **Location**: `node/src/main/java/org/pragmatica/aether/update/RollingUpdateManager.java`
 
-Manages rolling update operations with two-stage deployment model:
+Manages unified deployment operations supporting immediate, canary, blue-green, and rolling strategies:
 
 - **Stage 1 - Deploy**: Deploy new version instances with 0% traffic
-- **Stage 2 - Route**: Gradually shift traffic via ratio-based routing
+- **Stage 2 - Route**: Gradually shift traffic via strategy-specific routing
 
 Key operations:
-- `startUpdate()` - Start rolling update, deploy new version instances
-- `adjustRouting()` - Change traffic ratio (e.g., 1:3 = 25% new)
-- `completeUpdate()` - Finalize update, cleanup old version
+- `startDeployment()` - Start deployment with chosen strategy
+- `promote()` - Advance deployment (next canary stage, switch blue-green, shift rolling traffic)
+- `complete()` - Finalize deployment, cleanup old version
 - `rollback()` - Revert to old version
 
 **State Machine**:

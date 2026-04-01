@@ -119,7 +119,7 @@ Provides the programming model and core runtime. Consumer groups, CDC, persisten
 | Deployment status | `/api/deployments`, WebSocket push | Partial |
 | Schema migration | `/api/schema/status` | New |
 | Governor/community | `/api/cluster/governors` | New |
-| Deployment strategies | `/api/canary/list`, `/api/bluegreen/list`, `/api/ab/list` | New |
+| Deployment strategies | `/api/deploy` (unified), `/api/ab-tests` | New |
 | Worker group health | `/api/cluster/topology` + metrics | New |
 | Streams | `/api/streams/*` | New (if 0.24.0 landed) |
 | Node lifecycle | `/api/nodes/lifecycle` | Existing |

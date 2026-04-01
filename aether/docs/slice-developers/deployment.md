@@ -444,7 +444,7 @@ curl -X POST "${AETHER_PROD_URL}/api/blueprint" \
   --data-binary @target/blueprint-v1.0.0.toml
 ```
 
-Forge also supports rolling updates via its API (see [Forge Guide](forge-guide.md)).
+Forge also supports deployments via its API (see [Forge Guide](forge-guide.md)).
 
 ## Deployment Atomicity
 

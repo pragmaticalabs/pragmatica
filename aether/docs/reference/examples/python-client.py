@@ -149,37 +149,38 @@ class AetherClient:
             "critical": critical
         })
 
-    # Rolling Updates
-    def start_rolling_update(self, artifact_base: str, version: str,
-                             instances: int = 1, **kwargs) -> dict:
-        """Start a rolling update."""
+    # Deployments
+    def start_deployment(self, artifact_base: str, version: str,
+                         strategy: str = "IMMEDIATE", instances: int = 1, **kwargs) -> dict:
+        """Start a deployment."""
         data = {
             "artifactBase": artifact_base,
             "version": version,
+            "strategy": strategy,
             "instances": instances,
             **kwargs
         }
-        return self._post("/api/rolling-update/start", data)
+        return self._post("/api/deploy", data)
 
-    def rolling_updates(self) -> dict:
-        """List active rolling updates."""
-        return self._get("/api/rolling-updates")
+    def deployments(self) -> dict:
+        """List active deployments."""
+        return self._get("/api/deploy")
 
-    def rolling_update_status(self, update_id: str) -> dict:
-        """Get rolling update status."""
-        return self._get(f"/api/rolling-update/{update_id}")
+    def deployment_status(self, deployment_id: str) -> dict:
+        """Get deployment status."""
+        return self._get(f"/api/deploy/{deployment_id}")
 
-    def adjust_routing(self, update_id: str, routing: str) -> dict:
-        """Adjust traffic routing."""
-        return self._post(f"/api/rolling-update/{update_id}/routing", {"routing": routing})
+    def promote_deployment(self, deployment_id: str) -> dict:
+        """Advance deployment to next stage."""
+        return self._post(f"/api/deploy/{deployment_id}/promote", {})
 
-    def complete_update(self, update_id: str) -> dict:
-        """Complete rolling update."""
-        return self._post(f"/api/rolling-update/{update_id}/complete", {})
+    def complete_deployment(self, deployment_id: str) -> dict:
+        """Complete deployment."""
+        return self._post(f"/api/deploy/{deployment_id}/complete", {})
 
-    def rollback_update(self, update_id: str) -> dict:
-        """Rollback rolling update."""
-        return self._post(f"/api/rolling-update/{update_id}/rollback", {})
+    def rollback_deployment(self, deployment_id: str) -> dict:
+        """Rollback deployment."""
+        return self._post(f"/api/deploy/{deployment_id}/rollback", {})
 
 
 def main():

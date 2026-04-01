@@ -33,7 +33,7 @@ Aether supports role-based access control (RBAC) with three hierarchical authori
 | Role | Level | Description |
 |------|-------|-------------|
 | **ADMIN** | Full access | Deploy blueprints, shutdown nodes, manage logging, configure observability, RBAC management |
-| **OPERATOR** | Operational access | Drain/activate nodes, scaling, schema operations, canary/blue-green/rolling updates, backup, alerts, config overrides, scheduled tasks |
+| **OPERATOR** | Operational access | Drain/activate nodes, scaling, schema operations, deployments (canary/blue-green/rolling), backup, alerts, config overrides, scheduled tasks |
 | **VIEWER** | Read-only access | Cluster status, metrics, logs, traces, events, health checks |
 
 Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all VIEWER permissions.
@@ -56,7 +56,7 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 | Node drain/activate | OPERATOR | `POST /api/node/drain/{id}`, `POST /api/node/activate/{id}` |
 | Scaling | OPERATOR | `POST /api/scale` |
 | Schema operations | OPERATOR | `POST /api/schema/*` |
-| Deployment strategies | OPERATOR | `POST /api/canary/*`, `POST /api/blue-green/*`, `POST /api/rolling-update/*`, `POST /api/ab-test/*` |
+| Deployment strategies | OPERATOR | `POST /api/deploy`, `POST /api/deploy/*/promote`, `POST /api/deploy/*/rollback`, `POST /api/deploy/*/complete`, `POST /api/ab-test/*` |
 | Backup trigger | OPERATOR | `POST /api/backup` |
 | Config overrides | OPERATOR | `PUT /api/config/*` |
 | Alert management | OPERATOR | `POST /api/alerts/clear` |
@@ -1386,25 +1386,25 @@ curl -X DELETE http://localhost:8080/api/config/node/node-2/server.port
 
 ---
 
-## Rolling Updates
+## Deployments
 
-All rolling update mutation endpoints (start, routing, complete, rollback) require the requesting node to be the cluster leader.
+Unified deployment API supporting immediate, canary, blue-green, and rolling strategies. All deployment mutation endpoints (start, promote, complete, rollback) require the requesting node to be the cluster leader.
 
-### GET /api/rolling-updates
+### GET /api/deploy
 
-List all active rolling updates.
+List all active deployments across all strategies.
 
 **Response:**
 ```json
 {
-  "updates": [
+  "deployments": [
     {
-      "updateId": "2bKyJE8yxxxxxxxxxxx",
+      "deploymentId": "2bKyJE8yxxxxxxxxxxx",
+      "strategy": "ROLLING",
       "artifactBase": "org.example:my-slice",
       "oldVersion": "1.0.0",
       "newVersion": "2.0.0",
       "state": "ROUTING",
-      "routing": "1:3",
       "newInstances": 3,
       "createdAt": 1704067200000,
       "updatedAt": 1704067200000
@@ -1413,14 +1413,15 @@ List all active rolling updates.
 }
 ```
 
-### GET /api/rolling-update/{updateId}
+### GET /api/deploy/{deploymentId}
 
-Get a single rolling update by ID. Use `current` as the ID to resolve to the first active update.
+Get a single deployment by ID. Use `current` as the ID to resolve to the first active deployment.
 
 **Response:**
 ```json
 {
-  "updateId": "2bKyJE8yxxxxxxxxxxx",
+  "deploymentId": "2bKyJE8yxxxxxxxxxxx",
+  "strategy": "ROLLING",
   "artifactBase": "org.example:my-slice",
   "oldVersion": "1.0.0",
   "newVersion": "2.0.0",
@@ -1432,14 +1433,19 @@ Get a single rolling update by ID. Use `current` as the ID to resolve to the fir
 }
 ```
 
-### GET /api/rolling-update/{updateId}/health
+Strategy-specific fields vary:
+- **ROLLING**: includes `routing` (traffic ratio)
+- **CANARY**: includes `currentStage`, `trafficPercent`, `stages`
+- **BLUE_GREEN**: includes `activeSlot` (`BLUE` or `GREEN`)
 
-Get version health metrics for a rolling update.
+### GET /api/deploy/{deploymentId}/health
+
+Get version health metrics for a deployment.
 
 **Response:**
 ```json
 {
-  "updateId": "2bKyJE8yxxxxxxxxxxx",
+  "deploymentId": "2bKyJE8yxxxxxxxxxxx",
   "oldVersion": {
     "version": "1.0.0",
     "requestCount": 1000,
@@ -1456,15 +1462,16 @@ Get version health metrics for a rolling update.
 }
 ```
 
-### POST /api/rolling-update/start
+### POST /api/deploy
 
-Start a new rolling update. Requires leader node.
+Start a new deployment. Requires leader node.
 
 **Request:**
 ```json
 {
   "artifactBase": "org.example:my-slice",
   "version": "2.0.0",
+  "strategy": "ROLLING",
   "instances": 3,
   "maxErrorRate": 0.01,
   "maxLatencyMs": 500,
@@ -1473,49 +1480,41 @@ Start a new rolling update. Requires leader node.
 }
 ```
 
-All fields except `artifactBase` and `version` are optional. Defaults: `instances=1`, `maxErrorRate=0.01`, `maxLatencyMs=500`, `requireManualApproval=false`, `cleanupPolicy=GRACE_PERIOD`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `artifactBase` | string | Yes | Artifact coordinates (group:artifact) |
+| `version` | string | Yes | Target version |
+| `strategy` | string | No | `IMMEDIATE` (default), `CANARY`, `BLUE_GREEN`, `ROLLING` |
+| `instances` | integer | No | Number of new version instances (default: 1) |
+| `maxErrorRate` | float | No | Max error rate threshold (default: 0.01) |
+| `maxLatencyMs` | integer | No | Max latency threshold in ms (default: 500) |
+| `requireManualApproval` | boolean | No | Require manual approval (default: false) |
+| `cleanupPolicy` | string | No | `IMMEDIATE`, `GRACE_PERIOD` (default), `MANUAL` |
 
-**Response:**
-```json
-{
-  "updateId": "2bKyJE8yxxxxxxxxxxx",
-  "artifactBase": "org.example:my-slice",
-  "oldVersion": "1.0.0",
-  "newVersion": "2.0.0",
-  "state": "DEPLOYING",
-  "routing": "0:1",
-  "newInstances": 3,
-  "createdAt": 1704067200000,
-  "updatedAt": 1704067200000
-}
-```
+**Response:** Same as `GET /api/deploy/{deploymentId}`.
 
-### POST /api/rolling-update/{updateId}/routing
+### POST /api/deploy/{deploymentId}/promote
 
-Adjust traffic routing for a rolling update. Requires leader node.
+Advance a deployment to its next stage. The behavior depends on the strategy:
+- **ROLLING**: Shifts traffic to the next routing ratio
+- **CANARY**: Promotes to the next traffic stage (e.g., 1% to 5%)
+- **BLUE_GREEN**: Switches all traffic to the new version
 
-**Request:**
-```json
-{
-  "routing": "1:1"
-}
-```
+Requires leader node.
 
-Format: `new:old` (e.g., `"1:3"` = 25% new, 75% old; `"1:0"` = 100% new).
+**Response:** Same as `GET /api/deploy/{deploymentId}`.
 
-**Response:** Same as `GET /api/rolling-update/{updateId}`.
-
-### POST /api/rolling-update/{updateId}/complete
-
-Complete the rolling update (finalize new version, decommission old). Requires leader node.
-
-**Response:** Same as `GET /api/rolling-update/{updateId}`.
-
-### POST /api/rolling-update/{updateId}/rollback
+### POST /api/deploy/{deploymentId}/rollback
 
 Rollback to old version. Requires leader node.
 
-**Response:** Same as `GET /api/rolling-update/{updateId}`.
+**Response:** Same as `GET /api/deploy/{deploymentId}`.
+
+### POST /api/deploy/{deploymentId}/complete
+
+Complete the deployment (finalize new version, decommission old). Requires leader node.
+
+**Response:** Same as `GET /api/deploy/{deploymentId}`.
 
 ---
 
@@ -1973,197 +1972,7 @@ List all worker-hosted slice endpoints across all groups.
 
 ---
 
-## Canary Deployments
-
-All canary mutation endpoints require the requesting node to be the cluster leader.
-
-### GET /api/canaries
-
-List all active canary deployments.
-
-**Response:**
-```json
-{
-  "canaries": [
-    {
-      "canaryId": "abc123",
-      "artifactBase": "org.example:my-service",
-      "baselineVersion": "1.0.0",
-      "canaryVersion": "2.0.0",
-      "state": "EVALUATING",
-      "currentStage": 2,
-      "trafficPercent": 5,
-      "instances": 3,
-      "createdAt": 1704067200000
-    }
-  ]
-}
-```
-
-### GET /api/canary/{canaryId}
-
-Get canary deployment status.
-
-**Response:**
-```json
-{
-  "canaryId": "abc123",
-  "artifactBase": "org.example:my-service",
-  "baselineVersion": "1.0.0",
-  "canaryVersion": "2.0.0",
-  "state": "EVALUATING",
-  "currentStage": 2,
-  "trafficPercent": 5,
-  "stages": [1, 5, 25, 50, 100],
-  "instances": 3,
-  "maxErrorRate": 0.01,
-  "maxLatencyMs": 500,
-  "createdAt": 1704067200000,
-  "updatedAt": 1704067230000
-}
-```
-
-### GET /api/canary/{canaryId}/health
-
-Get health comparison between baseline and canary versions.
-
-**Response:**
-```json
-{
-  "canaryId": "abc123",
-  "baseline": {
-    "version": "1.0.0",
-    "requestCount": 9500,
-    "errorRate": 0.001,
-    "avgLatencyMs": 45.0
-  },
-  "canary": {
-    "version": "2.0.0",
-    "requestCount": 500,
-    "errorRate": 0.002,
-    "avgLatencyMs": 48.0
-  },
-  "evaluation": "PASS",
-  "collectedAt": 1704067230000
-}
-```
-
-### POST /api/canary/start
-
-Start a new canary deployment. Requires leader node.
-
-**Request:**
-```json
-{
-  "artifactBase": "org.example:my-service",
-  "version": "2.0.0",
-  "instances": 3,
-  "maxErrorRate": 0.01,
-  "maxLatencyMs": 500,
-  "cleanupPolicy": "GRACE_PERIOD"
-}
-```
-
-All fields except `artifactBase` and `version` are optional. Defaults: `instances=1`, `maxErrorRate=0.01`, `maxLatencyMs=500`, `cleanupPolicy=GRACE_PERIOD`.
-
-**Response:** Same as `GET /api/canary/{canaryId}`.
-
-### POST /api/canary/{canaryId}/promote
-
-Promote the canary to the next traffic stage (e.g., 1% to 5%). Requires leader node.
-
-**Response:** Same as `GET /api/canary/{canaryId}`.
-
-### POST /api/canary/{canaryId}/promote-full
-
-Promote the canary directly to 100% traffic. Requires leader node.
-
-**Response:** Same as `GET /api/canary/{canaryId}`.
-
-### POST /api/canary/{canaryId}/rollback
-
-Rollback the canary deployment to the baseline version. Requires leader node.
-
-**Response:** Same as `GET /api/canary/{canaryId}`.
-
----
-
-## Blue-Green Deployments
-
-All blue-green mutation endpoints require the requesting node to be the cluster leader.
-
-### GET /api/blue-green-deployments
-
-List all active blue-green deployments.
-
-**Response:**
-```json
-{
-  "deployments": [
-    {
-      "deploymentId": "bg-xyz",
-      "artifactBase": "org.example:my-service",
-      "blueVersion": "1.0.0",
-      "greenVersion": "2.0.0",
-      "activeSlot": "BLUE",
-      "state": "GREEN_READY",
-      "createdAt": 1704067200000
-    }
-  ]
-}
-```
-
-### GET /api/blue-green/{deploymentId}
-
-Get blue-green deployment status.
-
-**Response:**
-```json
-{
-  "deploymentId": "bg-xyz",
-  "artifactBase": "org.example:my-service",
-  "blueVersion": "1.0.0",
-  "greenVersion": "2.0.0",
-  "activeSlot": "BLUE",
-  "state": "GREEN_READY",
-  "instances": 3,
-  "createdAt": 1704067200000,
-  "updatedAt": 1704067230000
-}
-```
-
-### POST /api/blue-green/deploy
-
-Deploy the green version alongside the current blue. Requires leader node.
-
-**Request:**
-```json
-{
-  "artifactBase": "org.example:my-service",
-  "version": "2.0.0",
-  "instances": 3
-}
-```
-
-**Response:** Same as `GET /api/blue-green/{deploymentId}`.
-
-### POST /api/blue-green/{deploymentId}/switch
-
-Switch all traffic from blue to green. Atomic switchover via single Rabia round (~100ms). Requires leader node.
-
-**Response:** Same as `GET /api/blue-green/{deploymentId}`.
-
-### POST /api/blue-green/{deploymentId}/switch-back
-
-Switch traffic back from green to blue (instant rollback). Requires leader node.
-
-**Response:** Same as `GET /api/blue-green/{deploymentId}`.
-
-### POST /api/blue-green/{deploymentId}/complete
-
-Complete the deployment: drain the inactive slot and clean up resources. Requires leader node.
-
-**Response:** Same as `GET /api/blue-green/{deploymentId}`.
+<!-- Canary and blue-green deployment endpoints are now unified under /api/deploy above. -->
 
 ---
 
@@ -2344,31 +2153,19 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | POST | `/api/config` | Dynamic Configuration |
 | DELETE | `/api/config/{key}` | Dynamic Configuration |
 | DELETE | `/api/config/node/{nodeId}/{key}` | Dynamic Configuration |
-| GET | `/api/canaries` | Canary Deployments |
-| GET | `/api/canary/{canaryId}` | Canary Deployments |
-| GET | `/api/canary/{canaryId}/health` | Canary Deployments |
-| POST | `/api/canary/start` | Canary Deployments |
-| POST | `/api/canary/{canaryId}/promote` | Canary Deployments |
-| POST | `/api/canary/{canaryId}/promote-full` | Canary Deployments |
-| POST | `/api/canary/{canaryId}/rollback` | Canary Deployments |
-| GET | `/api/blue-green-deployments` | Blue-Green Deployments |
-| GET | `/api/blue-green/{deploymentId}` | Blue-Green Deployments |
-| POST | `/api/blue-green/deploy` | Blue-Green Deployments |
-| POST | `/api/blue-green/{deploymentId}/switch` | Blue-Green Deployments |
-| POST | `/api/blue-green/{deploymentId}/switch-back` | Blue-Green Deployments |
-| POST | `/api/blue-green/{deploymentId}/complete` | Blue-Green Deployments |
+| GET | `/api/deploy` | Deployments |
+| GET | `/api/deploy/{deploymentId}` | Deployments |
+| GET | `/api/deploy/{deploymentId}/health` | Deployments |
+| POST | `/api/deploy` | Deployments |
+| POST | `/api/deploy/{deploymentId}/promote` | Deployments |
+| POST | `/api/deploy/{deploymentId}/rollback` | Deployments |
+| POST | `/api/deploy/{deploymentId}/complete` | Deployments |
 | GET | `/api/ab-tests` | A/B Testing |
 | GET | `/api/ab-test/{testId}` | A/B Testing |
 | GET | `/api/ab-test/{testId}/metrics` | A/B Testing |
 | POST | `/api/ab-test/create` | A/B Testing |
 | POST | `/api/ab-test/{testId}/conclude` | A/B Testing |
-| GET | `/api/rolling-updates` | Rolling Updates |
-| GET | `/api/rolling-update/{updateId}` | Rolling Updates |
-| GET | `/api/rolling-update/{updateId}/health` | Rolling Updates |
-| POST | `/api/rolling-update/start` | Rolling Updates |
-| POST | `/api/rolling-update/{updateId}/routing` | Rolling Updates |
-| POST | `/api/rolling-update/{updateId}/complete` | Rolling Updates |
-| POST | `/api/rolling-update/{updateId}/rollback` | Rolling Updates |
+<!-- Rolling update endpoints replaced by unified /api/deploy above -->
 | GET | `/api/topology` | Topology |
 | GET | `/repository/info/{group}/{artifact}/{version}` | Artifact Repository |
 | GET | `/repository/{group}/{artifact}/{version}/{file}` | Artifact Repository |

@@ -16,9 +16,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 |---|---------|--------|-------------|
 | 1 | Blueprint management | Battle-tested | Declarative TOML-based deployment specs with dependency ordering, validation, pub-sub orphan detection, and status tracking |
 | 2 | Slice lifecycle | Battle-tested | Full state machine: DOWNLOADING, LOADING, STARTING, ACTIVE, UNLOADING, UNLOADED, FAILED. Per-node tracking via KV-Store |
-| 3 | Rolling updates | Battle-tested | Zero-downtime version deployments with traffic shifting (new:old ratio), health thresholds, auto-progression, rollback, and cleanup policies |
-| 133 | Canary Deployments | Complete | Progressive traffic shift with auto-evaluation, configurable stages, health-based auto-rollback |
-| 134 | Blue-Green Deployments | Complete | Atomic traffic switchover, drain period, instant switch-back |
+| 3 | Unified deployment strategies | Battle-tested | Single `aether deploy` command and `/api/deploy` endpoint supporting immediate, canary (progressive traffic shift with auto-evaluation), blue-green (atomic switchover with instant rollback), and rolling (weighted traffic shifting with health thresholds) strategies. Includes promote, rollback, complete lifecycle, cleanup policies |
 | 135 | A/B Testing | Complete | Deterministic traffic split by request context (header, cookie, percentage), ScopedValue variant propagation |
 | 4 | Auto-healing | Battle-tested | Automatic reconciliation of desired vs. actual state on node departure. Leader-only with failover |
 | 5 | Classloader isolation | Complete | Per-slice classloader prevents dependency conflicts between slices |
@@ -60,7 +58,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 18 | HTTP route registration | Complete | Dynamic per-slice route discovery and registration via KV-Store |
 | 19 | Endpoint registry | Complete | Artifact-to-node mapping for slice instance tracking and load balancing |
 | 20 | Service-to-service invocation | Battle-tested | SliceInvoker with HTTP routing, load balancer selection, timeout/retry, metrics |
-| 21 | Version routing | Battle-tested | Traffic splitting between old/new versions during rolling updates (configurable ratio) |
+| 21 | Version routing | Battle-tested | Traffic splitting between old/new versions during deployments (configurable ratio) |
 | 67 | Passive load balancer | Complete | Cluster-aware LB node (NodeRole.PASSIVE) joins cluster network, receives route table via committed Decisions, forwards HTTP via binary protocol. Smart routing, automatic failover, live topology awareness. No HTTP re-serialization. Reusable `PassiveNode<K,V>` abstraction in `integrations/cluster` separates infrastructure from consumer-specific wiring |
 | 68 | NodeRole cluster membership | Complete | ACTIVE/PASSIVE roles in NodeInfo. Passive nodes excluded from quorum/leader election, receive only Decision messages via deliverToPassive() filtering |
 | 69 | HttpForwarder (reusable) | Complete | Extracted HTTP forwarding with round-robin selection, retry with backoff, node departure failover. Used by both AppHttpServer and passive LB |
@@ -155,7 +153,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
 | 49 | REST management API | Battle-tested | 60+ endpoints across 13 route classes: status, health, blueprints, slices, scaling, rolling updates, config, thresholds, alerts, aspects, logging, TTM, invocation metrics, controller config, node lifecycle. Cluster-wide vs per-node separation: `/api/slices` (cluster-wide), `/api/node/slices` (per-node), `/api/node/routes` (per-node) |
-| 50 | Interactive CLI | Complete | Batch and REPL modes. Commands: status, nodes, slices, node-slices, routes, node-routes, metrics, health, scale, artifact, blueprint, update, invocation-metrics, controller, alerts, thresholds, aspects, traces, observability, config, logging, events, node lifecycle/drain/activate/shutdown |
+| 50 | Interactive CLI | Complete | Batch and REPL modes. Commands: status, nodes, slices, node-slices, routes, node-routes, metrics, health, scale, artifact, blueprint, deploy, invocation-metrics, controller, alerts, thresholds, aspects, traces, observability, config, logging, events, node lifecycle/drain/activate/shutdown |
 | 51 | WebSocket streams | Complete | `/ws/dashboard` (metrics), `/ws/status` (cluster state), `/ws/events` (real-time cluster events with delta broadcasting) |
 | 146 | In-memory streaming | Complete | StreamPublisher/StreamSubscriber/StreamAccess API, OffHeapRingBuffer, StreamPartitionManager, ResourceFactory SPI (StreamPublisherFactory, StreamAccessFactory), StreamConsumerAdapter, StreamConfigParser (blueprint TOML), CDM stream creation + consumer wiring, consensus cursor checkpointing, max-event-size enforcement, annotation processor (envelope v7), consumer runtime with configurable retries, dead-letter handler, REST API, CLI |
 | 147 | Declarative cluster management | Complete (Phase 1) | TOML-based cluster config (`cluster.toml`), `ClusterManagementConfig` model with validation, secret resolution (env vars, files, Vault), Hetzner cloud provisioning via REST API, 12-step bootstrap orchestrator (validate, resolve, provision, health, quorum, store, register), cluster registry (JSON, multi-cluster), CLI commands (`aether cluster bootstrap`, `cluster scale`, `cluster upgrade`), Management API (`GET/POST /api/cluster/config`, `POST /api/cluster/scale`, `POST /api/cluster/upgrade`) |

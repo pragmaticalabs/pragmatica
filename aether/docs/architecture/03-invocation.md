@@ -85,7 +85,7 @@ SliceInvoker prefers local endpoints when available:
 
 1. Check `CacheAffinityResolver` if registered (DHT-aware partition routing)
 2. If affinity node found, prefer it via `selectEndpointByAffinity()`
-3. Check for active rolling update - use weighted routing if active
+3. Check for active deployment - use weighted routing if active
 4. Otherwise, query EndpointRegistry with round-robin selection
 5. If any endpoint is on the current node, use it (zero network hop)
 6. Default invocation timeout: 20s (client-side), 15s (server-side)
@@ -139,19 +139,19 @@ graph LR
     ER --> Cache["Local Cache<br/>artifact:method → List<Endpoint>"]
 
     Cache --> RR["Round-Robin<br/>Selection"]
-    Cache --> WR["Weighted Routing<br/>(during rolling updates)"]
+    Cache --> WR["Weighted Routing<br/>(during deployments)"]
 ```
 
-### Weighted Routing for Rolling Updates
+### Weighted Routing for Deployments
 
-During rolling updates, `selectEndpointWithRouting()` uses `VersionRoutingKey` weights:
+During active deployments, `selectEndpointWithRouting()` uses `VersionRoutingKey` weights:
 
 ```
 v1 weight: 3, v2 weight: 1
 → 75% of requests go to v1, 25% to v2
 ```
 
-Weights are adjusted via `aether update routing <id> -r <new>:<old>`.
+Weights are adjusted via `aether deploy promote <id>` (or the `/api/deploy/{id}/promote` endpoint).
 
 ## DynamicAspectInterceptor
 

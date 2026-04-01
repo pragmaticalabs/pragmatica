@@ -43,7 +43,7 @@ Deploy, monitor, and maintain Aether clusters.
 - [Monitoring](operators/monitoring.md) - Alerts and thresholds
 - [Docker Deployment](operators/docker-deployment.md) - Container-based deployment
 - [Current Docker Setup](operators/current-docker-setup.md) - Current container configuration
-- [Rolling Updates](operators/rolling-updates.md) - Zero-downtime deployments
+- [Deployment Guide](guides/deploy-guide.md) - Zero-downtime deployments (canary, blue-green, rolling)
 - [Artifact Repository](operators/artifact-repository.md) - Slice artifact management
 - [Infrastructure Design](operators/infrastructure-design.md) - Infrastructure architecture
 

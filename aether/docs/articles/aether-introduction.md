@@ -172,15 +172,14 @@ Deploying a new version of a slice follows a two-stage model:
 **Stage 2: Route** -- Traffic shifts gradually according to your configured ratio. You might start at 10% to the new version, watch metrics, then shift to 50%, then 100%.
 
 ```bash
-# Deploy new version (Stage 1)
-aether rolling-update start org.example:order-service:1.0.0 \
-    --new-version 1.1.0
+# Deploy new version with rolling strategy
+aether deploy org.example:order-service:1.1.0 --rolling
 
-# Shift 25% of traffic to new version (Stage 2)
-aether rolling-update route org.example:order-service --ratio 25
+# Advance to next traffic stage
+aether deploy promote <id>
 
 # If something goes wrong, one command to roll back
-aether rolling-update rollback org.example:order-service
+aether deploy rollback <id>
 ```
 
 The routing is weighted at the request level, not the connection level. If 25% of traffic goes to the new version and you see elevated error rates, you haven't broken anything--75% of users are still hitting the stable version. Roll back instantly without any deployment ceremony.
@@ -293,7 +292,7 @@ We've built a comprehensive testing infrastructure: **80 end-to-end tests across
 
 The codebase handles edge cases that only emerge in distributed systems--leader failover, quorum loss, state recovery after crashes, concurrent modifications, and more.
 
-We've implemented rolling updates with weighted traffic shifting--deploy a new version, gradually shift traffic from 0% to 100%, roll back with one command if something goes wrong. Zero-downtime deployments are built into the runtime, not bolted on.
+We've implemented unified deployment strategies with weighted traffic shifting--deploy a new version via canary, blue-green, or rolling strategy, gradually shift traffic from 0% to 100%, roll back with one command if something goes wrong. Zero-downtime deployments are built into the runtime, not bolted on.
 
 We've built observability from the ground up: per-method invocation metrics with latency histograms, Prometheus-compatible endpoints, configurable alert thresholds, and real-time dashboards. You don't need to integrate external monitoring--it's already there.
 
