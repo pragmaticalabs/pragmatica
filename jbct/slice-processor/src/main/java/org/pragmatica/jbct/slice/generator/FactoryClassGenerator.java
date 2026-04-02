@@ -71,7 +71,7 @@ public class FactoryClassGenerator {
             try (var writer = new PrintWriter(file.openWriter())) {
                 generateFactoryClass(writer, model, factoryName);
             }
-            return Result.success(Unit.unit());
+            return Result.unitResult();
         } catch (Exception e) {
             return Causes.cause("Failed to generate factory class: " + e.getClass()
                                                                         .getSimpleName() + ": " + e.getMessage())

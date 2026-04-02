@@ -75,7 +75,7 @@ public record SliceModel(String packageName,
                                 + ". Use distinct method names — runtime dispatches by name.")
                          .result();
         }
-        return Result.success(Unit.unit());
+        return Result.unitResult();
     }
 
     private static Result<ExecutableElement> findFactoryMethod(TypeElement element, String simpleName) {
@@ -115,7 +115,7 @@ public record SliceModel(String packageName,
                 }
             }
         }
-        return Result.success(Unit.unit());
+        return Result.unitResult();
     }
 
     private static Result<Unit> checkDuplicateResource(DependencyModel dep, HashMap<String, String> seen) {
@@ -125,7 +125,7 @@ public record SliceModel(String packageName,
                                // Skip dedup for factory-wrapped resources (e.g., @PgSql persistence interfaces)
                                // — they share a connector but produce different typed instances
                                if (!rq.resourceType().toString().equals(dep.interfaceQualifiedName())) {
-                                   return Result.success(Unit.unit());
+                                   return Result.unitResult();
                                }
                                return checkDuplicate(rq, dep.parameterName(), seen);
                            });
@@ -140,7 +140,7 @@ public record SliceModel(String packageName,
                                 + " with config '" + rq.configSection() + "'")
                          .result();
         }
-        return Result.success(Unit.unit());
+        return Result.unitResult();
     }
 
     private static FactoryReturnKind detectReturnKind(ExecutableElement factoryMethod) {
@@ -163,7 +163,7 @@ public record SliceModel(String packageName,
     private static Result<Unit> validateReturnType(ExecutableElement factoryMethod, String sliceQualifiedName) {
         var returnKind = detectReturnKind(factoryMethod);
         if (returnKind == FactoryReturnKind.DIRECT) {
-            return Result.success(Unit.unit());
+            return Result.unitResult();
         }
         var returnType = factoryMethod.getReturnType();
         if (returnType instanceof DeclaredType dt && !dt.getTypeArguments().isEmpty()) {
@@ -174,7 +174,7 @@ public record SliceModel(String packageName,
                              .result();
             }
         }
-        return Result.success(Unit.unit());
+        return Result.unitResult();
     }
 
     public boolean hasDependencies() {

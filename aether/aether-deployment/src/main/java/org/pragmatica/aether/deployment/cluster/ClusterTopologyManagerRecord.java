@@ -307,11 +307,10 @@ import static org.pragmatica.lang.Unit.unit;
             transitionTo(new NodeReconcilerState.Converged());}
             return;
         }
-        if ( actual < desired) {
-        handleDeficit(actual, desired);} else
-        {
-            log.warn("CTM: Cluster has {} nodes, desired {}, excess nodes should be drained manually", actual, desired);
-            transitionTo(new NodeReconcilerState.Converged());
+        if (actual < desired) {
+            handleDeficit(actual, desired);
+        } else {
+            handleSurplus(actual, desired);
         }
     }
 
@@ -332,6 +331,18 @@ import static org.pragmatica.lang.Unit.unit;
         transitionTo(new NodeReconcilerState.Reconciling(desired, actual, buildInFlightList(batchSize), Instant.now()));
         provisionNodes(batchSize);
         scheduleRecheck();
+    }
+
+    private void handleSurplus(int actual, int desired) {
+        var surplus = actual - desired;
+        log.info("CTM: Cluster has {} nodes (desired {}), {} surplus — adjusting desired size to match", actual, desired, surplus);
+        // When the cluster has more nodes than desired (e.g., after multiple kill/provision cycles
+        // where provisions from a previous leader overlap with the new leader), adjust the desired
+        // size upward to match reality. The auto-scaler will later scale down if needed.
+        // This prevents the CTM from refusing to provision replacements for future node deaths
+        // because it thinks the cluster is already over-provisioned.
+        desiredSizeRef.set(actual);
+        transitionTo(new NodeReconcilerState.Converged());
     }
 
     private void provisionNodes(int count) {
