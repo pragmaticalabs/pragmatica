@@ -8,10 +8,10 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
@@ -22,7 +22,6 @@ import java.util.stream.Collectors;
 /// Thread safety: ConcurrentHashMap handles concurrent reads (HTTP dashboard)
 /// and writes (consensus thread). Weakly consistent iteration is acceptable
 /// for dashboard display.
-@SuppressWarnings("JBCT-RET-01") // MessageReceiver callbacks — void required by messaging framework
 public sealed interface DeploymentMap {
     /// Handle NodeArtifactKey put — extracts state from compound value.
     @SuppressWarnings("JBCT-RET-01") void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
@@ -38,6 +37,9 @@ public sealed interface DeploymentMap {
 
     int deploymentCount();
 
+    /// Returns the set of nodes from the given active node list that have no slices deployed.
+    Set<NodeId> nodesWithoutSlices(List<NodeId> activeNodes);
+
     record SliceDeploymentInfo(String artifact,
                                SliceState aggregateState,
                                List<SliceInstanceInfo> instances){}
@@ -45,14 +47,14 @@ public sealed interface DeploymentMap {
     record SliceInstanceInfo(String nodeId, SliceState state){}
 
     static DeploymentMap deploymentMap() {
-        return new DeploymentMapImpl();
+        return new IndexedDeploymentMap();
     }
 }
 
-@SuppressWarnings("JBCT-RET-01")
-final class DeploymentMapImpl implements DeploymentMap {
+final class IndexedDeploymentMap implements DeploymentMap {
     private final ConcurrentHashMap<SliceNodeKey, SliceState> index = new ConcurrentHashMap<>();
 
+    @SuppressWarnings("JBCT-RET-01")
     @Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
         var key = valuePut.cause().key();
         var value = valuePut.cause().value();
@@ -60,6 +62,7 @@ final class DeploymentMapImpl implements DeploymentMap {
                   value.state());
     }
 
+    @SuppressWarnings("JBCT-RET-01")
     @Override public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
         var key = valueRemove.cause().key();
         index.remove(new SliceNodeKey(key.artifact(), key.nodeId()));
@@ -87,20 +90,7 @@ final class DeploymentMapImpl implements DeploymentMap {
                                                                          .asString()))
                              .entrySet()
                              .stream()
-                             .map(group -> {
-                                      var instances = group.getValue().stream()
-                                                                    .map(e -> new SliceInstanceInfo(e.getKey().nodeId()
-                                                                                                            .id(),
-                                                                                                    e.getValue()))
-                                                                    .toList();
-                                      var aggregateState = group.getValue().stream()
-                                                                         .map(Map.Entry::getValue)
-                                                                         .reduce(DeploymentMapImpl::higherState)
-                                                                         .orElse(SliceState.FAILED);
-                                      return new SliceDeploymentInfo(group.getKey(),
-                                                                     aggregateState,
-                                                                     instances);
-                                  })
+                             .map(IndexedDeploymentMap::toSliceDeploymentInfo)
                              .toList();
     }
 
@@ -109,6 +99,30 @@ final class DeploymentMapImpl implements DeploymentMap {
                                  .map(key -> key.artifact().asString())
                                  .distinct()
                                  .count();
+    }
+
+    @Override public Set<NodeId> nodesWithoutSlices(List<NodeId> activeNodes) {
+        var nodesWithSlices = index.keySet().stream()
+                                          .map(SliceNodeKey::nodeId)
+                                          .collect(Collectors.toSet());
+        return activeNodes.stream().filter(nodeId -> !nodesWithSlices.contains(nodeId))
+                                 .collect(Collectors.toSet());
+    }
+
+    private static SliceDeploymentInfo toSliceDeploymentInfo(Map.Entry<String, List<Map.Entry<SliceNodeKey, SliceState>>> group) {
+        var instances = group.getValue().stream()
+                                      .map(IndexedDeploymentMap::toInstanceInfo)
+                                      .toList();
+        var aggregateState = group.getValue().stream()
+                                           .map(Map.Entry::getValue)
+                                           .reduce(SliceState.FAILED, IndexedDeploymentMap::higherState);
+        return new SliceDeploymentInfo(group.getKey(), aggregateState, instances);
+    }
+
+    private static SliceInstanceInfo toInstanceInfo(Map.Entry<SliceNodeKey, SliceState> entry) {
+        return new SliceInstanceInfo(entry.getKey().nodeId()
+                                                 .id(),
+                                     entry.getValue());
     }
 
     private static SliceState higherState(SliceState a, SliceState b) {

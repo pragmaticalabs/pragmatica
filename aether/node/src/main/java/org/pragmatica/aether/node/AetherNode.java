@@ -163,7 +163,6 @@ import org.slf4j.LoggerFactory;
 
 /// Main entry point for an Aether cluster node.
 /// Assembles all components: consensus, KV-store, slice management, deployment managers.
-@SuppressWarnings("JBCT-RET-01")
 public interface AetherNode {
     String VERSION = "1.0.0-alpha";
     NodeId self();
@@ -301,7 +300,7 @@ public interface AetherNode {
     TopologyConfig topologyConfig();
 
     /// Route a message to registered handlers via the internal MessageRouter.
-    void route(Message message);
+    @SuppressWarnings("JBCT-RET-01") void route(Message message);
 
     static Result<AetherNode> aetherNode(AetherNodeConfig config) {
         var delegateRouter = MessageRouter.DelegateRouter.delegate();
@@ -788,10 +787,13 @@ public interface AetherNode {
         // Create NodeLifecycleManager for cloud operations (shared by CTM and CDM drain completion)
         var computeProvider = config.environment().flatMap(EnvironmentIntegration::compute);
         var lifecycleManager = NodeLifecycleManager.nodeLifecycleManager(computeProvider);
+        // Create deployment map for event-driven slice-node indexing (needed by CTM for surplus node selection)
+        var deploymentMap = DeploymentMap.deploymentMap();
         // Create ClusterTopologyManager wrapping the observer — manages cluster size via reconciliation state machine
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
-                                                                                   config.autoHeal());
+                                                                                   config.autoHeal(),
+                                                                                   deploymentMap);
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,
@@ -862,8 +864,6 @@ public interface AetherNode {
                                                                                               minuteAggregator);
         // Create artifact metrics collector for storage and deployment tracking
         var artifactMetricsCollector = ArtifactMetricsCollector.artifactMetricsCollector(artifactStore);
-        // Create deployment map for event-driven slice-node indexing
-        var deploymentMap = DeploymentMap.deploymentMap();
         // Create cluster event aggregator for structured event collection
         var eventAggregator = ClusterEventAggregator.clusterEventAggregator(ClusterEventAggregatorConfig.defaultConfig());
         // Create TTM manager (returns no-op if disabled in config)
@@ -1290,6 +1290,8 @@ public interface AetherNode {
             growthLog.info("Received core activation directive from CDM");
             clusterNode.authorizeActivation();
         } else
+
+
 
 
 

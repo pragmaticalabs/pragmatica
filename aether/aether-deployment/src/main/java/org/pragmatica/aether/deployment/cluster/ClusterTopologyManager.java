@@ -1,5 +1,6 @@
 package org.pragmatica.aether.deployment.cluster;
 
+import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
@@ -30,6 +31,9 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// Get the current desired cluster size.
     int desiredSize();
 
+    /// Get the configured (operator-declared) cluster size.
+    int configuredSize();
+
     /// Notify that a node has reached ON_DUTY state (health check passed).
     /// Called by NodeDeploymentManager when a provisioned node registers lifecycle.
     void onNodeReady(NodeId nodeId);
@@ -50,7 +54,11 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// Factory method.
     static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
                                                          NodeLifecycleManager lifecycleManager,
-                                                         AutoHealConfig config) {
-        return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer, lifecycleManager, config);
+                                                         AutoHealConfig config,
+                                                         DeploymentMap deploymentMap) {
+        return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
+                                                                         lifecycleManager,
+                                                                         config,
+                                                                         deploymentMap);
     }
 }
