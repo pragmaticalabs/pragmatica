@@ -47,9 +47,9 @@ ENV JAVA_OPTS="-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
 # 8080     - Management API (REST, WebSocket dashboard)
 EXPOSE 8090/udp 8190/udp 8080
 
-# Health check using /api/health endpoint
+# Health check using liveness probe (bypasses auth — no audit log spam)
 HEALTHCHECK --interval=10s --timeout=5s --start-period=45s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:${MANAGEMENT_PORT}/api/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:${MANAGEMENT_PORT}/health/live || exit 1
 
 # Switch to non-root user
 USER aether

@@ -36,6 +36,14 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!-- Suppress SLF4J "no provider" warnings at runtime -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-nop</artifactId>
+            <version>${slf4j.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+
         <!-- Testing -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

@@ -82,15 +82,15 @@ public final class StatusRoutes implements RouteSource {
     private StatusResponse buildStatusResponse() {
         var node = nodeSupplier.get();
         var uptimeSeconds = node.uptimeSeconds();
-        var allMetrics = node.metricsCollector().allMetrics();
-        var connectedNodes = allMetrics.keySet();
+        var connectedPeers = node.connectedPeerIds();
         var leaderId = node.leader().map(NodeId::id)
                                   .or("none");
-        var nodeInfos = connectedNodes.stream().map(nodeId -> new NodeInfo(nodeId.id(),
-                                                                           node.leader().map(l -> l.equals(nodeId))
-                                                                                      .or(false)))
-                                             .toList();
-        var cluster = new ClusterInfo(connectedNodes.size(), leaderId, nodeInfos);
+        var nodeInfos = connectedPeers.stream().map(nodeId -> new NodeInfo(nodeId.id(),
+                                                                            node.leader().map(l -> l.equals(nodeId))
+                                                                                       .or(false)))
+                                              .toList();
+        var totalNodes = connectedPeers.size() + 1;
+        var cluster = new ClusterInfo(totalNodes, leaderId, nodeInfos);
         var derived = node.snapshotCollector().derivedMetrics();
         var metrics = new MetricsSummary(derived.requestRate(),
                                          100.0 - derived.errorRate() * 100.0,
