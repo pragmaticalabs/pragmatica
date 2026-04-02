@@ -14,7 +14,8 @@ public enum DeploymentType {
     AZURE("azure"),
     KUBERNETES("kubernetes"),
     ON_PREMISES("on-premises"),
-    EMBEDDED("embedded");
+    EMBEDDED("embedded"),
+    DOCKER("docker");
     private static final Cause INVALID_TYPE = Causes.cause("Invalid deployment type");
     private final String value;
     DeploymentType(String value) {

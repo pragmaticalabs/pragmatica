@@ -11,6 +11,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Contract;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -23,9 +24,9 @@ import static org.pragmatica.lang.Result.success;
 /// Docker implementation of the ComputeProvider SPI.
 /// Creates and manages aether-node containers on a Docker network using the Docker CLI.
 /// Designed for integration testing and local development environments.
-public record DockerComputeProvider( DockerCommandRunner runner,
-                                     DockerConfig config,
-                                     AtomicInteger nodeCounter) implements ComputeProvider {
+@Contract public record DockerComputeProvider( DockerCommandRunner runner,
+                                               DockerConfig config,
+                                               AtomicInteger nodeCounter) implements ComputeProvider {
     /// Factory method for creating a DockerComputeProvider.
     public static Result<DockerComputeProvider> dockerComputeProvider(DockerCommandRunner runner,
                                                                       DockerConfig config) {
@@ -40,46 +41,40 @@ public record DockerComputeProvider( DockerCommandRunner runner,
         var nodeIndex = nodeCounter.getAndIncrement();
         var containerName = buildContainerName(spec, nodeIndex);
         var command = buildRunCommand(spec, containerName, nodeIndex);
-        return runner.execute(command)
-                     .map(containerId -> toProvisionedInfo(containerId, containerName, spec, nodeIndex))
-                     .mapError(DockerComputeProvider::toProvisionError);
+        return runner.execute(command).map(containerId -> toProvisionedInfo(containerId, containerName, spec, nodeIndex))
+                             .mapError(DockerComputeProvider::toProvisionError);
     }
 
     @Override public Promise<Unit> terminate(InstanceId instanceId) {
         var stopCommand = buildStopCommand(instanceId);
         var removeCommand = buildRemoveCommand(instanceId);
-        return runner.execute(stopCommand)
-                     .flatMap(ignored -> runner.execute(removeCommand))
-                     .mapToUnit()
-                     .mapError(cause -> toTerminateError(instanceId, cause));
+        return runner.execute(stopCommand).flatMap(ignored -> runner.execute(removeCommand))
+                             .mapToUnit()
+                             .mapError(cause -> toTerminateError(instanceId, cause));
     }
 
     @Override public Promise<List<InstanceInfo>> listInstances() {
         var command = buildListCommand();
-        return runner.execute(command)
-                     .map(DockerComputeProvider::parseContainerList)
-                     .mapError(DockerComputeProvider::toListInstancesError);
+        return runner.execute(command).map(DockerComputeProvider::parseContainerList)
+                             .mapError(DockerComputeProvider::toListInstancesError);
     }
 
     @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
         var command = buildFilteredListCommand(tagFilter);
-        return runner.execute(command)
-                     .map(DockerComputeProvider::parseContainerList)
-                     .mapError(DockerComputeProvider::toListInstancesError);
+        return runner.execute(command).map(DockerComputeProvider::parseContainerList)
+                             .mapError(DockerComputeProvider::toListInstancesError);
     }
 
     @Override public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
         var command = buildInspectCommand(instanceId);
-        return runner.execute(command)
-                     .map(output -> parseInspectOutput(output, instanceId))
-                     .mapError(DockerComputeProvider::toProvisionError);
+        return runner.execute(command).map(output -> parseInspectOutput(output, instanceId))
+                             .mapError(DockerComputeProvider::toProvisionError);
     }
 
     @Override public Promise<Unit> restart(InstanceId id) {
         var command = buildRestartCommand(id);
-        return runner.execute(command)
-                     .mapToUnit()
-                     .mapError(DockerComputeProvider::toProvisionError);
+        return runner.execute(command).mapToUnit()
+                             .mapError(DockerComputeProvider::toProvisionError);
     }
 
     @Override public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
@@ -102,24 +97,39 @@ public record DockerComputeProvider( DockerCommandRunner runner,
         var peers = spec.tags().getOrDefault("aether.peers", "");
         var coreMax = spec.tags().getOrDefault("aether.core-max", "3");
         var apiKey = spec.tags().getOrDefault("aether.api-key", "");
-
-        var command = new ArrayList<>(List.of(
-            "docker", "run", "-d",
-            "--name", containerName,
-            "--hostname", containerName,
-            "--network", config.networkName(),
-            "--label", "aether.cluster=" + cluster,
-            "--label", "aether.role=" + role,
-            "--label", "aether.node-id=" + nodeId,
-            "-p", mgmtPort + ":8080",
-            "-p", appPort + ":8070",
-            "-e", "NODE_ID=" + nodeId,
-            "-e", "CLUSTER_PORT=" + config.clusterPort(),
-            "-e", "MANAGEMENT_PORT=8080",
-            "-e", "PEERS=" + peers,
-            "-e", "CORE_MAX=" + coreMax,
-            "-e", "AETHER_API_KEY=" + apiKey));
-
+        var command = new ArrayList<>(List.of("docker",
+                                              "run",
+                                              "-d",
+                                              "--name",
+                                              containerName,
+                                              "--hostname",
+                                              containerName,
+                                              "--network",
+                                              config.networkName(),
+                                              "-v",
+                                              config.socketPath() + ":" + config.socketPath(),
+                                              "--label",
+                                              "aether.cluster=" + cluster,
+                                              "--label",
+                                              "aether.role=" + role,
+                                              "--label",
+                                              "aether.node-id=" + nodeId,
+                                              "-p",
+                                              mgmtPort + ":8080",
+                                              "-p",
+                                              appPort + ":8070",
+                                              "-e",
+                                              "NODE_ID=" + nodeId,
+                                              "-e",
+                                              "CLUSTER_PORT=" + config.clusterPort(),
+                                              "-e",
+                                              "MANAGEMENT_PORT=8080",
+                                              "-e",
+                                              "PEERS=" + peers,
+                                              "-e",
+                                              "CORE_MAX=" + coreMax,
+                                              "-e",
+                                              "AETHER_API_KEY=" + apiKey));
         addSpecLabels(command, spec.tags());
         command.add(config.imageName());
         return List.copyOf(command);
@@ -128,13 +138,13 @@ public record DockerComputeProvider( DockerCommandRunner runner,
     // --- Leaf: add custom labels from spec tags ---
     private static void addSpecLabels(ArrayList<String> command, Map<String, String> tags) {
         tags.entrySet().stream()
-            .filter(DockerComputeProvider::isCustomLabel)
-            .forEach(entry -> addLabelArgs(command, entry));
+                     .filter(DockerComputeProvider::isCustomLabel)
+                     .forEach(entry -> addLabelArgs(command, entry));
     }
 
     // --- Leaf: check if a tag is a custom label (not an internal aether tag) ---
     private static boolean isCustomLabel(Map.Entry<String, String> entry) {
-        return !entry.getKey().startsWith("aether.");
+        return ! entry.getKey().startsWith("aether.");
     }
 
     // --- Leaf: add a single label argument pair to command list ---
@@ -155,16 +165,21 @@ public record DockerComputeProvider( DockerCommandRunner runner,
 
     // --- Leaf: build docker ps command for listing all aether containers ---
     private static List<String> buildListCommand() {
-        return List.of("docker", "ps", "-a",
-                        "--filter", "label=aether.cluster",
-                        "--format", "{{.ID}}\t{{.Names}}\t{{.State}}\t{{.Label \"aether.cluster\"}}\t{{.Label \"aether.role\"}}\t{{.Label \"aether.node-id\"}}");
+        return List.of("docker",
+                       "ps",
+                       "-a",
+                       "--filter",
+                       "label=aether.cluster",
+                       "--format",
+                       "{{.ID}}\t{{.Names}}\t{{.State}}\t{{.Label \"aether.cluster\"}}\t{{.Label \"aether.role\"}}\t{{.Label \"aether.node-id\"}}");
     }
 
     // --- Leaf: build docker ps command with tag filters ---
     private static List<String> buildFilteredListCommand(Map<String, String> tagFilter) {
         var command = new ArrayList<>(List.of("docker", "ps", "-a"));
         tagFilter.forEach((key, value) -> addFilterArgs(command, key, value));
-        command.addAll(List.of("--format", "{{.ID}}\t{{.Names}}\t{{.State}}\t{{.Label \"aether.cluster\"}}\t{{.Label \"aether.role\"}}\t{{.Label \"aether.node-id\"}}"));
+        command.addAll(List.of("--format",
+                               "{{.ID}}\t{{.Names}}\t{{.State}}\t{{.Label \"aether.cluster\"}}\t{{.Label \"aether.role\"}}\t{{.Label \"aether.node-id\"}}"));
         return List.copyOf(command);
     }
 
@@ -176,9 +191,11 @@ public record DockerComputeProvider( DockerCommandRunner runner,
 
     // --- Leaf: build docker inspect command ---
     private static List<String> buildInspectCommand(InstanceId instanceId) {
-        return List.of("docker", "inspect",
-                        "--format", "{{.State.Status}}\t{{.Name}}\t{{.Config.Hostname}}\t{{.Id}}",
-                        instanceId.value());
+        return List.of("docker",
+                       "inspect",
+                       "--format",
+                       "{{.State.Status}}\t{{.Name}}\t{{.Config.Hostname}}\t{{.Id}}",
+                       instanceId.value());
     }
 
     // --- Leaf: build docker restart command ---
@@ -187,12 +204,19 @@ public record DockerComputeProvider( DockerCommandRunner runner,
     }
 
     // --- Leaf: create InstanceInfo for a freshly provisioned container ---
-    private InstanceInfo toProvisionedInfo(String containerId, String containerName, ProvisionSpec spec, int nodeIndex) {
+    private InstanceInfo toProvisionedInfo(String containerId,
+                                           String containerName,
+                                           ProvisionSpec spec,
+                                           int nodeIndex) {
         var mgmtPort = config.managementPortBase() + nodeIndex;
         var appPort = config.appPortBase() + nodeIndex;
         var addresses = List.of("localhost:" + mgmtPort, "localhost:" + appPort);
         var tags = buildInstanceTags(spec, containerName);
-        return new InstanceInfo(new InstanceId(containerId), InstanceStatus.RUNNING, addresses, spec.instanceType(), tags);
+        return new InstanceInfo(new InstanceId(containerId),
+                                InstanceStatus.RUNNING,
+                                addresses,
+                                spec.instanceType(),
+                                tags);
     }
 
     // --- Leaf: build tags map for instance info ---
@@ -205,18 +229,16 @@ public record DockerComputeProvider( DockerCommandRunner runner,
 
     // --- Leaf: parse docker ps output into instance info list ---
     static List<InstanceInfo> parseContainerList(String output) {
-        if (output.isEmpty()) {
-            return List.of();
-        }
-        return Arrays.stream(output.split("\n"))
-                     .filter(line -> !line.isBlank())
-                     .map(DockerComputeProvider::parseContainerLine)
-                     .toList();
+        if ( output.isEmpty()) {
+        return List.of();}
+        return Arrays.stream(output.split("\n")).filter(line -> !line.isBlank())
+                            .map(DockerComputeProvider::parseContainerLine)
+                            .toList();
     }
 
     // --- Leaf: parse a single docker ps output line ---
     static InstanceInfo parseContainerLine(String line) {
-        var parts = line.split("\t", -1);
+        var parts = line.split("\t", - 1);
         var id = safePart(parts, 0);
         var name = safePart(parts, 1);
         var state = safePart(parts, 2);
@@ -229,12 +251,14 @@ public record DockerComputeProvider( DockerCommandRunner runner,
 
     // --- Leaf: safely extract a part from a string array ---
     private static String safePart(String[] parts, int index) {
-        return index < parts.length ? parts[index] : "";
+        return index < parts.length
+               ? parts[index]
+               : "";
     }
 
     // --- Leaf: parse docker inspect output into instance info ---
     static InstanceInfo parseInspectOutput(String output, InstanceId instanceId) {
-        var parts = output.split("\t", -1);
+        var parts = output.split("\t", - 1);
         var state = safePart(parts, 0);
         var name = safePart(parts, 1).replaceFirst("^/", "");
         return new InstanceInfo(instanceId, mapDockerState(state), List.of(name), InstanceType.ON_DEMAND, Map.of());
