@@ -53,6 +53,7 @@ ssh -i "$AETHER_SSH_KEY" "${AETHER_SSH_USER}@${TARGET_HOST}" \
 ```bash
 ssh -i "$AETHER_SSH_KEY" "${AETHER_SSH_USER}@${TARGET_HOST}" '
 docker network create aether-network 2>/dev/null || true
+DOCKER_GID=$(stat -c "%g" /var/run/docker.sock)
 PEERS=""
 for i in $(seq 1 5); do
     [ -n "$PEERS" ] && PEERS="${PEERS},"
@@ -63,6 +64,8 @@ for i in $(seq 1 5); do
         --name "aether-integration-test-${i}" \
         --hostname "aether-integration-test-${i}" \
         --network aether-network \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        --group-add "$DOCKER_GID" \
         -p "$((5149 + i)):8080" \
         -p "$((8069 + i)):8070" \
         -e "NODE_ID=integration-test-${i}" \
@@ -70,6 +73,7 @@ for i in $(seq 1 5); do
         -e "MANAGEMENT_PORT=8080" \
         -e "PEERS=${PEERS}" \
         -e "CORE_MAX=5" \
+        -e "AETHER_API_KEY=aether-integration-test-key" \
         aether-node:local
 done
 '

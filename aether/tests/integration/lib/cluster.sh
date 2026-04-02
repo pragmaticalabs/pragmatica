@@ -211,8 +211,11 @@ get_node_lifecycle() {
 # ---------------------------------------------------------------------------
 scale_cluster() {
     local target="$1"
-    log_info "Scaling cluster to ${target} nodes"
-    api_post "/api/scale" "{\"targetNodes\":${target}}"
+    log_info "Scaling cluster to ${target} nodes" >&2
+    # Get current cluster config version for optimistic concurrency
+    local version
+    version=$(api_get "/api/cluster/config" | python3 -c "import sys,json; print(json.load(sys.stdin).get('version',0))" 2>/dev/null || echo "0")
+    api_post "/api/cluster/scale" "{\"coreCount\":${target},\"expectedVersion\":${version}}"
 }
 
 # ---------------------------------------------------------------------------

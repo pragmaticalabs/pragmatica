@@ -14,11 +14,11 @@ MAX_ERROR_RATE="${MAX_ERROR_RATE:-2.0}"
 test_scale_api_available() {
     wait_for_cluster 60
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/scale" \
+    status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/scale" \
         -X POST \
         -H "X-API-Key: ${API_KEY}" \
         -H "Content-Type: application/json" \
-        -d '{"targetNodes":5}')
+        -d '{"coreCount":5,"expectedVersion":0}')
     if [ "$status" = "000" ] || [ "$status" = "" ]; then
         skip_test "Scale API" "Scale API endpoint not available"
         print_summary

@@ -9,11 +9,11 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 test_scale_api_available() {
     wait_for_cluster 60
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/scale" \
+    status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/scale" \
         -X POST \
         -H "X-API-Key: ${API_KEY}" \
         -H "Content-Type: application/json" \
-        -d '{"targetNodes":5}')
+        -d '{"coreCount":5,"expectedVersion":0}')
     if [ "$status" = "000" ] || [ "$status" = "" ]; then
         skip_test "Scale API" "Scale API endpoint not available"
         print_summary
@@ -31,11 +31,11 @@ test_initial_state() {
 test_reject_scale_to_1() {
     # Scaling below minimum (3) should be rejected
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/scale" \
+    status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/scale" \
         -X POST \
         -H "X-API-Key: ${API_KEY}" \
         -H "Content-Type: application/json" \
-        -d '{"targetNodes":1}')
+        -d '{"coreCount":1,"expectedVersion":0}')
 
     # Expect 400 or 422 (rejected) — NOT 200
     if [ "$status" -ge 400 ] && [ "$status" -lt 500 ] 2>/dev/null; then
@@ -48,11 +48,11 @@ test_reject_scale_to_1() {
 
 test_reject_scale_to_2() {
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/scale" \
+    status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/scale" \
         -X POST \
         -H "X-API-Key: ${API_KEY}" \
         -H "Content-Type: application/json" \
-        -d '{"targetNodes":2}')
+        -d '{"coreCount":2,"expectedVersion":0}')
 
     if [ "$status" -ge 400 ] && [ "$status" -lt 500 ] 2>/dev/null; then
         log_pass "Scale to 2 rejected (status: ${status})"
@@ -65,11 +65,11 @@ test_reject_scale_to_2() {
 test_reject_scale_above_max() {
     # Config max is 15
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/scale" \
+    status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/scale" \
         -X POST \
         -H "X-API-Key: ${API_KEY}" \
         -H "Content-Type: application/json" \
-        -d '{"targetNodes":20}')
+        -d '{"coreCount":20,"expectedVersion":0}')
 
     if [ "$status" -ge 400 ] && [ "$status" -lt 500 ] 2>/dev/null; then
         log_pass "Scale to 20 rejected (status: ${status})"

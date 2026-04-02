@@ -20,6 +20,17 @@ api_keys = ["aether-integration-test-key"]
 [messaging.click-events]
 topic_name = "click-events"
 
+[cloud]
+provider = "docker"
+
+[cloud.compute]
+image_name = "aether-node:local"
+network_name = "aether-network"
+management_port_base = "5150"
+app_port_base = "8070"
+cluster_port = "6000"
+socket_path = "/var/run/docker.sock"
+
 [database]
 username = "forge"
 password = "forge"
