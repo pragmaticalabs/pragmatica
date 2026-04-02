@@ -80,6 +80,7 @@ final class SmtpNotificationSender implements NotificationSender {
 
 
 
+
         catch (InterruptedException _) {
                        Thread.currentThread().interrupt();
                        promise.succeed(unit());

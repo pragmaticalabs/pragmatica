@@ -408,10 +408,12 @@ public final class KubernetesGenerator implements Generator {
 
 
 
+
         catch (UnsupportedOperationException e) {
             // POSIX permissions not supported on this filesystem (e.g., Windows)
             log.debug("Cannot set POSIX permissions on {}: {}", path, e.getMessage());
         }
+
 
 
 

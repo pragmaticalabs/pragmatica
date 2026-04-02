@@ -55,6 +55,7 @@ public interface BlueprintArtifactParser {
 
 
 
+
         catch (IOException e) {
             return PARSE_ERROR.apply(e.getMessage()).result();
         }
@@ -95,6 +96,7 @@ public interface BlueprintArtifactParser {
             datasource = "database";
             filename = parts[1];
         } else
+
 
 
 

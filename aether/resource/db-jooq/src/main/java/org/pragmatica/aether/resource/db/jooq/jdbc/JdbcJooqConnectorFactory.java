@@ -58,6 +58,7 @@ public final class JdbcJooqConnectorFactory implements ResourceFactory<JooqConne
 
 
 
+
         catch (Exception e) {
             dataSource.close();
             throw e;

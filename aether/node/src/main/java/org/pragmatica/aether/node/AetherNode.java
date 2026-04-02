@@ -1290,6 +1290,7 @@ public interface AetherNode {
             growthLog.info("Received core activation directive from CDM");
             clusterNode.authorizeActivation();
         } else
+
         if ( AetherValue.ActivationDirectiveValue.WORKER.equals(role)) {
             growthLog.info("Received worker activation directive from CDM");
             activateWorkerMode(selfId,

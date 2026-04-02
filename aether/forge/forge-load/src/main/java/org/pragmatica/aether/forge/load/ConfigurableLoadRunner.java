@@ -278,6 +278,7 @@ public final class ConfigurableLoadRunner {
 
 
 
+
         catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -336,6 +337,7 @@ public final class ConfigurableLoadRunner {
             applyConfig(newConfig);
             start();
         } else
+
 
 
 
@@ -643,6 +645,7 @@ public final class ConfigurableLoadRunner {
 
 
 
+
             catch (Exception e) {
                 log.debug("Error in target '{}': {}", name, e.getMessage());
             }}
@@ -654,6 +657,7 @@ public final class ConfigurableLoadRunner {
                 while ( paused.get() && running.get()) {
                 Thread.sleep(100);}
             }
+
 
 
 
@@ -725,6 +729,7 @@ public final class ConfigurableLoadRunner {
             try {
                 Thread.sleep(sleepMicros / 1000, (int)((sleepMicros % 1000) * 1000));
             }
+
 
 
 
