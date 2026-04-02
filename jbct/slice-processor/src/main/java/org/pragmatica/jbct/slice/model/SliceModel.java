@@ -121,7 +121,14 @@ public record SliceModel(String packageName,
     private static Result<Unit> checkDuplicateResource(DependencyModel dep, HashMap<String, String> seen) {
         return dep.resourceQualifier()
                   .toResult(Causes.cause("Resource dep without qualifier: " + dep.parameterName()))
-                  .flatMap(rq -> checkDuplicate(rq, dep.parameterName(), seen));
+                  .flatMap(rq -> {
+                               // Skip dedup for factory-wrapped resources (e.g., @PgSql persistence interfaces)
+                               // — they share a connector but produce different typed instances
+                               if (!rq.resourceType().toString().equals(dep.interfaceQualifiedName())) {
+                                   return Result.success(Unit.unit());
+                               }
+                               return checkDuplicate(rq, dep.parameterName(), seen);
+                           });
     }
 
     private static Result<Unit> checkDuplicate(ResourceQualifierModel rq, String paramName, HashMap<String, String> seen) {
