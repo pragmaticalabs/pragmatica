@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-alpha] - Unreleased
 
 ### Added
+- **DockerComputeProvider** — `ComputeProvider` SPI implementation for Docker-based cluster scaling. Provisions/terminates containers via Docker CLI, label-based instance discovery, atomic port allocation. Enables integration test scaling without cloud providers
 - **PostgreSQL persistence adapter** — `@PgSql` type-safe persistence with compile-time SQL validation. Annotation processor validates `@Query` SQL and generates CRUD from method names (Spring Data conventions: `findBy*`, `save`, `insert`, `deleteBy*`, `countBy*`, `existsBy*`). Named parameter rewriting (`:param` → `$N`), query narrowing (`SELECT *` → explicit columns), record expansion for INSERT/UPDATE
 - **PostgreSQL tooling (aether-pg-tools)** — SQL parser (PEG-based, ~500 rules), event-sourced schema model (25 event types), 41-rule migration linter (lock hazards, type design, schema design, migration practice), Java record/enum code generation from schema
 - **pg-maven-plugin** — standalone Maven plugin for generating Java records/enums from PostgreSQL migration SQL files (`mvn pg:generate`)
@@ -51,6 +52,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Blueprint deploy classifier** — CLI and server auto-append `:blueprint` classifier when only `groupId:artifactId:version` given
 - **Integration test node count** — `cluster_node_count()` uses health endpoint (QUIC peers) instead of metrics-based status endpoint
 - **Integration test deploy flow** — push artifacts before deploy, use CLI for deployment with failover
+- **Status endpoint node count** — uses live `connectedPeerIds()` instead of stale metrics-based count
+- **CLI SLF4J warnings** — added `slf4j-nop` to CLI dependencies
+- **Docker healthcheck** — uses `/health/live` (no auth required) instead of `/api/health`
+- **Audit logging** — set to WARN level, suppresses debug auth success noise
 
 ### Removed
 - **Separate deployment commands** — `aether canary`, `aether blue-green`, `aether update` removed (use `aether deploy --strategy`)
