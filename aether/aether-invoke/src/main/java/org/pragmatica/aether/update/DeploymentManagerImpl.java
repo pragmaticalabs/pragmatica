@@ -85,6 +85,8 @@ final class DeploymentManagerImpl implements DeploymentManager {
 
 
 
+
+
         {
             log.info("Deployment manager passive (follower)");
             leader = false;

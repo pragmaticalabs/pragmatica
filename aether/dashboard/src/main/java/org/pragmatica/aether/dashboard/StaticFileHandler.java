@@ -137,6 +137,8 @@ public final class StaticFileHandler {
 
 
 
+
+
         catch (IOException e) {
             log.error("Error loading resource: {}", path, e);
             return Option.empty();

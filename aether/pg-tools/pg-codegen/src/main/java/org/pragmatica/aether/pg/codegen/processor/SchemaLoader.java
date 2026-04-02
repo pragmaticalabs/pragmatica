@@ -98,6 +98,8 @@ public final class SchemaLoader {
                 files.add(probeResult.unwrap());
                 consecutiveMisses = 0;
             } else
+
+
             {
                 consecutiveMisses++;
                 if ( consecutiveMisses >= 3) {

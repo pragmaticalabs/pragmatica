@@ -650,6 +650,8 @@ public interface AppHttpServer {
 
 
 
+
+
         {
             log.warn("No route found for {} {} [{}]", method, request.path(), requestId);
             sendProblem(response,
@@ -1148,6 +1150,8 @@ public interface AppHttpServer {
             log.warn("HTTP error response [{}]: {} body={}", requestId, responseData.statusCode(), truncatedBody);
             log.debug("HTTP error response full body [{}]: {}", requestId, fullBody);
         } else
+
+
 
 
 

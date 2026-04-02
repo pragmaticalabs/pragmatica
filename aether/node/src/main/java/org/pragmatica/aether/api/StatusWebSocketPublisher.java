@@ -88,6 +88,8 @@ public class StatusWebSocketPublisher {
 
 
 
+
+
         catch (Exception e) {
             log.error("Error publishing status via WebSocket", e);
         }

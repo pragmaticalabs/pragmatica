@@ -212,6 +212,8 @@ public final class FactoryGenerator {
 
 
 
+
+
         if ( method.returnKind == MethodAnalyzer.ReturnKind.LONG || method.returnKind == MethodAnalyzer.ReturnKind.BOOLEAN) {
         appendScalarMapper(sb, method.returnKind, method.sql);}
         for ( var param : method.params) {

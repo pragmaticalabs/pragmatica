@@ -303,6 +303,8 @@ public final class InvocationContext {
         // Delegates to Runnable-based API
         // Delegates to Runnable-based API
         // Delegates to Runnable-based API
+        // Delegates to Runnable-based API
+        // Delegates to Runnable-based API
         void runWithCaptured(Runnable runnable) {
             if ( requestId == null) {
                 runWithVariantIfPresent(runnable);
@@ -336,6 +338,8 @@ public final class InvocationContext {
         // Delegates to supplier — null safety is caller's responsibility
         // Delegates to supplier — null safety is caller's responsibility
         // Delegates to supplier — null safety is caller's responsibility
+        // Delegates to supplier — null safety is caller's responsibility
+        // Delegates to supplier — null safety is caller's responsibility
         <T> T runWithVariantIfPresent(Supplier<T> supplier) {
             return variant != null
                    ? runWithVariant(variant, supplier)
@@ -344,6 +348,8 @@ public final class InvocationContext {
 
         @SuppressWarnings("JBCT-RET-01") // Void wrapper for variant scoping
         private// Void wrapper for variant scoping
+        // Void wrapper for variant scoping
+        // Void wrapper for variant scoping
         // Void wrapper for variant scoping
         // Void wrapper for variant scoping
         // Void wrapper for variant scoping

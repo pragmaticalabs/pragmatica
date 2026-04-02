@@ -150,6 +150,8 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 
+
+
         if ( clusterWasFormed && effectiveActual >= desired - 1) {
             // Leader failover: one node short (the dead leader). Immediate reconciliation.
             transitionTo(new NodeReconcilerState.Converged());
@@ -241,6 +243,8 @@ import static org.pragmatica.lang.Unit.unit;
             transitionTo(new NodeReconcilerState.Converged());
             log.info("CTM: Cluster formation complete ({}/{})", actual, desired);
         } else
+
+
 
 
 

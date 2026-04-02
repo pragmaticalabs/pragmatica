@@ -44,6 +44,8 @@ public final class NamingConvention {
 
 
 
+
+
             {
             sb.append(c);}
         }

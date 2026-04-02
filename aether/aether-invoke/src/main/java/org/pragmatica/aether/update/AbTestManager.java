@@ -139,6 +139,8 @@ public interface AbTestManager {
 
 
 
+
+
                 {
                 log.info("A/B test manager passive (follower)");}
             }
@@ -159,6 +161,8 @@ public interface AbTestManager {
 
             @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
             private// Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
             // Side-effect helper — void inherent
             // Side-effect helper — void inherent
             // Side-effect helper — void inherent
@@ -421,6 +425,8 @@ public interface AbTestManager {
             // Side-effect helper — void inherent
             // Side-effect helper — void inherent
             // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
             void restoreState() {
                 int beforeCount = tests.size();
                 kvStore.forEach(AbTestKey.class, AbTestValue.class, (key, value) -> restoreTest(value));
@@ -431,6 +437,8 @@ public interface AbTestManager {
 
             @SuppressWarnings({"JBCT-VO-02", "JBCT-RET-01"}) // Side-effect helper — void inherent
             private// Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
             // Side-effect helper — void inherent
             // Side-effect helper — void inherent
             // Side-effect helper — void inherent
@@ -520,6 +528,8 @@ public interface AbTestManager {
             // --- Housekeeping ---
             @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
             private// Side-effect helper — void inherent
+            // Side-effect helper — void inherent
+            // Side-effect helper — void inherent
             // Side-effect helper — void inherent
             // Side-effect helper — void inherent
             // Side-effect helper — void inherent
