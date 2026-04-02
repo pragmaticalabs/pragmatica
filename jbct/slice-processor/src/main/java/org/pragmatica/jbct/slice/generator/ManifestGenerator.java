@@ -272,6 +272,19 @@ public class ManifestGenerator {
         for (var dep : model.dependencies()) {
             classes.add(model.packageName() + "." + model.simpleName() + "Factory$" + dep.localRecordName());
         }
+        // For resource deps where the interface type differs from the resource type
+        // (e.g., @PgSql persistence interfaces), include the interface and its generated factory
+        for (var dep : model.dependencies()) {
+            if (dep.isResource()) {
+                dep.resourceQualifier().onPresent(qualifier -> {
+                    var resourceTypeName = qualifier.resourceType().toString();
+                    if (!resourceTypeName.equals(dep.interfaceQualifiedName())) {
+                        classes.add(dep.interfaceQualifiedName());
+                        classes.add(dep.interfaceQualifiedName() + "Factory");
+                    }
+                });
+            }
+        }
         // Add Routes class if generated
         routesClass.onPresent(classes::add);
         return classes;

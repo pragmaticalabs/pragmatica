@@ -1040,16 +1040,25 @@ public class FactoryClassGenerator {
 
     /// Generate resource provisioning call: ctx.resources().provide(Type.class, "config.section")
     /// Publisher and stream resources require ProvisioningContext for runtime extensions.
+    /// When the resource type differs from the parameter type (e.g., @PgSql persistence interfaces),
+    /// wraps the connector in a factory call: InterfaceFactory.interface(connector).
     private String generateResourceProvideCall(DependencyModel resource) {
         return resource.resourceQualifier()
                        .map(qualifier -> {
-                           var typeName = qualifier.resourceTypeSimpleName();
+                           var typeName = qualifier.resourceType().toString();
                            var configSection = escapeJavaString(qualifier.configSection());
-                           if (resource.isPublisher() || resource.isStreamResource()) {
-                               return "ctx.resources().provide(" + typeName + ".class, \""
-                                      + configSection + "\", ProvisioningContext.provisioningContext())";
+                           var provideCall = resource.isPublisher() || resource.isStreamResource()
+                               ? "ctx.resources().provide(" + typeName + ".class, \""
+                                 + configSection + "\", ProvisioningContext.provisioningContext())"
+                               : "ctx.resources().provide(" + typeName + ".class, \"" + configSection + "\")";
+                           // If resource type differs from parameter type, wrap in factory call
+                           // e.g., @PgSql AnalyticsPersistence -> provide PgSqlConnector, wrap via factory
+                           if (!typeName.equals(resource.interfaceQualifiedName())) {
+                               var factoryClass = resource.interfaceQualifiedName() + "Factory";
+                               var factoryMethod = lowercaseFirst(resource.interfaceSimpleName());
+                               return provideCall + ".map(" + factoryClass + "::" + factoryMethod + ")";
                            }
-                           return "ctx.resources().provide(" + typeName + ".class, \"" + configSection + "\")";
+                           return provideCall;
                        })
                        .or("ctx.resources().provide(Object.class, \"unknown\")");
     }

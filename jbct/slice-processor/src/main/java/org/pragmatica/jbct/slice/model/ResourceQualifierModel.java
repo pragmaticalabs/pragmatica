@@ -39,11 +39,21 @@ public record ResourceQualifierModel(TypeMirror resourceType,
     /// @return Option containing the model if found, empty otherwise
     public static Option<ResourceQualifierModel> fromParameter(VariableElement param,
                                                                 ProcessingEnvironment env) {
-        // Check each annotation on the parameter
+        // Check each annotation on the parameter itself (e.g., @Sql SqlConnector db)
         for (var annotation : param.getAnnotationMirrors()) {
             var result = fromAnnotationMirror(annotation, env);
             if (result.isPresent()) {
                 return result;
+            }
+        }
+        // Also check annotations on the parameter's type (e.g., @PgSql on the interface)
+        // This handles persistence interfaces where @PgSql is on the type, not the parameter
+        if (param.asType() instanceof DeclaredType dt && dt.asElement() instanceof TypeElement typeElement) {
+            for (var annotation : typeElement.getAnnotationMirrors()) {
+                var result = fromAnnotationMirror(annotation, env);
+                if (result.isPresent()) {
+                    return result;
+                }
             }
         }
         return Option.none();
