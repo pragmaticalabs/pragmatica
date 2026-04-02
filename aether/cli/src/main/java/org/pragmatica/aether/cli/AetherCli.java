@@ -193,6 +193,8 @@ subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, Aeth
 
 
 
+
+
         catch (NoSuchAlgorithmException | KeyManagementException e) {
             System.err.println("Warning: Failed to create trust-all SSL context: " + e.getMessage());
             return JdkHttpOperations.jdkHttpOperations();
@@ -285,6 +287,8 @@ subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, Aeth
                 sendReplCommand(cmd, line.trim());
             }
         }
+
+
 
 
 
@@ -673,6 +677,8 @@ subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, Aeth
 
 
 
+
+
             catch (InterruptedException _) {
                 Thread.currentThread().interrupt();
             }
@@ -729,6 +735,8 @@ subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, Aeth
                     var response = artifactParent.parent.putToNode(repoPath, content, "application/java-archive");
                     return reportDeployResult(response, coordinates, content.length);
                 }
+
+
 
 
 
@@ -888,6 +896,8 @@ subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, Aeth
 
 
 
+
+
                 catch (IOException e) {
                     System.err.println("  x " + descriptor.label() + " (error: " + e.getMessage() + ")");
                     return ExitCode.ERROR;
@@ -906,6 +916,8 @@ subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, Aeth
                     return MISSING_BLUEPRINT_TOML.result();}
                     return Result.success(new String(jar.getInputStream(entry).readAllBytes()));
                 }
+
+
 
 
 
@@ -1184,6 +1196,8 @@ subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, Aeth
 
 
 
+
+
                 catch (IOException e) {
                     System.err.println("Error reading blueprint file: " + e.getMessage());
                     return ExitCode.ERROR;
@@ -1286,6 +1300,8 @@ subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, Aeth
 
 
 
+
+
                 catch (IOException e) {
                     System.err.println("Error reading input: " + e.getMessage());
                     return false;
@@ -1333,6 +1349,8 @@ subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, Aeth
                     return reportValidationFailure(response);}
                     return OutputFormatter.printQuery(response, blueprintParent.parent.outputOptions());
                 }
+
+
 
 
 
@@ -1421,6 +1439,8 @@ subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, Aeth
 
 
 
+
+
                     {
                         result.add(arrayContent.substring(stringStart, i));
                         inString = false;
@@ -1470,7 +1490,8 @@ subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, Aeth
             @Override
             @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
-                var body = "{\"artifact\":\"" + escapeJsonValue(coords) + "\"}";
+                var fullCoords = coords.split(":").length == 3 ? coords + ":blueprint" : coords;
+                var body = "{\"artifact\":\"" + escapeJsonValue(fullCoords) + "\"}";
                 var response = blueprintParent.parent.postToNode("/api/blueprint/deploy", body);
                 var errorCode = OutputFormatter.checkResponseError(response,
                                                                    blueprintParent.parent.outputOptions(),
@@ -1549,6 +1570,8 @@ subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, Aeth
 
 
 
+
+
                 catch (InterruptedException _) {
                     Thread.currentThread().interrupt();
                 }
@@ -1604,6 +1627,8 @@ subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, Aeth
                                                        blueprintParent.parent.outputOptions(),
                                                        "Uploaded and deployed " + coordinates);
                 }
+
+
 
 
 
@@ -1734,6 +1759,8 @@ subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, Aeth
 
 
 
+
+
                 {
                 OutputFormatter.printQuery(response, metricsParent.parent.outputOptions());}
             }
@@ -1786,6 +1813,8 @@ subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, Aeth
                     var response = controllerParent.parent.postToNode("/api/controller/config", body);
                     return OutputFormatter.printQuery(response, controllerParent.parent.outputOptions());
                 } else
+
+
 
 
 

@@ -195,9 +195,13 @@ public interface BlueprintService {
 
     private static ParsedArtifactCoords parseArtifactWithClassifier(String coords) {
         var parts = coords.split(":");
-        if ( parts.length == 4) {
+        if (parts.length == 4) {
             var baseCoords = parts[0] + ":" + parts[1] + ":" + parts[2];
             return ParsedArtifactCoords.parsedArtifactCoords(Artifact.artifact(baseCoords), parts[3], baseCoords);
+        }
+        // Default to "blueprint" classifier when only groupId:artifactId:version given
+        if (parts.length == 3) {
+            return ParsedArtifactCoords.parsedArtifactCoords(Artifact.artifact(coords), "blueprint", coords);
         }
         return ParsedArtifactCoords.parsedArtifactCoords(MISSING_CLASSIFIER.result(), "", coords);
     }
