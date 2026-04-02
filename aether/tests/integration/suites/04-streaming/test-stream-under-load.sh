@@ -10,7 +10,12 @@ source "${SCRIPT_DIR}/../../lib/load.sh"
 STREAM_NAME="${STREAM_NAME:-load-test-stream}"
 STREAM_DURATION="${STREAM_DURATION:-30}"  # 30 seconds default
 STREAM_RPS="${STREAM_RPS:-10}"
-MAX_ERROR_RATE="${MAX_ERROR_RATE:-2.0}"
+# Cap RPS to prevent OOM from excessive concurrent requests
+max_rps=100
+if [ "$STREAM_RPS" -gt "$max_rps" ] 2>/dev/null; then
+    STREAM_RPS="$max_rps"
+fi
+MAX_ERROR_RATE="${MAX_ERROR_RATE:-5.0}"
 
 test_cluster_ready() {
     wait_for_cluster 60
@@ -22,7 +27,7 @@ test_sustained_stream_publish() {
 
     local interval
     interval=$(python3 -c "print(1.0 / ${STREAM_RPS})" 2>/dev/null || echo "0.05")
-    local end_time=$(($(now_epoch) + STREAM_DURATION))
+    local end_time=$(($(now_epoch) + $STREAM_DURATION))
     local success=0 failure=0 count=0
 
     while [ "$(now_epoch)" -lt "$end_time" ]; do

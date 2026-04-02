@@ -45,12 +45,9 @@ if entries:
 
     if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
         log_pass "First drain accepted (${status})"
-    elif [ "$status" -ge 400 ] && [ "$status" -lt 500 ] 2>/dev/null; then
-        log_warn "First drain rejected (${status}) — budget may already be at limit"
-        log_pass "Disruption budget enforced"
     else
-        log_warn "Drain returned ${status}"
-        log_pass "Drain endpoint responds"
+        log_fail "First drain should be accepted (within budget), got ${status}"
+        return 1
     fi
     sleep 3
 }
@@ -80,11 +77,11 @@ if len(entries) >= 2:
         -H "Content-Type: application/json" \
         -d "{\"nodeId\":\"${node2}\"}")
     log_info "Second drain response: ${status}"
-    # May be accepted or rejected depending on budget
-    if [ "$status" -ge 200 ] && [ "$status" -lt 500 ] 2>/dev/null; then
-        log_pass "Second drain responded (${status})"
+    if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
+        log_pass "Second drain accepted (${status})"
     else
-        log_pass "Drain endpoint responds"
+        log_fail "Second drain should be accepted (within budget), got ${status}"
+        return 1
     fi
     sleep 3
 }
@@ -116,12 +113,14 @@ if len(entries) >= 3:
 
     if [ "$status" -ge 400 ] && [ "$status" -lt 500 ] 2>/dev/null; then
         log_pass "Third drain rejected by disruption budget (${status})"
+    elif [ "$status" -eq 503 ] 2>/dev/null; then
+        log_pass "Third drain rejected — service unavailable (${status})"
     elif [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
-        log_warn "Third drain accepted (${status}) — budget may be more permissive than expected"
-        log_pass "Drain endpoint responds"
+        log_fail "Third drain should be rejected by budget, but was accepted (${status})"
+        return 1
     else
-        log_warn "Unexpected status: ${status}"
-        log_pass "Drain endpoint responds"
+        log_fail "Unexpected status from third drain: ${status}"
+        return 1
     fi
 }
 
@@ -136,13 +135,13 @@ test_reactivate_nodes() {
     if [ -n "$lifecycle" ]; then
         log_info "Reactivating drained nodes"
         echo "$lifecycle" | python3 -c "
-import sys, json
+import sys, json, re
 try:
     data = json.load(sys.stdin)
     nodes = data if isinstance(data, list) else data.get('nodes', [])
     for n in nodes:
-        state = n.get('state', n.get('lifecycle', ''))
-        if 'DRAIN' in str(state).upper():
+        state = str(n.get('state', n.get('lifecycle', '')))
+        if re.search(r'drain(ing|ed)?', state, re.IGNORECASE):
             print(n.get('nodeId', n.get('id', '')))
 except:
     pass

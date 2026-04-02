@@ -1,12 +1,12 @@
 #!/bin/bash
-# test-streaming-resources.sh — Deploy notification-hub, verify StreamPublisher/StreamSubscriber
+# test-streaming-resources.sh — Verify StreamPublisher/StreamSubscriber (streams auto-create on publish)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
-BLUEPRINT="${STREAM_BLUEPRINT:-notification-hub}"
+# Note: No blueprint needed — streams auto-create on first publish
 STREAM_NAME="${NOTIFICATION_STREAM:-notifications}"
 EVENT_COUNT="${STREAM_EVENT_COUNT:-20}"
 
