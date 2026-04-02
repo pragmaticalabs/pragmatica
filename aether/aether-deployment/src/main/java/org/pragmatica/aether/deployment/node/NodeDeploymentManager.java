@@ -584,6 +584,8 @@ public interface NodeDeploymentManager {
 
 
 
+
+
                 catch (Exception e) {
                     log.debug("Could not read subscription manifest {}: {}", manifestPath, e.getMessage());
                 }
@@ -697,6 +699,8 @@ public interface NodeDeploymentManager {
                     for ( int i = 0; i < count; i++) {
                     readScheduledTaskEntry(props, i).onPresent(result::add);}
                 }
+
+
 
 
 
@@ -847,6 +851,8 @@ public interface NodeDeploymentManager {
                     for ( int i = 0; i < count; i++) {
                     readStreamSubscriptionEntry(props, i).onPresent(result::add);}
                 }
+
+
 
 
 
@@ -1039,6 +1045,8 @@ public interface NodeDeploymentManager {
 
 
 
+
+
                 {
                 log.error("CRITICAL: Failed to write FAILED state for {} after {} attempts. Slice stuck in transitional state.",
                           sliceKey.artifact(),
@@ -1151,6 +1159,8 @@ public interface NodeDeploymentManager {
                         suspendSlice(sliceKey);
                         suspended.add(SuspendedSlice.suspendedSlice(sliceKey, deployment));
                     } else
+
+
 
 
 
@@ -1408,6 +1418,8 @@ public interface NodeDeploymentManager {
                              self().id(),
                              suspended.size());
                 } else
+
+
 
 
 

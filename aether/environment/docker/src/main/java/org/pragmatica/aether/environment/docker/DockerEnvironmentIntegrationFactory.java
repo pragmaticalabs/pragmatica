@@ -15,28 +15,25 @@ public record DockerEnvironmentIntegrationFactory() implements EnvironmentIntegr
     }
 
     @Override public Result<EnvironmentIntegration> create(CloudConfig config) {
-        return buildDockerConfig(config)
-                   .flatMap(DockerEnvironmentIntegration::dockerEnvironmentIntegration)
-                   .map(EnvironmentIntegration.class::cast);
+        return buildDockerConfig(config).flatMap(DockerEnvironmentIntegration::dockerEnvironmentIntegration)
+                                .map(EnvironmentIntegration.class::cast);
     }
 
     // --- Leaf: assemble DockerConfig from generic cloud config maps ---
     private static Result<DockerConfig> buildDockerConfig(CloudConfig config) {
         var compute = config.compute();
-        return dockerConfig(
-            compute.getOrDefault("image_name", "aether-node:local"),
-            compute.getOrDefault("network_name", "aether-network"),
-            parseIntOrDefault(compute.getOrDefault("management_port_base", ""), 5150),
-            parseIntOrDefault(compute.getOrDefault("app_port_base", ""), 8070),
-            parseIntOrDefault(compute.getOrDefault("cluster_port", ""), 6000),
-            compute.getOrDefault("socket_path", "/var/run/docker.sock"));
+        return dockerConfig(compute.getOrDefault("image_name", "aether-node:local"),
+                            compute.getOrDefault("network_name", "aether-network"),
+                            parseIntOrDefault(compute.getOrDefault("management_port_base", ""), 5150),
+                            parseIntOrDefault(compute.getOrDefault("app_port_base", ""), 8070),
+                            parseIntOrDefault(compute.getOrDefault("cluster_port", ""), 6000),
+                            compute.getOrDefault("socket_path", "/var/run/docker.sock"));
     }
 
     // --- Leaf: parse integer with fallback default ---
     private static int parseIntOrDefault(String value, int defaultValue) {
-        if (value.isEmpty()) {
-            return defaultValue;
-        }
+        if ( value.isEmpty()) {
+        return defaultValue;}
         return Result.lift(() -> Integer.parseInt(value)).or(defaultValue);
     }
 }

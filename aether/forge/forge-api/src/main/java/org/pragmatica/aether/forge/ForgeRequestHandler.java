@@ -72,6 +72,8 @@ public final class ForgeRequestHandler {
 
 
 
+
+
         catch (Exception e) {
             log.error("Error handling request: {}", e.getMessage(), e);
             response.error(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());

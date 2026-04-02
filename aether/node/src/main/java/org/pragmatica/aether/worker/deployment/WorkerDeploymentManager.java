@@ -150,6 +150,8 @@ public interface WorkerDeploymentManager {
 
 
 
+
+
                 if ( assigned == 0 && needsUndeploy(current)) {
                     deployments.remove(artifact);
                     teardownSlice(artifact);

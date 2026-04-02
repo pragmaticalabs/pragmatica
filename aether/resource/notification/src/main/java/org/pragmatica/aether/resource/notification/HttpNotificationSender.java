@@ -82,6 +82,8 @@ final class HttpNotificationSender implements NotificationSender {
 
 
 
+
+
         catch (InterruptedException _) {
                        Thread.currentThread().interrupt();
                        promise.succeed(unit());

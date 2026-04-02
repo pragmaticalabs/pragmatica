@@ -175,6 +175,8 @@ public final class DdlAnalyzer {
 
 
 
+
+
         if ( e.has("UniqueKW")) {
             var cols = extractConstraintColumns(e);
             constraints.add(new Constraint.Unique(constraintName, cols));
@@ -229,6 +231,8 @@ public final class DdlAnalyzer {
                 var newName = CstExtractor.extractIdentifier(renameColIds.get(1)).normalized();
                 events.add(new SchemaEvent.ColumnRenamed(span, tableName, oldName, newName));
             } else
+
+
 
 
 

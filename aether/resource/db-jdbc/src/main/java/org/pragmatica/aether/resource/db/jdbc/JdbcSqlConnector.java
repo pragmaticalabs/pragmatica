@@ -169,6 +169,8 @@ public final class JdbcSqlConnector implements SqlConnector {
 
 
 
+
+
             catch (Exception e) {
                 rollbackSilently(conn);
                 throw e;
@@ -227,6 +229,8 @@ public final class JdbcSqlConnector implements SqlConnector {
         try {
             conn.rollback();
         }
+
+
 
 
 

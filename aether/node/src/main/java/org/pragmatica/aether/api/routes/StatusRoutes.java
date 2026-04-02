@@ -86,9 +86,9 @@ public final class StatusRoutes implements RouteSource {
         var leaderId = node.leader().map(NodeId::id)
                                   .or("none");
         var nodeInfos = connectedPeers.stream().map(nodeId -> new NodeInfo(nodeId.id(),
-                                                                            node.leader().map(l -> l.equals(nodeId))
-                                                                                       .or(false)))
-                                              .toList();
+                                                                           node.leader().map(l -> l.equals(nodeId))
+                                                                                      .or(false)))
+                                             .toList();
         var totalNodes = connectedPeers.size() + 1;
         var cluster = new ClusterInfo(totalNodes, leaderId, nodeInfos);
         var derived = node.snapshotCollector().derivedMetrics();

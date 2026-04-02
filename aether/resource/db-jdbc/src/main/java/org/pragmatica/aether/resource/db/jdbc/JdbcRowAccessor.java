@@ -51,6 +51,8 @@ final class JdbcRowAccessor implements RowAccessor {
 
 
 
+
+
         catch (SQLException e) {
             return DatabaseConnectorError.queryFailed("getString(" + column + ")", e).result();
         }
@@ -63,6 +65,8 @@ final class JdbcRowAccessor implements RowAccessor {
                    ? DatabaseConnectorError.queryFailed("getInt(" + column + ")", "Column value was NULL").result()
                    : Result.success(value);
         }
+
+
 
 
 
@@ -129,6 +133,8 @@ final class JdbcRowAccessor implements RowAccessor {
 
 
 
+
+
         catch (SQLException e) {
             return DatabaseConnectorError.queryFailed("getLong(" + column + ")", e).result();
         }
@@ -141,6 +147,8 @@ final class JdbcRowAccessor implements RowAccessor {
                    ? DatabaseConnectorError.queryFailed("getDouble(" + column + ")", "Column value was NULL").result()
                    : Result.success(value);
         }
+
+
 
 
 
@@ -207,6 +215,8 @@ final class JdbcRowAccessor implements RowAccessor {
 
 
 
+
+
         catch (SQLException e) {
             return DatabaseConnectorError.queryFailed("getBoolean(" + column + ")", e).result();
         }
@@ -219,6 +229,8 @@ final class JdbcRowAccessor implements RowAccessor {
                    ? Result.success(new byte[0])
                    : Result.success(option(value).or(new byte[0]));
         }
+
+
 
 
 
@@ -261,6 +273,8 @@ final class JdbcRowAccessor implements RowAccessor {
                    : option(value).toResult(DatabaseConnectorError.queryFailed("getObject(" + column + ", " + type.getSimpleName() + ")",
                                                                                "Column value was NULL"));
         }
+
+
 
 
 

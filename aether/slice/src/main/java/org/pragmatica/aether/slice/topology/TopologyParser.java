@@ -132,6 +132,8 @@ public final class TopologyParser {
 
 
 
+
+
         catch (Exception e) {
             log.debug("Could not read topology from manifest {}: {}", manifestPath, e.getMessage());
             return Option.none();
@@ -219,6 +221,8 @@ public final class TopologyParser {
         try {
             return Integer.parseInt(props.getProperty(key, "0"));
         }
+
+
 
 
 

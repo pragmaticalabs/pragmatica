@@ -113,6 +113,8 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
 
 
 
+
+
         {
             log.info("Node {} is no longer leader, stopping deployment metrics scheduler", self);
             stopPinging();
@@ -165,6 +167,8 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
                                   .forEach(nodeId -> network.send(nodeId, ping));
             log.trace("Sent DeploymentMetricsPing to {} nodes", currentTopology.size() - 1);
         }
+
+
 
 
 

@@ -23,8 +23,7 @@ public record DockerEnvironmentIntegration( DockerComputeProvider computeProvide
     /// Factory method for creating a DockerEnvironmentIntegration with a custom command runner.
     public static Result<DockerEnvironmentIntegration> dockerEnvironmentIntegration(DockerCommandRunner runner,
                                                                                     DockerConfig config) {
-        return DockerComputeProvider.dockerComputeProvider(runner, config)
-                                    .map(DockerEnvironmentIntegration::new);
+        return DockerComputeProvider.dockerComputeProvider(runner, config).map(DockerEnvironmentIntegration::new);
     }
 
     @Override public Option<ComputeProvider> compute() {

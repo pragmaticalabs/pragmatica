@@ -283,6 +283,8 @@ public interface HttpForwarder {
 
 
 
+
+
                 {
                     log.error("All retries exhausted for [{}]", requestId);
                     resultPromise.fail(Causes.cause("Request failed after all retries"));
@@ -306,6 +308,8 @@ public interface HttpForwarder {
                 try {
                     requestData = serializer.encode(requestContext);
                 }
+
+
 
 
 
@@ -393,6 +397,8 @@ public interface HttpForwarder {
                     pending.promise().succeed(responseData);
                     log.trace("Completed forward request [{}]", pending.requestId());
                 }
+
+
 
 
 

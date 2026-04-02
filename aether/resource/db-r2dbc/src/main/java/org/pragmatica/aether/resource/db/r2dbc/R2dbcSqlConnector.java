@@ -314,6 +314,8 @@ public final class R2dbcSqlConnector implements SqlConnector {
         // Reactive Streams Subscriber interface requires void methods
         // Reactive Streams Subscriber interface requires void methods
         // Reactive Streams Subscriber interface requires void methods
+        // Reactive Streams Subscriber interface requires void methods
+        // Reactive Streams Subscriber interface requires void methods
         class ResultFlatMapSubscriber<T> implements org.reactivestreams.Subscriber<io.r2dbc.spi.Result> {
             private final org.reactivestreams.Subscriber<? super T> downstream;
             private final java.util.function.BiFunction<Row, RowMetadata, T> mapper;

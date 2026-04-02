@@ -21,19 +21,21 @@ public record DockerConfig( String imageName,
 
     /// Factory method for creating a DockerConfig with all parameters.
     public static Result<DockerConfig> dockerConfig(String imageName,
-                                                     String networkName,
-                                                     int managementPortBase,
-                                                     int appPortBase,
-                                                     int clusterPort,
-                                                     String socketPath) {
-        return success(new DockerConfig(imageName, networkName, managementPortBase,
-                                        appPortBase, clusterPort, socketPath));
+                                                    String networkName,
+                                                    int managementPortBase,
+                                                    int appPortBase,
+                                                    int clusterPort,
+                                                    String socketPath) {
+        return success(new DockerConfig(imageName, networkName, managementPortBase, appPortBase, clusterPort, socketPath));
     }
 
     /// Factory method for creating a DockerConfig with default values.
     public static Result<DockerConfig> dockerConfig() {
-        return dockerConfig(DEFAULT_IMAGE_NAME, DEFAULT_NETWORK_NAME,
-                            DEFAULT_MANAGEMENT_PORT_BASE, DEFAULT_APP_PORT_BASE,
-                            DEFAULT_CLUSTER_PORT, DEFAULT_SOCKET_PATH);
+        return dockerConfig(DEFAULT_IMAGE_NAME,
+                            DEFAULT_NETWORK_NAME,
+                            DEFAULT_MANAGEMENT_PORT_BASE,
+                            DEFAULT_APP_PORT_BASE,
+                            DEFAULT_CLUSTER_PORT,
+                            DEFAULT_SOCKET_PATH);
     }
 }
