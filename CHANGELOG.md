@@ -44,6 +44,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **FactoryGenerator mapper typeArg** — `getObject()` calls now include class argument for Instant/BigDecimal
 - **`Result.failure(cause)` → `cause.result()`** — 7 sites in SchemaBuilder, CodegenPipeline, RecordGenerator
 - **Multi-statement lambdas** — 6 extracted to named methods across SchemaBuilder, DdlAnalyzer, linter rules, TypeMapper
+- **SWIM double-start race condition** — atomic `starting` flag prevents two ESTABLISHED notifications from creating duplicate SWIM protocols; transport bind failure now aborts protocol creation
+- **Slice processor @PgSql detection** — `ResourceQualifierModel.fromParameter()` now checks type-level annotations, not just parameter annotations; persistence interfaces correctly classified as resources
+- **Slice processor factory wrapping** — generated code maps `PgSqlConnector` through `{Interface}Factory` when resource type differs from parameter type
+- **PgSqlConnectorFactory SPI registration** — added to `META-INF/services/org.pragmatica.aether.resource.ResourceFactory`
+- **Blueprint deploy classifier** — CLI and server auto-append `:blueprint` classifier when only `groupId:artifactId:version` given
+- **Integration test node count** — `cluster_node_count()` uses health endpoint (QUIC peers) instead of metrics-based status endpoint
+- **Integration test deploy flow** — push artifacts before deploy, use CLI for deployment with failover
 
 ### Removed
 - **Separate deployment commands** — `aether canary`, `aether blue-green`, `aether update` removed (use `aether deploy --strategy`)
