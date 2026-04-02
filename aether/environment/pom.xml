@@ -18,6 +18,7 @@
     <modules>
         <module>aws</module>
         <module>azure</module>
+        <module>docker</module>
         <module>gcp</module>
         <module>hetzner</module>
     </modules>
