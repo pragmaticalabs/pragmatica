@@ -8,7 +8,9 @@ source "${LIB_DIR}/common.sh"
 # Cluster queries (CLI-based)
 # ---------------------------------------------------------------------------
 cluster_node_count() {
-    aether_field status cluster.nodeCount
+    # Use health endpoint (QUIC peer count) — reliable immediately.
+    # /api/status nodeCount comes from metrics aggregation which lags on startup.
+    api_get "/api/health" | python3 -c "import sys,json; print(json.load(sys.stdin).get('nodeCount',0))" 2>/dev/null
 }
 
 cluster_leader() {
@@ -144,7 +146,8 @@ push_blueprint() {
 deploy_blueprint() {
     local artifact="$1"
     log_info "Deploying blueprint: ${artifact}" >&2
-    api_post "/api/blueprint/deploy" "{\"artifact\":\"${artifact}\"}"
+    aether_failover blueprint deploy "$artifact" 2>/dev/null \
+        || api_post "/api/blueprint/deploy" "{\"artifact\":\"${artifact}\"}"
 }
 
 deploy_blueprint_file() {
