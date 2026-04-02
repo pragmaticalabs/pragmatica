@@ -48,6 +48,8 @@ final class JooqR2dbcRowAccessor implements RowAccessor {
 
 
 
+
+
         catch (Exception e) {
             return DatabaseConnectorError.queryFailed("getString(" + column + ")", e).result();
         }
@@ -58,6 +60,8 @@ final class JooqR2dbcRowAccessor implements RowAccessor {
             return Option.option(row.get(column, Integer.class))
             .toResult(DatabaseConnectorError.queryFailed("getInt(" + column + ")", "Column value was NULL"));
         }
+
+
 
 
 
@@ -126,6 +130,8 @@ final class JooqR2dbcRowAccessor implements RowAccessor {
 
 
 
+
+
         catch (Exception e) {
             return DatabaseConnectorError.queryFailed("getLong(" + column + ")", e).result();
         }
@@ -136,6 +142,8 @@ final class JooqR2dbcRowAccessor implements RowAccessor {
             return Option.option(row.get(column, Double.class))
             .toResult(DatabaseConnectorError.queryFailed("getDouble(" + column + ")", "Column value was NULL"));
         }
+
+
 
 
 
@@ -204,6 +212,8 @@ final class JooqR2dbcRowAccessor implements RowAccessor {
 
 
 
+
+
         catch (Exception e) {
             return DatabaseConnectorError.queryFailed("getBoolean(" + column + ")", e).result();
         }
@@ -242,6 +252,8 @@ final class JooqR2dbcRowAccessor implements RowAccessor {
 
 
 
+
+
         catch (Exception e) {
             return DatabaseConnectorError.queryFailed("getBytes(" + column + ")", e).result();
         }
@@ -251,6 +263,8 @@ final class JooqR2dbcRowAccessor implements RowAccessor {
         try {
             return Result.success(row.get(column, type));
         }
+
+
 
 
 

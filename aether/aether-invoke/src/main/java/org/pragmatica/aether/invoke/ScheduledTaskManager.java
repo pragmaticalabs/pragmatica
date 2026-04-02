@@ -93,6 +93,8 @@ public interface ScheduledTaskManager {
 
 
 
+
+
                 {
                     log.info("Node {} lost leadership, cancelling single-mode scheduled tasks", self);
                     isLeader.set(false);
@@ -110,6 +112,8 @@ public interface ScheduledTaskManager {
                     hasQuorum.set(true);
                     startAllEligibleTasks();
                 } else
+
+
 
 
 
@@ -263,6 +267,8 @@ public interface ScheduledTaskManager {
 
 
 
+
+
                 catch (Exception e) {
                     // Scheduler boundary — generic catch prevents scheduler thread death
                     log.error("Error executing scheduled task {}.{}: {}",
@@ -372,6 +378,8 @@ public interface ScheduledTaskManager {
             try {
                 return org.pragmatica.lang.Result.success(Long.parseLong(numberPart));
             }
+
+
 
 
 

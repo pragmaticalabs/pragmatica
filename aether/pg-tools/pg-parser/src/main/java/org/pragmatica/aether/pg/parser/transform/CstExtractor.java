@@ -240,6 +240,8 @@ public final class CstExtractor {
 
 
 
+
+
                 catch (NumberFormatException e) {}
             }
             case CstNode.NonTerminal nt -> {

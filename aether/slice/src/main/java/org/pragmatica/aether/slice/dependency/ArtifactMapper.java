@@ -149,6 +149,8 @@ public interface ArtifactMapper {
 
 
 
+
+
             {
             result.append(c);}
         }
