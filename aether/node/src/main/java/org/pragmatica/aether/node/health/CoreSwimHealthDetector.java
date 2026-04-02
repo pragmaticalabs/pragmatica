@@ -22,6 +22,7 @@ import org.pragmatica.swim.SwimProtocol;
 import org.pragmatica.swim.SwimTransport;
 
 import java.net.InetSocketAddress;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -63,6 +64,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private volatile GossipEncryptor encryptor;
     private final AtomicReference<Option<SwimProtocol>> swimProtocol = new AtomicReference<>(none());
     private final AtomicReference<Option<SwimTransport>> swimTransport = new AtomicReference<>(none());
+    private final AtomicBoolean starting = new AtomicBoolean(false);
     private final AtomicInteger faultyCountInWindow = new AtomicInteger();
     private volatile long faultyWindowStart;
     private volatile boolean locallyDisconnected;
@@ -99,7 +101,14 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03", "JBCT-EX-01"})
     public Promise<Unit> start(Option<EventLoopGroup> sharedEventLoopGroup, GossipEncryptor gossipEncryptor) {
         this.encryptor = gossipEncryptor;
+        // Fix: atomic claim prevents double-start race when two ESTABLISHED notifications
+        // arrive within milliseconds of each other
+        if ( !starting.compareAndSet(false, true)) {
+            log.debug("SWIM start already in progress, skipping");
+            return Promise.success(Unit.unit());
+        }
         if ( swimProtocol.get().isPresent()) {
+            starting.set(false);
             log.debug("SWIM already running, skipping start");
             return Promise.success(Unit.unit());
         }
@@ -111,6 +120,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                                                  selfAddress,
                                                                                                  swimPort))
                               .async()
+                              .onFailure(_ -> starting.set(false))
                               .mapToUnit();
     }
 
@@ -262,15 +272,21 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                         InetSocketAddress selfAddress,
                                                         int swimPort) {
         this.swimTransport.set(option(transport));
-        transport.start(swimPort, this::delegateToProtocol).await(timeSpan(5).seconds())
-                       .onFailure(cause -> log.error("SWIM transport failed to start: {}",
-                                                     cause.message()));
-        return SwimProtocol.swimProtocol(CORE_SWIM_CONFIG,
-                                         transport,
-                                         this,
-                                         topologyConfig.self(),
-                                         selfAddress).flatMap(SwimProtocol::start)
-                                        .map(this::storeAndSeed);
+        // Fix: transport bind failure must abort protocol creation — a SWIM protocol
+        // backed by a dead transport will falsely suspect all peers
+        return transport.start(swimPort, this::delegateToProtocol).await(timeSpan(5).seconds())
+                              .onFailure(cause -> {
+                                             log.error("SWIM transport failed to start: {}",
+                                                       cause.message());
+                                             this.swimTransport.set(none());
+                                         })
+                              .flatMap(_ -> SwimProtocol.swimProtocol(CORE_SWIM_CONFIG,
+                                                                      transport,
+                                                                      this,
+                                                                      topologyConfig.self(),
+                                                                      selfAddress))
+                              .flatMap(SwimProtocol::start)
+                              .map(this::storeAndSeed);
     }
 
     private void delegateToProtocol(InetSocketAddress sender, SwimMessage message) {
