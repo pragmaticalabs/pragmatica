@@ -1292,9 +1292,6 @@ public interface AetherNode {
         } else
 
 
-
-
-
         if ( AetherValue.ActivationDirectiveValue.WORKER.equals(role)) {
             growthLog.info("Received worker activation directive from CDM");
             activateWorkerMode(selfId,

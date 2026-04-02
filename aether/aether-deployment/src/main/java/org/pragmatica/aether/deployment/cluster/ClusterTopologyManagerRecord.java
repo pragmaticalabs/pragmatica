@@ -158,6 +158,7 @@ import static org.pragmatica.lang.Unit.unit;
             transitionTo(new NodeReconcilerState.Converged());
             log.info("CTM: Cluster at target size, skipping formation");
         } else
+
         if ( clusterWasFormed && effectiveActual >= desired - 1) {
         activateWithLeaderFailover(effectiveActual, desired);} else {
         activateWithFormation();}
@@ -251,6 +252,7 @@ import static org.pragmatica.lang.Unit.unit;
             transitionTo(new NodeReconcilerState.Converged());
             log.info("CTM: Cluster formation complete ({}/{})", actual, desired);
         } else
+
         {
         handleFormationCooldownExpired(actual, desired);}
     }
@@ -297,6 +299,7 @@ import static org.pragmatica.lang.Unit.unit;
             desiredSizeRef.set(configured);
             handleDeficit(actual, configured);
         } else
+
         {
         handleSurplus(actual, configured);}
     }

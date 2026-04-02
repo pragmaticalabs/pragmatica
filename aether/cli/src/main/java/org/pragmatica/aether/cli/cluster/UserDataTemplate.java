@@ -53,34 +53,6 @@ sealed interface UserDataTemplate {
         } else
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         {
             appendJvmInstall(sb, cluster.version());
             appendConfig(sb,

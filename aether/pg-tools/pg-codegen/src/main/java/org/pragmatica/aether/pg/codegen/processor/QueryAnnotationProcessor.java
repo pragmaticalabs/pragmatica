@@ -497,12 +497,6 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             } else
 
 
-
-
-
-
-
-
             {
                 allParamNames.add(param.name());
                 bodyParams.add(param);

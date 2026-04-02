@@ -122,35 +122,6 @@ public interface ArtifactMapper {
             } else
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
             {
             result.append(c);}
         }

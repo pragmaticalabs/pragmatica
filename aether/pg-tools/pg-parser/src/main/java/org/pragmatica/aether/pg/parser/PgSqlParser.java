@@ -6502,9 +6502,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         column++;}
         return c;
@@ -6534,9 +6531,6 @@ public final class PgSqlParser {
             furthestFailure = Option.some(loc);
             furthestExpected = Option.some(expected);
         } else
-
-
-
 
 
         if ( loc.offset() == furthestFailure.unwrap().offset() && !furthestExpected.or("").contains(expected)) {
@@ -6678,9 +6672,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -6711,9 +6702,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -6730,9 +6718,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -6767,9 +6752,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -6778,9 +6760,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -6807,9 +6786,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem7.isSuccess()) {
                 var optChildren7 = new ArrayList<>(children);
                 children.clear();
@@ -6828,9 +6804,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -6847,9 +6820,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INPUT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -6937,9 +6907,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -7013,9 +6980,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EMPTY_STATEMENT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -7125,9 +7089,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -7167,9 +7128,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -7184,9 +7142,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -7322,9 +7277,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -7341,9 +7293,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CREATE_STATEMENT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -7385,9 +7334,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -7402,9 +7348,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -7507,9 +7450,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -7526,9 +7466,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ALTER_STATEMENT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -7570,9 +7507,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -7587,9 +7521,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -7725,9 +7656,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -7744,9 +7672,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DROP_STATEMENT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -7834,9 +7759,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -7882,9 +7804,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -7901,9 +7820,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -7930,9 +7846,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -7949,9 +7862,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -7972,9 +7882,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -7989,9 +7896,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -8019,9 +7923,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem7.isSuccess()) {
                 var optChildren7 = new ArrayList<>(children);
                 children.clear();
@@ -8038,9 +7939,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -8061,9 +7959,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -8080,9 +7975,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_6;
             } else
-
-
-
 
 
             if ( elem0_6.isFailure()) {
@@ -8103,9 +7995,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_7.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -8122,9 +8011,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_8;
             } else
-
-
-
 
 
             if ( elem0_8.isFailure()) {
@@ -8151,9 +8037,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem13.isSuccess()) {
                 var optChildren13 = new ArrayList<>(children);
                 children.clear();
@@ -8172,9 +8055,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_9.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -8191,9 +8071,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CREATE_TABLE_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -8235,9 +8112,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -8254,9 +8128,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -8277,9 +8148,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -8296,9 +8164,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_IF_NOT_EXISTS, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -8340,9 +8205,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -8361,9 +8223,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -8380,9 +8239,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_IF_EXISTS, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -8424,9 +8280,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -8457,9 +8310,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -8476,9 +8326,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -8513,9 +8360,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -8524,9 +8368,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -8545,9 +8386,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TABLE_ELEMENT_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -8613,9 +8451,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -8655,9 +8490,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -8674,9 +8506,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -8721,9 +8550,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom3);
@@ -8732,9 +8558,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -8753,9 +8576,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_COLUMN_DEF, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -8803,9 +8623,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -8822,9 +8639,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -8845,9 +8659,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -8864,9 +8675,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_COL_CONSTRAINT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -9020,9 +8828,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -9062,9 +8867,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -9083,9 +8885,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -9102,9 +8901,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NOT_NULL_CONSTRAINT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -9144,9 +8940,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -9182,9 +8975,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_UNIQUE_COL_CONSTRAINT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -9226,9 +9016,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -9247,9 +9034,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -9266,9 +9050,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_PRIMARY_KEY_COL_CONSTRAINT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -9310,9 +9091,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -9327,9 +9105,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -9351,9 +9126,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -9370,9 +9142,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -9393,9 +9162,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -9412,9 +9178,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CHECK_COL_CONSTRAINT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -9456,9 +9219,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -9473,9 +9233,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -9497,9 +9254,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -9516,9 +9270,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DEFAULT_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -9560,9 +9311,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -9577,9 +9325,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -9601,9 +9346,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -9620,9 +9362,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_COLLATE_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -9664,9 +9403,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -9681,9 +9417,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -9703,9 +9436,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -9734,9 +9464,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem6_0.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
@@ -9753,9 +9480,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart6);
                     optElem4 = elem6_1;
                 } else
-
-
-
 
 
                 if ( elem6_1.isFailure()) {
@@ -9776,9 +9500,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem6_2.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
@@ -9797,9 +9518,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem4.isSuccess()) {
                 var optChildren4 = new ArrayList<>(children);
                 children.clear();
@@ -9816,9 +9534,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -9845,9 +9560,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem10.isSuccess()) {
                 var optChildren10 = new ArrayList<>(children);
                 children.clear();
@@ -9866,9 +9578,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -9885,9 +9594,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_REFERENCES_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -9929,9 +9635,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -9948,9 +9651,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -9971,9 +9671,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -9988,9 +9685,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -10022,9 +9716,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem7_0.isFailure()) {
                     restoreLocation(seqStart7);
                     alt6_0 = cut7
@@ -10041,9 +9732,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart7);
                     alt6_0 = elem7_1;
                 } else
-
-
-
 
 
                 if ( elem7_1.isFailure()) {
@@ -10064,9 +9752,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem7_2.isFailure()) {
                     restoreLocation(seqStart7);
                     alt6_0 = cut7
@@ -10083,9 +9768,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart7);
                     alt6_0 = elem7_3;
                 } else
-
-
-
 
 
                 if ( elem7_3.isFailure()) {
@@ -10124,9 +9806,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -10143,9 +9822,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_GENERATED_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -10187,9 +9863,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -10228,9 +9901,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem5_0.isFailure()) {
                         restoreLocation(seqStart5);
                         alt3_1 = cut5
@@ -10247,9 +9917,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart5);
                         alt3_1 = elem5_1;
                     } else
-
-
-
 
 
                     if ( elem5_1.isFailure()) {
@@ -10278,9 +9945,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -10299,9 +9963,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -10318,9 +9979,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -10347,9 +10005,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem10.isSuccess()) {
                 var optChildren10 = new ArrayList<>(children);
                 children.clear();
@@ -10368,9 +10023,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -10387,9 +10039,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_IDENTITY_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -10431,9 +10080,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -10458,9 +10104,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -10479,9 +10122,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -10498,9 +10138,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_IDENTITY_SPEC, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -10548,9 +10185,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -10567,9 +10201,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -10590,9 +10221,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -10609,9 +10237,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TABLE_CONSTRAINT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -10653,9 +10278,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -10670,9 +10292,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -10694,9 +10313,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -10713,9 +10329,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CONSTRAINT_NAME, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -10814,9 +10427,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -10856,9 +10466,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -10877,9 +10484,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -10894,9 +10498,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -10918,9 +10519,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -10939,9 +10537,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -10958,9 +10553,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_5;
             } else
-
-
-
 
 
             if ( elem0_5.isFailure()) {
@@ -10987,9 +10579,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem7.isSuccess()) {
                 var optChildren7 = new ArrayList<>(children);
                 children.clear();
@@ -11008,9 +10597,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -11027,9 +10613,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_PRIMARY_KEY_TBL_CONSTRAINT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -11071,9 +10654,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -11088,9 +10668,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -11118,9 +10695,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -11137,9 +10711,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -11160,9 +10731,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -11181,9 +10749,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -11200,9 +10765,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_5;
             } else
-
-
-
 
 
             if ( elem0_5.isFailure()) {
@@ -11229,9 +10791,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem8.isSuccess()) {
                 var optChildren8 = new ArrayList<>(children);
                 children.clear();
@@ -11250,9 +10809,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -11269,9 +10825,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_UNIQUE_TBL_CONSTRAINT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -11313,9 +10866,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -11330,9 +10880,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -11354,9 +10901,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -11375,9 +10919,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -11394,9 +10935,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -11423,9 +10961,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem6.isSuccess()) {
                 var optChildren6 = new ArrayList<>(children);
                 children.clear();
@@ -11444,9 +10979,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -11463,9 +10995,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CHECK_TBL_CONSTRAINT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -11507,9 +11036,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -11528,9 +11054,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -11547,9 +11070,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NO_INHERIT_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -11591,9 +11111,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -11612,9 +11129,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -11629,9 +11143,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -11653,9 +11164,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -11672,9 +11180,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -11695,9 +11200,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -11716,9 +11218,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -11735,9 +11234,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_7;
             } else
-
-
-
 
 
             if ( elem0_7.isFailure()) {
@@ -11766,9 +11262,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem11_0.isFailure()) {
                     restoreLocation(seqStart11);
                     optElem9 = cut11
@@ -11785,9 +11278,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart11);
                     optElem9 = elem11_1;
                 } else
-
-
-
 
 
                 if ( elem11_1.isFailure()) {
@@ -11808,9 +11298,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem11_2.isFailure()) {
                     restoreLocation(seqStart11);
                     optElem9 = cut11
@@ -11829,9 +11316,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem9.isSuccess()) {
                 var optChildren9 = new ArrayList<>(children);
                 children.clear();
@@ -11848,9 +11332,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_8;
             } else
-
-
-
 
 
             if ( elem0_8.isFailure()) {
@@ -11877,9 +11358,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem15.isSuccess()) {
                 var optChildren15 = new ArrayList<>(children);
                 children.clear();
@@ -11896,9 +11374,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_9;
             } else
-
-
-
 
 
             if ( elem0_9.isFailure()) {
@@ -11925,9 +11400,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem17.isSuccess()) {
                 var optChildren17 = new ArrayList<>(children);
                 children.clear();
@@ -11946,9 +11418,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_10.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -11965,9 +11434,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FOREIGN_KEY_TBL_CONSTRAINT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -12041,9 +11507,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -12081,9 +11544,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -12130,9 +11590,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -12151,9 +11608,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -12170,9 +11624,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FK_ACTION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -12239,9 +11690,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem3_0.isFailure()) {
                         restoreLocation(seqStart3);
                         alt0_2 = cut3
@@ -12258,9 +11706,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart3);
                         alt0_2 = elem3_1;
                     } else
-
-
-
 
 
                     if ( elem3_1.isFailure()) {
@@ -12293,9 +11738,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem6_0.isFailure()) {
                             restoreLocation(seqStart6);
                             alt0_3 = cut6
@@ -12312,9 +11754,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart6);
                             alt0_3 = elem6_1;
                         } else
-
-
-
 
 
                         if ( elem6_1.isFailure()) {
@@ -12347,9 +11786,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( elem9_0.isFailure()) {
                                 restoreLocation(seqStart9);
                                 alt0_4 = cut9
@@ -12366,9 +11802,6 @@ public final class PgSqlParser {
                                 restoreLocation(seqStart9);
                                 alt0_4 = elem9_1;
                             } else
-
-
-
 
 
                             if ( elem9_1.isFailure()) {
@@ -12401,9 +11834,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FK_ACTION_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -12451,9 +11881,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -12472,9 +11899,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -12491,9 +11915,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -12520,9 +11941,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart6);
                     optElem4 = elem6_0;
                 } else
-
-
-
 
 
                 if ( elem6_0.isFailure()) {
@@ -12569,9 +11987,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem6_1.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
@@ -12588,9 +12003,6 @@ public final class PgSqlParser {
                 children.addAll(savedChildrenOpt4);
                 elem0_2 = optElem4;
             } else
-
-
-
 
 
             if ( optElem4.isSuccess()) {
@@ -12611,9 +12023,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -12630,9 +12039,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FK_DEFERRABLE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -12674,9 +12080,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -12691,9 +12094,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -12721,9 +12121,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -12740,9 +12137,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -12763,9 +12157,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -12784,9 +12175,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -12803,9 +12191,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_5;
             } else
-
-
-
 
 
             if ( elem0_5.isFailure()) {
@@ -12832,9 +12217,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem8.isSuccess()) {
                 var optChildren8 = new ArrayList<>(children);
                 children.clear();
@@ -12853,9 +12235,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -12872,9 +12251,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EXCLUDE_TBL_CONSTRAINT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -12916,9 +12292,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -12949,9 +12322,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -12968,9 +12338,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -13005,9 +12372,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -13016,9 +12380,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -13037,9 +12398,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EXCLUDE_ELEMENT_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -13081,9 +12439,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -13100,9 +12455,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -13123,9 +12475,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -13142,9 +12491,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EXCLUDE_ELEMENT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -13186,9 +12532,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -13213,9 +12556,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -13232,9 +12572,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -13255,9 +12592,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -13274,9 +12608,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NULLS_DISTINCT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -13324,9 +12655,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -13343,9 +12671,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -13372,9 +12697,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -13391,9 +12713,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -13420,9 +12739,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem5.isSuccess()) {
                 var optChildren5 = new ArrayList<>(children);
                 children.clear();
@@ -13441,9 +12757,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -13460,9 +12773,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INDEX_OPTIONS, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -13504,9 +12814,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -13523,9 +12830,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -13546,9 +12850,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -13567,9 +12868,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -13586,9 +12884,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INCLUDE_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -13630,9 +12925,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -13649,9 +12941,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -13672,9 +12961,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -13693,9 +12979,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -13712,9 +12995,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_WITH_STORAGE_PARAMS, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -13756,9 +13036,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -13789,9 +13066,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -13808,9 +13082,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -13845,9 +13116,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -13856,9 +13124,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -13877,9 +13142,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_STORAGE_PARAM_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -13921,9 +13183,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -13950,9 +13209,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = cut4
@@ -13969,9 +13225,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart4);
                     optElem2 = elem4_1;
                 } else
-
-
-
 
 
                 if ( elem4_1.isFailure()) {
@@ -13992,9 +13245,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -14013,9 +13263,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -14032,9 +13279,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_STORAGE_PARAM, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -14076,9 +13320,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -14095,9 +13336,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -14118,9 +13356,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -14139,9 +13374,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -14158,9 +13390,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_USING_INDEX_TBLSPACE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -14208,9 +13437,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -14227,9 +13453,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -14256,9 +13479,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -14275,9 +13495,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -14304,9 +13521,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem5.isSuccess()) {
                 var optChildren5 = new ArrayList<>(children);
                 children.clear();
@@ -14325,9 +13539,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -14344,9 +13555,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TABLE_OPTIONS, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -14388,9 +13596,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -14409,9 +13614,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -14426,9 +13628,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -14450,9 +13649,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -14469,9 +13665,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -14492,9 +13685,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -14513,9 +13703,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -14532,9 +13719,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_PARTITION_BY_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -14611,9 +13795,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -14653,9 +13834,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -14686,9 +13864,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -14705,9 +13880,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -14742,9 +13914,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -14753,9 +13922,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -14774,9 +13940,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_PARTITION_KEY_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -14833,9 +13996,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem2_0.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
@@ -14854,9 +14014,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem2_1.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
@@ -14873,9 +14030,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_2;
                 } else
-
-
-
 
 
                 if ( elem2_2.isFailure()) {
@@ -14905,9 +14059,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_PARTITION_KEY, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -14949,9 +14100,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -14968,9 +14116,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -14991,9 +14136,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -15012,9 +14154,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -15031,9 +14170,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INHERITS_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -15075,9 +14211,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -15096,9 +14229,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -15115,9 +14245,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TABLESPACE_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -15159,9 +14286,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -15192,9 +14316,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -15211,9 +14332,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -15248,9 +14366,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -15259,9 +14374,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -15280,9 +14392,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_COLUMN_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -15324,9 +14433,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -15357,9 +14463,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -15376,9 +14479,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -15413,9 +14513,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -15424,9 +14521,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -15445,9 +14539,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_QUALIFIED_NAME_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -15489,9 +14580,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -15506,9 +14594,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -15536,9 +14621,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -15555,9 +14637,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -15584,9 +14663,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem5.isSuccess()) {
                 var optChildren5 = new ArrayList<>(children);
                 children.clear();
@@ -15605,9 +14681,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -15624,9 +14697,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -15706,9 +14776,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -15725,9 +14792,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ALTER_TABLE_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -15769,9 +14833,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -15802,9 +14863,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -15821,9 +14879,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -15858,9 +14913,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -15869,9 +14921,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -15890,9 +14939,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ALTER_TABLE_ACTIONS, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -16035,9 +15081,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -16077,9 +15120,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -16104,9 +15144,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -16123,9 +15160,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -16152,9 +15186,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem4.isSuccess()) {
                 var optChildren4 = new ArrayList<>(children);
                 children.clear();
@@ -16171,9 +15202,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -16194,9 +15222,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -16213,9 +15238,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ADD_COLUMN_ACTION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -16257,9 +15279,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -16284,9 +15303,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -16303,9 +15319,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -16332,9 +15345,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem4.isSuccess()) {
                 var optChildren4 = new ArrayList<>(children);
                 children.clear();
@@ -16353,9 +15363,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -16372,9 +15379,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -16401,9 +15405,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem7.isSuccess()) {
                 var optChildren7 = new ArrayList<>(children);
                 children.clear();
@@ -16422,9 +15423,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -16441,9 +15439,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DROP_COLUMN_ACTION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -16509,9 +15504,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -16551,9 +15543,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -16578,9 +15567,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -16597,9 +15583,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -16620,9 +15603,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -16641,9 +15621,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -16660,9 +15637,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ALTER_COLUMN_ACTION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -16805,9 +15779,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -16853,9 +15824,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -16872,9 +15840,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -16901,9 +15866,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -16920,9 +15882,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -16943,9 +15902,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -16960,9 +15916,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -16982,9 +15935,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -17013,9 +15963,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem10_0.isFailure()) {
                     restoreLocation(seqStart10);
                     optElem8 = cut10
@@ -17032,9 +15979,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart10);
                     optElem8 = elem10_1;
                 } else
-
-
-
 
 
                 if ( elem10_1.isFailure()) {
@@ -17055,9 +15999,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem8.isSuccess()) {
                 var optChildren8 = new ArrayList<>(children);
                 children.clear();
@@ -17076,9 +16017,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -17095,9 +16033,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SET_DATA_TYPE_CMD, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -17139,9 +16074,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -17160,9 +16092,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -17177,9 +16106,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -17201,9 +16127,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -17220,9 +16143,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SET_DEFAULT_CMD, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -17264,9 +16184,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -17285,9 +16202,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -17304,9 +16218,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DROP_DEFAULT_CMD, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -17348,9 +16259,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -17367,9 +16275,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -17390,9 +16295,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -17409,9 +16311,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SET_NOT_NULL_CMD, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -17453,9 +16352,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -17472,9 +16368,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -17495,9 +16388,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -17514,9 +16404,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DROP_NOT_NULL_CMD, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -17558,9 +16445,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -17577,9 +16461,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -17600,9 +16481,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -17619,9 +16497,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SET_STATISTICS_CMD, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -17663,9 +16538,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -17682,9 +16554,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -17705,9 +16574,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -17724,9 +16590,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SET_STORAGE_CMD, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -17768,9 +16631,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -17787,9 +16647,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -17830,9 +16687,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem6_0.isFailure()) {
                         restoreLocation(seqStart6);
                         alt4_1 = cut6
@@ -17849,9 +16703,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart6);
                         alt4_1 = elem6_1;
                     } else
-
-
-
 
 
                     if ( elem6_1.isFailure()) {
@@ -17880,9 +16731,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -17901,9 +16749,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -17920,9 +16765,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -17949,9 +16791,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem11.isSuccess()) {
                 var optChildren11 = new ArrayList<>(children);
                 children.clear();
@@ -17970,9 +16809,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -17989,9 +16825,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ADD_IDENTITY_CMD, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -18033,9 +16866,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18052,9 +16882,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -18081,9 +16908,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -18102,9 +16926,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18121,9 +16942,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DROP_IDENTITY_CMD, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -18165,9 +16983,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18182,9 +16997,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -18204,9 +17016,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -18233,9 +17042,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem4.isSuccess()) {
                 var optChildren4 = new ArrayList<>(children);
                 children.clear();
@@ -18254,9 +17060,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18273,9 +17076,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ADD_CONSTRAINT_ACTION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -18317,9 +17117,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18338,9 +17135,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18355,9 +17149,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -18385,9 +17176,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem4.isSuccess()) {
                 var optChildren4 = new ArrayList<>(children);
                 children.clear();
@@ -18406,9 +17194,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18425,9 +17210,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -18454,9 +17236,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem7.isSuccess()) {
                 var optChildren7 = new ArrayList<>(children);
                 children.clear();
@@ -18475,9 +17254,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18494,9 +17270,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DROP_CONSTRAINT_ACTION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -18538,9 +17311,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18559,9 +17329,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18576,9 +17343,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -18600,9 +17364,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18619,9 +17380,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_VALIDATE_CONSTRAINT_ACTION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -18663,9 +17421,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18684,9 +17439,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18701,9 +17453,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -18725,9 +17474,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18744,9 +17490,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -18767,9 +17510,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18786,9 +17526,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_RENAME_CONSTRAINT_ACTION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -18830,9 +17567,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18851,9 +17585,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18870,9 +17601,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NOT_VALID_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -18914,9 +17642,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18933,9 +17658,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -18956,9 +17678,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -18975,9 +17694,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ALTER_OWNER_ACTION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -19019,9 +17735,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -19050,9 +17763,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     alt3_0 = cut4
@@ -19069,9 +17779,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart4);
                     alt3_0 = elem4_1;
                 } else
-
-
-
 
 
                 if ( elem4_1.isFailure()) {
@@ -19092,9 +17799,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_2.isFailure()) {
                     restoreLocation(seqStart4);
                     alt3_0 = cut4
@@ -19111,9 +17815,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart4);
                     alt3_0 = elem4_3;
                 } else
-
-
-
 
 
                 if ( elem4_3.isFailure()) {
@@ -19146,9 +17847,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem9_0.isFailure()) {
                         restoreLocation(seqStart9);
                         alt3_1 = cut9
@@ -19165,9 +17863,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart9);
                         alt3_1 = elem9_1;
                     } else
-
-
-
 
 
                     if ( elem9_1.isFailure()) {
@@ -19196,9 +17891,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -19215,9 +17907,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_RENAME_ACTION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -19259,9 +17948,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -19280,9 +17966,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -19297,9 +17980,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -19321,9 +18001,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -19340,9 +18017,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SET_SCHEMA_ACTION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -19384,9 +18058,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -19405,9 +18076,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -19422,9 +18090,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -19446,9 +18111,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -19465,9 +18127,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SET_TABLESPACE_ACTION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -19509,9 +18168,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -19530,9 +18186,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -19547,9 +18200,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -19571,9 +18221,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -19592,9 +18239,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -19611,9 +18255,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ATTACH_PARTITION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -19655,9 +18296,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -19676,9 +18314,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -19693,9 +18328,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -19715,9 +18347,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -19770,9 +18399,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem5.isSuccess()) {
                 var optChildren5 = new ArrayList<>(children);
                 children.clear();
@@ -19791,9 +18417,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -19810,9 +18433,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DETACH_PARTITION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -19854,9 +18474,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -19873,9 +18490,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -19906,9 +18520,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem5_0.isFailure()) {
                     restoreLocation(seqStart5);
                     alt4_0 = cut5
@@ -19925,9 +18536,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart5);
                     alt4_0 = elem5_1;
                 } else
-
-
-
 
 
                 if ( elem5_1.isFailure()) {
@@ -19948,9 +18556,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem5_2.isFailure()) {
                     restoreLocation(seqStart5);
                     alt4_0 = cut5
@@ -19967,9 +18572,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart5);
                     alt4_0 = elem5_3;
                 } else
-
-
-
 
 
                 if ( elem5_3.isFailure()) {
@@ -20002,9 +18604,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem10_0.isFailure()) {
                         restoreLocation(seqStart10);
                         alt4_1 = cut10
@@ -20021,9 +18620,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart10);
                         alt4_1 = elem10_1;
                     } else
-
-
-
 
 
                     if ( elem10_1.isFailure()) {
@@ -20044,9 +18640,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem10_2.isFailure()) {
                         restoreLocation(seqStart10);
                         alt4_1 = cut10
@@ -20063,9 +18656,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart10);
                         alt4_1 = elem10_3;
                     } else
-
-
-
 
 
                     if ( elem10_3.isFailure()) {
@@ -20086,9 +18676,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem10_4.isFailure()) {
                         restoreLocation(seqStart10);
                         alt4_1 = cut10
@@ -20105,9 +18692,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart10);
                         alt4_1 = elem10_5;
                     } else
-
-
-
 
 
                     if ( elem10_5.isFailure()) {
@@ -20128,9 +18712,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem10_6.isFailure()) {
                         restoreLocation(seqStart10);
                         alt4_1 = cut10
@@ -20147,9 +18728,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart10);
                         alt4_1 = elem10_7;
                     } else
-
-
-
 
 
                     if ( elem10_7.isFailure()) {
@@ -20182,9 +18760,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem19_0.isFailure()) {
                             restoreLocation(seqStart19);
                             alt4_2 = cut19
@@ -20201,9 +18776,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart19);
                             alt4_2 = elem19_1;
                         } else
-
-
-
 
 
                         if ( elem19_1.isFailure()) {
@@ -20224,9 +18796,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem19_2.isFailure()) {
                             restoreLocation(seqStart19);
                             alt4_2 = cut19
@@ -20243,9 +18812,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart19);
                             alt4_2 = elem19_3;
                         } else
-
-
-
 
 
                         if ( elem19_3.isFailure()) {
@@ -20286,9 +18852,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -20305,9 +18868,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FOR_VALUES_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -20350,9 +18910,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -20371,9 +18928,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -20398,9 +18952,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -20410,9 +18961,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ONLY_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -20454,9 +19002,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -20471,9 +19016,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -20501,9 +19043,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -20522,9 +19061,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -20541,9 +19077,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -20570,9 +19103,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem6.isSuccess()) {
                 var optChildren6 = new ArrayList<>(children);
                 children.clear();
@@ -20591,9 +19121,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -20610,9 +19137,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DROP_TABLE_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -20660,9 +19184,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -20679,9 +19200,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -20702,9 +19220,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -20719,9 +19234,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -20749,9 +19261,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem5.isSuccess()) {
                 var optChildren5 = new ArrayList<>(children);
                 children.clear();
@@ -20768,9 +19277,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -20797,9 +19303,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem7.isSuccess()) {
                 var optChildren7 = new ArrayList<>(children);
                 children.clear();
@@ -20816,9 +19319,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -20849,9 +19349,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem11_0.isFailure()) {
                     restoreLocation(seqStart11);
                     alt10_0 = cut11
@@ -20868,9 +19365,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart11);
                     alt10_0 = elem11_1;
                 } else
-
-
-
 
 
                 if ( elem11_1.isFailure()) {
@@ -20909,9 +19403,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -20936,9 +19427,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem15.isSuccess()) {
                 var optChildren15 = new ArrayList<>(children);
                 children.clear();
@@ -20957,9 +19445,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -20976,9 +19461,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_7;
             } else
-
-
-
 
 
             if ( elem0_7.isFailure()) {
@@ -21005,9 +19487,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem18.isSuccess()) {
                 var optChildren18 = new ArrayList<>(children);
                 children.clear();
@@ -21024,9 +19503,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_8;
             } else
-
-
-
 
 
             if ( elem0_8.isFailure()) {
@@ -21047,9 +19523,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_9.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -21068,9 +19541,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_10.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -21087,9 +19557,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_11;
             } else
-
-
-
 
 
             if ( elem0_11.isFailure()) {
@@ -21116,9 +19583,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem23.isSuccess()) {
                 var optChildren23 = new ArrayList<>(children);
                 children.clear();
@@ -21135,9 +19599,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_12;
             } else
-
-
-
 
 
             if ( elem0_12.isFailure()) {
@@ -21164,9 +19625,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem25.isSuccess()) {
                 var optChildren25 = new ArrayList<>(children);
                 children.clear();
@@ -21183,9 +19641,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_13;
             } else
-
-
-
 
 
             if ( elem0_13.isFailure()) {
@@ -21212,9 +19667,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem27.isSuccess()) {
                 var optChildren27 = new ArrayList<>(children);
                 children.clear();
@@ -21231,9 +19683,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_14;
             } else
-
-
-
 
 
             if ( elem0_14.isFailure()) {
@@ -21260,9 +19709,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem29.isSuccess()) {
                 var optChildren29 = new ArrayList<>(children);
                 children.clear();
@@ -21279,9 +19725,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_15;
             } else
-
-
-
 
 
             if ( elem0_15.isFailure()) {
@@ -21308,9 +19751,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem31.isSuccess()) {
                 var optChildren31 = new ArrayList<>(children);
                 children.clear();
@@ -21329,9 +19769,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_16.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -21348,9 +19785,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CREATE_INDEX_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -21392,9 +19826,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -21409,9 +19840,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -21433,9 +19861,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -21452,9 +19877,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_USING_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -21541,9 +19963,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -21562,9 +19981,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -21589,9 +20005,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -21601,9 +20014,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INDEX_METHOD, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -21645,9 +20055,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -21678,9 +20085,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -21697,9 +20101,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -21734,9 +20135,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -21745,9 +20143,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -21766,9 +20161,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INDEX_ELEM_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -21840,9 +20232,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem5_0.isFailure()) {
                             restoreLocation(seqStart5);
                             alt2_2 = cut5
@@ -21861,9 +20250,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem5_1.isFailure()) {
                             restoreLocation(seqStart5);
                             alt2_2 = cut5
@@ -21880,9 +20266,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart5);
                             alt2_2 = elem5_2;
                         } else
-
-
-
 
 
                         if ( elem5_2.isFailure()) {
@@ -21912,9 +20295,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -21939,9 +20319,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem9.isSuccess()) {
                 var optChildren9 = new ArrayList<>(children);
                 children.clear();
@@ -21958,9 +20335,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -21987,9 +20361,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem11.isSuccess()) {
                 var optChildren11 = new ArrayList<>(children);
                 children.clear();
@@ -22006,9 +20377,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -22035,9 +20403,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem13.isSuccess()) {
                 var optChildren13 = new ArrayList<>(children);
                 children.clear();
@@ -22056,9 +20421,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -22075,9 +20437,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INDEX_ELEM, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -22119,9 +20478,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -22148,9 +20504,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = cut4
@@ -22167,9 +20520,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart4);
                     optElem2 = elem4_1;
                 } else
-
-
-
 
 
                 if ( elem4_1.isFailure()) {
@@ -22190,9 +20540,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_2.isFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = cut4
@@ -22209,9 +20556,6 @@ public final class PgSqlParser {
                 children.addAll(savedChildrenOpt2);
                 elem0_1 = optElem2;
             } else
-
-
-
 
 
             if ( optElem2.isSuccess()) {
@@ -22232,9 +20576,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -22251,9 +20592,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_OP_CLASS, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -22319,9 +20657,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -22359,9 +20694,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -22408,9 +20740,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -22427,9 +20756,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NULLS_ORDER, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -22472,9 +20798,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -22493,9 +20816,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -22520,9 +20840,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -22532,9 +20849,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CONCURRENTLY_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -22576,9 +20890,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -22593,9 +20904,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -22623,9 +20931,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -22644,9 +20949,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -22663,9 +20965,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -22696,9 +20995,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem8_0.isFailure()) {
                     restoreLocation(seqStart8);
                     alt7_0 = cut8
@@ -22717,9 +21013,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem8_1.isFailure()) {
                     restoreLocation(seqStart8);
                     alt7_0 = cut8
@@ -22736,9 +21029,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart8);
                     alt7_0 = elem8_2;
                 } else
-
-
-
 
 
                 if ( elem8_2.isFailure()) {
@@ -22771,9 +21061,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem12_0.isFailure()) {
                         restoreLocation(seqStart12);
                         alt7_1 = cut12
@@ -22792,9 +21079,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem12_1.isFailure()) {
                         restoreLocation(seqStart12);
                         alt7_1 = cut12
@@ -22811,9 +21095,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart12);
                         alt7_1 = elem12_2;
                     } else
-
-
-
 
 
                     if ( elem12_2.isFailure()) {
@@ -22853,9 +21134,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -22872,9 +21150,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ALTER_INDEX_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -22916,9 +21191,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -22933,9 +21205,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -22963,9 +21232,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -22982,9 +21248,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -23011,9 +21274,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem5.isSuccess()) {
                 var optChildren5 = new ArrayList<>(children);
                 children.clear();
@@ -23032,9 +21292,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -23051,9 +21308,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -23080,9 +21334,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem8.isSuccess()) {
                 var optChildren8 = new ArrayList<>(children);
                 children.clear();
@@ -23101,9 +21352,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -23120,9 +21368,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DROP_INDEX_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -23164,9 +21409,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -23181,9 +21423,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -23211,9 +21450,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -23232,9 +21468,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -23251,9 +21484,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -23280,9 +21510,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem6.isSuccess()) {
                 var optChildren6 = new ArrayList<>(children);
                 children.clear();
@@ -23301,9 +21528,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -23320,9 +21544,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CREATE_SEQUENCE_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -23364,9 +21585,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -23381,9 +21599,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -23411,9 +21626,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -23430,9 +21642,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -23453,9 +21662,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -23474,9 +21680,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -23493,9 +21696,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ALTER_SEQUENCE_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -23537,9 +21737,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -23554,9 +21751,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -23584,9 +21778,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -23605,9 +21796,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -23624,9 +21812,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -23653,9 +21838,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem6.isSuccess()) {
                 var optChildren6 = new ArrayList<>(children);
                 children.clear();
@@ -23674,9 +21856,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -23693,9 +21872,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DROP_SEQUENCE_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -23769,9 +21945,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -23816,9 +21989,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -23835,9 +22005,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -23870,9 +22037,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     alt0_1 = cut4
@@ -23897,9 +22061,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem6.isSuccess()) {
                     var optChildren6 = new ArrayList<>(children);
                     children.clear();
@@ -23918,9 +22079,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_1.isFailure()) {
                     restoreLocation(seqStart4);
                     alt0_1 = cut4
@@ -23937,9 +22095,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart4);
                     alt0_1 = elem4_2;
                 } else
-
-
-
 
 
                 if ( elem4_2.isFailure()) {
@@ -23998,9 +22153,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem9_0.isFailure()) {
                         restoreLocation(seqStart9);
                         alt0_2 = cut9
@@ -24017,9 +22169,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart9);
                         alt0_2 = elem9_1;
                     } else
-
-
-
 
 
                     if ( elem9_1.isFailure()) {
@@ -24050,9 +22199,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart15);
                             alt0_3 = elem15_0;
                         } else
-
-
-
 
 
                         if ( elem15_0.isFailure()) {
@@ -24110,9 +22256,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem15_1.isFailure()) {
                             restoreLocation(seqStart15);
                             alt0_3 = cut15
@@ -24143,9 +22286,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( elem22_0.isFailure()) {
                                 restoreLocation(seqStart22);
                                 alt0_4 = cut22
@@ -24170,9 +22310,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( optElem24.isSuccess()) {
                                 var optChildren24 = new ArrayList<>(children);
                                 children.clear();
@@ -24191,9 +22328,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( elem22_1.isFailure()) {
                                 restoreLocation(seqStart22);
                                 alt0_4 = cut22
@@ -24210,9 +22344,6 @@ public final class PgSqlParser {
                                 restoreLocation(seqStart22);
                                 alt0_4 = elem22_2;
                             } else
-
-
-
 
 
                             if ( elem22_2.isFailure()) {
@@ -24243,9 +22374,6 @@ public final class PgSqlParser {
                                     restoreLocation(seqStart27);
                                     alt0_5 = elem27_0;
                                 } else
-
-
-
 
 
                                 if ( elem27_0.isFailure()) {
@@ -24280,9 +22408,6 @@ public final class PgSqlParser {
                                     } else
 
 
-
-
-
                                     if ( optElem32.isSuccess()) {
                                         var optChildren32 = new ArrayList<>(children);
                                         children.clear();
@@ -24299,9 +22424,6 @@ public final class PgSqlParser {
                                         restoreLocation(seqStart31);
                                         optElem29 = elem31_0;
                                     } else
-
-
-
 
 
                                     if ( elem31_0.isFailure()) {
@@ -24322,9 +22444,6 @@ public final class PgSqlParser {
                                     } else
 
 
-
-
-
                                     if ( elem31_1.isFailure()) {
                                         restoreLocation(seqStart31);
                                         optElem29 = cut31
@@ -24343,9 +22462,6 @@ public final class PgSqlParser {
                                 } else
 
 
-
-
-
                                 if ( optElem29.isSuccess()) {
                                     var optChildren29 = new ArrayList<>(children);
                                     children.clear();
@@ -24362,9 +22478,6 @@ public final class PgSqlParser {
                                     restoreLocation(seqStart27);
                                     alt0_5 = elem27_1;
                                 } else
-
-
-
 
 
                                 if ( elem27_1.isFailure()) {
@@ -24397,9 +22510,6 @@ public final class PgSqlParser {
                                     } else
 
 
-
-
-
                                     if ( elem35_0.isFailure()) {
                                         restoreLocation(seqStart35);
                                         alt0_6 = cut35
@@ -24416,9 +22526,6 @@ public final class PgSqlParser {
                                         restoreLocation(seqStart35);
                                         alt0_6 = elem35_1;
                                     } else
-
-
-
 
 
                                     if ( elem35_1.isFailure()) {
@@ -24461,9 +22568,6 @@ public final class PgSqlParser {
                                             } else
 
 
-
-
-
                                             if ( elem39_0.isFailure()) {
                                                 restoreLocation(seqStart39);
                                                 alt0_8 = cut39
@@ -24480,9 +22584,6 @@ public final class PgSqlParser {
                                                 restoreLocation(seqStart39);
                                                 alt0_8 = elem39_1;
                                             } else
-
-
-
 
 
                                             if ( elem39_1.isFailure()) {
@@ -24529,9 +22630,6 @@ public final class PgSqlParser {
                                             } else
 
 
-
-
-
                                             if ( elem39_2.isFailure()) {
                                                 restoreLocation(seqStart39);
                                                 alt0_8 = cut39
@@ -24568,9 +22666,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SEQUENCE_OPTION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -24612,9 +22707,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -24629,9 +22721,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -24651,9 +22740,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -24687,9 +22773,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem7_0.isFailure()) {
                     restoreLocation(seqStart7);
                     alt6_0 = cut7
@@ -24706,9 +22789,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart7);
                     alt6_0 = elem7_1;
                 } else
-
-
-
 
 
                 if ( elem7_1.isFailure()) {
@@ -24729,9 +22809,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem7_2.isFailure()) {
                     restoreLocation(seqStart7);
                     alt6_0 = cut7
@@ -24750,9 +22827,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem7_3.isFailure()) {
                     restoreLocation(seqStart7);
                     alt6_0 = cut7
@@ -24769,9 +22843,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart7);
                     alt6_0 = elem7_4;
                 } else
-
-
-
 
 
                 if ( elem7_4.isFailure()) {
@@ -24804,9 +22875,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem13_0.isFailure()) {
                         restoreLocation(seqStart13);
                         alt6_1 = cut13
@@ -24823,9 +22891,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart13);
                         alt6_1 = elem13_1;
                     } else
-
-
-
 
 
                     if ( elem13_1.isFailure()) {
@@ -24846,9 +22911,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem13_2.isFailure()) {
                         restoreLocation(seqStart13);
                         alt6_1 = cut13
@@ -24865,9 +22927,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart13);
                         alt6_1 = elem13_3;
                     } else
-
-
-
 
 
                     if ( elem13_3.isFailure()) {
@@ -24900,9 +22959,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem18_0.isFailure()) {
                             restoreLocation(seqStart18);
                             alt6_2 = cut18
@@ -24919,9 +22975,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart18);
                             alt6_2 = elem18_1;
                         } else
-
-
-
 
 
                         if ( elem18_1.isFailure()) {
@@ -24942,9 +22995,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem18_2.isFailure()) {
                             restoreLocation(seqStart18);
                             alt6_2 = cut18
@@ -24963,9 +23013,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem18_3.isFailure()) {
                             restoreLocation(seqStart18);
                             alt6_2 = cut18
@@ -24982,9 +23029,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart18);
                             alt6_2 = elem18_4;
                         } else
-
-
-
 
 
                         if ( elem18_4.isFailure()) {
@@ -25017,9 +23061,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( elem24_0.isFailure()) {
                                 restoreLocation(seqStart24);
                                 alt6_3 = cut24
@@ -25036,9 +23077,6 @@ public final class PgSqlParser {
                                 restoreLocation(seqStart24);
                                 alt6_3 = elem24_1;
                             } else
-
-
-
 
 
                             if ( elem24_1.isFailure()) {
@@ -25087,9 +23125,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             {
                                 children.clear();
                                 children.addAll(savedChildrenZom27);
@@ -25098,9 +23133,6 @@ public final class PgSqlParser {
                                 restoreLocation(seqStart24);
                                 alt6_3 = elem24_2;
                             } else
-
-
-
 
 
                             if ( elem24_2.isFailure()) {
@@ -25134,9 +23166,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem4.isSuccess()) {
                 var optChildren4 = new ArrayList<>(children);
                 children.clear();
@@ -25155,9 +23184,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -25174,9 +23200,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CREATE_TYPE_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -25218,9 +23241,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -25251,9 +23271,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -25270,9 +23287,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -25307,9 +23321,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -25318,9 +23329,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -25339,9 +23347,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ENUM_LABEL_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -25383,9 +23388,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -25416,9 +23418,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -25435,9 +23434,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -25472,9 +23468,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -25483,9 +23476,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -25504,9 +23494,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_COMPOSITE_FIELD_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -25548,9 +23535,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -25567,9 +23551,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -25596,9 +23577,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -25617,9 +23595,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -25636,9 +23611,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_COMPOSITE_FIELD, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -25680,9 +23652,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -25713,9 +23682,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -25732,9 +23698,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -25769,9 +23732,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -25780,9 +23740,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -25801,9 +23758,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_RANGE_OPTION_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -25845,9 +23799,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -25864,9 +23815,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -25924,9 +23872,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -25943,9 +23888,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_RANGE_OPTION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -25993,9 +23935,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -26012,9 +23951,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -26094,9 +24030,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -26113,9 +24046,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DOMAIN_CONSTRAINT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -26157,9 +24087,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -26174,9 +24101,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -26196,9 +24120,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -26229,9 +24150,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem6_0.isFailure()) {
                     restoreLocation(seqStart6);
                     alt5_0 = cut6
@@ -26248,9 +24166,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart6);
                     alt5_0 = elem6_1;
                 } else
-
-
-
 
 
                 if ( elem6_1.isFailure()) {
@@ -26277,9 +24192,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem9.isSuccess()) {
                     var optChildren9 = new ArrayList<>(children);
                     children.clear();
@@ -26298,9 +24210,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem6_2.isFailure()) {
                     restoreLocation(seqStart6);
                     alt5_0 = cut6
@@ -26317,9 +24226,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart6);
                     alt5_0 = elem6_3;
                 } else
-
-
-
 
 
                 if ( elem6_3.isFailure()) {
@@ -26353,9 +24259,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem15_0.isFailure()) {
                         restoreLocation(seqStart15);
                         alt14_0 = cut15
@@ -26372,9 +24275,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart15);
                         alt14_0 = elem15_1;
                     } else
-
-
-
 
 
                     if ( elem15_1.isFailure()) {
@@ -26407,9 +24307,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem18_0.isFailure()) {
                             restoreLocation(seqStart18);
                             alt14_1 = cut18
@@ -26426,9 +24323,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart18);
                             alt14_1 = elem18_1;
                         } else
-
-
-
 
 
                         if ( elem18_1.isFailure()) {
@@ -26460,9 +24354,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem12.isSuccess()) {
                     var optChildren12 = new ArrayList<>(children);
                     children.clear();
@@ -26479,9 +24370,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart6);
                     alt5_0 = elem6_4;
                 } else
-
-
-
 
 
                 if ( elem6_4.isFailure()) {
@@ -26514,9 +24402,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem21_0.isFailure()) {
                         restoreLocation(seqStart21);
                         alt5_1 = cut21
@@ -26533,9 +24418,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart21);
                         alt5_1 = elem21_1;
                     } else
-
-
-
 
 
                     if ( elem21_1.isFailure()) {
@@ -26556,9 +24438,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem21_2.isFailure()) {
                         restoreLocation(seqStart21);
                         alt5_1 = cut21
@@ -26577,9 +24456,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem21_3.isFailure()) {
                         restoreLocation(seqStart21);
                         alt5_1 = cut21
@@ -26596,9 +24472,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart21);
                         alt5_1 = elem21_4;
                     } else
-
-
-
 
 
                     if ( elem21_4.isFailure()) {
@@ -26631,9 +24504,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem27_0.isFailure()) {
                             restoreLocation(seqStart27);
                             alt5_2 = cut27
@@ -26652,9 +24522,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem27_1.isFailure()) {
                             restoreLocation(seqStart27);
                             alt5_2 = cut27
@@ -26671,9 +24538,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart27);
                             alt5_2 = elem27_2;
                         } else
-
-
-
 
 
                         if ( elem27_2.isFailure()) {
@@ -26706,9 +24570,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( elem31_0.isFailure()) {
                                 restoreLocation(seqStart31);
                                 alt5_3 = cut31
@@ -26727,9 +24588,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( elem31_1.isFailure()) {
                                 restoreLocation(seqStart31);
                                 alt5_3 = cut31
@@ -26746,9 +24604,6 @@ public final class PgSqlParser {
                                 restoreLocation(seqStart31);
                                 alt5_3 = elem31_2;
                             } else
-
-
-
 
 
                             if ( elem31_2.isFailure()) {
@@ -26781,9 +24636,6 @@ public final class PgSqlParser {
                                 } else
 
 
-
-
-
                                 if ( elem35_0.isFailure()) {
                                     restoreLocation(seqStart35);
                                     alt5_4 = cut35
@@ -26800,9 +24652,6 @@ public final class PgSqlParser {
                                     restoreLocation(seqStart35);
                                     alt5_4 = elem35_1;
                                 } else
-
-
-
 
 
                                 if ( elem35_1.isFailure()) {
@@ -26823,9 +24672,6 @@ public final class PgSqlParser {
                                 } else
 
 
-
-
-
                                 if ( elem35_2.isFailure()) {
                                     restoreLocation(seqStart35);
                                     alt5_4 = cut35
@@ -26842,9 +24688,6 @@ public final class PgSqlParser {
                                     restoreLocation(seqStart35);
                                     alt5_4 = elem35_3;
                                 } else
-
-
-
 
 
                                 if ( elem35_3.isFailure()) {
@@ -26871,9 +24714,6 @@ public final class PgSqlParser {
                                 } else
 
 
-
-
-
                                 if ( optElem40.isSuccess()) {
                                     var optChildren40 = new ArrayList<>(children);
                                     children.clear();
@@ -26890,9 +24730,6 @@ public final class PgSqlParser {
                                     restoreLocation(seqStart35);
                                     alt5_4 = elem35_4;
                                 } else
-
-
-
 
 
                                 if ( elem35_4.isFailure()) {
@@ -26919,9 +24756,6 @@ public final class PgSqlParser {
                                 } else
 
 
-
-
-
                                 if ( optElem42.isSuccess()) {
                                     var optChildren42 = new ArrayList<>(children);
                                     children.clear();
@@ -26938,9 +24772,6 @@ public final class PgSqlParser {
                                     restoreLocation(seqStart35);
                                     alt5_4 = elem35_5;
                                 } else
-
-
-
 
 
                                 if ( elem35_5.isFailure()) {
@@ -26973,9 +24804,6 @@ public final class PgSqlParser {
                                     } else
 
 
-
-
-
                                     if ( elem44_0.isFailure()) {
                                         restoreLocation(seqStart44);
                                         alt5_5 = cut44
@@ -26992,9 +24820,6 @@ public final class PgSqlParser {
                                         restoreLocation(seqStart44);
                                         alt5_5 = elem44_1;
                                     } else
-
-
-
 
 
                                     if ( elem44_1.isFailure()) {
@@ -27021,9 +24846,6 @@ public final class PgSqlParser {
                                     } else
 
 
-
-
-
                                     if ( optElem47.isSuccess()) {
                                         var optChildren47 = new ArrayList<>(children);
                                         children.clear();
@@ -27042,9 +24864,6 @@ public final class PgSqlParser {
                                     } else
 
 
-
-
-
                                     if ( elem44_2.isFailure()) {
                                         restoreLocation(seqStart44);
                                         alt5_5 = cut44
@@ -27061,9 +24880,6 @@ public final class PgSqlParser {
                                         restoreLocation(seqStart44);
                                         alt5_5 = elem44_3;
                                     } else
-
-
-
 
 
                                     if ( elem44_3.isFailure()) {
@@ -27090,9 +24906,6 @@ public final class PgSqlParser {
                                     } else
 
 
-
-
-
                                     if ( optElem50.isSuccess()) {
                                         var optChildren50 = new ArrayList<>(children);
                                         children.clear();
@@ -27109,9 +24922,6 @@ public final class PgSqlParser {
                                         restoreLocation(seqStart44);
                                         alt5_5 = elem44_4;
                                     } else
-
-
-
 
 
                                     if ( elem44_4.isFailure()) {
@@ -27144,9 +24954,6 @@ public final class PgSqlParser {
                                         } else
 
 
-
-
-
                                         if ( elem52_0.isFailure()) {
                                             restoreLocation(seqStart52);
                                             alt5_6 = cut52
@@ -27163,9 +24970,6 @@ public final class PgSqlParser {
                                             restoreLocation(seqStart52);
                                             alt5_6 = elem52_1;
                                         } else
-
-
-
 
 
                                         if ( elem52_1.isFailure()) {
@@ -27186,9 +24990,6 @@ public final class PgSqlParser {
                                         } else
 
 
-
-
-
                                         if ( elem52_2.isFailure()) {
                                             restoreLocation(seqStart52);
                                             alt5_6 = cut52
@@ -27205,9 +25006,6 @@ public final class PgSqlParser {
                                             restoreLocation(seqStart52);
                                             alt5_6 = elem52_3;
                                         } else
-
-
-
 
 
                                         if ( elem52_3.isFailure()) {
@@ -27243,9 +25041,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -27262,9 +25057,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ALTER_TYPE_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -27306,9 +25098,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -27323,9 +25112,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -27353,9 +25139,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -27374,9 +25157,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -27393,9 +25173,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -27422,9 +25199,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem6.isSuccess()) {
                 var optChildren6 = new ArrayList<>(children);
                 children.clear();
@@ -27443,9 +25217,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -27462,9 +25233,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DROP_TYPE_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -27506,9 +25274,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -27523,9 +25288,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -27553,9 +25315,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -27572,9 +25331,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -27605,9 +25361,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem7_0.isFailure()) {
                     restoreLocation(seqStart7);
                     alt6_0 = cut7
@@ -27624,9 +25377,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart7);
                     alt6_0 = elem7_1;
                 } else
-
-
-
 
 
                 if ( elem7_1.isFailure()) {
@@ -27659,9 +25409,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem10_0.isFailure()) {
                         restoreLocation(seqStart10);
                         alt6_1 = cut10
@@ -27688,9 +25435,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem14_0.isFailure()) {
                             restoreLocation(seqStart14);
                             optElem12 = cut14
@@ -27707,9 +25451,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart14);
                             optElem12 = elem14_1;
                         } else
-
-
-
 
 
                         if ( elem14_1.isFailure()) {
@@ -27730,9 +25471,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( optElem12.isSuccess()) {
                         var optChildren12 = new ArrayList<>(children);
                         children.clear();
@@ -27749,9 +25487,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart10);
                         alt6_1 = elem10_1;
                     } else
-
-
-
 
 
                     if ( elem10_1.isFailure()) {
@@ -27780,9 +25515,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -27799,9 +25531,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CREATE_SCHEMA_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -27843,9 +25572,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -27860,9 +25586,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -27882,9 +25605,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -27915,9 +25635,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem6_0.isFailure()) {
                     restoreLocation(seqStart6);
                     alt5_0 = cut6
@@ -27936,9 +25653,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem6_1.isFailure()) {
                     restoreLocation(seqStart6);
                     alt5_0 = cut6
@@ -27955,9 +25669,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart6);
                     alt5_0 = elem6_2;
                 } else
-
-
-
 
 
                 if ( elem6_2.isFailure()) {
@@ -27990,9 +25701,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem10_0.isFailure()) {
                         restoreLocation(seqStart10);
                         alt5_1 = cut10
@@ -28011,9 +25719,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem10_1.isFailure()) {
                         restoreLocation(seqStart10);
                         alt5_1 = cut10
@@ -28030,9 +25735,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart10);
                         alt5_1 = elem10_2;
                     } else
-
-
-
 
 
                     if ( elem10_2.isFailure()) {
@@ -28061,9 +25763,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -28080,9 +25779,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ALTER_SCHEMA_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -28124,9 +25820,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -28141,9 +25834,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -28171,9 +25861,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -28192,9 +25879,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -28211,9 +25895,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -28246,9 +25927,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem8_0.isFailure()) {
                         restoreLocation(seqStart8);
                         zomElem6 = cut8
@@ -28265,9 +25943,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart8);
                         zomElem6 = elem8_1;
                     } else
-
-
-
 
 
                     if ( elem8_1.isFailure()) {
@@ -28302,9 +25977,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom6);
@@ -28313,9 +25985,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -28342,9 +26011,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem11.isSuccess()) {
                 var optChildren11 = new ArrayList<>(children);
                 children.clear();
@@ -28363,9 +26029,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -28382,9 +26045,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DROP_SCHEMA_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -28434,9 +26094,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem3_0.isFailure()) {
                     restoreLocation(seqStart3);
                     optElem1 = cut3
@@ -28453,9 +26110,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart3);
                     optElem1 = elem3_1;
                 } else
-
-
-
 
 
                 if ( elem3_1.isFailure()) {
@@ -28476,9 +26130,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -28495,9 +26146,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -28524,9 +26172,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem6.isSuccess()) {
                 var optChildren6 = new ArrayList<>(children);
                 children.clear();
@@ -28543,9 +26188,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -28572,9 +26214,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem8.isSuccess()) {
                 var optChildren8 = new ArrayList<>(children);
                 children.clear();
@@ -28591,9 +26230,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -28614,9 +26250,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -28631,9 +26264,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -28653,9 +26283,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_5;
             } else
-
-
-
 
 
             if ( elem0_5.isFailure()) {
@@ -28684,9 +26311,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem15_0.isFailure()) {
                     restoreLocation(seqStart15);
                     optElem13 = cut15
@@ -28703,9 +26327,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart15);
                     optElem13 = elem15_1;
                 } else
-
-
-
 
 
                 if ( elem15_1.isFailure()) {
@@ -28726,9 +26347,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem15_2.isFailure()) {
                     restoreLocation(seqStart15);
                     optElem13 = cut15
@@ -28745,9 +26363,6 @@ public final class PgSqlParser {
                 children.addAll(savedChildrenOpt13);
                 elem0_6 = optElem13;
             } else
-
-
-
 
 
             if ( optElem13.isSuccess()) {
@@ -28768,9 +26383,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -28789,9 +26401,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_7.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -28808,9 +26417,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_8;
             } else
-
-
-
 
 
             if ( elem0_8.isFailure()) {
@@ -28837,9 +26443,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem21.isSuccess()) {
                 var optChildren21 = new ArrayList<>(children);
                 children.clear();
@@ -28858,9 +26461,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_9.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -28877,9 +26477,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CREATE_VIEW_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -28919,9 +26516,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -28974,9 +26568,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -28993,9 +26584,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -29016,9 +26604,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -29037,9 +26622,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -29056,9 +26638,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CHECK_OPTION_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -29100,9 +26679,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -29121,9 +26697,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -29138,9 +26711,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -29168,9 +26738,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem4.isSuccess()) {
                 var optChildren4 = new ArrayList<>(children);
                 children.clear();
@@ -29189,9 +26756,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -29208,9 +26772,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -29239,9 +26800,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem9_0.isFailure()) {
                     restoreLocation(seqStart9);
                     optElem7 = cut9
@@ -29258,9 +26816,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart9);
                     optElem7 = elem9_1;
                 } else
-
-
-
 
 
                 if ( elem9_1.isFailure()) {
@@ -29281,9 +26836,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem9_2.isFailure()) {
                     restoreLocation(seqStart9);
                     optElem7 = cut9
@@ -29300,9 +26852,6 @@ public final class PgSqlParser {
                 children.addAll(savedChildrenOpt7);
                 elem0_5 = optElem7;
             } else
-
-
-
 
 
             if ( optElem7.isSuccess()) {
@@ -29323,9 +26872,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -29344,9 +26890,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -29363,9 +26906,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_7;
             } else
-
-
-
 
 
             if ( elem0_7.isFailure()) {
@@ -29394,9 +26934,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem17_0.isFailure()) {
                     restoreLocation(seqStart17);
                     optElem15 = cut17
@@ -29421,9 +26958,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem19.isSuccess()) {
                     var optChildren19 = new ArrayList<>(children);
                     children.clear();
@@ -29440,9 +26974,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart17);
                     optElem15 = elem17_1;
                 } else
-
-
-
 
 
                 if ( elem17_1.isFailure()) {
@@ -29463,9 +26994,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem17_2.isFailure()) {
                     restoreLocation(seqStart17);
                     optElem15 = cut17
@@ -29482,9 +27010,6 @@ public final class PgSqlParser {
                 children.addAll(savedChildrenOpt15);
                 elem0_8 = optElem15;
             } else
-
-
-
 
 
             if ( optElem15.isSuccess()) {
@@ -29505,9 +27030,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_8.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -29524,9 +27046,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CREATE_MAT_VIEW_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -29574,9 +27093,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -29593,9 +27109,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -29616,9 +27129,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -29633,9 +27143,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -29663,9 +27170,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem5.isSuccess()) {
                 var optChildren5 = new ArrayList<>(children);
                 children.clear();
@@ -29684,9 +27188,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -29703,9 +27204,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -29736,9 +27234,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem10_0.isFailure()) {
                     restoreLocation(seqStart10);
                     alt9_0 = cut10
@@ -29757,9 +27252,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem10_1.isFailure()) {
                     restoreLocation(seqStart10);
                     alt9_0 = cut10
@@ -29776,9 +27268,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart10);
                     alt9_0 = elem10_2;
                 } else
-
-
-
 
 
                 if ( elem10_2.isFailure()) {
@@ -29811,9 +27300,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem14_0.isFailure()) {
                         restoreLocation(seqStart14);
                         alt9_1 = cut14
@@ -29832,9 +27318,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem14_1.isFailure()) {
                         restoreLocation(seqStart14);
                         alt9_1 = cut14
@@ -29851,9 +27334,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart14);
                         alt9_1 = elem14_2;
                     } else
-
-
-
 
 
                     if ( elem14_2.isFailure()) {
@@ -29886,9 +27366,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem18_0.isFailure()) {
                             restoreLocation(seqStart18);
                             alt9_2 = cut18
@@ -29907,9 +27384,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem18_1.isFailure()) {
                             restoreLocation(seqStart18);
                             alt9_2 = cut18
@@ -29926,9 +27400,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart18);
                             alt9_2 = elem18_2;
                         } else
-
-
-
 
 
                         if ( elem18_2.isFailure()) {
@@ -29958,9 +27429,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -29977,9 +27445,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ALTER_VIEW_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -30021,9 +27486,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -30038,9 +27500,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -30068,9 +27527,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -30089,9 +27545,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -30108,9 +27561,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -30137,9 +27587,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem6.isSuccess()) {
                 var optChildren6 = new ArrayList<>(children);
                 children.clear();
@@ -30158,9 +27605,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -30177,9 +27621,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DROP_VIEW_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -30221,9 +27662,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -30242,9 +27680,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -30259,9 +27694,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -30289,9 +27721,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem4.isSuccess()) {
                 var optChildren4 = new ArrayList<>(children);
                 children.clear();
@@ -30310,9 +27739,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -30329,9 +27755,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -30358,9 +27781,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem7.isSuccess()) {
                 var optChildren7 = new ArrayList<>(children);
                 children.clear();
@@ -30379,9 +27799,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -30398,9 +27815,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DROP_MAT_VIEW_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -30442,9 +27856,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -30459,9 +27870,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -30489,9 +27897,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -30510,9 +27915,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -30529,9 +27931,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -30558,9 +27957,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem6.isSuccess()) {
                 var optChildren6 = new ArrayList<>(children);
                 children.clear();
@@ -30579,9 +27975,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -30598,9 +27991,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CREATE_EXTENSION_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -30674,9 +28064,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -30722,9 +28109,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -30741,9 +28125,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -30774,9 +28155,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem5_0.isFailure()) {
                     restoreLocation(seqStart5);
                     alt4_0 = cut5
@@ -30793,9 +28171,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart5);
                     alt4_0 = elem5_1;
                 } else
-
-
-
 
 
                 if ( elem5_1.isFailure()) {
@@ -30826,9 +28201,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart8);
                         alt4_1 = elem8_0;
                     } else
-
-
-
 
 
                     if ( elem8_0.isFailure()) {
@@ -30875,9 +28247,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem8_1.isFailure()) {
                         restoreLocation(seqStart8);
                         alt4_1 = cut8
@@ -30906,9 +28275,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart14);
                             alt4_2 = elem14_0;
                         } else
-
-
-
 
 
                         if ( elem14_0.isFailure()) {
@@ -30955,9 +28321,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem14_1.isFailure()) {
                             restoreLocation(seqStart14);
                             alt4_2 = cut14
@@ -30996,9 +28359,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -31015,9 +28375,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EXTENSION_OPTION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -31059,9 +28416,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -31076,9 +28430,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -31106,9 +28457,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -31127,9 +28475,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -31146,9 +28491,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -31181,9 +28523,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem8_0.isFailure()) {
                         restoreLocation(seqStart8);
                         zomElem6 = cut8
@@ -31200,9 +28539,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart8);
                         zomElem6 = elem8_1;
                     } else
-
-
-
 
 
                     if ( elem8_1.isFailure()) {
@@ -31237,9 +28573,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom6);
@@ -31248,9 +28581,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -31277,9 +28607,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem11.isSuccess()) {
                 var optChildren11 = new ArrayList<>(children);
                 children.clear();
@@ -31298,9 +28625,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -31317,9 +28641,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DROP_EXTENSION_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -31361,9 +28682,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -31382,9 +28700,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -31399,9 +28714,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -31423,9 +28735,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -31442,9 +28751,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -31491,9 +28797,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -31510,9 +28813,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_COMMENT_STATEMENT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -31559,9 +28859,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -31578,9 +28875,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -31613,9 +28907,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     alt0_1 = cut4
@@ -31632,9 +28923,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart4);
                     alt0_1 = elem4_1;
                 } else
-
-
-
 
 
                 if ( elem4_1.isFailure()) {
@@ -31667,9 +28955,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem7_0.isFailure()) {
                         restoreLocation(seqStart7);
                         alt0_2 = cut7
@@ -31686,9 +28971,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart7);
                         alt0_2 = elem7_1;
                     } else
-
-
-
 
 
                     if ( elem7_1.isFailure()) {
@@ -31721,9 +29003,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem10_0.isFailure()) {
                             restoreLocation(seqStart10);
                             alt0_3 = cut10
@@ -31740,9 +29019,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart10);
                             alt0_3 = elem10_1;
                         } else
-
-
-
 
 
                         if ( elem10_1.isFailure()) {
@@ -31775,9 +29051,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( elem13_0.isFailure()) {
                                 restoreLocation(seqStart13);
                                 alt0_4 = cut13
@@ -31794,9 +29067,6 @@ public final class PgSqlParser {
                                 restoreLocation(seqStart13);
                                 alt0_4 = elem13_1;
                             } else
-
-
-
 
 
                             if ( elem13_1.isFailure()) {
@@ -31829,9 +29099,6 @@ public final class PgSqlParser {
                                 } else
 
 
-
-
-
                                 if ( elem16_0.isFailure()) {
                                     restoreLocation(seqStart16);
                                     alt0_5 = cut16
@@ -31848,9 +29115,6 @@ public final class PgSqlParser {
                                     restoreLocation(seqStart16);
                                     alt0_5 = elem16_1;
                                 } else
-
-
-
 
 
                                 if ( elem16_1.isFailure()) {
@@ -31883,9 +29147,6 @@ public final class PgSqlParser {
                                     } else
 
 
-
-
-
                                     if ( elem19_0.isFailure()) {
                                         restoreLocation(seqStart19);
                                         alt0_6 = cut19
@@ -31902,9 +29163,6 @@ public final class PgSqlParser {
                                         restoreLocation(seqStart19);
                                         alt0_6 = elem19_1;
                                     } else
-
-
-
 
 
                                     if ( elem19_1.isFailure()) {
@@ -31937,9 +29195,6 @@ public final class PgSqlParser {
                                         } else
 
 
-
-
-
                                         if ( elem22_0.isFailure()) {
                                             restoreLocation(seqStart22);
                                             alt0_7 = cut22
@@ -31956,9 +29211,6 @@ public final class PgSqlParser {
                                             restoreLocation(seqStart22);
                                             alt0_7 = elem22_1;
                                         } else
-
-
-
 
 
                                         if ( elem22_1.isFailure()) {
@@ -31993,9 +29245,6 @@ public final class PgSqlParser {
                                             } else
 
 
-
-
-
                                             if ( elem25_0.isFailure()) {
                                                 restoreLocation(seqStart25);
                                                 alt0_8 = cut25
@@ -32014,9 +29263,6 @@ public final class PgSqlParser {
                                             } else
 
 
-
-
-
                                             if ( elem25_1.isFailure()) {
                                                 restoreLocation(seqStart25);
                                                 alt0_8 = cut25
@@ -32033,9 +29279,6 @@ public final class PgSqlParser {
                                                 restoreLocation(seqStart25);
                                                 alt0_8 = elem25_2;
                                             } else
-
-
-
 
 
                                             if ( elem25_2.isFailure()) {
@@ -32070,9 +29313,6 @@ public final class PgSqlParser {
                                                 } else
 
 
-
-
-
                                                 if ( elem29_0.isFailure()) {
                                                     restoreLocation(seqStart29);
                                                     alt0_9 = cut29
@@ -32089,9 +29329,6 @@ public final class PgSqlParser {
                                                     restoreLocation(seqStart29);
                                                     alt0_9 = elem29_1;
                                                 } else
-
-
-
 
 
                                                 if ( elem29_1.isFailure()) {
@@ -32112,9 +29349,6 @@ public final class PgSqlParser {
                                                 } else
 
 
-
-
-
                                                 if ( elem29_2.isFailure()) {
                                                     restoreLocation(seqStart29);
                                                     alt0_9 = cut29
@@ -32131,9 +29365,6 @@ public final class PgSqlParser {
                                                     restoreLocation(seqStart29);
                                                     alt0_9 = elem29_3;
                                                 } else
-
-
-
 
 
                                                 if ( elem29_3.isFailure()) {
@@ -32168,9 +29399,6 @@ public final class PgSqlParser {
                                                     } else
 
 
-
-
-
                                                     if ( elem34_0.isFailure()) {
                                                         restoreLocation(seqStart34);
                                                         alt0_10 = cut34
@@ -32189,9 +29417,6 @@ public final class PgSqlParser {
                                                     } else
 
 
-
-
-
                                                     if ( elem34_1.isFailure()) {
                                                         restoreLocation(seqStart34);
                                                         alt0_10 = cut34
@@ -32208,9 +29433,6 @@ public final class PgSqlParser {
                                                         restoreLocation(seqStart34);
                                                         alt0_10 = elem34_2;
                                                     } else
-
-
-
 
 
                                                     if ( elem34_2.isFailure()) {
@@ -32237,9 +29459,6 @@ public final class PgSqlParser {
                                                     } else
 
 
-
-
-
                                                     if ( optElem38.isSuccess()) {
                                                         var optChildren38 = new ArrayList<>(children);
                                                         children.clear();
@@ -32258,9 +29477,6 @@ public final class PgSqlParser {
                                                     } else
 
 
-
-
-
                                                     if ( elem34_3.isFailure()) {
                                                         restoreLocation(seqStart34);
                                                         alt0_10 = cut34
@@ -32277,9 +29493,6 @@ public final class PgSqlParser {
                                                         restoreLocation(seqStart34);
                                                         alt0_10 = elem34_4;
                                                     } else
-
-
-
 
 
                                                     if ( elem34_4.isFailure()) {
@@ -32322,9 +29535,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -32364,9 +29574,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -32397,9 +29604,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -32416,9 +29620,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -32453,9 +29654,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -32464,9 +29662,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -32485,9 +29680,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FUNC_ARG_TYPES, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -32583,9 +29775,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -32602,9 +29791,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -32625,9 +29811,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -32644,9 +29827,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FUNC_ARG_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -32688,9 +29868,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -32705,9 +29882,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -32729,9 +29903,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -32748,9 +29919,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -32771,9 +29939,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -32792,9 +29957,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -32811,9 +29973,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_6;
             } else
-
-
-
 
 
             if ( elem0_6.isFailure()) {
@@ -32842,9 +30001,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem10_0.isFailure()) {
                     restoreLocation(seqStart10);
                     optElem8 = cut10
@@ -32861,9 +30017,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart10);
                     optElem8 = elem10_1;
                 } else
-
-
-
 
 
                 if ( elem10_1.isFailure()) {
@@ -32884,9 +30037,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem10_2.isFailure()) {
                     restoreLocation(seqStart10);
                     optElem8 = cut10
@@ -32903,9 +30053,6 @@ public final class PgSqlParser {
                 children.addAll(savedChildrenOpt8);
                 elem0_7 = optElem8;
             } else
-
-
-
 
 
             if ( optElem8.isSuccess()) {
@@ -32926,9 +30073,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_7.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -32945,9 +30089,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_GRANT_STATEMENT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -32989,9 +30130,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -33006,9 +30144,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -33038,9 +30173,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem5_0.isFailure()) {
                     restoreLocation(seqStart5);
                     optElem3 = cut5
@@ -33057,9 +30189,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart5);
                     optElem3 = elem5_1;
                 } else
-
-
-
 
 
                 if ( elem5_1.isFailure()) {
@@ -33080,9 +30209,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem5_2.isFailure()) {
                     restoreLocation(seqStart5);
                     optElem3 = cut5
@@ -33099,9 +30225,6 @@ public final class PgSqlParser {
                 children.addAll(savedChildrenOpt3);
                 elem0_2 = optElem3;
             } else
-
-
-
 
 
             if ( optElem3.isSuccess()) {
@@ -33122,9 +30245,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -33141,9 +30261,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -33164,9 +30281,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -33183,9 +30297,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_5;
             } else
-
-
-
 
 
             if ( elem0_5.isFailure()) {
@@ -33206,9 +30317,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -33225,9 +30333,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_7;
             } else
-
-
-
 
 
             if ( elem0_7.isFailure()) {
@@ -33254,9 +30359,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem14.isSuccess()) {
                 var optChildren14 = new ArrayList<>(children);
                 children.clear();
@@ -33275,9 +30377,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_8.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -33294,9 +30393,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_REVOKE_STATEMENT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -33343,9 +30439,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -33370,9 +30463,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -33389,9 +30479,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -33424,9 +30511,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem5_0.isFailure()) {
                     restoreLocation(seqStart5);
                     alt0_1 = cut5
@@ -33457,9 +30541,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem9_0.isFailure()) {
                             restoreLocation(seqStart9);
                             zomElem7 = cut9
@@ -33476,9 +30557,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart9);
                             zomElem7 = elem9_1;
                         } else
-
-
-
 
 
                         if ( elem9_1.isFailure()) {
@@ -33513,9 +30591,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 {
                     children.clear();
                     children.addAll(savedChildrenZom7);
@@ -33524,9 +30599,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart5);
                     alt0_1 = elem5_1;
                 } else
-
-
-
 
 
                 if ( elem5_1.isFailure()) {
@@ -33556,9 +30628,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_PRIVILEGE_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -33736,9 +30805,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -33765,9 +30831,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem17_0.isFailure()) {
                     restoreLocation(seqStart17);
                     optElem15 = cut17
@@ -33784,9 +30847,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart17);
                     optElem15 = elem17_1;
                 } else
-
-
-
 
 
                 if ( elem17_1.isFailure()) {
@@ -33807,9 +30867,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem17_2.isFailure()) {
                     restoreLocation(seqStart17);
                     optElem15 = cut17
@@ -33826,9 +30883,6 @@ public final class PgSqlParser {
                 children.addAll(savedChildrenOpt15);
                 elem0_1 = optElem15;
             } else
-
-
-
 
 
             if ( optElem15.isSuccess()) {
@@ -33849,9 +30903,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -33868,9 +30919,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_PRIVILEGE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -33915,9 +30963,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_0;
             } else
-
-
-
 
 
             if ( elem1_0.isFailure()) {
@@ -33986,9 +31031,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -34005,9 +31047,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
             } else
-
-
-
 
 
             if ( elem1_2.isFailure()) {
@@ -34028,9 +31067,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_3.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -34047,9 +31083,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_4;
             } else
-
-
-
 
 
             if ( elem1_4.isFailure()) {
@@ -34082,9 +31115,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem12_0.isFailure()) {
                     restoreLocation(seqStart12);
                     alt0_1 = cut12
@@ -34101,9 +31131,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart12);
                     alt0_1 = elem12_1;
                 } else
-
-
-
 
 
                 if ( elem12_1.isFailure()) {
@@ -34136,9 +31163,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem17_0.isFailure()) {
                             restoreLocation(seqStart17);
                             zomElem15 = cut17
@@ -34155,9 +31179,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart17);
                             zomElem15 = elem17_1;
                         } else
-
-
-
 
 
                         if ( elem17_1.isFailure()) {
@@ -34192,9 +31213,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 {
                     children.clear();
                     children.addAll(savedChildrenZom15);
@@ -34203,9 +31221,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart12);
                     alt0_1 = elem12_2;
                 } else
-
-
-
 
 
                 if ( elem12_2.isFailure()) {
@@ -34238,9 +31253,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem20_0.isFailure()) {
                         restoreLocation(seqStart20);
                         alt0_2 = cut20
@@ -34257,9 +31269,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart20);
                         alt0_2 = elem20_1;
                     } else
-
-
-
 
 
                     if ( elem20_1.isFailure()) {
@@ -34292,9 +31301,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem23_0.isFailure()) {
                             restoreLocation(seqStart23);
                             alt0_3 = cut23
@@ -34311,9 +31317,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart23);
                             alt0_3 = elem23_1;
                         } else
-
-
-
 
 
                         if ( elem23_1.isFailure()) {
@@ -34352,9 +31355,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( optElem27.isSuccess()) {
                                 var optChildren27 = new ArrayList<>(children);
                                 children.clear();
@@ -34373,9 +31373,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( elem26_0.isFailure()) {
                                 restoreLocation(seqStart26);
                                 alt0_4 = cut26
@@ -34392,9 +31389,6 @@ public final class PgSqlParser {
                                 restoreLocation(seqStart26);
                                 alt0_4 = elem26_1;
                             } else
-
-
-
 
 
                             if ( elem26_1.isFailure()) {
@@ -34427,9 +31421,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_GRANT_TARGET, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -34471,9 +31462,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -34504,9 +31492,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -34523,9 +31508,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -34560,9 +31542,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -34571,9 +31550,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -34592,9 +31568,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_GRANTEE_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -34657,9 +31630,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem3.isSuccess()) {
                     var optChildren3 = new ArrayList<>(children);
                     children.clear();
@@ -34678,9 +31648,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem2_0.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
@@ -34697,9 +31664,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_1;
                 } else
-
-
-
 
 
                 if ( elem2_1.isFailure()) {
@@ -34729,9 +31693,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_GRANTEE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -34773,9 +31734,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -34792,9 +31750,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -34815,9 +31770,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -34834,9 +31786,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ALTER_DEFAULT_PRIVILEGES_PASSTHROUGH, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -34886,9 +31835,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem3_0.isFailure()) {
                     restoreLocation(seqStart3);
                     optElem1 = cut3
@@ -34905,9 +31851,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart3);
                     optElem1 = elem3_1;
                 } else
-
-
-
 
 
                 if ( elem3_1.isFailure()) {
@@ -34928,9 +31871,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -34947,9 +31887,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -34996,9 +31933,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -35017,9 +31951,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -35036,9 +31967,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CREATE_FUNCTION_PASSTHROUGH, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -35086,9 +32014,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -35105,9 +32030,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -35128,9 +32050,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -35149,9 +32068,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -35168,9 +32084,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CREATE_TRIGGER_PASSTHROUGH, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -35249,9 +32162,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -35270,9 +32180,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -35289,9 +32196,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DROP_FUNCTION_PASSTHROUGH, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -35333,9 +32237,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -35354,9 +32255,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -35373,9 +32271,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DROP_TRIGGER_PASSTHROUGH, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -35428,9 +32323,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -35449,9 +32341,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -35468,9 +32357,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -35515,9 +32401,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom5);
@@ -35526,9 +32409,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
             } else
-
-
-
 
 
             if ( elem1_2.isFailure()) {
@@ -35555,9 +32435,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem7.isSuccess()) {
                 var optChildren7 = new ArrayList<>(children);
                 children.clear();
@@ -35574,9 +32451,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_3;
             } else
-
-
-
 
 
             if ( elem1_3.isFailure()) {
@@ -35603,9 +32477,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem9.isSuccess()) {
                 var optChildren9 = new ArrayList<>(children);
                 children.clear();
@@ -35622,9 +32493,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_4;
             } else
-
-
-
 
 
             if ( elem1_4.isFailure()) {
@@ -35651,9 +32519,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem11.isSuccess()) {
                 var optChildren11 = new ArrayList<>(children);
                 children.clear();
@@ -35670,9 +32535,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_5;
             } else
-
-
-
 
 
             if ( elem1_5.isFailure()) {
@@ -35699,9 +32561,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem13.isSuccess()) {
                 var optChildren13 = new ArrayList<>(children);
                 children.clear();
@@ -35718,9 +32577,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_6;
             } else
-
-
-
 
 
             if ( elem1_6.isFailure()) {
@@ -35753,9 +32609,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem15_0.isFailure()) {
                     restoreLocation(seqStart15);
                     alt0_1 = cut15
@@ -35774,9 +32627,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem15_1.isFailure()) {
                     restoreLocation(seqStart15);
                     alt0_1 = cut15
@@ -35793,9 +32643,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart15);
                     alt0_1 = elem15_2;
                 } else
-
-
-
 
 
                 if ( elem15_2.isFailure()) {
@@ -35825,9 +32672,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SELECT_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -35874,9 +32718,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -35891,9 +32732,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -35921,9 +32759,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem4.isSuccess()) {
                 var optChildren4 = new ArrayList<>(children);
                 children.clear();
@@ -35942,9 +32777,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_2.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -35961,9 +32793,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_3;
             } else
-
-
-
 
 
             if ( elem1_3.isFailure()) {
@@ -35990,9 +32819,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem7.isSuccess()) {
                 var optChildren7 = new ArrayList<>(children);
                 children.clear();
@@ -36009,9 +32835,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_4;
             } else
-
-
-
 
 
             if ( elem1_4.isFailure()) {
@@ -36038,9 +32861,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem9.isSuccess()) {
                 var optChildren9 = new ArrayList<>(children);
                 children.clear();
@@ -36057,9 +32877,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_5;
             } else
-
-
-
 
 
             if ( elem1_5.isFailure()) {
@@ -36086,9 +32903,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem11.isSuccess()) {
                 var optChildren11 = new ArrayList<>(children);
                 children.clear();
@@ -36105,9 +32919,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_6;
             } else
-
-
-
 
 
             if ( elem1_6.isFailure()) {
@@ -36134,9 +32945,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem13.isSuccess()) {
                 var optChildren13 = new ArrayList<>(children);
                 children.clear();
@@ -36153,9 +32961,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_7;
             } else
-
-
-
 
 
             if ( elem1_7.isFailure()) {
@@ -36182,9 +32987,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem15.isSuccess()) {
                 var optChildren15 = new ArrayList<>(children);
                 children.clear();
@@ -36201,9 +33003,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_8;
             } else
-
-
-
 
 
             if ( elem1_8.isFailure()) {
@@ -36230,9 +33029,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem17.isSuccess()) {
                 var optChildren17 = new ArrayList<>(children);
                 children.clear();
@@ -36249,9 +33045,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_9;
             } else
-
-
-
 
 
             if ( elem1_9.isFailure()) {
@@ -36291,9 +33084,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SELECT_CORE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -36350,9 +33140,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem2_0.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
@@ -36379,9 +33166,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem6_0.isFailure()) {
                         restoreLocation(seqStart6);
                         optElem4 = cut6
@@ -36398,9 +33182,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart6);
                         optElem4 = elem6_1;
                     } else
-
-
-
 
 
                     if ( elem6_1.isFailure()) {
@@ -36421,9 +33202,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem6_2.isFailure()) {
                         restoreLocation(seqStart6);
                         optElem4 = cut6
@@ -36440,9 +33218,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart6);
                         optElem4 = elem6_3;
                     } else
-
-
-
 
 
                     if ( elem6_3.isFailure()) {
@@ -36463,9 +33238,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem4.isSuccess()) {
                     var optChildren4 = new ArrayList<>(children);
                     children.clear();
@@ -36482,9 +33254,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_1;
                 } else
-
-
-
 
 
                 if ( elem2_1.isFailure()) {
@@ -36514,9 +33283,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SET_QUANTIFIER, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -36558,9 +33324,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -36591,9 +33354,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -36610,9 +33370,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -36647,9 +33404,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -36658,9 +33412,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -36679,9 +33430,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TARGET_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -36738,9 +33486,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem2_0.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
@@ -36772,9 +33517,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem7_0.isFailure()) {
                         restoreLocation(seqStart7);
                         alt6_0 = cut7
@@ -36791,9 +33533,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart7);
                         alt6_0 = elem7_1;
                     } else
-
-
-
 
 
                     if ( elem7_1.isFailure()) {
@@ -36831,9 +33570,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem10_0.isFailure()) {
                             restoreLocation(seqStart10);
                             alt6_1 = cut10
@@ -36850,9 +33586,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart10);
                             alt6_1 = elem10_1;
                         } else
-
-
-
 
 
                         if ( elem10_1.isFailure()) {
@@ -36884,9 +33617,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem4.isSuccess()) {
                     var optChildren4 = new ArrayList<>(children);
                     children.clear();
@@ -36903,9 +33633,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_1;
                 } else
-
-
-
 
 
                 if ( elem2_1.isFailure()) {
@@ -36935,9 +33662,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TARGET_ELEM, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -36984,9 +33708,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -37005,9 +33726,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -37024,9 +33742,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
             } else
-
-
-
 
 
             if ( elem1_2.isFailure()) {
@@ -37068,9 +33783,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -37108,9 +33820,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -37174,9 +33883,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -37193,9 +33899,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -37222,9 +33925,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem8.isSuccess()) {
                 var optChildren8 = new ArrayList<>(children);
                 children.clear();
@@ -37241,9 +33941,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -37264,9 +33961,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -37283,9 +33977,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INTO_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -37327,9 +34018,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -37344,9 +34032,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -37368,9 +34053,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -37387,9 +34069,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FROM_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -37431,9 +34110,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -37464,9 +34140,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -37483,9 +34156,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -37520,9 +34190,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -37531,9 +34198,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -37552,9 +34216,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FROM_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -37594,9 +34255,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -37641,9 +34299,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -37652,9 +34307,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -37673,9 +34325,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TABLE_REF, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -37762,9 +34411,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( elem5_0.isFailure()) {
                                 restoreLocation(seqStart5);
                                 alt0_4 = cut5
@@ -37783,9 +34429,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( elem5_1.isFailure()) {
                                 restoreLocation(seqStart5);
                                 alt0_4 = cut5
@@ -37802,9 +34445,6 @@ public final class PgSqlParser {
                                 restoreLocation(seqStart5);
                                 alt0_4 = elem5_2;
                             } else
-
-
-
 
 
                             if ( elem5_2.isFailure()) {
@@ -37837,9 +34477,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TABLE_REF_BASE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -37881,9 +34518,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -37908,9 +34542,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -37927,9 +34558,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -37956,9 +34584,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem4.isSuccess()) {
                 var optChildren4 = new ArrayList<>(children);
                 children.clear();
@@ -37975,9 +34600,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -38004,9 +34626,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem6.isSuccess()) {
                 var optChildren6 = new ArrayList<>(children);
                 children.clear();
@@ -38025,9 +34644,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -38044,9 +34660,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_BASE_TABLE_REF, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -38094,9 +34707,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -38113,9 +34723,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -38136,9 +34743,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -38155,9 +34759,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -38178,9 +34779,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -38199,9 +34797,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -38218,9 +34813,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SUBQUERY_REF, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -38262,9 +34854,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -38303,9 +34892,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem5_0.isFailure()) {
                         restoreLocation(seqStart5);
                         alt3_1 = cut5
@@ -38324,9 +34910,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem5_1.isFailure()) {
                         restoreLocation(seqStart5);
                         alt3_1 = cut5
@@ -38343,9 +34926,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart5);
                         alt3_1 = elem5_2;
                     } else
-
-
-
 
 
                     if ( elem5_2.isFailure()) {
@@ -38374,9 +34954,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -38401,9 +34978,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem9.isSuccess()) {
                 var optChildren9 = new ArrayList<>(children);
                 children.clear();
@@ -38422,9 +34996,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -38441,9 +35012,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_LATERAL_REF, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -38485,9 +35053,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -38512,9 +35077,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -38531,9 +35093,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -38560,9 +35119,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem4.isSuccess()) {
                 var optChildren4 = new ArrayList<>(children);
                 children.clear();
@@ -38581,9 +35137,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -38600,9 +35153,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FUNC_TABLE_REF, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -38644,9 +35194,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -38665,9 +35212,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -38684,9 +35228,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_WITH_ORDINALITY, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -38733,9 +35274,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -38752,9 +35290,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -38783,9 +35318,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem6_0.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
@@ -38802,9 +35334,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart6);
                     optElem4 = elem6_1;
                 } else
-
-
-
 
 
                 if ( elem6_1.isFailure()) {
@@ -38825,9 +35354,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem6_2.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
@@ -38846,9 +35372,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem4.isSuccess()) {
                 var optChildren4 = new ArrayList<>(children);
                 children.clear();
@@ -38865,9 +35388,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
             } else
-
-
-
 
 
             if ( elem1_2.isFailure()) {
@@ -38905,9 +35425,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem10_0.isFailure()) {
                     restoreLocation(seqStart10);
                     alt0_1 = cut10
@@ -38924,9 +35441,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart10);
                     alt0_1 = elem10_1;
                 } else
-
-
-
 
 
                 if ( elem10_1.isFailure()) {
@@ -38955,9 +35469,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem16_0.isFailure()) {
                         restoreLocation(seqStart16);
                         optElem14 = cut16
@@ -38974,9 +35485,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart16);
                         optElem14 = elem16_1;
                     } else
-
-
-
 
 
                     if ( elem16_1.isFailure()) {
@@ -38997,9 +35505,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem16_2.isFailure()) {
                         restoreLocation(seqStart16);
                         optElem14 = cut16
@@ -39018,9 +35523,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem14.isSuccess()) {
                     var optChildren14 = new ArrayList<>(children);
                     children.clear();
@@ -39037,9 +35539,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart10);
                     alt0_1 = elem10_2;
                 } else
-
-
-
 
 
                 if ( elem10_2.isFailure()) {
@@ -39069,9 +35568,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ALIAS, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -39113,9 +35609,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -39134,9 +35627,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -39153,9 +35643,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TABLESAMPLE_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -39195,9 +35682,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -39252,9 +35736,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -39271,9 +35752,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_JOIN_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -39326,9 +35804,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -39345,9 +35820,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_0;
             } else
-
-
-
 
 
             if ( elem1_0.isFailure()) {
@@ -39374,9 +35846,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem4.isSuccess()) {
                 var optChildren4 = new ArrayList<>(children);
                 children.clear();
@@ -39393,9 +35862,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -39416,9 +35882,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_2.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -39433,9 +35896,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_3;
             } else
-
-
-
 
 
             if ( elem1_3.isFailure()) {
@@ -39455,9 +35915,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_4;
             } else
-
-
-
 
 
             if ( elem1_4.isFailure()) {
@@ -39484,9 +35941,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem9.isSuccess()) {
                 var optChildren9 = new ArrayList<>(children);
                 children.clear();
@@ -39503,9 +35957,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_5;
             } else
-
-
-
 
 
             if ( elem1_5.isFailure()) {
@@ -39538,9 +35989,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem11_0.isFailure()) {
                     restoreLocation(seqStart11);
                     alt0_1 = cut11
@@ -39559,9 +36007,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem11_1.isFailure()) {
                     restoreLocation(seqStart11);
                     alt0_1 = cut11
@@ -39576,9 +36021,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart11);
                     alt0_1 = elem11_2;
                 } else
-
-
-
 
 
                 if ( elem11_2.isFailure()) {
@@ -39598,9 +36040,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart11);
                     alt0_1 = elem11_3;
                 } else
-
-
-
 
 
                 if ( elem11_3.isFailure()) {
@@ -39633,9 +36072,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem16_0.isFailure()) {
                         restoreLocation(seqStart16);
                         alt0_2 = cut16
@@ -39660,9 +36096,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( optElem18.isSuccess()) {
                         var optChildren18 = new ArrayList<>(children);
                         children.clear();
@@ -39679,9 +36112,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart16);
                         alt0_2 = elem16_1;
                     } else
-
-
-
 
 
                     if ( elem16_1.isFailure()) {
@@ -39702,9 +36132,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem16_2.isFailure()) {
                         restoreLocation(seqStart16);
                         alt0_2 = cut16
@@ -39719,9 +36146,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart16);
                         alt0_2 = elem16_3;
                     } else
-
-
-
 
 
                     if ( elem16_3.isFailure()) {
@@ -39741,9 +36165,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart16);
                         alt0_2 = elem16_4;
                     } else
-
-
-
 
 
                     if ( elem16_4.isFailure()) {
@@ -39774,9 +36195,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_JOIN_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -39860,9 +36278,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -39887,9 +36302,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem7.isSuccess()) {
                 var optChildren7 = new ArrayList<>(children);
                 children.clear();
@@ -39906,9 +36318,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -39948,9 +36357,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_JOIN_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -39997,9 +36403,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -40016,9 +36419,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -40051,9 +36451,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     alt0_1 = cut4
@@ -40070,9 +36467,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart4);
                     alt0_1 = elem4_1;
                 } else
-
-
-
 
 
                 if ( elem4_1.isFailure()) {
@@ -40093,9 +36487,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_2.isFailure()) {
                     restoreLocation(seqStart4);
                     alt0_1 = cut4
@@ -40112,9 +36503,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart4);
                     alt0_1 = elem4_3;
                 } else
-
-
-
 
 
                 if ( elem4_3.isFailure()) {
@@ -40144,9 +36532,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_JOIN_QUAL, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -40188,9 +36573,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -40205,9 +36587,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -40229,9 +36608,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -40248,9 +36624,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_WHERE_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -40292,9 +36665,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -40313,9 +36683,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -40330,9 +36697,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -40380,9 +36744,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -40399,9 +36760,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_GROUP_BY_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -40443,9 +36801,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -40476,9 +36831,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -40495,9 +36847,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -40532,9 +36881,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -40543,9 +36889,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -40564,9 +36907,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_GROUP_BY_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -40613,9 +36953,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -40632,9 +36969,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -40655,9 +36989,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_2.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -40674,9 +37005,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_3;
             } else
-
-
-
 
 
             if ( elem1_3.isFailure()) {
@@ -40709,9 +37037,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem6_0.isFailure()) {
                     restoreLocation(seqStart6);
                     alt0_1 = cut6
@@ -40728,9 +37053,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart6);
                     alt0_1 = elem6_1;
                 } else
-
-
-
 
 
                 if ( elem6_1.isFailure()) {
@@ -40751,9 +37073,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem6_2.isFailure()) {
                     restoreLocation(seqStart6);
                     alt0_1 = cut6
@@ -40770,9 +37089,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart6);
                     alt0_1 = elem6_3;
                 } else
-
-
-
 
 
                 if ( elem6_3.isFailure()) {
@@ -40805,9 +37121,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem11_0.isFailure()) {
                         restoreLocation(seqStart11);
                         alt0_2 = cut11
@@ -40824,9 +37137,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart11);
                         alt0_2 = elem11_1;
                     } else
-
-
-
 
 
                     if ( elem11_1.isFailure()) {
@@ -40847,9 +37157,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem11_2.isFailure()) {
                         restoreLocation(seqStart11);
                         alt0_2 = cut11
@@ -40866,9 +37173,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart11);
                         alt0_2 = elem11_3;
                     } else
-
-
-
 
 
                     if ( elem11_3.isFailure()) {
@@ -40901,9 +37205,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem16_0.isFailure()) {
                             restoreLocation(seqStart16);
                             alt0_3 = cut16
@@ -40920,9 +37221,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart16);
                             alt0_3 = elem16_1;
                         } else
-
-
-
 
 
                         if ( elem16_1.isFailure()) {
@@ -40967,9 +37265,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -41009,9 +37304,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -41026,9 +37318,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -41050,9 +37339,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -41069,9 +37355,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_HAVING_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -41113,9 +37396,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -41130,9 +37410,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -41154,9 +37431,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -41173,9 +37447,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_WINDOW_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -41217,9 +37488,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -41250,9 +37518,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -41269,9 +37534,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -41306,9 +37568,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -41317,9 +37576,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -41338,9 +37594,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_WINDOW_DEF_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -41382,9 +37635,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -41401,9 +37651,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -41424,9 +37671,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -41443,9 +37687,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -41466,9 +37707,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -41485,9 +37723,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_WINDOW_DEF, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -41535,9 +37770,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -41554,9 +37786,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -41583,9 +37812,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -41602,9 +37828,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -41631,9 +37854,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem5.isSuccess()) {
                 var optChildren5 = new ArrayList<>(children);
                 children.clear();
@@ -41650,9 +37870,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -41679,9 +37896,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem7.isSuccess()) {
                 var optChildren7 = new ArrayList<>(children);
                 children.clear();
@@ -41700,9 +37914,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -41719,9 +37930,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_WINDOW_SPEC, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -41768,9 +37976,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -41792,9 +37997,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -41820,9 +38022,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -41844,9 +38043,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -41872,9 +38068,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -41893,9 +38086,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -41912,9 +38102,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_WINDOW_NAME, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -41956,9 +38143,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -41977,9 +38161,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -41994,9 +38175,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -42018,9 +38196,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -42037,9 +38212,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_PARTITION_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -42081,9 +38253,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -42100,9 +38269,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -42129,9 +38295,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -42150,9 +38313,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -42169,9 +38329,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FRAME_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -42248,9 +38405,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -42295,9 +38449,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -42314,9 +38465,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -42337,9 +38485,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_2.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -42356,9 +38501,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_3;
             } else
-
-
-
 
 
             if ( elem1_3.isFailure()) {
@@ -42398,9 +38540,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FRAME_EXTENT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -42447,9 +38586,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -42494,9 +38630,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -42527,9 +38660,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem7_0.isFailure()) {
                     restoreLocation(seqStart7);
                     alt0_1 = cut7
@@ -42546,9 +38676,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart7);
                     alt0_1 = elem7_1;
                 } else
-
-
-
 
 
                 if ( elem7_1.isFailure()) {
@@ -42579,9 +38706,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart10);
                         alt0_2 = elem10_0;
                     } else
-
-
-
 
 
                     if ( elem10_0.isFailure()) {
@@ -42628,9 +38752,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem10_1.isFailure()) {
                         restoreLocation(seqStart10);
                         alt0_2 = cut10
@@ -42659,9 +38780,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FRAME_BOUND, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -42703,9 +38821,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -42734,9 +38849,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     alt3_0 = cut4
@@ -42753,9 +38865,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart4);
                     alt3_0 = elem4_1;
                 } else
-
-
-
 
 
                 if ( elem4_1.isFailure()) {
@@ -42808,9 +38917,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( elem9_0.isFailure()) {
                                 restoreLocation(seqStart9);
                                 alt3_3 = cut9
@@ -42827,9 +38933,6 @@ public final class PgSqlParser {
                                 restoreLocation(seqStart9);
                                 alt3_3 = elem9_1;
                             } else
-
-
-
 
 
                             if ( elem9_1.isFailure()) {
@@ -42860,9 +38963,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -42879,9 +38979,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FRAME_EXCLUSION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -42923,9 +39020,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -42940,9 +39034,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -42970,9 +39061,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -42989,9 +39077,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -43012,9 +39097,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -43031,9 +39113,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_WITH_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -43075,9 +39154,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -43108,9 +39184,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -43127,9 +39200,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -43164,9 +39234,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -43175,9 +39242,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -43196,9 +39260,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CTE_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -43240,9 +39301,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -43269,9 +39327,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = cut4
@@ -43288,9 +39343,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart4);
                     optElem2 = elem4_1;
                 } else
-
-
-
 
 
                 if ( elem4_1.isFailure()) {
@@ -43311,9 +39363,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_2.isFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = cut4
@@ -43330,9 +39379,6 @@ public final class PgSqlParser {
                 children.addAll(savedChildrenOpt2);
                 elem0_1 = optElem2;
             } else
-
-
-
 
 
             if ( optElem2.isSuccess()) {
@@ -43353,9 +39399,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -43372,9 +39415,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -43409,9 +39449,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem12.isSuccess()) {
                     var optChildren12 = new ArrayList<>(children);
                     children.clear();
@@ -43428,9 +39465,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart11);
                     optElem9 = elem11_0;
                 } else
-
-
-
 
 
                 if ( elem11_0.isFailure()) {
@@ -43451,9 +39485,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem11_1.isFailure()) {
                     restoreLocation(seqStart11);
                     optElem9 = cut11
@@ -43470,9 +39501,6 @@ public final class PgSqlParser {
                 children.addAll(savedChildrenOpt9);
                 elem0_3 = optElem9;
             } else
-
-
-
 
 
             if ( optElem9.isSuccess()) {
@@ -43493,9 +39521,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -43512,9 +39537,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -43535,9 +39557,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -43556,9 +39575,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -43575,9 +39591,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CTE_DEF, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -43656,9 +39669,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -43709,9 +39719,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem6.isSuccess()) {
                 var optChildren6 = new ArrayList<>(children);
                 children.clear();
@@ -43728,9 +39735,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -43751,9 +39755,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -43770,9 +39771,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SET_OP, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -43814,9 +39812,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -43835,9 +39830,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -43852,9 +39844,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -43876,9 +39865,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -43895,9 +39881,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ORDER_BY_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -43939,9 +39922,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -43972,9 +39952,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -43991,9 +39968,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -44028,9 +40002,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -44039,9 +40010,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -44060,9 +40028,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ORDER_BY_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -44104,9 +40069,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -44131,9 +40093,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -44150,9 +40109,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -44179,9 +40135,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem4.isSuccess()) {
                 var optChildren4 = new ArrayList<>(children);
                 children.clear();
@@ -44200,9 +40153,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -44219,9 +40169,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ORDER_BY_ITEM, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -44263,9 +40210,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -44280,9 +40224,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -44330,9 +40271,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -44349,9 +40287,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_LIMIT_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -44393,9 +40328,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -44410,9 +40342,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -44432,9 +40361,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -44487,9 +40413,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem4.isSuccess()) {
                 var optChildren4 = new ArrayList<>(children);
                 children.clear();
@@ -44508,9 +40431,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -44527,9 +40447,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_OFFSET_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -44569,9 +40486,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -44616,9 +40530,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -44671,9 +40582,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem6.isSuccess()) {
                 var optChildren6 = new ArrayList<>(children);
                 children.clear();
@@ -44690,9 +40598,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -44739,9 +40644,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -44780,9 +40682,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem18_0.isFailure()) {
                         restoreLocation(seqStart18);
                         alt16_1 = cut18
@@ -44799,9 +40698,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart18);
                         alt16_1 = elem18_1;
                     } else
-
-
-
 
 
                     if ( elem18_1.isFailure()) {
@@ -44830,9 +40726,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -44849,9 +40742,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FETCH_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -44899,9 +40789,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -44918,9 +40805,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -44941,9 +40825,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -44962,9 +40843,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -44979,9 +40857,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -45001,9 +40876,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -45030,9 +40902,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem7.isSuccess()) {
                 var optChildren7 = new ArrayList<>(children);
                 children.clear();
@@ -45049,9 +40918,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_5;
             } else
-
-
-
 
 
             if ( elem0_5.isFailure()) {
@@ -45080,9 +40946,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem11_0.isFailure()) {
                     restoreLocation(seqStart11);
                     optElem9 = cut11
@@ -45099,9 +40962,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart11);
                     optElem9 = elem11_1;
                 } else
-
-
-
 
 
                 if ( elem11_1.isFailure()) {
@@ -45122,9 +40982,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem11_2.isFailure()) {
                     restoreLocation(seqStart11);
                     optElem9 = cut11
@@ -45141,9 +40998,6 @@ public final class PgSqlParser {
                 children.addAll(savedChildrenOpt9);
                 elem0_6 = optElem9;
             } else
-
-
-
 
 
             if ( optElem9.isSuccess()) {
@@ -45164,9 +41018,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -45183,9 +41034,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_7;
             } else
-
-
-
 
 
             if ( elem0_7.isFailure()) {
@@ -45212,9 +41060,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem16.isSuccess()) {
                 var optChildren16 = new ArrayList<>(children);
                 children.clear();
@@ -45231,9 +41076,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_8;
             } else
-
-
-
 
 
             if ( elem0_8.isFailure()) {
@@ -45260,9 +41102,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem18.isSuccess()) {
                 var optChildren18 = new ArrayList<>(children);
                 children.clear();
@@ -45281,9 +41120,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_9.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -45300,9 +41136,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INSERT_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -45349,9 +41182,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -45368,9 +41198,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -45423,9 +41250,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -45465,9 +41289,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -45482,9 +41303,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -45506,9 +41324,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -45525,9 +41340,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_VALUES_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -45569,9 +41381,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -45590,9 +41399,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -45609,9 +41415,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -45644,9 +41447,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem6_0.isFailure()) {
                         restoreLocation(seqStart6);
                         zomElem4 = cut6
@@ -45663,9 +41463,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart6);
                         zomElem4 = elem6_1;
                     } else
-
-
-
 
 
                     if ( elem6_1.isFailure()) {
@@ -45686,9 +41483,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem6_2.isFailure()) {
                         restoreLocation(seqStart6);
                         zomElem4 = cut6
@@ -45705,9 +41499,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart6);
                         zomElem4 = elem6_3;
                     } else
-
-
-
 
 
                     if ( elem6_3.isFailure()) {
@@ -45742,9 +41533,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom4);
@@ -45753,9 +41541,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -45774,9 +41559,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_VALUE_ROW_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -45818,9 +41600,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -45851,9 +41630,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -45870,9 +41646,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -45907,9 +41680,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -45918,9 +41688,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -45939,9 +41706,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EXPR_OR_DEFAULT_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -46007,9 +41771,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -46049,9 +41810,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -46070,9 +41828,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -46087,9 +41842,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -46117,9 +41869,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem4.isSuccess()) {
                 var optChildren4 = new ArrayList<>(children);
                 children.clear();
@@ -46136,9 +41885,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -46159,9 +41905,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -46178,9 +41921,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ON_CONFLICT_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -46227,9 +41967,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -46248,9 +41985,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -46267,9 +42001,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
             } else
-
-
-
 
 
             if ( elem1_2.isFailure()) {
@@ -46296,9 +42027,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem5.isSuccess()) {
                 var optChildren5 = new ArrayList<>(children);
                 children.clear();
@@ -46315,9 +42043,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_3;
             } else
-
-
-
 
 
             if ( elem1_3.isFailure()) {
@@ -46350,9 +42075,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem7_0.isFailure()) {
                     restoreLocation(seqStart7);
                     alt0_1 = cut7
@@ -46371,9 +42093,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem7_1.isFailure()) {
                     restoreLocation(seqStart7);
                     alt0_1 = cut7
@@ -46390,9 +42109,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart7);
                     alt0_1 = elem7_2;
                 } else
-
-
-
 
 
                 if ( elem7_2.isFailure()) {
@@ -46422,9 +42138,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CONFLICT_TARGET, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -46471,9 +42184,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -46490,9 +42200,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -46525,9 +42232,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     alt0_1 = cut4
@@ -46544,9 +42248,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart4);
                     alt0_1 = elem4_1;
                 } else
-
-
-
 
 
                 if ( elem4_1.isFailure()) {
@@ -46567,9 +42268,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_2.isFailure()) {
                     restoreLocation(seqStart4);
                     alt0_1 = cut4
@@ -46586,9 +42284,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart4);
                     alt0_1 = elem4_3;
                 } else
-
-
-
 
 
                 if ( elem4_3.isFailure()) {
@@ -46615,9 +42310,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem9.isSuccess()) {
                     var optChildren9 = new ArrayList<>(children);
                     children.clear();
@@ -46634,9 +42326,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart4);
                     alt0_1 = elem4_4;
                 } else
-
-
-
 
 
                 if ( elem4_4.isFailure()) {
@@ -46666,9 +42355,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CONFLICT_ACTION, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -46710,9 +42396,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -46727,9 +42410,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -46751,9 +42431,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -46770,9 +42447,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_RETURNING_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -46820,9 +42494,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -46839,9 +42510,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -46862,9 +42530,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -46879,9 +42544,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -46909,9 +42571,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem5.isSuccess()) {
                 var optChildren5 = new ArrayList<>(children);
                 children.clear();
@@ -46930,9 +42589,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -46949,9 +42605,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -46978,9 +42631,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem8.isSuccess()) {
                 var optChildren8 = new ArrayList<>(children);
                 children.clear();
@@ -46997,9 +42647,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_5;
             } else
-
-
-
 
 
             if ( elem0_5.isFailure()) {
@@ -47026,9 +42673,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem10.isSuccess()) {
                 var optChildren10 = new ArrayList<>(children);
                 children.clear();
@@ -47045,9 +42689,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_6;
             } else
-
-
-
 
 
             if ( elem0_6.isFailure()) {
@@ -47068,9 +42709,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_7.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -47087,9 +42725,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_8;
             } else
-
-
-
 
 
             if ( elem0_8.isFailure()) {
@@ -47116,9 +42751,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem14.isSuccess()) {
                 var optChildren14 = new ArrayList<>(children);
                 children.clear();
@@ -47135,9 +42767,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_9;
             } else
-
-
-
 
 
             if ( elem0_9.isFailure()) {
@@ -47164,9 +42793,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem16.isSuccess()) {
                 var optChildren16 = new ArrayList<>(children);
                 children.clear();
@@ -47183,9 +42809,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_10;
             } else
-
-
-
 
 
             if ( elem0_10.isFailure()) {
@@ -47212,9 +42835,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem18.isSuccess()) {
                 var optChildren18 = new ArrayList<>(children);
                 children.clear();
@@ -47233,9 +42853,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_11.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -47252,9 +42869,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_UPDATE_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -47296,9 +42910,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -47329,9 +42940,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -47348,9 +42956,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -47385,9 +42990,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -47396,9 +42998,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -47417,9 +43016,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_UPDATE_SET_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -47466,9 +43062,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -47487,9 +43080,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -47506,9 +43096,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
             } else
-
-
-
 
 
             if ( elem1_2.isFailure()) {
@@ -47541,9 +43128,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem5_0.isFailure()) {
                     restoreLocation(seqStart5);
                     alt0_1 = cut5
@@ -47560,9 +43144,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart5);
                     alt0_1 = elem5_1;
                 } else
-
-
-
 
 
                 if ( elem5_1.isFailure()) {
@@ -47583,9 +43164,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem5_2.isFailure()) {
                     restoreLocation(seqStart5);
                     alt0_1 = cut5
@@ -47602,9 +43180,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart5);
                     alt0_1 = elem5_3;
                 } else
-
-
-
 
 
                 if ( elem5_3.isFailure()) {
@@ -47635,9 +43210,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem12_0.isFailure()) {
                         restoreLocation(seqStart12);
                         alt11_0 = cut12
@@ -47656,9 +43228,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem12_1.isFailure()) {
                         restoreLocation(seqStart12);
                         alt11_0 = cut12
@@ -47675,9 +43244,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart12);
                         alt11_0 = elem12_2;
                     } else
-
-
-
 
 
                     if ( elem12_2.isFailure()) {
@@ -47710,9 +43276,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem16_0.isFailure()) {
                             restoreLocation(seqStart16);
                             alt11_1 = cut16
@@ -47731,9 +43294,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem16_1.isFailure()) {
                             restoreLocation(seqStart16);
                             alt11_1 = cut16
@@ -47750,9 +43310,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart16);
                             alt11_1 = elem16_2;
                         } else
-
-
-
 
 
                         if ( elem16_2.isFailure()) {
@@ -47779,9 +43336,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart5);
                     alt0_1 = elem5_4;
                 } else
-
-
-
 
 
                 if ( elem5_4.isFailure()) {
@@ -47811,9 +43365,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_UPDATE_SET_ITEM, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -47861,9 +43412,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -47880,9 +43428,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -47903,9 +43448,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -47924,9 +43466,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -47941,9 +43480,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -47971,9 +43507,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem6.isSuccess()) {
                 var optChildren6 = new ArrayList<>(children);
                 children.clear();
@@ -47992,9 +43525,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -48011,9 +43541,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_5;
             } else
-
-
-
 
 
             if ( elem0_5.isFailure()) {
@@ -48040,9 +43567,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem9.isSuccess()) {
                 var optChildren9 = new ArrayList<>(children);
                 children.clear();
@@ -48059,9 +43583,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_6;
             } else
-
-
-
 
 
             if ( elem0_6.isFailure()) {
@@ -48088,9 +43609,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem11.isSuccess()) {
                 var optChildren11 = new ArrayList<>(children);
                 children.clear();
@@ -48107,9 +43625,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_7;
             } else
-
-
-
 
 
             if ( elem0_7.isFailure()) {
@@ -48136,9 +43651,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem13.isSuccess()) {
                 var optChildren13 = new ArrayList<>(children);
                 children.clear();
@@ -48155,9 +43667,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_8;
             } else
-
-
-
 
 
             if ( elem0_8.isFailure()) {
@@ -48184,9 +43693,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem15.isSuccess()) {
                 var optChildren15 = new ArrayList<>(children);
                 children.clear();
@@ -48203,9 +43709,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_9;
             } else
-
-
-
 
 
             if ( elem0_9.isFailure()) {
@@ -48232,9 +43735,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem17.isSuccess()) {
                 var optChildren17 = new ArrayList<>(children);
                 children.clear();
@@ -48253,9 +43753,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_10.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -48272,9 +43769,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DELETE_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -48316,9 +43810,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -48333,9 +43824,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -48357,9 +43845,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -48376,9 +43861,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_USING_CLAUSE_DELETE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -48497,9 +43979,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_PASSTHROUGH_STATEMENT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -48622,9 +44101,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -48643,9 +44119,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -48662,9 +44135,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TRANSACTION_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -48743,9 +44213,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -48764,9 +44231,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -48783,9 +44247,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SESSION_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -48941,9 +44402,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -48962,9 +44420,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -48981,9 +44436,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_UTILITY_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -49025,9 +44477,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -49046,9 +44495,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -49065,9 +44511,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TRUNCATE_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -49109,9 +44552,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -49130,9 +44570,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -49149,9 +44586,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EXPLAIN_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -49193,9 +44627,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -49214,9 +44645,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -49233,9 +44661,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_COPY_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -49277,9 +44702,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -49296,9 +44718,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -49319,9 +44738,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -49340,9 +44756,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -49359,9 +44772,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_REFRESH_MAT_VIEW_STMT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -49415,9 +44825,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem2_0.isFailure()) {
                     restoreLocation(seqStart2);
                     zomElem0 = cut2
@@ -49434,9 +44841,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart2);
                     zomElem0 = elem2_1;
                 } else
-
-
-
 
 
                 if ( elem2_1.isFailure()) {
@@ -49471,9 +44875,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             children.clear();
             children.addAll(savedChildrenZom0);
@@ -49485,9 +44886,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_REST_OF_STATEMENT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -49525,9 +44923,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -49569,9 +44964,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -49602,9 +44994,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -49621,9 +45010,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -49658,9 +45044,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -49669,9 +45052,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -49690,9 +45070,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_OR_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -49734,9 +45111,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -49767,9 +45141,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -49786,9 +45157,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -49823,9 +45191,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -49834,9 +45199,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -49855,9 +45217,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_AND_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -49904,9 +45263,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -49923,9 +45279,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -49967,9 +45320,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -50009,9 +45359,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -50043,9 +45390,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem5_0.isFailure()) {
                     restoreLocation(seqStart5);
                     alt4_0 = cut5
@@ -50062,9 +45406,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart5);
                     alt4_0 = elem5_1;
                 } else
-
-
-
 
 
                 if ( elem5_1.isFailure()) {
@@ -50103,9 +45444,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( optElem9.isSuccess()) {
                         var optChildren9 = new ArrayList<>(children);
                         children.clear();
@@ -50124,9 +45462,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem8_0.isFailure()) {
                         restoreLocation(seqStart8);
                         alt4_1 = cut8
@@ -50143,9 +45478,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart8);
                         alt4_1 = elem8_1;
                     } else
-
-
-
 
 
                     if ( elem8_1.isFailure()) {
@@ -50184,9 +45516,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( optElem13.isSuccess()) {
                             var optChildren13 = new ArrayList<>(children);
                             children.clear();
@@ -50205,9 +45534,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem12_0.isFailure()) {
                             restoreLocation(seqStart12);
                             alt4_2 = cut12
@@ -50224,9 +45550,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart12);
                             alt4_2 = elem12_1;
                         } else
-
-
-
 
 
                         if ( elem12_1.isFailure()) {
@@ -50265,9 +45588,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( optElem17.isSuccess()) {
                                 var optChildren17 = new ArrayList<>(children);
                                 children.clear();
@@ -50286,9 +45606,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( elem16_0.isFailure()) {
                                 restoreLocation(seqStart16);
                                 alt4_3 = cut16
@@ -50305,9 +45622,6 @@ public final class PgSqlParser {
                                 restoreLocation(seqStart16);
                                 alt4_3 = elem16_1;
                             } else
-
-
-
 
 
                             if ( elem16_1.isFailure()) {
@@ -50346,9 +45660,6 @@ public final class PgSqlParser {
                                 } else
 
 
-
-
-
                                 if ( optElem21.isSuccess()) {
                                     var optChildren21 = new ArrayList<>(children);
                                     children.clear();
@@ -50367,9 +45678,6 @@ public final class PgSqlParser {
                                 } else
 
 
-
-
-
                                 if ( elem20_0.isFailure()) {
                                     restoreLocation(seqStart20);
                                     alt4_4 = cut20
@@ -50386,9 +45694,6 @@ public final class PgSqlParser {
                                     restoreLocation(seqStart20);
                                     alt4_4 = elem20_1;
                                 } else
-
-
-
 
 
                                 if ( elem20_1.isFailure()) {
@@ -50434,9 +45739,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -50455,9 +45757,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -50474,9 +45773,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_COMPARE_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -50568,9 +45864,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( elem5_0.isFailure()) {
                                 restoreLocation(seqStart5);
                                 alt0_4 = cut5
@@ -50587,9 +45880,6 @@ public final class PgSqlParser {
                                 restoreLocation(seqStart5);
                                 alt0_4 = elem5_1;
                             } else
-
-
-
 
 
                             if ( elem5_1.isFailure()) {
@@ -50627,9 +45917,6 @@ public final class PgSqlParser {
                                 } else
 
 
-
-
-
                                 if ( elem9_0.isFailure()) {
                                     restoreLocation(seqStart9);
                                     alt0_5 = cut9
@@ -50646,9 +45933,6 @@ public final class PgSqlParser {
                                     restoreLocation(seqStart9);
                                     alt0_5 = elem9_1;
                                 } else
-
-
-
 
 
                                 if ( elem9_1.isFailure()) {
@@ -50695,9 +45979,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -50737,9 +46018,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -50764,9 +46042,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -50785,9 +46060,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -50804,9 +46076,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_IS_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -50853,9 +46122,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -50880,9 +46146,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -50899,9 +46162,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -50972,9 +46232,6 @@ public final class PgSqlParser {
                                 } else
 
 
-
-
-
                                 if ( elem11_0.isFailure()) {
                                     restoreLocation(seqStart11);
                                     alt6_4 = cut11
@@ -50993,9 +46250,6 @@ public final class PgSqlParser {
                                 } else
 
 
-
-
-
                                 if ( elem11_1.isFailure()) {
                                     restoreLocation(seqStart11);
                                     alt6_4 = cut11
@@ -51012,9 +46266,6 @@ public final class PgSqlParser {
                                     restoreLocation(seqStart11);
                                     alt6_4 = elem11_2;
                                 } else
-
-
-
 
 
                                 if ( elem11_2.isFailure()) {
@@ -51044,9 +46295,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
             } else
-
-
-
 
 
             if ( elem1_2.isFailure()) {
@@ -51099,9 +46347,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem17_0.isFailure()) {
                             restoreLocation(seqStart17);
                             alt0_3 = cut17
@@ -51118,9 +46363,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart17);
                             alt0_3 = elem17_1;
                         } else
-
-
-
 
 
                         if ( elem17_1.isFailure()) {
@@ -51152,9 +46394,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_IS_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -51196,9 +46435,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -51215,9 +46451,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -51264,9 +46497,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -51285,9 +46515,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -51304,9 +46531,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_IN_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -51346,9 +46570,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -51401,9 +46622,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -51420,9 +46638,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -51443,9 +46658,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -51462,9 +46674,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -51485,9 +46694,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -51504,9 +46710,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_BETWEEN_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -51574,9 +46777,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -51593,9 +46793,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -51624,9 +46821,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem8_0.isFailure()) {
                     restoreLocation(seqStart8);
                     optElem6 = cut8
@@ -51643,9 +46837,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart8);
                     optElem6 = elem8_1;
                 } else
-
-
-
 
 
                 if ( elem8_1.isFailure()) {
@@ -51666,9 +46857,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem6.isSuccess()) {
                 var optChildren6 = new ArrayList<>(children);
                 children.clear();
@@ -51687,9 +46875,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -51706,9 +46891,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_LIKE_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -51750,9 +46932,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -51771,9 +46950,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -51790,9 +46966,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -51821,9 +46994,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem6_0.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
@@ -51840,9 +47010,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart6);
                     optElem4 = elem6_1;
                 } else
-
-
-
 
 
                 if ( elem6_1.isFailure()) {
@@ -51863,9 +47030,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem4.isSuccess()) {
                 var optChildren4 = new ArrayList<>(children);
                 children.clear();
@@ -51884,9 +47048,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -51903,9 +47064,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SIMILAR_TO_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -51947,9 +47105,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -51974,9 +47129,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -51993,9 +47145,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -52016,9 +47165,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -52035,9 +47181,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -52058,9 +47201,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -52077,9 +47217,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_IS_DISTINCT_FROM, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -52119,9 +47256,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -52179,9 +47313,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( elem8_0.isFailure()) {
                                 restoreLocation(seqStart8);
                                 alt6_1 = cut8
@@ -52198,9 +47329,6 @@ public final class PgSqlParser {
                                 restoreLocation(seqStart8);
                                 alt6_1 = elem8_1;
                             } else
-
-
-
 
 
                             if ( elem8_1.isFailure()) {
@@ -52229,9 +47357,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -52248,9 +47373,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -52285,9 +47407,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -52296,9 +47415,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -52317,9 +47433,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ADD_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -52359,9 +47472,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -52431,9 +47541,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -52450,9 +47557,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -52487,9 +47591,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -52498,9 +47599,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -52519,9 +47617,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_MUL_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -52593,9 +47688,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem5_0.isFailure()) {
                         restoreLocation(seqStart5);
                         alt3_1 = cut5
@@ -52612,9 +47704,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart5);
                         alt3_1 = elem5_1;
                     } else
-
-
-
 
 
                     if ( elem5_1.isFailure()) {
@@ -52643,9 +47732,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -52662,9 +47748,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -52706,9 +47789,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -52748,9 +47828,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -52777,9 +47854,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = cut4
@@ -52796,9 +47870,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart4);
                     optElem2 = elem4_1;
                 } else
-
-
-
 
 
                 if ( elem4_1.isFailure()) {
@@ -52819,9 +47890,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -52840,9 +47908,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -52859,9 +47924,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EXPONENT_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -52903,9 +47965,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -52936,9 +47995,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -52955,9 +48011,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -52992,9 +48045,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -53003,9 +48053,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -53024,9 +48071,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CONCAT_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -53068,9 +48112,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -53101,9 +48142,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -53120,9 +48158,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -53151,9 +48186,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem9_0.isFailure()) {
                             restoreLocation(seqStart9);
                             optElem7 = cut9
@@ -53170,9 +48202,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart9);
                             optElem7 = elem9_1;
                         } else
-
-
-
 
 
                         if ( elem9_1.isFailure()) {
@@ -53193,9 +48222,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( optElem7.isSuccess()) {
                         var optChildren7 = new ArrayList<>(children);
                         children.clear();
@@ -53214,9 +48240,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_2.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -53233,9 +48256,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_3;
                     } else
-
-
-
 
 
                     if ( elem4_3.isFailure()) {
@@ -53270,9 +48290,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -53281,9 +48298,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -53302,9 +48316,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ARRAY_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -53346,9 +48357,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -53379,9 +48387,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -53398,9 +48403,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -53435,9 +48437,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -53446,9 +48445,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -53467,9 +48463,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TYPE_CAST_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -53509,9 +48502,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -53556,9 +48546,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -53567,9 +48554,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -53588,9 +48572,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_POSTFIX_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -53637,9 +48618,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -53656,9 +48634,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -53691,9 +48666,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     alt0_1 = cut4
@@ -53710,9 +48682,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart4);
                     alt0_1 = elem4_1;
                 } else
-
-
-
 
 
                 if ( elem4_1.isFailure()) {
@@ -53745,9 +48714,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem7_0.isFailure()) {
                         restoreLocation(seqStart7);
                         alt0_2 = cut7
@@ -53764,9 +48730,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart7);
                         alt0_2 = elem7_1;
                     } else
-
-
-
 
 
                     if ( elem7_1.isFailure()) {
@@ -53799,9 +48762,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem10_0.isFailure()) {
                             restoreLocation(seqStart10);
                             alt0_3 = cut10
@@ -53818,9 +48778,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart10);
                             alt0_3 = elem10_1;
                         } else
-
-
-
 
 
                         if ( elem10_1.isFailure()) {
@@ -53852,9 +48809,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_POSTFIX_OP, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -53942,9 +48896,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -54017,9 +48968,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ARRAY_OVERLAP_OP, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -54259,9 +49207,6 @@ public final class PgSqlParser {
                                                                                         } else
 
 
-
-
-
                                                                                         if ( elem20_0.isFailure()) {
                                                                                             restoreLocation(seqStart20);
                                                                                             alt0_19 = cut20
@@ -54278,9 +49223,6 @@ public final class PgSqlParser {
                                                                                             restoreLocation(seqStart20);
                                                                                             alt0_19 = elem20_1;
                                                                                         } else
-
-
-
 
 
                                                                                         if ( elem20_1.isFailure()) {
@@ -54300,9 +49242,6 @@ public final class PgSqlParser {
                                                                                             restoreLocation(seqStart20);
                                                                                             alt0_19 = elem20_2;
                                                                                         } else
-
-
-
 
 
                                                                                         if ( elem20_2.isFailure()) {
@@ -54366,9 +49305,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -54404,9 +49340,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_COL_REF, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -54446,9 +49379,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -54493,18 +49423,12 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
             elem0_1 = tbElem2;}
             if ( elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -54523,9 +49447,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_PARAM_REF, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -54567,9 +49488,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -54586,9 +49504,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -54609,9 +49524,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -54630,9 +49542,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -54649,9 +49558,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EXISTS_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -54693,9 +49599,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -54712,9 +49615,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -54735,9 +49635,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -54754,9 +49651,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SUBQUERY_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -54835,9 +49729,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -54854,9 +49745,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -54903,9 +49791,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -54924,9 +49809,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -54943,9 +49825,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ANY_ALL_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -54987,9 +49866,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -55006,9 +49882,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -55029,9 +49902,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -55050,9 +49920,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -55069,9 +49936,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ROW_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -55113,9 +49977,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -55144,9 +50005,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     alt3_0 = cut4
@@ -55171,9 +50029,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem6.isSuccess()) {
                     var optChildren6 = new ArrayList<>(children);
                     children.clear();
@@ -55192,9 +50047,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem4_1.isFailure()) {
                     restoreLocation(seqStart4);
                     alt3_0 = cut4
@@ -55211,9 +50063,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart4);
                     alt3_0 = elem4_2;
                 } else
-
-
-
 
 
                 if ( elem4_2.isFailure()) {
@@ -55246,9 +50095,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem9_0.isFailure()) {
                         restoreLocation(seqStart9);
                         alt3_1 = cut9
@@ -55267,9 +50113,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem9_1.isFailure()) {
                         restoreLocation(seqStart9);
                         alt3_1 = cut9
@@ -55286,9 +50129,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart9);
                         alt3_1 = elem9_2;
                     } else
-
-
-
 
 
                     if ( elem9_2.isFailure()) {
@@ -55317,9 +50157,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -55336,9 +50173,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ARRAY_EXPR_CONSTRUCTOR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -55380,9 +50214,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -55399,9 +50230,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -55422,9 +50250,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -55441,9 +50266,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -55464,9 +50286,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -55485,9 +50304,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -55504,9 +50320,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CAST_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -55548,9 +50361,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -55565,9 +50375,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -55595,9 +50402,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -55614,9 +50418,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -55671,9 +50472,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -55698,9 +50496,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem8.isSuccess()) {
                 var optChildren8 = new ArrayList<>(children);
                 children.clear();
@@ -55717,9 +50512,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -55740,9 +50532,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -55759,9 +50548,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CASE_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -55803,9 +50589,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -55822,9 +50605,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -55845,9 +50625,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -55866,9 +50643,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -55885,9 +50659,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_WHEN_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -55929,9 +50700,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -55950,9 +50718,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -55969,9 +50734,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ELSE_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -56013,9 +50775,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56032,9 +50791,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -56055,9 +50811,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56076,9 +50829,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56095,9 +50845,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_COALESCE_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -56139,9 +50886,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56158,9 +50902,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -56181,9 +50922,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56200,9 +50938,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -56223,9 +50958,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56244,9 +50976,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56263,9 +50992,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NULL_IF_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -56333,9 +51059,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56352,9 +51075,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -56375,9 +51095,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56396,9 +51113,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56415,9 +51129,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_GREATEST_LEAST_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -56459,9 +51170,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56478,9 +51186,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -56501,9 +51206,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56520,9 +51222,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -56543,9 +51242,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56564,9 +51260,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56583,9 +51276,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EXTRACT_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -56627,9 +51317,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56646,9 +51333,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -56669,9 +51353,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56688,9 +51369,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -56711,9 +51389,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56732,9 +51407,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56751,9 +51423,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_POSITION_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -56795,9 +51464,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56816,9 +51482,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -56835,9 +51498,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -56866,9 +51526,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem6_0.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
@@ -56885,9 +51542,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart6);
                     optElem4 = elem6_1;
                 } else
-
-
-
 
 
                 if ( elem6_1.isFailure()) {
@@ -56908,9 +51562,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem4.isSuccess()) {
                 var optChildren4 = new ArrayList<>(children);
                 children.clear();
@@ -56927,9 +51578,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -56958,9 +51606,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem11_0.isFailure()) {
                     restoreLocation(seqStart11);
                     optElem9 = cut11
@@ -56977,9 +51622,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart11);
                     optElem9 = elem11_1;
                 } else
-
-
-
 
 
                 if ( elem11_1.isFailure()) {
@@ -57000,9 +51642,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem9.isSuccess()) {
                 var optChildren9 = new ArrayList<>(children);
                 children.clear();
@@ -57019,9 +51658,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_4;
             } else
-
-
-
 
 
             if ( elem0_4.isFailure()) {
@@ -57042,9 +51678,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -57061,9 +51694,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SUBSTRING_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -57105,9 +51735,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -57124,9 +51751,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -57190,9 +51814,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -57209,9 +51830,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -57238,9 +51856,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem9.isSuccess()) {
                 var optChildren9 = new ArrayList<>(children);
                 children.clear();
@@ -57257,9 +51872,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -57280,9 +51892,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -57299,9 +51908,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_5;
             } else
-
-
-
 
 
             if ( elem0_5.isFailure()) {
@@ -57322,9 +51928,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -57341,9 +51944,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TRIM_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -57385,9 +51985,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -57404,9 +52001,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -57427,9 +52021,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -57446,9 +52037,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -57469,9 +52057,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -57490,9 +52075,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -57509,9 +52091,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_6;
             } else
-
-
-
 
 
             if ( elem0_6.isFailure()) {
@@ -57540,9 +52119,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem10_0.isFailure()) {
                     restoreLocation(seqStart10);
                     optElem8 = cut10
@@ -57559,9 +52135,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart10);
                     optElem8 = elem10_1;
                 } else
-
-
-
 
 
                 if ( elem10_1.isFailure()) {
@@ -57582,9 +52155,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem8.isSuccess()) {
                 var optChildren8 = new ArrayList<>(children);
                 children.clear();
@@ -57601,9 +52171,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_7;
             } else
-
-
-
 
 
             if ( elem0_7.isFailure()) {
@@ -57624,9 +52191,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_8.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -57643,9 +52207,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_OVERLAY_EXPR, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -57687,9 +52248,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -57708,9 +52266,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -57727,9 +52282,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TYPED_LITERAL, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -57776,9 +52328,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -57795,9 +52344,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -57818,9 +52364,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_2.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -57837,9 +52380,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_3;
             } else
-
-
-
 
 
             if ( elem1_3.isFailure()) {
@@ -57866,9 +52406,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem6.isSuccess()) {
                 var optChildren6 = new ArrayList<>(children);
                 children.clear();
@@ -57885,9 +52422,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_4;
             } else
-
-
-
 
 
             if ( elem1_4.isFailure()) {
@@ -57914,9 +52448,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem8.isSuccess()) {
                 var optChildren8 = new ArrayList<>(children);
                 children.clear();
@@ -57933,9 +52464,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_5;
             } else
-
-
-
 
 
             if ( elem1_5.isFailure()) {
@@ -57962,9 +52490,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem10.isSuccess()) {
                 var optChildren10 = new ArrayList<>(children);
                 children.clear();
@@ -57981,9 +52506,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_6;
             } else
-
-
-
 
 
             if ( elem1_6.isFailure()) {
@@ -58016,9 +52538,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem12_0.isFailure()) {
                     restoreLocation(seqStart12);
                     alt0_1 = cut12
@@ -58035,9 +52554,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart12);
                     alt0_1 = elem12_1;
                 } else
-
-
-
 
 
                 if ( elem12_1.isFailure()) {
@@ -58058,9 +52574,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem12_2.isFailure()) {
                     restoreLocation(seqStart12);
                     alt0_1 = cut12
@@ -58077,9 +52590,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart12);
                     alt0_1 = elem12_3;
                 } else
-
-
-
 
 
                 if ( elem12_3.isFailure()) {
@@ -58106,9 +52616,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem17.isSuccess()) {
                     var optChildren17 = new ArrayList<>(children);
                     children.clear();
@@ -58125,9 +52632,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart12);
                     alt0_1 = elem12_4;
                 } else
-
-
-
 
 
                 if ( elem12_4.isFailure()) {
@@ -58154,9 +52658,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem19.isSuccess()) {
                     var optChildren19 = new ArrayList<>(children);
                     children.clear();
@@ -58173,9 +52674,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart12);
                     alt0_1 = elem12_5;
                 } else
-
-
-
 
 
                 if ( elem12_5.isFailure()) {
@@ -58208,9 +52706,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem21_0.isFailure()) {
                         restoreLocation(seqStart21);
                         alt0_2 = cut21
@@ -58229,9 +52724,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem21_1.isFailure()) {
                         restoreLocation(seqStart21);
                         alt0_2 = cut21
@@ -58248,9 +52740,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart21);
                         alt0_2 = elem21_2;
                     } else
-
-
-
 
 
                     if ( elem21_2.isFailure()) {
@@ -58277,9 +52766,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( optElem25.isSuccess()) {
                         var optChildren25 = new ArrayList<>(children);
                         children.clear();
@@ -58296,9 +52782,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart21);
                         alt0_2 = elem21_3;
                     } else
-
-
-
 
 
                     if ( elem21_3.isFailure()) {
@@ -58325,9 +52808,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( optElem27.isSuccess()) {
                         var optChildren27 = new ArrayList<>(children);
                         children.clear();
@@ -58344,9 +52824,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart21);
                         alt0_2 = elem21_4;
                     } else
-
-
-
 
 
                     if ( elem21_4.isFailure()) {
@@ -58377,9 +52854,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FUNC_CALL, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -58453,9 +52927,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -58474,9 +52945,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -58493,9 +52961,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -58522,9 +52987,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem7.isSuccess()) {
                 var optChildren7 = new ArrayList<>(children);
                 children.clear();
@@ -58543,9 +53005,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -58562,9 +53021,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FUNC_CALL_ARGS, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -58602,9 +53058,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FUNC_NAME, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -58646,9 +53099,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -58665,9 +53115,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -58688,9 +53135,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -58709,9 +53153,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -58728,9 +53169,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FILTER_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -58772,9 +53210,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -58813,9 +53248,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem5_0.isFailure()) {
                         restoreLocation(seqStart5);
                         alt3_1 = cut5
@@ -58834,9 +53266,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem5_1.isFailure()) {
                         restoreLocation(seqStart5);
                         alt3_1 = cut5
@@ -58853,9 +53282,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart5);
                         alt3_1 = elem5_2;
                     } else
-
-
-
 
 
                     if ( elem5_2.isFailure()) {
@@ -58884,9 +53310,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -58903,9 +53326,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_OVER_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -58947,9 +53367,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -58966,9 +53383,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -58989,9 +53403,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -59008,9 +53419,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_3;
             } else
-
-
-
 
 
             if ( elem0_3.isFailure()) {
@@ -59031,9 +53439,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -59050,9 +53455,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_WITHIN_GROUP_CLAUSE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -59094,9 +53496,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -59127,9 +53526,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -59146,9 +53542,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -59183,9 +53576,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -59194,9 +53584,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -59215,9 +53602,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EXPR_LIST, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -59483,9 +53867,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -59521,9 +53902,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DATA_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -59565,9 +53943,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -59601,9 +53976,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem7_0.isFailure()) {
                     restoreLocation(seqStart7);
                     oomFirst5 = cut7
@@ -59628,9 +54000,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem9.isSuccess()) {
                     var optChildren9 = new ArrayList<>(children);
                     children.clear();
@@ -59649,9 +54018,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem7_1.isFailure()) {
                     restoreLocation(seqStart7);
                     oomFirst5 = cut7
@@ -59668,9 +54034,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart7);
                     oomFirst5 = elem7_2;
                 } else
-
-
-
 
 
                 if ( elem7_2.isFailure()) {
@@ -59702,9 +54065,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem13_0.isFailure()) {
                         restoreLocation(seqStart13);
                         oomElem5 = cut13
@@ -59729,9 +54089,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( optElem15.isSuccess()) {
                         var optChildren15 = new ArrayList<>(children);
                         children.clear();
@@ -59750,9 +54107,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem13_1.isFailure()) {
                         restoreLocation(seqStart13);
                         oomElem5 = cut13
@@ -59769,9 +54123,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart13);
                         oomElem5 = elem13_2;
                     } else
-
-
-
 
 
                     if ( elem13_2.isFailure()) {
@@ -59827,9 +54178,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem18_0.isFailure()) {
                         restoreLocation(seqStart18);
                         alt4_1 = cut18
@@ -59856,9 +54204,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem22_0.isFailure()) {
                             restoreLocation(seqStart22);
                             optElem20 = cut22
@@ -59875,9 +54220,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart22);
                             optElem20 = elem22_1;
                         } else
-
-
-
 
 
                         if ( elem22_1.isFailure()) {
@@ -59898,9 +54240,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem22_2.isFailure()) {
                             restoreLocation(seqStart22);
                             optElem20 = cut22
@@ -59919,9 +54258,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( optElem20.isSuccess()) {
                         var optChildren20 = new ArrayList<>(children);
                         children.clear();
@@ -59938,9 +54274,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart18);
                         alt4_1 = elem18_1;
                     } else
-
-
-
 
 
                     if ( elem18_1.isFailure()) {
@@ -59972,9 +54305,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem2.isSuccess()) {
                 var optChildren2 = new ArrayList<>(children);
                 children.clear();
@@ -59993,9 +54323,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -60012,9 +54339,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ARRAY_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -60193,9 +54517,6 @@ public final class PgSqlParser {
                                                                 } else
 
 
-
-
-
                                                                 if ( elem14_0.isFailure()) {
                                                                     restoreLocation(seqStart14);
                                                                     alt0_13 = cut14
@@ -60220,9 +54541,6 @@ public final class PgSqlParser {
                                                                 } else
 
 
-
-
-
                                                                 if ( optElem16.isSuccess()) {
                                                                     var optChildren16 = new ArrayList<>(children);
                                                                     children.clear();
@@ -60241,9 +54559,6 @@ public final class PgSqlParser {
                                                                     restoreLocation(seqStart14);
                                                                     alt0_13 = elem14_1;
                                                                 } else
-
-
-
 
 
                                                                 if ( elem14_1.isFailure()) {
@@ -60288,9 +54603,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SCALAR_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -60345,9 +54657,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem5_0.isFailure()) {
                         restoreLocation(seqStart5);
                         alt4_0 = cut5
@@ -60380,9 +54689,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem5_1.isFailure()) {
                         restoreLocation(seqStart5);
                         alt4_0 = cut5
@@ -60397,9 +54703,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart5);
                         alt4_0 = elem5_2;
                     } else
-
-
-
 
 
                     if ( elem5_2.isFailure()) {
@@ -60515,9 +54818,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem2_0.isFailure()) {
                     restoreLocation(seqStart2);
                     tbElem1 = cut2
@@ -60536,9 +54836,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart2);
                     tbElem1 = elem2_1;
                 } else
-
-
-
 
 
                 if ( elem2_1.isFailure()) {
@@ -60563,18 +54860,12 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
             elem0_0 = tbElem1;}
             if ( elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -60601,9 +54892,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem26.isSuccess()) {
                 var optChildren26 = new ArrayList<>(children);
                 children.clear();
@@ -60622,9 +54910,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -60641,9 +54926,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NUMERIC_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -60698,9 +54980,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem5_0.isFailure()) {
                         restoreLocation(seqStart5);
                         alt4_0 = cut5
@@ -60733,9 +55012,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem5_1.isFailure()) {
                         restoreLocation(seqStart5);
                         alt4_0 = cut5
@@ -60750,9 +55026,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart5);
                         alt4_0 = elem5_2;
                     } else
-
-
-
 
 
                     if ( elem5_2.isFailure()) {
@@ -60819,9 +55092,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem2_0.isFailure()) {
                     restoreLocation(seqStart2);
                     tbElem1 = cut2
@@ -60840,9 +55110,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart2);
                     tbElem1 = elem2_1;
                 } else
-
-
-
 
 
                 if ( elem2_1.isFailure()) {
@@ -60867,18 +55134,12 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
             elem0_0 = tbElem1;}
             if ( elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -60905,9 +55166,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem19.isSuccess()) {
                 var optChildren19 = new ArrayList<>(children);
                 children.clear();
@@ -60926,9 +55184,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -60945,9 +55200,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CHAR_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -61035,9 +55287,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -61088,9 +55337,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem3_0.isFailure()) {
                     restoreLocation(seqStart3);
                     tbElem2 = cut3
@@ -61109,9 +55355,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart3);
                     tbElem2 = elem3_1;
                 } else
-
-
-
 
 
                 if ( elem3_1.isFailure()) {
@@ -61136,18 +55379,12 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
             elem1_0 = tbElem2;}
             if ( elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_0;
             } else
-
-
-
 
 
             if ( elem1_0.isFailure()) {
@@ -61174,9 +55411,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem7.isSuccess()) {
                 var optChildren7 = new ArrayList<>(children);
                 children.clear();
@@ -61193,9 +55427,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -61234,9 +55465,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem11_0.isFailure()) {
                         restoreLocation(seqStart11);
                         tbElem10 = cut11
@@ -61255,9 +55483,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart11);
                         tbElem10 = elem11_1;
                     } else
-
-
-
 
 
                     if ( elem11_1.isFailure()) {
@@ -61282,18 +55507,12 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 {
                 elem9_0 = tbElem10;}
                 if ( elem9_0.isCutFailure()) {
                     restoreLocation(seqStart9);
                     alt0_1 = elem9_0;
                 } else
-
-
-
 
 
                 if ( elem9_0.isFailure()) {
@@ -61320,9 +55539,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem15.isSuccess()) {
                     var optChildren15 = new ArrayList<>(children);
                     children.clear();
@@ -61339,9 +55555,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart9);
                     alt0_1 = elem9_1;
                 } else
-
-
-
 
 
                 if ( elem9_1.isFailure()) {
@@ -61375,9 +55588,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem20_0.isFailure()) {
                         restoreLocation(seqStart20);
                         alt19_0 = cut20
@@ -61396,9 +55606,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem20_1.isFailure()) {
                         restoreLocation(seqStart20);
                         alt19_0 = cut20
@@ -61415,9 +55622,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart20);
                         alt19_0 = elem20_2;
                     } else
-
-
-
 
 
                     if ( elem20_2.isFailure()) {
@@ -61450,9 +55654,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem24_0.isFailure()) {
                             restoreLocation(seqStart24);
                             alt19_1 = cut24
@@ -61471,9 +55672,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem24_1.isFailure()) {
                             restoreLocation(seqStart24);
                             alt19_1 = cut24
@@ -61490,9 +55688,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart24);
                             alt19_1 = elem24_2;
                         } else
-
-
-
 
 
                         if ( elem24_2.isFailure()) {
@@ -61524,9 +55719,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem17.isSuccess()) {
                     var optChildren17 = new ArrayList<>(children);
                     children.clear();
@@ -61543,9 +55735,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart9);
                     alt0_1 = elem9_2;
                 } else
-
-
-
 
 
                 if ( elem9_2.isFailure()) {
@@ -61575,9 +55764,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TIMESTAMP_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -61630,9 +55816,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem3_0.isFailure()) {
                     restoreLocation(seqStart3);
                     tbElem2 = cut3
@@ -61651,9 +55834,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart3);
                     tbElem2 = elem3_1;
                 } else
-
-
-
 
 
                 if ( elem3_1.isFailure()) {
@@ -61678,18 +55858,12 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
             elem1_0 = tbElem2;}
             if ( elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_0;
             } else
-
-
-
 
 
             if ( elem1_0.isFailure()) {
@@ -61716,9 +55890,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem7.isSuccess()) {
                 var optChildren7 = new ArrayList<>(children);
                 children.clear();
@@ -61735,9 +55906,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -61776,9 +55944,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem11_0.isFailure()) {
                         restoreLocation(seqStart11);
                         tbElem10 = cut11
@@ -61797,9 +55962,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart11);
                         tbElem10 = elem11_1;
                     } else
-
-
-
 
 
                     if ( elem11_1.isFailure()) {
@@ -61824,18 +55986,12 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 {
                 elem9_0 = tbElem10;}
                 if ( elem9_0.isCutFailure()) {
                     restoreLocation(seqStart9);
                     alt0_1 = elem9_0;
                 } else
-
-
-
 
 
                 if ( elem9_0.isFailure()) {
@@ -61862,9 +56018,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem15.isSuccess()) {
                     var optChildren15 = new ArrayList<>(children);
                     children.clear();
@@ -61881,9 +56034,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart9);
                     alt0_1 = elem9_1;
                 } else
-
-
-
 
 
                 if ( elem9_1.isFailure()) {
@@ -61917,9 +56067,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem20_0.isFailure()) {
                         restoreLocation(seqStart20);
                         alt19_0 = cut20
@@ -61938,9 +56085,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem20_1.isFailure()) {
                         restoreLocation(seqStart20);
                         alt19_0 = cut20
@@ -61957,9 +56101,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart20);
                         alt19_0 = elem20_2;
                     } else
-
-
-
 
 
                     if ( elem20_2.isFailure()) {
@@ -61992,9 +56133,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem24_0.isFailure()) {
                             restoreLocation(seqStart24);
                             alt19_1 = cut24
@@ -62013,9 +56151,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem24_1.isFailure()) {
                             restoreLocation(seqStart24);
                             alt19_1 = cut24
@@ -62032,9 +56167,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart24);
                             alt19_1 = elem24_2;
                         } else
-
-
-
 
 
                         if ( elem24_2.isFailure()) {
@@ -62066,9 +56198,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem17.isSuccess()) {
                     var optChildren17 = new ArrayList<>(children);
                     children.clear();
@@ -62085,9 +56214,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart9);
                     alt0_1 = elem9_2;
                 } else
-
-
-
 
 
                 if ( elem9_2.isFailure()) {
@@ -62117,9 +56243,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TIME_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -62162,9 +56285,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -62183,9 +56303,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -62210,9 +56327,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -62222,9 +56336,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DATE_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -62272,9 +56383,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem2_0.isFailure()) {
                     restoreLocation(seqStart2);
                     tbElem1 = cut2
@@ -62293,9 +56401,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart2);
                     tbElem1 = elem2_1;
                 } else
-
-
-
 
 
                 if ( elem2_1.isFailure()) {
@@ -62320,18 +56425,12 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
             elem0_0 = tbElem1;}
             if ( elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -62358,9 +56457,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem6.isSuccess()) {
                 var optChildren6 = new ArrayList<>(children);
                 children.clear();
@@ -62377,9 +56473,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -62406,9 +56499,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem8.isSuccess()) {
                 var optChildren8 = new ArrayList<>(children);
                 children.clear();
@@ -62427,9 +56517,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -62446,9 +56533,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INTERVAL_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -62495,9 +56579,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -62524,9 +56605,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem5_0.isFailure()) {
                     restoreLocation(seqStart5);
                     optElem3 = cut5
@@ -62543,9 +56621,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart5);
                     optElem3 = elem5_1;
                 } else
-
-
-
 
 
                 if ( elem5_1.isFailure()) {
@@ -62566,9 +56641,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem3.isSuccess()) {
                 var optChildren3 = new ArrayList<>(children);
                 children.clear();
@@ -62585,9 +56657,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -62630,9 +56699,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem9_0.isFailure()) {
                         restoreLocation(seqStart9);
                         alt0_2 = cut9
@@ -62657,9 +56723,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart13);
                             optElem11 = elem13_0;
                         } else
-
-
-
 
 
                         if ( elem13_0.isFailure()) {
@@ -62717,9 +56780,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem13_1.isFailure()) {
                             restoreLocation(seqStart13);
                             optElem11 = cut13
@@ -62738,9 +56798,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( optElem11.isSuccess()) {
                         var optChildren11 = new ArrayList<>(children);
                         children.clear();
@@ -62757,9 +56814,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart9);
                         alt0_2 = elem9_1;
                     } else
-
-
-
 
 
                     if ( elem9_1.isFailure()) {
@@ -62792,9 +56846,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem20_0.isFailure()) {
                             restoreLocation(seqStart20);
                             alt0_3 = cut20
@@ -62819,9 +56870,6 @@ public final class PgSqlParser {
                                 restoreLocation(seqStart24);
                                 optElem22 = elem24_0;
                             } else
-
-
-
 
 
                             if ( elem24_0.isFailure()) {
@@ -62868,9 +56916,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( elem24_1.isFailure()) {
                                 restoreLocation(seqStart24);
                                 optElem22 = cut24
@@ -62889,9 +56934,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( optElem22.isSuccess()) {
                             var optChildren22 = new ArrayList<>(children);
                             children.clear();
@@ -62908,9 +56950,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart20);
                             alt0_3 = elem20_1;
                         } else
-
-
-
 
 
                         if ( elem20_1.isFailure()) {
@@ -62943,9 +56982,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( elem30_0.isFailure()) {
                                 restoreLocation(seqStart30);
                                 alt0_4 = cut30
@@ -62972,9 +57008,6 @@ public final class PgSqlParser {
                                 } else
 
 
-
-
-
                                 if ( elem34_0.isFailure()) {
                                     restoreLocation(seqStart34);
                                     optElem32 = cut34
@@ -62991,9 +57024,6 @@ public final class PgSqlParser {
                                     restoreLocation(seqStart34);
                                     optElem32 = elem34_1;
                                 } else
-
-
-
 
 
                                 if ( elem34_1.isFailure()) {
@@ -63014,9 +57044,6 @@ public final class PgSqlParser {
                             } else
 
 
-
-
-
                             if ( optElem32.isSuccess()) {
                                 var optChildren32 = new ArrayList<>(children);
                                 children.clear();
@@ -63033,9 +57060,6 @@ public final class PgSqlParser {
                                 restoreLocation(seqStart30);
                                 alt0_4 = elem30_1;
                             } else
-
-
-
 
 
                             if ( elem30_1.isFailure()) {
@@ -63079,9 +57103,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INTERVAL_FIELD, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -63140,9 +57161,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -63161,9 +57179,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -63188,9 +57203,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -63200,9 +57212,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_BOOLEAN_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -63261,9 +57270,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -63282,9 +57288,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -63309,9 +57312,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -63321,9 +57321,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_JSON_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -63366,9 +57363,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -63387,9 +57381,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -63414,9 +57405,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -63426,9 +57414,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_UUID_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -63471,9 +57456,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -63492,9 +57474,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -63519,9 +57498,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -63531,9 +57507,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_BYTEA_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -63576,9 +57549,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -63597,9 +57567,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -63624,9 +57591,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -63636,9 +57600,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_XML_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -63681,9 +57642,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -63702,9 +57660,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -63729,9 +57684,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -63741,9 +57693,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_MONEY_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -63830,9 +57779,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -63851,9 +57797,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -63878,9 +57821,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -63890,9 +57830,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SERIAL_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -63953,9 +57890,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem6_0.isFailure()) {
                             restoreLocation(seqStart6);
                             alt4_1 = cut6
@@ -63988,9 +57922,6 @@ public final class PgSqlParser {
                         } else
 
 
-
-
-
                         if ( elem6_1.isFailure()) {
                             restoreLocation(seqStart6);
                             alt4_1 = cut6
@@ -64005,9 +57936,6 @@ public final class PgSqlParser {
                             restoreLocation(seqStart6);
                             alt4_1 = elem6_2;
                         } else
-
-
-
 
 
                         if ( elem6_2.isFailure()) {
@@ -64040,9 +57968,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem2_0.isFailure()) {
                     restoreLocation(seqStart2);
                     tbElem1 = cut2
@@ -64061,9 +57986,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart2);
                     tbElem1 = elem2_1;
                 } else
-
-
-
 
 
                 if ( elem2_1.isFailure()) {
@@ -64088,18 +58010,12 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
             elem0_0 = tbElem1;}
             if ( elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -64126,9 +58042,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem15.isSuccess()) {
                 var optChildren15 = new ArrayList<>(children);
                 children.clear();
@@ -64147,9 +58060,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -64166,9 +58076,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_BIT_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -64241,9 +58148,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -64262,9 +58166,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -64289,9 +58190,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -64301,9 +58199,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NETWORK_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -64362,9 +58257,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -64383,9 +58275,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -64410,9 +58299,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -64422,9 +58308,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TSVECTOR_TYPE, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -64466,9 +58349,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -64485,9 +58365,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -64520,9 +58397,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem5_0.isFailure()) {
                         restoreLocation(seqStart5);
                         zomElem3 = cut5
@@ -64539,9 +58413,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart5);
                         zomElem3 = elem5_1;
                     } else
-
-
-
 
 
                     if ( elem5_1.isFailure()) {
@@ -64576,9 +58447,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom3);
@@ -64587,9 +58455,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -64610,9 +58475,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -64629,9 +58491,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TYPE_MODIFIERS, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -64669,9 +58528,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_QUALIFIED_TYPE_NAME, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -64716,9 +58572,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -64776,9 +58629,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -64795,9 +58645,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_COL_ID, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -64874,9 +58721,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -64916,9 +58760,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -64947,9 +58788,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
                     } else
-
-
-
 
 
                     if ( elem4_0.isFailure()) {
@@ -64996,9 +58834,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -65031,9 +58866,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -65042,9 +58874,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -65063,9 +58892,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_QUALIFIED_NAME, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -65108,9 +58934,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -65143,9 +58966,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -65168,9 +58988,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -65180,9 +58997,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_UNQUOTED_IDENTIFIER, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -65222,9 +59036,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -65301,18 +59112,12 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
             elem0_1 = tbElem2;}
             if ( elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -65333,9 +59138,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -65352,9 +59154,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_QUOTED_IDENTIFIER, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -65394,9 +59193,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -65473,18 +59269,12 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
             elem0_1 = tbElem2;}
             if ( elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -65505,9 +59295,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -65524,9 +59311,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_UNICODE_IDENTIFIER, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -65614,9 +59398,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -65652,9 +59433,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NULL_LITERAL, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -65718,9 +59496,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_BOOLEAN_LITERAL, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -65788,9 +59563,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -65800,9 +59572,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NUMERIC_LITERAL, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -65844,9 +59613,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -65863,9 +59629,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -65920,9 +59683,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -65939,9 +59699,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_HEX_NUMBER, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -66022,9 +59779,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
@@ -66041,9 +59795,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -66088,9 +59839,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom6);
@@ -66099,9 +59847,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
             } else
-
-
-
 
 
             if ( elem1_2.isFailure()) {
@@ -66130,9 +59875,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem10_0.isFailure()) {
                     restoreLocation(seqStart10);
                     optElem8 = cut10
@@ -66157,9 +59899,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem12.isSuccess()) {
                     var optChildren12 = new ArrayList<>(children);
                     children.clear();
@@ -66176,9 +59915,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart10);
                     optElem8 = elem10_1;
                 } else
-
-
-
 
 
                 if ( elem10_1.isFailure()) {
@@ -66233,9 +59969,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem10_2.isFailure()) {
                     restoreLocation(seqStart10);
                     optElem8 = cut10
@@ -66254,9 +59987,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem8.isSuccess()) {
                 var optChildren8 = new ArrayList<>(children);
                 children.clear();
@@ -66273,9 +60003,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_3;
             } else
-
-
-
 
 
             if ( elem1_3.isFailure()) {
@@ -66306,9 +60033,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart17);
                     alt0_1 = elem17_0;
                 } else
-
-
-
 
 
                 if ( elem17_0.isFailure()) {
@@ -66363,9 +60087,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem17_1.isFailure()) {
                     restoreLocation(seqStart17);
                     alt0_1 = cut17
@@ -66392,9 +60113,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem24_0.isFailure()) {
                         restoreLocation(seqStart24);
                         optElem22 = cut24
@@ -66419,9 +60137,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( optElem26.isSuccess()) {
                         var optChildren26 = new ArrayList<>(children);
                         children.clear();
@@ -66438,9 +60153,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart24);
                         optElem22 = elem24_1;
                     } else
-
-
-
 
 
                     if ( elem24_1.isFailure()) {
@@ -66499,9 +60211,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem24_2.isFailure()) {
                         restoreLocation(seqStart24);
                         optElem22 = cut24
@@ -66520,9 +60229,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( optElem22.isSuccess()) {
                     var optChildren22 = new ArrayList<>(children);
                     children.clear();
@@ -66539,9 +60245,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart17);
                     alt0_1 = elem17_2;
                 } else
-
-
-
 
 
                 if ( elem17_2.isFailure()) {
@@ -66612,9 +60315,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem31_0.isFailure()) {
                         restoreLocation(seqStart31);
                         alt0_2 = cut31
@@ -66631,9 +60331,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart31);
                         alt0_2 = elem31_1;
                     } else
-
-
-
 
 
                     if ( elem31_1.isFailure()) {
@@ -66660,9 +60357,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( optElem36.isSuccess()) {
                         var optChildren36 = new ArrayList<>(children);
                         children.clear();
@@ -66679,9 +60373,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart31);
                         alt0_2 = elem31_2;
                     } else
-
-
-
 
 
                     if ( elem31_2.isFailure()) {
@@ -66740,9 +60431,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem31_3.isFailure()) {
                         restoreLocation(seqStart31);
                         alt0_2 = cut31
@@ -66771,9 +60459,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DECIMAL_NUMBER, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -66847,9 +60532,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -66895,9 +60577,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( optElem1.isSuccess()) {
                 var optChildren1 = new ArrayList<>(children);
                 children.clear();
@@ -66914,9 +60593,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -66937,9 +60613,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -66956,9 +60629,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SIGNED_NUMERIC_LITERAL, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -67035,9 +60705,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
             restoreLocation(startLoc);
             finalResult = result;
@@ -67077,9 +60744,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -67111,9 +60775,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem6_0.isFailure()) {
                         restoreLocation(seqStart6);
                         alt5_0 = cut6
@@ -67128,9 +60789,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart6);
                         alt5_0 = elem6_1;
                     } else
-
-
-
 
 
                     if ( elem6_1.isFailure()) {
@@ -67180,18 +60838,12 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
             elem0_1 = tbElem2;}
             if ( elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -67212,9 +60864,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -67231,9 +60880,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_BASIC_STRING, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -67275,9 +60921,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -67294,9 +60937,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -67330,9 +60970,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem7_0.isFailure()) {
                         restoreLocation(seqStart7);
                         alt6_0 = cut7
@@ -67347,9 +60984,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart7);
                         alt6_0 = elem7_1;
                     } else
-
-
-
 
 
                     if ( elem7_1.isFailure()) {
@@ -67399,18 +61033,12 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
             elem0_2 = tbElem3;}
             if ( elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
             } else
-
-
-
 
 
             if ( elem0_2.isFailure()) {
@@ -67431,9 +61059,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -67450,9 +61075,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ESCAPE_STRING, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -67494,9 +61116,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -67530,9 +61149,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem5_0.isFailure()) {
                         restoreLocation(seqStart5);
                         zomElem3 = cut5
@@ -67547,9 +61163,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart5);
                         zomElem3 = elem5_1;
                     } else
-
-
-
 
 
                     if ( elem5_1.isFailure()) {
@@ -67585,18 +61198,12 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
             elem0_1 = tbElem2;}
             if ( elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -67617,9 +61224,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -67636,9 +61240,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DOLLAR_STRING, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -68055,9 +61656,6 @@ public final class PgSqlParser {
                 } else
 
 
-
-
-
                 if ( elem2_0.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
@@ -68079,9 +61677,6 @@ public final class PgSqlParser {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_1;
                 } else
-
-
-
 
 
                 if ( elem2_1.isFailure()) {
@@ -68111,9 +61706,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CLAUSE_KEYWORD, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -69078,9 +62670,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -69104,9 +62693,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -69123,9 +62709,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_RESERVED_KEYWORD, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -69168,9 +62751,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -69189,9 +62769,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -69216,9 +62793,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -69228,9 +62802,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CREATE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -69273,9 +62844,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -69294,9 +62862,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -69321,9 +62886,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -69333,9 +62895,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ALTER_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -69378,9 +62937,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -69399,9 +62955,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -69426,9 +62979,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -69438,9 +62988,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DROP_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -69483,9 +63030,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -69504,9 +63048,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -69531,9 +63072,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -69543,9 +63081,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SELECT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -69588,9 +63123,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -69609,9 +63141,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -69636,9 +63165,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -69648,9 +63174,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INSERT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -69693,9 +63216,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -69714,9 +63234,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -69741,9 +63258,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -69753,9 +63267,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_UPDATE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -69798,9 +63309,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -69819,9 +63327,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -69846,9 +63351,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -69858,9 +63360,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DELETE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -69903,9 +63402,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -69924,9 +63420,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -69951,9 +63444,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -69963,9 +63453,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FROM_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -70008,9 +63495,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -70029,9 +63513,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -70056,9 +63537,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -70068,9 +63546,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_WHERE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -70113,9 +63588,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -70134,9 +63606,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -70161,9 +63630,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -70173,9 +63639,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TABLE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -70218,9 +63681,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -70239,9 +63699,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -70266,9 +63723,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -70278,9 +63732,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INDEX_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -70323,9 +63774,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -70344,9 +63792,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -70371,9 +63816,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -70383,9 +63825,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_VIEW_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -70428,9 +63867,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -70449,9 +63885,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -70476,9 +63909,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -70488,9 +63918,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SCHEMA_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -70533,9 +63960,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -70554,9 +63978,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -70581,9 +64002,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -70593,9 +64011,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SEQUENCE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -70638,9 +64053,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -70659,9 +64071,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -70686,9 +64095,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -70698,9 +64104,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TYPE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -70743,9 +64146,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -70764,9 +64164,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -70791,9 +64188,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -70803,9 +64197,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FUNCTION_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -70848,9 +64239,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -70869,9 +64257,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -70896,9 +64281,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -70908,9 +64290,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_PROCEDURE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -70953,9 +64332,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -70974,9 +64350,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -71001,9 +64374,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -71013,9 +64383,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TRIGGER_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -71058,9 +64425,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -71079,9 +64443,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -71106,9 +64467,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -71118,9 +64476,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EXTENSION_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -71163,9 +64518,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -71184,9 +64536,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -71211,9 +64560,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -71223,9 +64569,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_PRIMARY_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -71268,9 +64611,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -71289,9 +64629,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -71316,9 +64653,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -71328,9 +64662,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_KEY_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -71373,9 +64704,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -71394,9 +64722,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -71421,9 +64746,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -71433,9 +64755,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FOREIGN_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -71478,9 +64797,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -71499,9 +64815,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -71526,9 +64839,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -71538,9 +64848,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_REFERENCES_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -71583,9 +64890,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -71604,9 +64908,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -71631,9 +64932,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -71643,9 +64941,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CONSTRAINT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -71688,9 +64983,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -71709,9 +65001,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -71736,9 +65025,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -71748,9 +65034,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_UNIQUE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -71793,9 +65076,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -71814,9 +65094,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -71841,9 +65118,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -71853,9 +65127,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CHECK_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -71898,9 +65169,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -71919,9 +65187,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -71946,9 +65211,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -71958,9 +65220,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NOT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -72003,9 +65262,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -72024,9 +65280,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -72051,9 +65304,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -72063,9 +65313,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NULL_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -72108,9 +65355,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -72129,9 +65373,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -72156,9 +65397,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -72168,9 +65406,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DEFAULT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -72213,9 +65448,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -72234,9 +65466,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -72261,9 +65490,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -72273,9 +65499,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SET_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -72318,9 +65541,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -72339,9 +65559,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -72366,9 +65583,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -72378,9 +65592,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ADD_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -72423,9 +65634,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -72444,9 +65652,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -72471,9 +65676,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -72483,9 +65685,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_COLUMN_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -72528,9 +65727,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -72549,9 +65745,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -72576,9 +65769,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -72588,9 +65778,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_RENAME_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -72633,9 +65820,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -72654,9 +65838,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -72681,9 +65862,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -72693,9 +65871,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TO_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -72738,9 +65913,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -72759,9 +65931,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -72786,9 +65955,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -72798,9 +65964,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_IF_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -72843,9 +66006,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -72864,9 +66024,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -72891,9 +66048,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -72903,9 +66057,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EXISTS_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -72948,9 +66099,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -72969,9 +66117,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -72996,9 +66141,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -73008,9 +66150,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CASCADE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -73053,9 +66192,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -73074,9 +66210,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -73101,9 +66234,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -73113,9 +66243,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_RESTRICT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -73158,9 +66285,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -73179,9 +66303,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -73206,9 +66327,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -73218,9 +66336,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NO_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -73263,9 +66378,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -73284,9 +66396,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -73311,9 +66420,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -73323,9 +66429,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ACTION_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -73368,9 +66471,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -73389,9 +66489,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -73416,9 +66513,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -73428,9 +66522,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ON_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -73473,9 +66564,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -73494,9 +66582,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -73521,9 +66606,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -73533,9 +66615,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_AS_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -73578,9 +66657,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -73599,9 +66675,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -73626,9 +66699,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -73638,9 +66708,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_WITH_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -73683,9 +66750,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -73704,9 +66768,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -73731,9 +66792,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -73743,9 +66801,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_WITHOUT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -73788,9 +66843,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -73809,9 +66861,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -73836,9 +66885,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -73848,9 +66894,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_USING_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -73893,9 +66936,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -73914,9 +66954,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -73941,9 +66978,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -73953,9 +66987,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_IN_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -73998,9 +67029,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -74019,9 +67047,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -74046,9 +67071,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -74058,9 +67080,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_AND_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -74103,9 +67122,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -74124,9 +67140,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -74151,9 +67164,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -74163,9 +67173,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_OR_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -74208,9 +67215,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -74229,9 +67233,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -74256,9 +67257,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -74268,9 +67266,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_IS_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -74313,9 +67308,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -74334,9 +67326,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -74361,9 +67350,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -74373,9 +67359,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_LIKE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -74418,9 +67401,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -74439,9 +67419,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -74466,9 +67443,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -74478,9 +67452,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ILIKE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -74523,9 +67494,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -74544,9 +67512,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -74571,9 +67536,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -74583,9 +67545,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SIMILAR_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -74628,9 +67587,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -74649,9 +67605,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -74676,9 +67629,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -74688,9 +67638,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_BETWEEN_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -74733,9 +67680,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -74754,9 +67698,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -74781,9 +67722,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -74793,9 +67731,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CASE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -74838,9 +67773,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -74859,9 +67791,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -74886,9 +67815,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -74898,9 +67824,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_WHEN_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -74943,9 +67866,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -74964,9 +67884,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -74991,9 +67908,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -75003,9 +67917,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_THEN_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -75048,9 +67959,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -75069,9 +67977,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -75096,9 +68001,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -75108,9 +68010,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ELSE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -75153,9 +68052,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -75174,9 +68070,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -75201,9 +68094,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -75213,9 +68103,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_END_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -75258,9 +68145,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -75279,9 +68163,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -75306,9 +68187,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -75318,9 +68196,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CAST_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -75363,9 +68238,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -75384,9 +68256,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -75411,9 +68280,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -75423,9 +68289,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_COALESCE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -75468,9 +68331,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -75489,9 +68349,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -75516,9 +68373,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -75528,9 +68382,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NULL_IF_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -75573,9 +68424,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -75594,9 +68442,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -75621,9 +68466,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -75633,9 +68475,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_GREATEST_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -75678,9 +68517,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -75699,9 +68535,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -75726,9 +68559,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -75738,9 +68568,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_LEAST_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -75783,9 +68610,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -75804,9 +68628,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -75831,9 +68652,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -75843,9 +68661,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EXTRACT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -75888,9 +68703,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -75909,9 +68721,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -75936,9 +68745,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -75948,9 +68754,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_POSITION_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -75993,9 +68796,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -76014,9 +68814,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -76041,9 +68838,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -76053,9 +68847,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SUBSTRING_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -76098,9 +68889,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -76119,9 +68907,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -76146,9 +68931,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -76158,9 +68940,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TRIM_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -76203,9 +68982,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -76224,9 +69000,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -76251,9 +69024,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -76263,9 +69033,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_OVERLAY_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -76308,9 +69075,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -76329,9 +69093,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -76356,9 +69117,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -76368,9 +69126,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_PLACING_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -76413,9 +69168,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -76434,9 +69186,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -76461,9 +69210,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -76473,9 +69219,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TRUE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -76518,9 +69261,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -76539,9 +69279,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -76566,9 +69303,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -76578,9 +69312,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FALSE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -76623,9 +69354,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -76644,9 +69372,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -76671,9 +69396,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -76683,9 +69405,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_UNKNOWN_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -76728,9 +69447,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -76749,9 +69465,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -76776,9 +69489,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -76788,9 +69498,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ISNULL_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -76833,9 +69540,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -76854,9 +69558,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -76881,9 +69582,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -76893,9 +69591,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NOTNULL_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -76938,9 +69633,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -76959,9 +69651,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -76986,9 +69675,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -76998,9 +69684,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DISTINCT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -77043,9 +69726,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -77064,9 +69744,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -77091,9 +69768,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -77103,9 +69777,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SYMMETRIC_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -77148,9 +69819,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -77169,9 +69837,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -77196,9 +69861,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -77208,9 +69870,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ASYMMETRIC_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -77253,9 +69912,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -77274,9 +69930,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -77301,9 +69954,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -77313,9 +69963,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ESCAPE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -77358,9 +70005,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -77379,9 +70023,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -77406,9 +70047,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -77418,9 +70056,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ALL_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -77463,9 +70098,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -77484,9 +70116,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -77511,9 +70140,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -77523,9 +70149,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ANY_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -77568,9 +70191,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -77589,9 +70209,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -77616,9 +70233,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -77628,9 +70242,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SOME_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -77673,9 +70284,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -77694,9 +70302,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -77721,9 +70326,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -77733,9 +70335,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ARRAY_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -77778,9 +70377,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -77799,9 +70395,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -77826,9 +70419,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -77838,9 +70428,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ROW_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -77883,9 +70470,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -77904,9 +70488,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -77931,9 +70512,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -77943,9 +70521,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ROWS_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -77988,9 +70563,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -78009,9 +70581,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -78036,9 +70605,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -78048,9 +70614,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ASC_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -78093,9 +70656,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -78114,9 +70674,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -78141,9 +70698,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -78153,9 +70707,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DESC_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -78198,9 +70749,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -78219,9 +70767,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -78246,9 +70791,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -78258,9 +70800,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NULLS_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -78303,9 +70842,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -78324,9 +70860,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -78351,9 +70884,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -78363,9 +70893,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FIRST_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -78408,9 +70935,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -78429,9 +70953,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -78456,9 +70977,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -78468,9 +70986,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_LAST_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -78513,9 +71028,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -78534,9 +71046,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -78561,9 +71070,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -78573,9 +71079,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FETCH_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -78618,9 +71121,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -78639,9 +71139,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -78666,9 +71163,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -78678,9 +71172,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NEXT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -78723,9 +71214,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -78744,9 +71232,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -78771,9 +71256,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -78783,9 +71265,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TIES_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -78828,9 +71307,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -78849,9 +71325,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -78876,9 +71349,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -78888,9 +71358,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ORDER_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -78933,9 +71400,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -78954,9 +71418,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -78981,9 +71442,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -78993,9 +71451,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_BY_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -79038,9 +71493,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -79059,9 +71511,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -79086,9 +71535,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -79098,9 +71544,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_GROUP_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -79143,9 +71586,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -79164,9 +71604,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -79191,9 +71628,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -79203,9 +71637,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_HAVING_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -79248,9 +71679,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -79269,9 +71697,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -79296,9 +71721,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -79308,9 +71730,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_LIMIT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -79353,9 +71772,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -79374,9 +71790,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -79401,9 +71814,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -79413,9 +71823,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_OFFSET_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -79458,9 +71865,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -79479,9 +71883,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -79506,9 +71907,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -79518,9 +71916,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_WINDOW_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -79563,9 +71958,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -79584,9 +71976,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -79611,9 +72000,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -79623,9 +72009,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_UNION_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -79668,9 +72051,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -79689,9 +72069,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -79716,9 +72093,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -79728,9 +72102,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INTERSECT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -79773,9 +72144,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -79794,9 +72162,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -79821,9 +72186,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -79833,9 +72195,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EXCEPT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -79878,9 +72237,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -79899,9 +72255,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -79926,9 +72279,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -79938,9 +72288,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_JOIN_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -79983,9 +72330,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -80004,9 +72348,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -80031,9 +72372,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -80043,9 +72381,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CROSS_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -80088,9 +72423,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -80109,9 +72441,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -80136,9 +72465,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -80148,9 +72474,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INNER_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -80193,9 +72516,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -80214,9 +72534,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -80241,9 +72558,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -80253,9 +72567,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_LEFT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -80298,9 +72609,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -80319,9 +72627,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -80346,9 +72651,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -80358,9 +72660,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_RIGHT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -80403,9 +72702,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -80424,9 +72720,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -80451,9 +72744,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -80463,9 +72753,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FULL_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -80508,9 +72795,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -80529,9 +72813,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -80556,9 +72837,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -80568,9 +72846,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_OUTER_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -80613,9 +72888,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -80634,9 +72906,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -80661,9 +72930,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -80673,9 +72939,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NATURAL_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -80718,9 +72981,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -80739,9 +72999,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -80766,9 +73023,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -80778,9 +73032,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_LATERAL_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -80823,9 +73074,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -80844,9 +73092,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -80871,9 +73116,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -80883,9 +73125,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INTO_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -80928,9 +73167,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -80949,9 +73185,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -80976,9 +73209,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -80988,9 +73218,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_VALUES_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -81033,9 +73260,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -81054,9 +73278,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -81081,9 +73302,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -81093,9 +73311,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DO_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -81138,9 +73353,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -81159,9 +73371,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -81186,9 +73395,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -81198,9 +73404,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NOTHING_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -81243,9 +73446,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -81264,9 +73464,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -81291,9 +73488,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -81303,9 +73497,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CONFLICT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -81348,9 +73539,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -81369,9 +73557,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -81396,9 +73581,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -81408,9 +73590,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_RETURNING_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -81453,9 +73632,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -81474,9 +73650,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -81501,9 +73674,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -81513,9 +73683,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_PARTITION_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -81558,9 +73725,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -81579,9 +73743,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -81606,9 +73767,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -81618,9 +73776,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_RANGE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -81663,9 +73818,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -81684,9 +73836,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -81711,9 +73860,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -81723,9 +73869,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_LIST_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -81768,9 +73911,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -81789,9 +73929,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -81816,9 +73953,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -81828,9 +73962,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_HASH_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -81873,9 +74004,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -81894,9 +74022,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -81921,9 +74046,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -81933,9 +74055,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ATTACH_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -81978,9 +74097,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -81999,9 +74115,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -82026,9 +74139,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -82038,9 +74148,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DETACH_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -82083,9 +74190,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -82104,9 +74208,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -82131,9 +74232,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -82143,9 +74241,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FINALIZE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -82188,9 +74283,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -82209,9 +74301,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -82236,9 +74325,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -82248,9 +74334,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FOR_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -82293,9 +74376,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -82314,9 +74394,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -82341,9 +74418,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -82353,9 +74427,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INHERITS_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -82398,9 +74469,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -82419,9 +74487,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -82446,9 +74511,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -82458,9 +74520,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TABLESPACE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -82503,9 +74562,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -82524,9 +74580,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -82551,9 +74604,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -82563,9 +74613,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INCLUDE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -82608,9 +74655,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -82629,9 +74673,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -82656,9 +74697,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -82668,9 +74706,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EXCLUDE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -82713,9 +74748,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -82734,9 +74766,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -82761,9 +74790,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -82773,9 +74799,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ENUM_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -82818,9 +74841,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -82839,9 +74859,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -82866,9 +74883,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -82878,9 +74892,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DOMAIN_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -82923,9 +74934,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -82944,9 +74952,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -82971,9 +74976,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -82983,9 +74985,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ATTRIBUTE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -83028,9 +75027,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -83049,9 +75045,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -83076,9 +75069,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -83088,9 +75078,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_VALUE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -83133,9 +75120,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -83154,9 +75138,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -83181,9 +75162,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -83193,9 +75171,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_BEFORE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -83238,9 +75213,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -83259,9 +75231,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -83286,9 +75255,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -83298,9 +75264,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_AFTER_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -83343,9 +75306,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -83364,9 +75324,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -83391,9 +75348,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -83403,9 +75357,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INCREMENT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -83448,9 +75399,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -83469,9 +75417,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -83496,9 +75441,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -83508,9 +75450,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_MINVALUE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -83553,9 +75492,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -83574,9 +75510,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -83601,9 +75534,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -83613,9 +75543,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_MAXVALUE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -83658,9 +75585,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -83679,9 +75603,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -83706,9 +75627,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -83718,9 +75636,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_START_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -83763,9 +75678,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -83784,9 +75696,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -83811,9 +75720,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -83823,9 +75729,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CACHE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -83868,9 +75771,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -83889,9 +75789,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -83916,9 +75813,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -83928,9 +75822,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CYCLE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -83973,9 +75864,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -83994,9 +75882,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -84021,9 +75906,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -84033,9 +75915,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_OWNED_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -84078,9 +75957,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -84099,9 +75975,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -84126,9 +75999,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -84138,9 +76008,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_RESTART_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -84183,9 +76050,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -84204,9 +76068,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -84231,9 +76092,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -84243,9 +76101,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NONE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -84288,9 +76143,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -84309,9 +76161,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -84336,9 +76185,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -84348,9 +76194,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_GENERATED_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -84393,9 +76236,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -84414,9 +76254,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -84441,9 +76278,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -84453,9 +76287,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ALWAYS_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -84498,9 +76329,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -84519,9 +76347,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -84546,9 +76371,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -84558,9 +76380,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_IDENTITY_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -84603,9 +76422,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -84624,9 +76440,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -84651,9 +76464,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -84663,9 +76473,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_STORED_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -84708,9 +76515,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -84729,9 +76533,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -84756,9 +76557,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -84768,9 +76566,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_COLLATE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -84813,9 +76608,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -84834,9 +76626,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -84861,9 +76650,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -84873,9 +76659,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DEFERRABLE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -84918,9 +76701,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -84939,9 +76719,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -84966,9 +76743,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -84978,9 +76752,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INITIALLY_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -85023,9 +76794,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -85044,9 +76812,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -85071,9 +76836,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -85083,9 +76845,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DEFERRED_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -85128,9 +76887,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -85149,9 +76905,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -85176,9 +76929,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -85188,9 +76938,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_IMMEDIATE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -85233,9 +76980,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -85254,9 +76998,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -85281,9 +77022,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -85293,9 +77031,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_VALID_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -85338,9 +77073,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -85359,9 +77091,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -85386,9 +77115,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -85398,9 +77124,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_VALIDATE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -85443,9 +77166,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -85464,9 +77184,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -85491,9 +77208,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -85503,9 +77217,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INHERIT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -85548,9 +77259,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -85569,9 +77277,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -85596,9 +77301,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -85608,9 +77310,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_COMMENT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -85653,9 +77352,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -85674,9 +77370,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -85701,9 +77394,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -85713,9 +77403,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_GRANT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -85758,9 +77445,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -85779,9 +77463,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -85806,9 +77487,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -85818,9 +77496,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_REVOKE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -85863,9 +77538,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -85884,9 +77556,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -85911,9 +77580,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -85923,9 +77589,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_PRIVILEGES_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -85968,9 +77631,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -85989,9 +77649,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -86016,9 +77673,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -86028,9 +77682,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_PUBLIC_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -86073,9 +77724,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -86094,9 +77742,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -86121,9 +77766,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -86133,9 +77775,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_OPTION_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -86178,9 +77817,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -86199,9 +77835,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -86226,9 +77859,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -86238,9 +77868,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TABLES_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -86283,9 +77910,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -86304,9 +77928,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -86331,9 +77952,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -86343,9 +77961,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SEQUENCES_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -86388,9 +78003,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -86409,9 +78021,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -86436,9 +78045,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -86448,9 +78054,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FUNCTIONS_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -86493,9 +78096,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -86514,9 +78114,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -86541,9 +78138,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -86553,9 +78147,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SCHEMAS_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -86598,9 +78189,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -86619,9 +78207,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -86646,9 +78231,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -86658,9 +78240,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EXECUTE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -86703,9 +78282,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -86724,9 +78300,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -86751,9 +78324,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -86763,9 +78333,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_USAGE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -86808,9 +78375,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -86829,9 +78393,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -86856,9 +78417,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -86868,9 +78426,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CONNECT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -86913,9 +78468,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -86934,9 +78486,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -86961,9 +78510,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -86973,9 +78519,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TEMPORARY_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -87018,9 +78561,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -87039,9 +78579,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -87066,9 +78603,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -87078,9 +78612,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TEMP_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -87123,9 +78654,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -87144,9 +78672,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -87171,9 +78696,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -87183,9 +78705,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TRUNCATE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -87228,9 +78747,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -87249,9 +78765,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -87276,9 +78789,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -87288,9 +78798,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_MATERIALIZED_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -87333,9 +78840,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -87354,9 +78858,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -87381,9 +78882,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -87393,9 +78891,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_RECURSIVE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -87438,9 +78933,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -87459,9 +78951,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -87486,9 +78975,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -87498,9 +78984,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_REPLACE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -87543,9 +79026,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -87564,9 +79044,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -87591,9 +79068,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -87603,9 +79077,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CASCADED_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -87648,9 +79119,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -87669,9 +79137,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -87696,9 +79161,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -87708,9 +79170,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_LOCAL_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -87753,9 +79212,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -87774,9 +79230,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -87801,9 +79254,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -87813,9 +79263,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_AUTHORIZATION_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -87858,9 +79305,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -87879,9 +79323,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -87906,9 +79347,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -87918,9 +79356,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_OWNER_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -87963,9 +79398,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -87984,9 +79416,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -88011,9 +79440,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -88023,9 +79449,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_VERSION_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -88068,9 +79491,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -88089,9 +79509,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -88116,9 +79533,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -88128,9 +79542,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DATA_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -88173,9 +79584,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -88194,9 +79602,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -88221,9 +79626,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -88233,9 +79635,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_STATISTICS_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -88278,9 +79677,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -88299,9 +79695,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -88326,9 +79719,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -88338,9 +79728,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_STORAGE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -88383,9 +79770,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -88404,9 +79788,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -88431,9 +79812,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -88443,9 +79821,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_UNLOGGED_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -88488,9 +79863,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -88509,9 +79881,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -88536,9 +79905,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -88548,9 +79914,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FILTER_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -88593,9 +79956,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -88614,9 +79974,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -88641,9 +79998,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -88653,9 +80007,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_OVER_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -88698,9 +80049,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -88719,9 +80067,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -88746,9 +80091,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -88758,9 +80100,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_WITHIN_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -88803,9 +80142,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -88824,9 +80160,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -88851,9 +80184,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -88863,9 +80193,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ORDINALITY_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -88908,9 +80235,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -88929,9 +80253,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -88956,9 +80277,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -88968,9 +80286,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TABLESAMPLE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -89013,9 +80328,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -89048,9 +80360,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -89065,9 +80374,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_2;
             } else
-
-
-
 
 
             if ( elem1_2.isFailure()) {
@@ -89088,9 +80394,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_3;
             } else
-
-
-
 
 
             if ( elem1_3.isFailure()) {
@@ -89115,9 +80418,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -89127,9 +80427,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_GROUPING_SETS_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -89172,9 +80469,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -89193,9 +80487,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -89220,9 +80511,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -89232,9 +80520,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ROLLUP_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -89277,9 +80562,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -89298,9 +80580,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -89325,9 +80604,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -89337,9 +80613,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CUBE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -89382,9 +80655,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -89403,9 +80673,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -89430,9 +80697,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -89442,9 +80706,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_PRECEDING_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -89487,9 +80748,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -89508,9 +80766,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -89535,9 +80790,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -89547,9 +80799,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_FOLLOWING_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -89592,9 +80841,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -89613,9 +80859,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -89640,9 +80883,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -89652,9 +80892,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CURRENT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -89697,9 +80934,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -89718,9 +80952,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -89745,9 +80976,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -89757,9 +80985,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_UNBOUNDED_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -89802,9 +81027,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -89823,9 +81045,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -89850,9 +81069,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -89862,9 +81078,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_GROUPS_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -89907,9 +81120,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -89928,9 +81138,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -89955,9 +81162,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -89967,9 +81171,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_OTHERS_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -90012,9 +81213,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -90033,9 +81231,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -90060,9 +81255,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -90072,9 +81264,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SEARCH_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -90117,9 +81306,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -90138,9 +81324,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -90165,9 +81348,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -90177,9 +81357,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_BREADTH_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -90222,9 +81399,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -90243,9 +81417,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -90270,9 +81441,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -90282,9 +81450,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DEPTH_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -90327,9 +81492,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -90348,9 +81510,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -90375,9 +81534,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -90387,9 +81543,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_BEGIN_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -90432,9 +81585,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -90453,9 +81603,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -90480,9 +81627,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -90492,9 +81636,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_COMMIT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -90537,9 +81678,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -90558,9 +81696,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -90585,9 +81720,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -90597,9 +81729,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ROLLBACK_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -90642,9 +81771,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -90663,9 +81789,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -90690,9 +81813,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -90702,9 +81822,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SAVEPOINT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -90747,9 +81864,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -90768,9 +81882,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -90795,9 +81906,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -90807,9 +81915,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_RELEASE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -90852,9 +81957,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -90873,9 +81975,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -90900,9 +81999,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -90912,9 +82008,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_PREPARE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -90957,9 +82050,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -90978,9 +82068,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -91005,9 +82092,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -91017,9 +82101,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SHOW_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -91062,9 +82143,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -91083,9 +82161,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -91110,9 +82185,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -91122,9 +82194,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_RESET_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -91167,9 +82236,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -91188,9 +82254,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -91215,9 +82278,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -91227,9 +82287,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_VACUUM_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -91272,9 +82329,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -91293,9 +82347,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -91320,9 +82371,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -91332,9 +82380,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ANALYZE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -91377,9 +82422,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -91398,9 +82440,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -91425,9 +82464,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -91437,9 +82473,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_EXPLAIN_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -91482,9 +82515,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -91503,9 +82533,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -91530,9 +82557,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -91542,9 +82566,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_COPY_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -91587,9 +82608,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -91608,9 +82626,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -91635,9 +82650,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -91647,9 +82659,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_REINDEX_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -91692,9 +82701,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -91713,9 +82719,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -91740,9 +82743,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -91752,9 +82752,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_CLUSTER_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -91797,9 +82794,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -91818,9 +82812,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -91845,9 +82836,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -91857,9 +82845,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_REFRESH_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -91902,9 +82887,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -91923,9 +82905,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -91950,9 +82929,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -91962,9 +82938,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_NOTIFY_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -92007,9 +82980,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -92028,9 +82998,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -92055,9 +83022,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -92067,9 +83031,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_LISTEN_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -92112,9 +83073,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -92133,9 +83091,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -92160,9 +83115,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -92172,9 +83124,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_UNLISTEN_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -92217,9 +83166,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -92238,9 +83184,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -92265,9 +83208,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -92277,9 +83217,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_LOAD_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -92322,9 +83259,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -92357,9 +83291,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -92374,9 +83305,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_2;
             } else
-
-
-
 
 
             if ( elem1_2.isFailure()) {
@@ -92397,9 +83325,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_3;
             } else
-
-
-
 
 
             if ( elem1_3.isFailure()) {
@@ -92424,9 +83349,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -92436,9 +83358,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SECURITY_LABEL_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -92481,9 +83400,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -92502,9 +83418,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -92529,9 +83442,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -92541,9 +83451,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DEALLOCATE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -92586,9 +83493,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -92607,9 +83511,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -92634,9 +83535,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -92646,9 +83544,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_INOUT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -92691,9 +83586,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -92712,9 +83604,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -92739,9 +83628,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -92751,9 +83637,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_OUT_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -92796,9 +83679,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -92817,9 +83697,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -92844,9 +83721,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -92856,9 +83730,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_VARIADIC_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -92901,9 +83772,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -92922,9 +83790,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -92949,9 +83814,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -92961,9 +83823,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_AGGREGATE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -93006,9 +83865,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -93027,9 +83883,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -93054,9 +83907,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -93066,9 +83916,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_YEAR_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -93111,9 +83958,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -93132,9 +83976,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -93159,9 +84000,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -93171,9 +84009,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_MONTH_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -93216,9 +84051,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -93237,9 +84069,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -93264,9 +84093,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -93276,9 +84102,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_DAY_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -93321,9 +84144,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -93342,9 +84162,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -93369,9 +84186,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -93381,9 +84195,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_HOUR_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -93426,9 +84237,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -93447,9 +84255,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -93474,9 +84279,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -93486,9 +84288,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_MINUTE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -93531,9 +84330,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -93552,9 +84348,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -93579,9 +84372,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -93591,9 +84381,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_SECOND_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -93636,9 +84423,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -93657,9 +84441,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -93684,9 +84465,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -93696,9 +84474,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TIME_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -93741,9 +84516,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -93762,9 +84534,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -93789,9 +84558,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -93801,9 +84567,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_ZONE_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -93846,9 +84609,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -93867,9 +84627,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -93894,9 +84651,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -93906,9 +84660,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_LEADING_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -93951,9 +84702,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -93972,9 +84720,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -93999,9 +84744,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -94011,9 +84753,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_TRAILING_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -94056,9 +84795,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
@@ -94077,9 +84813,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
             } else
-
-
-
 
 
             if ( elem1_1.isFailure()) {
@@ -94104,9 +84837,6 @@ public final class PgSqlParser {
         } else
 
 
-
-
-
         {
         result = tbElem0;}
         CstParseResult finalResult;
@@ -94116,9 +84846,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_BOTH_K_W, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -94158,9 +84885,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_0;
             } else
-
-
-
 
 
             if ( elem0_0.isFailure()) {
@@ -94205,9 +84929,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -94216,9 +84937,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -94237,9 +84955,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_LINE_COMMENT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -94281,9 +84996,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -94319,9 +85031,6 @@ public final class PgSqlParser {
                     } else
 
 
-
-
-
                     if ( elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
@@ -94338,9 +85047,6 @@ public final class PgSqlParser {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
                     } else
-
-
-
 
 
                     if ( elem4_1.isFailure()) {
@@ -94375,9 +85081,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             {
                 children.clear();
                 children.addAll(savedChildrenZom2);
@@ -94386,9 +85089,6 @@ public final class PgSqlParser {
                 restoreLocation(seqStart0);
                 result = elem0_1;
             } else
-
-
-
 
 
             if ( elem0_1.isFailure()) {
@@ -94409,9 +85109,6 @@ public final class PgSqlParser {
             } else
 
 
-
-
-
             if ( elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
@@ -94428,9 +85125,6 @@ public final class PgSqlParser {
             var node = wrapWithRuleName(result, children, span, RULE_BLOCK_COMMENT, leadingTrivia);
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
         } else
-
-
-
 
 
         {
@@ -94662,9 +85356,6 @@ public final class PgSqlParser {
                     }
 
 
-
-
-
                     catch (NumberFormatException e) {
                         yield 'x';
                     }}
@@ -94676,9 +85367,6 @@ public final class PgSqlParser {
                         consumed = 6;
                         yield (char) Integer.parseInt(hex, 16);
                     }
-
-
-
 
 
                     catch (NumberFormatException e) {
@@ -94700,9 +85388,6 @@ public final class PgSqlParser {
                 if ( testChar >= start && testChar <= end) return true;
                 i += 3;
             } else
-
-
-
 
 
             {

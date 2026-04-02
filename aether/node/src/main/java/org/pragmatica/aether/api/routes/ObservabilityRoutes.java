@@ -137,33 +137,6 @@ public final class ObservabilityRoutes implements RouteSource {
         }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         catch (NumberFormatException _) {
             return DEFAULT_LIMIT;
         }

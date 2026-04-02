@@ -603,34 +603,6 @@ public interface ClusterDeploymentManager {
                 } else
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
                 {
                     log.info("Assigning node {} as worker (core count at max: {})", addedNode, coreMax);
                     submitActivationDirective(addedNode, AetherValue.ActivationDirectiveValue.worker());
@@ -829,34 +801,6 @@ public interface ClusterDeploymentManager {
                     issueUnloadCommand(originalKey);
                     SharedScheduler.schedule(() -> evictNextSliceFromNode(drainingNode), timeSpan(2).seconds());
                 } else
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
                 {
@@ -1176,34 +1120,6 @@ public interface ClusterDeploymentManager {
                 } else
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
                 {
                 log.debug("Slice {} waiting for dependencies to become ACTIVE: {}",
                           artifact,
@@ -1486,6 +1402,7 @@ public interface ClusterDeploymentManager {
             // DHT fire-and-forget writes
             // DHT fire-and-forget writes
             // DHT fire-and-forget writes
+            // DHT fire-and-forget writes
             void issueAllocationCommands(Artifact artifact, int desiredInstances) {
                 if ( hasNoAllocatableNodes(artifact)) {
                 return;}
@@ -1547,6 +1464,7 @@ public interface ClusterDeploymentManager {
             // DHT fire-and-forget writes
             // DHT fire-and-forget writes
             // DHT fire-and-forget writes
+            // DHT fire-and-forget writes
             void issueAdjustmentCommands(Artifact artifact,
                                          int desiredInstances,
                                          List<SliceNodeKey> currentInstances) {
@@ -1559,6 +1477,7 @@ public interface ClusterDeploymentManager {
 
             @SuppressWarnings("JBCT-RET-01") // DHT fire-and-forget writes
             private// DHT fire-and-forget writes
+            // DHT fire-and-forget writes
             // DHT fire-and-forget writes
             // DHT fire-and-forget writes
             // DHT fire-and-forget writes
@@ -1712,6 +1631,7 @@ public interface ClusterDeploymentManager {
             // DHT fire-and-forget writes
             // DHT fire-and-forget writes
             // DHT fire-and-forget writes
+            // DHT fire-and-forget writes
             void issueRoundRobinAllocations(Artifact artifact, int remaining) {
                 if ( remaining <= 0) {
                 return;}
@@ -1741,6 +1661,7 @@ public interface ClusterDeploymentManager {
 
             @SuppressWarnings("JBCT-RET-01") // DHT fire-and-forget writes
             private// DHT fire-and-forget writes
+            // DHT fire-and-forget writes
             // DHT fire-and-forget writes
             // DHT fire-and-forget writes
             // DHT fire-and-forget writes
@@ -1878,6 +1799,7 @@ public interface ClusterDeploymentManager {
             // DHT fire-and-forget writes
             // DHT fire-and-forget writes
             // DHT fire-and-forget writes
+            // DHT fire-and-forget writes
             void issueStuckRemediationCommand(SliceNodeKey sliceKey) {
                 Option.option(sliceStates.get(sliceKey)).onPresent(state -> executeStuckRemediation(sliceKey, state));
             }
@@ -1907,6 +1829,7 @@ public interface ClusterDeploymentManager {
 
             @SuppressWarnings("JBCT-RET-01") // DHT fire-and-forget writes
             private// DHT fire-and-forget writes
+            // DHT fire-and-forget writes
             // DHT fire-and-forget writes
             // DHT fire-and-forget writes
             // DHT fire-and-forget writes
@@ -2374,34 +2297,6 @@ public interface ClusterDeploymentManager {
                     SharedScheduler.schedule(() -> deferredTopologyRecheck(activeState, activeNodes),
                                              timeSpan(2).seconds());
                 } else
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
                 {

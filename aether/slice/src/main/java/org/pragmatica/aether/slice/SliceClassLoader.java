@@ -58,35 +58,6 @@ public class SliceClassLoader extends URLClassLoader {
             }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
             catch (ClassNotFoundException e) {
                 // Fall back to parent (SharedLibraryClassLoader -> Node ClassLoader)
                 return super.loadClass(name, resolve);

@@ -210,34 +210,6 @@ public final class GcpDiscoveryProvider implements DiscoveryProvider {
         }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

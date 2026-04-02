@@ -159,34 +159,6 @@ public final class ComprehensiveSnapshotCollector {
         }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         catch (Exception e) {
             log.warn("Failed to collect comprehensive snapshot: {}", e.getMessage());
         }

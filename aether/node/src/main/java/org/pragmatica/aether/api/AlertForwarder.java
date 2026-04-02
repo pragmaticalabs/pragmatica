@@ -46,34 +46,6 @@ public class AlertForwarder {
         } else
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         {
             this.httpOps = Option.none();
             log.info("AlertForwarder disabled");

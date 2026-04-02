@@ -34,23 +34,6 @@ public final class NamingConvention {
             } else
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
             {
             sb.append(c);}
         }
