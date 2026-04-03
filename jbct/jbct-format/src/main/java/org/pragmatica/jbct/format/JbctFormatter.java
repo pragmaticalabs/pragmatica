@@ -1,6 +1,6 @@
 package org.pragmatica.jbct.format;
 
-import org.pragmatica.jbct.format.cst.CstFormatter;
+import org.pragmatica.jbct.format.flow.FlowFormatter;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Result;
 
@@ -12,12 +12,13 @@ import org.pragmatica.lang.Result;
 /// - 120 character max line length
 /// - 4 space indentation
 ///
-/// Uses CST-based formatter for trivia (whitespace/comments) preservation.
+/// Uses flow-based formatter that makes all layout decisions from code structure and width
+/// measurement only. Comments are emitted inline but never influence layout decisions.
 public class JbctFormatter {
-    private final CstFormatter delegate;
+    private final FlowFormatter delegate;
 
     private JbctFormatter(FormatterConfig config) {
-        this.delegate = CstFormatter.cstFormatter(config);
+        this.delegate = FlowFormatter.flowFormatter(config);
     }
 
     /// Factory method for creating a formatter with default config.

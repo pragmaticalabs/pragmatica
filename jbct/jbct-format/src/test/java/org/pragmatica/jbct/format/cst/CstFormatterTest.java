@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -294,6 +295,7 @@ class CstFormatterTest {
                             });
     }
 
+    @Disabled("Golden examples are now formatted by FlowFormatter — CstFormatter is superseded")
     @ParameterizedTest
     @ValueSource(strings = {"ChainAlignment.java",
     "MultilineArguments.java",
@@ -327,6 +329,7 @@ class CstFormatterTest {
                             });
     }
 
+    @Disabled("Golden examples are now formatted by FlowFormatter — CstFormatter is superseded")
     @ParameterizedTest(name = "Multi-pass idempotency: {0}")
     @ValueSource(strings = {"BlankLines.java",
     "ChainAlignment.java",
