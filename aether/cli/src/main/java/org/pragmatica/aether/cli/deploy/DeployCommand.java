@@ -78,7 +78,7 @@ subcommands = {DeployCommand.ListCommand.class, DeployCommand.StatusCommand.clas
 
     @SuppressWarnings("JBCT-SEQ-01")
     private int deployImmediate() {
-        var body = "{\"blueprint\":\"" + coordinates + "\",\"instances\":" + instances + "}";
+        var body = "{\"artifact\":\"" + coordinates + "\"}";
         var response = parent.postToNode("/api/blueprint/deploy", body);
         return OutputFormatter.printQuery(response, parent.outputOptions());
     }

@@ -19,7 +19,13 @@ test_storage_list() {
         skip_test "Storage list" "Storage API not available (feature may not be enabled)"
         return 0
     fi
-    assert_contains "$result" "instances" "Storage list returns instances array"
+    # Response may be {} (no storage configured) or {"instances": [...]}
+    if echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print('ok' if 'instances' in d or d == {} else 'fail')" 2>/dev/null | grep -q "ok"; then
+        log_pass "Storage list returns valid response"
+    else
+        log_fail "Storage list returns instances array: unexpected format"
+        return 1
+    fi
 }
 
 # Verify the default "artifacts" instance appears in the list

@@ -37,11 +37,7 @@ if entries:
 
     log_info "Draining first node: ${node1}"
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain" \
-        -X POST \
-        -H "X-API-Key: ${API_KEY}" \
-        -H "Content-Type: application/json" \
-        -d "{\"nodeId\":\"${node1}\"}")
+    status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain/${node1}" -X POST -H "X-API-Key: ${API_KEY}")
 
     if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
         log_pass "First drain accepted (${status})"
@@ -71,11 +67,7 @@ if len(entries) >= 2:
 
     log_info "Draining second node: ${node2}"
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain" \
-        -X POST \
-        -H "X-API-Key: ${API_KEY}" \
-        -H "Content-Type: application/json" \
-        -d "{\"nodeId\":\"${node2}\"}")
+    status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain/${node2}" -X POST -H "X-API-Key: ${API_KEY}")
     log_info "Second drain response: ${status}"
     if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
         log_pass "Second drain accepted (${status})"
@@ -105,11 +97,7 @@ if len(entries) >= 3:
 
     log_info "Attempting to drain third node (should be rejected by budget): ${node3}"
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain" \
-        -X POST \
-        -H "X-API-Key: ${API_KEY}" \
-        -H "Content-Type: application/json" \
-        -d "{\"nodeId\":\"${node3}\"}")
+    status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain/${node3}" -X POST -H "X-API-Key: ${API_KEY}")
 
     if [ "$status" -ge 400 ] && [ "$status" -lt 500 ] 2>/dev/null; then
         log_pass "Third drain rejected by disruption budget (${status})"

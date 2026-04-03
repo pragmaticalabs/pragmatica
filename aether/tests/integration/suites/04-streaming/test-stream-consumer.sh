@@ -28,9 +28,22 @@ test_publish_and_verify_count() {
     info=$(stream_info "$STREAM_NAME")
     assert_ne "$info" "" "Stream info available after publish"
 
-    # Verify messages are tracked — endpoint returns flat StreamInfoResponse with totalEvents
+    # Verify messages are tracked — endpoint may return flat object or {streams: [...]} array
     local msg_count
-    msg_count=$(echo "$info" | python3 -c "import sys,json; print(json.load(sys.stdin)['totalEvents'])" 2>/dev/null)
+    msg_count=$(echo "$info" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+if 'totalEvents' in data:
+    print(data['totalEvents'])
+elif 'streams' in data:
+    for s in data['streams']:
+        if s.get('name') == '${STREAM_NAME}':
+            print(s.get('totalEvents', 0)); break
+    else:
+        print(0)
+else:
+    print(0)
+" 2>/dev/null)
 
     assert_gt "$msg_count" "0" "Stream has messages: ${msg_count}"
 }
@@ -40,7 +53,16 @@ test_stream_metadata() {
     info=$(stream_info "$STREAM_NAME")
     assert_ne "$info" "" "Stream metadata retrievable"
     local name
-    name=$(echo "$info" | python3 -c "import sys,json; print(json.load(sys.stdin)['name'])" 2>/dev/null)
+    name=$(echo "$info" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+if 'name' in data:
+    print(data['name'])
+elif 'streams' in data and data['streams']:
+    print(data['streams'][0].get('name', ''))
+else:
+    print('')
+" 2>/dev/null)
     assert_ne "$name" "" "Stream name in metadata"
 }
 

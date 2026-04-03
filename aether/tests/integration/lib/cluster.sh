@@ -206,6 +206,16 @@ get_node_lifecycle() {
     api_get "/api/nodes/lifecycle"
 }
 
+drain_node() {
+    local node_id="$1"
+    api_post "/api/node/drain/${node_id}" "{}"
+}
+
+activate_node() {
+    local node_id="$1"
+    api_post "/api/node/activate/${node_id}" "{}"
+}
+
 # ---------------------------------------------------------------------------
 # Scaling
 # ---------------------------------------------------------------------------
@@ -234,6 +244,18 @@ config_export() {
 config_get_key() {
     local key="$1"
     api_get "/api/config/${key}"
+}
+
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+schema_status() {
+    local datasource="${1:-}"
+    if [ -n "$datasource" ]; then
+        api_get "/api/schema/status/${datasource}"
+    else
+        api_get "/api/schema/status"
+    fi
 }
 
 # ---------------------------------------------------------------------------

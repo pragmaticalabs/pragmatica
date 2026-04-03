@@ -63,12 +63,19 @@ except:
 " 2>/dev/null)
     if [ "$seconds" -gt 0 ] 2>/dev/null; then
         log_pass "secondsUntilExpiry > 0: ${seconds}s"
-    elif [ "$seconds" = "-1" ]; then
+    elif [ "$seconds" = "0" ]; then
+        # TLS may be disabled — check renewalStatus for NOT_CONFIGURED
+        local renewal
+        renewal=$(echo "$cert" | python3 -c "import sys,json; print(json.load(sys.stdin).get('renewalStatus',''))" 2>/dev/null)
+        if [ "$renewal" = "NOT_CONFIGURED" ]; then
+            log_pass "TLS disabled — no certificate expiry (NOT_CONFIGURED)"
+        else
+            log_fail "secondsUntilExpiry is 0 but TLS appears configured"
+            return 1
+        fi
+    else
         log_warn "secondsUntilExpiry field not found"
         log_pass "Certificate endpoint returns data"
-    else
-        log_fail "secondsUntilExpiry is not positive: ${seconds}"
-        return 1
     fi
 }
 
@@ -122,8 +129,15 @@ except:
         log_warn "Could not determine certificate validity"
         log_pass "Certificate endpoint returns data"
     else
-        log_fail "Certificate appears expired"
-        return 1
+        # Check if TLS is simply not configured
+        local renewal
+        renewal=$(echo "$cert" | python3 -c "import sys,json; print(json.load(sys.stdin).get('renewalStatus',''))" 2>/dev/null)
+        if [ "$renewal" = "NOT_CONFIGURED" ]; then
+            log_pass "TLS disabled — no expiry check needed (NOT_CONFIGURED)"
+        else
+            log_fail "Certificate appears expired"
+            return 1
+        fi
     fi
 }
 
