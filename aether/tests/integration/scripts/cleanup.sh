@@ -7,8 +7,12 @@ ROOT_DIR="${SCRIPT_DIR}/.."
 source "${ROOT_DIR}/lib/common.sh"
 
 HOST="${TARGET_HOST:-localhost}"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/aether_test}"
 SSH_USER="${AETHER_SSH_USER:-aether}"
+
+if [ "$HOST" != "localhost" ]; then
+    : "${AETHER_SSH_KEY:?AETHER_SSH_KEY must be set for remote target ${HOST}}"
+fi
+SSH_KEY="${AETHER_SSH_KEY:-}"
 
 remote_exec() {
     if [ "$HOST" = "localhost" ]; then

@@ -29,9 +29,13 @@ NODE_JAR="${REPO_ROOT}/aether/node/target/aether-node.jar"
 DOCKERFILE="${REPO_ROOT}/aether/docker/aether-node/Dockerfile"
 AETHER_TOML="${REPO_ROOT}/aether/docker/aether-node/aether.toml"
 
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/aether_test}"
 SSH_USER="${AETHER_SSH_USER:-aether}"
 HOST="${TARGET_HOST:-localhost}"
+
+if [ "$HOST" != "localhost" ]; then
+    : "${AETHER_SSH_KEY:?AETHER_SSH_KEY must be set for remote target ${HOST}}"
+fi
+SSH_KEY="${AETHER_SSH_KEY:-}"
 
 remote_exec() {
     if [ "$HOST" = "localhost" ]; then
