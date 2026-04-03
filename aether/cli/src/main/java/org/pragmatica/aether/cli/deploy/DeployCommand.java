@@ -78,28 +78,28 @@ subcommands = {DeployCommand.ListCommand.class, DeployCommand.StatusCommand.clas
 
     @SuppressWarnings("JBCT-SEQ-01")
     private int deployImmediate() {
-        var body = "{\"coordinates\":\"" + coordinates + "\",\"instances\":" + instances + "}";
+        var body = "{\"blueprint\":\"" + coordinates + "\",\"instances\":" + instances + "}";
         var response = parent.postToNode("/api/blueprint/deploy", body);
         return OutputFormatter.printQuery(response, parent.outputOptions());
     }
 
     @SuppressWarnings("JBCT-SEQ-01")
     private int deployWithStrategy(String strategy, String strategyBody) {
-        var body = "{\"coordinates\":\"" + coordinates + "\",\"strategy\":\"" + strategy + "\"," + strategyBody + "}";
+        var body = "{\"blueprint\":\"" + coordinates + "\",\"strategy\":\"" + strategy + "\"," + strategyBody + "}";
         var response = parent.postToNode("/api/deploy", body);
         return OutputFormatter.printQuery(response, parent.outputOptions());
     }
 
     private String buildCanaryBody() {
-        return "\"instances\":" + instances + ",\"trafficPercent\":" + trafficPercent + ",\"maxErrorRate\":" + errorRate + ",\"maxLatencyMs\":" + latencyMs;
+        return "\"instances\":" + instances + ",\"canary\":{\"stages\":[{\"trafficPercent\":" + trafficPercent + ",\"observationMinutes\":10}]},\"thresholds\":{\"maxErrorRate\":" + errorRate + ",\"maxLatencyMs\":" + latencyMs + "}";
     }
 
     private String buildBlueGreenBody() {
-        return "\"instances\":" + instances + ",\"drainTimeoutMs\":" + drainTimeoutMs;
+        return "\"instances\":" + instances + ",\"blueGreen\":{\"drainTimeoutMs\":" + drainTimeoutMs + "},\"thresholds\":{\"maxErrorRate\":" + errorRate + ",\"maxLatencyMs\":" + latencyMs + "}";
     }
 
     private String buildRollingBody() {
-        return "\"instances\":" + instances + ",\"maxErrorRate\":" + errorRate + ",\"maxLatencyMs\":" + latencyMs + ",\"requireManualApproval\":" + manualApproval;
+        return "\"instances\":" + instances + ",\"rolling\":{\"requireManualApproval\":" + manualApproval + "},\"thresholds\":{\"maxErrorRate\":" + errorRate + ",\"maxLatencyMs\":" + latencyMs + "}";
     }
 
     @Command(name = "list", description = "List active deployments")
