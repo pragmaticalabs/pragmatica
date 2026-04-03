@@ -119,8 +119,7 @@ window.WsManager = {
     },
 
     showAuthRequired: function() {
-        sessionStorage.removeItem('aether-api-key');
-        if (window.AetherAuth) window.AetherAuth.show();
+        if (window.AetherAuth) window.AetherAuth.onUnauthorized();
     },
 
     // Issue 20: Per-channel status

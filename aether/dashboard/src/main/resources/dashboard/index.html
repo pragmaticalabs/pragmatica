@@ -28,37 +28,62 @@
     <script>
     window.AetherAuth = {
         overlay: null,
+
         init: function() {
             this.overlay = document.getElementById('auth-overlay');
-            var key = sessionStorage.getItem('aether-api-key');
-            if (!key) {
-                var params = new URLSearchParams(window.location.search);
-                key = params.get('apiKey');
-                if (key) sessionStorage.setItem('aether-api-key', key);
-            }
-            if (!key) { this.show(); return false; }
-            return true;
+            // Check URL param first
+            var params = new URLSearchParams(window.location.search);
+            var paramKey = params.get('apiKey');
+            if (paramKey) sessionStorage.setItem('aether-api-key', paramKey);
+            // Show overlay if no key
+            if (!this.hasValidKey()) this.show();
         },
+
+        hasValidKey: function() {
+            return !!sessionStorage.getItem('aether-api-key');
+        },
+
         show: function() {
-            if (this.isVisible()) return; // Don't reset input if already showing
             this.overlay.style.display = 'flex';
             document.getElementById('auth-error').style.display = 'none';
             document.getElementById('auth-key-input').value = '';
             setTimeout(function() { document.getElementById('auth-key-input').focus(); }, 100);
         },
-        hide: function() { this.overlay.style.display = 'none'; },
-        isVisible: function() { return this.overlay && this.overlay.style.display === 'flex'; },
+
+        hide: function() {
+            this.overlay.style.display = 'none';
+        },
+
+        isVisible: function() {
+            return this.overlay && this.overlay.style.display === 'flex';
+        },
+
         submit: function(key) {
             var self = this;
-            sessionStorage.setItem('aether-api-key', key);
+            // Validate key against server before accepting
             fetch('/api/status', { headers: { 'x-api-key': key } }).then(function(r) {
-                if (r.ok) { self.hide(); }
-                else { sessionStorage.removeItem('aether-api-key'); document.getElementById('auth-error').style.display = 'block'; }
-            }).catch(function() { sessionStorage.removeItem('aether-api-key'); document.getElementById('auth-error').style.display = 'block'; });
+                if (r.ok) {
+                    sessionStorage.setItem('aether-api-key', key);
+                    self.hide();
+                    // Signal the app to start data fetching
+                    window.dispatchEvent(new Event('aether-auth-success'));
+                } else {
+                    document.getElementById('auth-error').style.display = 'block';
+                }
+            }).catch(function() {
+                document.getElementById('auth-error').style.display = 'block';
+            });
+        },
+
+        // Called by RestClient on 401 — only acts if we thought we had a valid key
+        onUnauthorized: function() {
+            sessionStorage.removeItem('aether-api-key');
+            this.show();
         }
     };
+
     document.addEventListener('DOMContentLoaded', function() {
-        var ready = AetherAuth.init();
+        AetherAuth.init();
         document.getElementById('auth-form').addEventListener('submit', function(e) {
             e.preventDefault();
             var key = document.getElementById('auth-key-input').value.trim();
