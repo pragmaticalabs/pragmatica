@@ -13,6 +13,24 @@ document.addEventListener('alpine:init', function() {
             if (data.cluster) {
                 this.leaderId = data.cluster.leaderId || '';
                 this.targetClusterSize = data.cluster.nodeCount || data.targetClusterSize || 0;
+                // Populate nodes from cluster.nodes (REST /api/status) if nodeMetrics not available
+                if (data.cluster.nodes && Array.isArray(data.cluster.nodes) && !data.nodeMetrics) {
+                    var self = this;
+                    data.cluster.nodes.forEach(function(n) {
+                        var nodeId = n.id || n.nodeId;
+                        var existing = self.nodes.find(function(e) { return e.nodeId === nodeId; });
+                        if (!existing) {
+                            self.nodes.push({
+                                nodeId: nodeId,
+                                isLeader: n.isLeader || nodeId === self.leaderId,
+                                cpuUsage: 0, heapUsedMb: 0, heapMaxMb: 0,
+                                lifecycleState: 'ON_DUTY', slices: []
+                            });
+                        } else {
+                            existing.isLeader = n.isLeader || nodeId === self.leaderId;
+                        }
+                    });
+                }
             }
             if (data.targetClusterSize) {
                 this.targetClusterSize = data.targetClusterSize;
@@ -49,6 +67,21 @@ document.addEventListener('alpine:init', function() {
                 });
             }
             this.healthy = this.nodes.length >= this.targetClusterSize && this.nodes.length > 0;
+        },
+
+        updateSlices(data) {
+            var slices = data.slices || (Array.isArray(data) ? data : []);
+            if (!slices.length) return;
+            var nodeSliceMap = {};
+            slices.forEach(function(s) {
+                (s.instances || []).forEach(function(inst) {
+                    if (!nodeSliceMap[inst.nodeId]) nodeSliceMap[inst.nodeId] = [];
+                    nodeSliceMap[inst.nodeId].push({artifact: s.artifact, state: inst.state || 'ACTIVE'});
+                });
+            });
+            this.nodes.forEach(function(node) {
+                node.slices = nodeSliceMap[node.nodeId] || node.slices || [];
+            });
         },
 
         updateFromWsDashboard(data) {

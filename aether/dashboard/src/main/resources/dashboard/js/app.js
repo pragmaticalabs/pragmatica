@@ -156,6 +156,11 @@ document.addEventListener('alpine:init', function() {
                     Alpine.store('metrics').updateNodeHistory(Alpine.store('cluster').nodes);
                     this.updateCharts();
                 }
+                // Fetch slice details for node→slice mapping (REST /api/status only has sliceCount)
+                var slices = await RestClient.get('/api/slices');
+                if (slices) {
+                    Alpine.store('cluster').updateSlices(slices);
+                }
             },
 
             async loadInitialData() {
