@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-alpha] - Unreleased
 
 ### Added
+- **CTM bidirectional convergence** — ClusterTopologyManager now reliably converges cluster to configured size in both directions: scale-up (provision) and scale-down (terminate). Separate `configuredSizeRef` (operator intent) from `desiredSizeRef` (working target). Node selection for termination: empty nodes first, then most recently joined, never self. CAS-based state transitions eliminate race conditions
 - **DockerComputeProvider** — `ComputeProvider` SPI implementation for Docker-based cluster scaling. Provisions/terminates containers via Docker CLI, label-based instance discovery, atomic port allocation. Enables integration test scaling without cloud providers
 - **PostgreSQL persistence adapter** — `@PgSql` type-safe persistence with compile-time SQL validation. Annotation processor validates `@Query` SQL and generates CRUD from method names (Spring Data conventions: `findBy*`, `save`, `insert`, `deleteBy*`, `countBy*`, `existsBy*`). Named parameter rewriting (`:param` → `$N`), query narrowing (`SELECT *` → explicit columns), record expansion for INSERT/UPDATE
 - **PostgreSQL tooling (aether-pg-tools)** — SQL parser (PEG-based, ~500 rules), event-sourced schema model (25 event types), 41-rule migration linter (lock hazards, type design, schema design, migration practice), Java record/enum code generation from schema
@@ -29,6 +30,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Unified deployment spec** — `aether/docs/specs/unified-deploy-spec.md` with complete API design
 
 ### Changed
+- **Flow-based JBCT formatter** — completely replaced trivia-entangled CstPrinter with FlowPrinter that makes layout decisions from code structure + width measurement only. Eliminates all blank-line accumulation bugs by design. 0 non-idempotent files across 1,970-file codebase
+- **DeploymentMap renamed** — `DeploymentMapImpl` → `IndexedDeploymentMap` (JBCT naming compliance)
 - **Aether Store branding** — PostgreSQL persistence adapter branded as "Aether Store" in all user-facing documentation
 - **build.sh** — replaced `-q` with grep filtering, JBCT formatting warnings visible, no more stalls on large files
 - **Format logging** — JBCT formatter now logs reformatted files at WARN level (was DEBUG)
@@ -56,6 +59,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **CLI SLF4J warnings** — added `slf4j-nop` to CLI dependencies
 - **Docker healthcheck** — uses `/health/live` (no auth required) instead of `/api/health`
 - **Audit logging** — set to WARN level, suppresses debug auth success noise
+- **QUIC reconnection storm** — three fixes: exclude self node from reconciliation loop (was firing ConnectNode(self) every 5s), prefer new connections over potentially stale ones in `onPeerConnected`, add `connectingInProgress` guard to prevent TOCTOU race in `connectPeer`
+- **DeployCommand JSON bodies** — CLI now sends correct nested JSON matching API's `DeployRequest` schema: `"blueprint"` field (was `"coordinates"`), nested `"canary"/"blueGreen"/"rolling"` strategy configs, nested `"thresholds"` object
+- **Slice processor FQCN in provide() calls** — `generateResourceProvideCall` and plain interface factory params now use `ImportTracker` for simple names instead of fully-qualified class names
+- **Integration test scripts** — fixed JSON field paths (08-http-client), OOM prevention with RPS cap (04-under-load), temp file race condition (13-concurrent-deploys), strengthened disruption budget assertions (13-disruption-budget), relaxed error rate threshold
+- **JBCT formatter blank-line artifacts** — removed 13,911 blank lines across 91 aether files from previous formatter bug
 
 ### Removed
 - **Separate deployment commands** — `aether canary`, `aether blue-green`, `aether update` removed (use `aether deploy --strategy`)
