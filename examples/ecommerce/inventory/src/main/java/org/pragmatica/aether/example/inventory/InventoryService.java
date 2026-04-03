@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+
 @Slice public interface InventoryService {
     record CheckStockRequest(List<LineItem> items) {
         public static CheckStockRequest checkStockRequest(List<LineItem> items) {
@@ -52,7 +53,7 @@ import java.util.stream.Collectors;
         }
 
         public boolean hasUnavailableItems() {
-            return! unavailableItems.isEmpty();
+            return ! unavailableItems.isEmpty();
         }
     }
 
@@ -101,24 +102,33 @@ import java.util.stream.Collectors;
     Promise<StockAvailability> checkStock(CheckStockRequest request);
     Promise<StockReservation> reserveStock(ReserveStockRequest request);
     Promise<Unit> releaseStock(ReleaseStockRequest request);
+
     String SELECT_STOCK = "SELECT product_id, stock FROM products WHERE product_id = ?";
+
     String UPDATE_STOCK = "UPDATE products SET stock = stock - ? WHERE product_id = ? AND stock >= ?";
+
     String RESTORE_STOCK = "UPDATE products SET stock = stock + ? WHERE product_id = ?";
+
     String INSERT_RESERVATION = "INSERT INTO stock_reservations (reservation_id, order_id, expires_at) VALUES (?, ?, ?)";
+
     String INSERT_RESERVATION_ITEM = "INSERT INTO reservation_items (reservation_id, product_id, quantity) VALUES (?, ?, ?)";
+
     String SELECT_RESERVATION_ITEMS = "SELECT product_id, quantity FROM reservation_items WHERE reservation_id = ?";
+
     String DELETE_RESERVATION_ITEMS = "DELETE FROM reservation_items WHERE reservation_id = ?";
+
     String DELETE_RESERVATION = "DELETE FROM stock_reservations WHERE reservation_id = ?";
 
     static InventoryService inventoryService(@Sql SqlConnector db) {
-        record inventoryService( SqlConnector db) implements InventoryService {
+        record inventoryService(SqlConnector db) implements InventoryService {
             @Override public Promise<StockAvailability> checkStock(CheckStockRequest request) {
                 return fetchStockLevels(request.items()).map(stockMap -> buildAvailability(request.items(), stockMap));
             }
 
             @Override public Promise<StockReservation> reserveStock(ReserveStockRequest request) {
                 return checkStock(CheckStockRequest.checkStockRequest(request.items())).flatMap(availability -> availability.hasUnavailableItems()
-                                                                                                               ? InventoryError.insufficientStock(availability.unavailableItems()).promise()
+                                                                                                               ? InventoryError.insufficientStock(availability.unavailableItems())
+                                                                                                                                                 .promise()
                                                                                                                : performReservation(request));
             }
 
@@ -137,7 +147,8 @@ import java.util.stream.Collectors;
                 return db.queryOptional(SELECT_STOCK,
                                         row -> row.getInt("stock").flatMap(Quantity::quantity)
                                                          .map(qty -> new ProductStock(productId, qty)),
-                                        productId.value()).map(opt -> opt.or(new ProductStock(productId, Quantity.ZERO)));
+                                        productId.value())
+                .map(opt -> opt.or(new ProductStock(productId, Quantity.ZERO)));
             }
 
             private static Map<ProductId, Quantity> toStockMap(List<ProductStock> stocks) {
@@ -147,12 +158,13 @@ import java.util.stream.Collectors;
             private static StockAvailability buildAvailability(List<LineItem> items,
                                                                Map<ProductId, Quantity> stockMap) {
                 var unavailable = items.stream().filter(item -> stockMap.getOrDefault(item.productId(),
-                                                                                      Quantity.ZERO).value() < item.quantity().value())
+                                                                                      Quantity.ZERO)
+                .value() <item.quantity().value())
                                               .map(LineItem::productId)
                                               .toList();
                 return unavailable.isEmpty()
-                       ? StockAvailability.fullyAvailable(stockMap)
-                       : StockAvailability.partiallyAvailable(stockMap, unavailable);
+                      ? StockAvailability.fullyAvailable(stockMap)
+                      : StockAvailability.partiallyAvailable(stockMap, unavailable);
             }
 
             private Promise<StockReservation> performReservation(ReserveStockRequest request) {
@@ -200,7 +212,8 @@ import java.util.stream.Collectors;
             private Promise<Unit> restoreStockFromReservation(SqlConnector conn, String reservationId) {
                 return conn.queryList(SELECT_RESERVATION_ITEMS,
                                       row -> Result.all(row.getString("product_id"),
-                                                        row.getInt("quantity")).map(ReservationItem::new),
+                                                        row.getInt("quantity"))
+                .map(ReservationItem::new),
                                       reservationId).flatMap(items -> restoreAllStock(conn, items))
                                      .flatMap(_ -> conn.update(DELETE_RESERVATION_ITEMS, reservationId))
                                      .flatMap(_ -> conn.update(DELETE_RESERVATION, reservationId))

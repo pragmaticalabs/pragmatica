@@ -4,7 +4,8 @@ import org.pragmatica.lang.Result;
 
 import java.util.List;
 
-public record LineItem( ProductId productId, Quantity quantity) {
+
+public record LineItem(ProductId productId, Quantity quantity) {
     public static Result<LineItem> lineItem(String productId, int quantity) {
         return Result.all(ProductId.productId(productId), Quantity.quantity(quantity)).map(LineItem::new);
     }

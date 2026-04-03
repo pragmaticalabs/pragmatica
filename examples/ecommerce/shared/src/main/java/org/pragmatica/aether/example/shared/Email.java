@@ -8,7 +8,8 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.util.regex.Pattern;
 
-public record Email( String value) {
+
+public record Email(String value) {
     private static final Pattern EMAIL_PATTERN = Pattern.compile("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
 
     private static final Fn1<Cause, String> INVALID_EMAIL = Causes.forOneValue("Invalid email: %s");

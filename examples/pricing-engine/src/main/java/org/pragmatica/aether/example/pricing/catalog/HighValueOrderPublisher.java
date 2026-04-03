@@ -8,4 +8,5 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
+
 @ResourceQualifier(type = Publisher.class, config = "messaging.high-value-orders") @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.PARAMETER) public@interface HighValueOrderPublisher {}

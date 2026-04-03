@@ -15,15 +15,18 @@ import java.util.Set;
 
 import static org.pragmatica.lang.Result.success;
 
+
 @Slice public interface EchoService {
     record EchoRequest(String message) {
         private static final Fn1<Cause, String> MESSAGE_REQUIRED = Causes.forOneValue("Message is required, got: '%s'");
+
         private static final Fn1<Cause, Integer> MESSAGE_TOO_LONG = Causes.forOneValue("Message exceeds max length 10000, got: %d");
+
         private static final int MAX_LENGTH = 10000;
 
         public static Result<EchoRequest> echoRequest(String message) {
-            if ( message == null || Verify.Is.blank(message)) {return MESSAGE_REQUIRED.apply(message).result();}
-            if ( message.length() > MAX_LENGTH) {return MESSAGE_TOO_LONG.apply(message.length()).result();}
+            if (message == null || Verify.Is.blank(message)) {return MESSAGE_REQUIRED.apply(message).result();}
+            if (message.length() > MAX_LENGTH) {return MESSAGE_TOO_LONG.apply(message.length()).result();}
             return success(new EchoRequest(message));
         }
     }
@@ -36,9 +39,13 @@ import static org.pragmatica.lang.Result.success;
 
     record TransformRequest(String operation, String value) {
         private static final Set<String> VALID_OPERATIONS = Set.of("reverse", "upper", "lower", "hash");
+
         private static final Fn1<Cause, String> INVALID_OPERATION = Causes.forOneValue("Invalid operation: '%s'. Valid: reverse, upper, lower, hash");
+
         private static final Fn1<Cause, String> VALUE_REQUIRED = Causes.forOneValue("Value is required, got: '%s'");
+
         private static final Fn1<Cause, Integer> VALUE_TOO_LONG = Causes.forOneValue("Value exceeds max length 10000, got: %d");
+
         private static final int MAX_LENGTH = 10000;
 
         public static Result<TransformRequest> transformRequest(String operation, String value) {
@@ -48,13 +55,14 @@ import static org.pragmatica.lang.Result.success;
         }
 
         @SuppressWarnings("JBCT-UTIL-02") private static Result<String> parseOperation(String operation) {
-            if ( operation == null || !VALID_OPERATIONS.contains(operation.toLowerCase())) {return INVALID_OPERATION.apply(operation).result();}
+            if (operation == null || !VALID_OPERATIONS.contains(operation.toLowerCase())) {return INVALID_OPERATION.apply(operation)
+                                                                                                                         .result();}
             return success(operation.toLowerCase());
         }
 
         private static Result<String> parseValue(String value) {
-            if ( value == null || Verify.Is.empty(value)) {return VALUE_REQUIRED.apply(value).result();}
-            if ( value.length() > MAX_LENGTH) {return VALUE_TOO_LONG.apply(value.length()).result();}
+            if (value == null || Verify.Is.empty(value)) {return VALUE_REQUIRED.apply(value).result();}
+            if (value.length() > MAX_LENGTH) {return VALUE_TOO_LONG.apply(value.length()).result();}
             return success(value);
         }
     }
@@ -63,7 +71,7 @@ import static org.pragmatica.lang.Result.success;
         private static final Fn1<Cause, Integer> INVALID_CODE = Causes.forOneValue("HTTP code must be 400-599, got: %d");
 
         public static Result<FailRequest> failRequest(int code) {
-            if ( code <400 || code >599) {return INVALID_CODE.apply(code).result();}
+            if (code <400 || code > 599) {return INVALID_CODE.apply(code).result();}
             return success(new FailRequest(code));
         }
     }
@@ -119,7 +127,16 @@ import static org.pragmatica.lang.Result.success;
         }
 
         private static String formatErrorText(int code) {
-            return switch (code) {case 400 -> "Bad Request"; case 401 -> "Unauthorized"; case 403 -> "Forbidden"; case 404 -> "Not Found"; case 500 -> "Internal Server Error"; case 502 -> "Bad Gateway"; case 503 -> "Service Unavailable"; default -> "Error " + code;};
+            return switch (code){
+                case 400 -> "Bad Request";
+                case 401 -> "Unauthorized";
+                case 403 -> "Forbidden";
+                case 404 -> "Not Found";
+                case 500 -> "Internal Server Error";
+                case 502 -> "Bad Gateway";
+                case 503 -> "Service Unavailable";
+                default -> "Error " + code;
+            };
         }
     }
 
@@ -151,12 +168,17 @@ import static org.pragmatica.lang.Result.success;
         }
 
         @SuppressWarnings("JBCT-SEQ-01") private String convertValue(TransformRequest request) {
-            return switch (request.operation()) {case "reverse" -> reverse(request.value());case "upper" -> request.value().toUpperCase();case "lower" -> request.value().toLowerCase();case "hash" -> computeHash(request.value());default -> request.value();};
+            return switch (request.operation()){
+                case "reverse" -> reverse(request.value());
+                case "upper" -> request.value().toUpperCase();
+                case "lower" -> request.value().toLowerCase();
+                case "hash" -> computeHash(request.value());
+                default -> request.value();
+            };
         }
 
         private String reverse(String input) {
-            return new StringBuilder(input).reverse()
-                                           .toString();
+            return new StringBuilder(input).reverse().toString();
         }
 
         private String computeHash(String input) {

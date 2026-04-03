@@ -7,7 +7,8 @@ import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.IdGenerator;
 
-public record CustomerId( String value) {
+
+public record CustomerId(String value) {
     private static final Fn1<Cause, String> INVALID_CUSTOMER_ID = Causes.forOneValue("Invalid customer ID: %s");
 
     public static Result<CustomerId> customerId(String raw) {

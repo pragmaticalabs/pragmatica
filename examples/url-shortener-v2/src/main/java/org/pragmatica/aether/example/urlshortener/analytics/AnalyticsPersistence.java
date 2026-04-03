@@ -5,6 +5,7 @@ import org.pragmatica.aether.resource.db.PgSql;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+
 /// Persistence adapter for click analytics v2.
 ///
 /// Records and counts click events per short code.

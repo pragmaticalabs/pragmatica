@@ -11,11 +11,13 @@ import org.pragmatica.lang.Verify;
 
 import java.util.regex.Pattern;
 
+
 @Slice public interface Analytics {
     record RecordClickRequest(String shortCode) {
         private static final Pattern CODE_PATTERN = Pattern.compile("^[A-Za-z0-9]{6,8}$");
 
         private static final Cause EMPTY_CODE = AnalyticsError.invalidCode("Short code cannot be empty");
+
         private static final Cause INVALID_CODE_FORMAT = AnalyticsError.invalidCode("Invalid short code format");
 
         public static Result<RecordClickRequest> recordClickRequest(String shortCode) {
@@ -31,6 +33,7 @@ import java.util.regex.Pattern;
         private static final Pattern CODE_PATTERN = Pattern.compile("^[A-Za-z0-9]{6,8}$");
 
         private static final Cause EMPTY_CODE = AnalyticsError.invalidCode("Short code cannot be empty");
+
         private static final Cause INVALID_CODE_FORMAT = AnalyticsError.invalidCode("Invalid short code format");
 
         public static Result<GetStatsRequest> getStatsRequest(String shortCode) {
@@ -90,7 +93,7 @@ import java.util.regex.Pattern;
         @Override public Promise<GetStatsResponse> getStats(GetStatsRequest request) {
             var shortCode = request.shortCode();
             return persistence.countByShortCode(shortCode)
-            .map(count -> GetStatsResponse.getStatsResponse(shortCode, count));
+                                               .map(count -> GetStatsResponse.getStatsResponse(shortCode, count));
         }
 
         @Override public Promise<Unit> onClickEvent(ClickEvent event) {
@@ -99,12 +102,18 @@ import java.util.regex.Pattern;
     }
 
     static Analytics noopAnalytics() {
-        return new Analytics() {@Override public Promise<RecordClickResponse> recordClick(RecordClickRequest request) {
-            return Promise.success(RecordClickResponse.recordClickResponse(request.shortCode(), 0));
-        }@Override public Promise<GetStatsResponse> getStats(GetStatsRequest request) {
-            return Promise.success(GetStatsResponse.getStatsResponse(request.shortCode(), 0));
-        }@Override public Promise<Unit> onClickEvent(ClickEvent event) {
-            return Promise.success(Unit.unit());
-        }};
+        return new Analytics() {
+            @Override public Promise<RecordClickResponse> recordClick(RecordClickRequest request) {
+                return Promise.success(RecordClickResponse.recordClickResponse(request.shortCode(), 0));
+            }
+
+            @Override public Promise<GetStatsResponse> getStats(GetStatsRequest request) {
+                return Promise.success(GetStatsResponse.getStatsResponse(request.shortCode(), 0));
+            }
+
+            @Override public Promise<Unit> onClickEvent(ClickEvent event) {
+                return Promise.success(Unit.unit());
+            }
+        };
     }
 }

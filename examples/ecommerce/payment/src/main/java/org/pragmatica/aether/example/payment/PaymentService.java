@@ -22,6 +22,7 @@ import java.time.Instant;
 import java.util.Currency;
 import java.util.Random;
 
+
 @Slice public interface PaymentService {
     record ProcessPaymentRequest(OrderId orderId, CustomerId customerId, Money amount, PaymentMethod paymentMethod) {
         public static ProcessPaymentRequest processPaymentRequest(OrderId orderId,
@@ -84,7 +85,9 @@ import java.util.Random;
 
     record PaymentMethod(String cardNumber, String expiryMonth, String expiryYear, String cvv, String cardholderName) {
         private static final Fn1<Cause, String> INVALID_CARD = Causes.forOneValue("Invalid card number: %s");
+
         private static final Fn1<Cause, String> INVALID_EXPIRY = Causes.forOneValue("Invalid expiry: %s");
+
         private static final Fn1<Cause, String> INVALID_CVV = Causes.forOneValue("Invalid CVV: %s");
 
         public static Result<PaymentMethod> paymentMethod(String cardNumber,
@@ -97,11 +100,8 @@ import java.util.Random;
                               validateCvv(cvv),
                               Verify.ensure(cardholderName,
                                             Verify.Is::notBlank,
-                                            Causes.forOneValue("Invalid cardholder name: %s"))).map((card, _, validCvv, name) -> new PaymentMethod(card,
-                                                                                                                                                   expiryMonth,
-                                                                                                                                                   expiryYear,
-                                                                                                                                                   validCvv,
-                                                                                                                                                   name));
+                                            Causes.forOneValue("Invalid cardholder name: %s")))
+            .map((card, _, validCvv, name) -> new PaymentMethod(card, expiryMonth, expiryYear, validCvv, name));
         }
 
         private static Result<String> validateCardNumber(String number) {
@@ -110,18 +110,18 @@ import java.util.Random;
         }
 
         private static boolean isValidCardNumber(String number) {
-            if ( !number.matches("\\d{13,19}")) return false;
+            if (!number.matches("\\d{13,19}")) return false;
             return luhnCheck(number);
         }
 
         private static boolean luhnCheck(String number) {
             int sum = 0;
             boolean alternate = false;
-            for ( int i = number.length() - 1;i >= 0;i--) {
+            for (int i = number.length() - 1;i >= 0;i--) {
                 int n = Character.digit(number.charAt(i), 10);
-                if ( alternate) {
+                if (alternate) {
                     n *= 2;
-                    if ( n >9) n -= 9;
+                    if (n > 9) n -= 9;
                 }
                 sum += n;
                 alternate = !alternate;
@@ -148,7 +148,13 @@ import java.util.Random;
         }
 
         public String cardType() {
-            return switch (cardNumber.charAt(0)) {case '4' -> "Visa"; case '5' -> "Mastercard"; case '3' -> "Amex"; case '6' -> "Discover"; default -> "Unknown";};
+            return switch (cardNumber.charAt(0)){
+                case '4' -> "Visa";
+                case '5' -> "Mastercard";
+                case '3' -> "Amex";
+                case '6' -> "Discover";
+                default -> "Unknown";
+            };
         }
     }
 
@@ -192,16 +198,19 @@ import java.util.Random;
 
     Promise<PaymentResult> processPayment(ProcessPaymentRequest request);
     Promise<RefundResult> processRefund(RefundRequest request);
+
     String INSERT_TRANSACTION = """
         INSERT INTO transactions (transaction_id, order_id, customer_id, amount_cents, currency, card_type, masked_card, status)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)""";
+
     String SELECT_TRANSACTION = """
         SELECT transaction_id, order_id, customer_id, amount_cents, currency, card_type, masked_card, status
         FROM transactions WHERE transaction_id = ?""";
 
     static PaymentService paymentService(@Sql SqlConnector db) {
-        record paymentService( SqlConnector db, Random random) implements PaymentService {
+        record paymentService(SqlConnector db, Random random) implements PaymentService {
             private static final double DECLINE_RATE = 0.05;
+
             private static final long FRAUD_CHECK_DELAY_MS = 100;
 
             @Override public Promise<PaymentResult> processPayment(ProcessPaymentRequest request) {
@@ -213,7 +222,8 @@ import java.util.Random;
             @Override public Promise<RefundResult> processRefund(RefundRequest request) {
                 return db.queryOptional(SELECT_TRANSACTION,
                                         paymentService::mapTransaction,
-                                        request.transactionId()).flatMap(opt -> opt.toResult(new PaymentError.TransactionNotFound(request.transactionId())).async())
+                                        request.transactionId()).flatMap(opt -> opt.toResult(new PaymentError.TransactionNotFound(request.transactionId()))
+                                                                                            .async())
                                        .flatMap(original -> validateRefundAmount(request, original).async())
                                        .flatMap(refundAmount -> persistRefund(request.transactionId(),
                                                                               refundAmount));
@@ -226,7 +236,8 @@ import java.util.Random;
                                   row.getString("currency"),
                                   row.getString("card_type"),
                                   row.getString("masked_card"),
-                                  row.getString("status")).flatMap(paymentService::buildPaymentResult);
+                                  row.getString("status"))
+                .flatMap(paymentService::buildPaymentResult);
             }
 
             private static Result<PaymentResult> buildPaymentResult(String txnId,
@@ -237,19 +248,23 @@ import java.util.Random;
                                                                     String maskedCard,
                                                                     String status) {
                 return Result.all(OrderId.orderId(orderId),
-                                  Money.money(BigDecimal.valueOf(amountCents, 2), Currency.getInstance(currency))).map((oid, amount) -> new PaymentResult(txnId,
-                                                                                                                                                          oid,
-                                                                                                                                                          amount,
-                                                                                                                                                          cardType,
-                                                                                                                                                          maskedCard,
-                                                                                                                                                          Instant.now(),
-                                                                                                                                                          PaymentResult.PaymentStatus.valueOf(status)));
+                                  Money.money(BigDecimal.valueOf(amountCents, 2),
+                                              Currency.getInstance(currency)))
+                .map((oid, amount) -> new PaymentResult(txnId,
+                                                        oid,
+                                                        amount,
+                                                        cardType,
+                                                        maskedCard,
+                                                        Instant.now(),
+                                                        PaymentResult.PaymentStatus.valueOf(status)));
             }
 
             private Result<Money> validateRefundAmount(RefundRequest request, PaymentResult original) {
                 var refundAmount = request.partialAmount().or(original.amount());
                 return original.amount().isGreaterThan(refundAmount)
-                                      .flatMap(isGreater -> isGreater || refundAmount.amount().equals(original.amount().amount())
+                                      .flatMap(isGreater -> isGreater || refundAmount.amount()
+                                                                                            .equals(original.amount()
+                                                                                                                   .amount())
                                                            ? Result.success(refundAmount)
                                                            : new PaymentError.RefundExceedsOriginal(refundAmount,
                                                                                                     original.amount()).result());
@@ -258,37 +273,7 @@ import java.util.Random;
             private Promise<Unit> simulateFraudCheck() {
                 try {
                     Thread.sleep(FRAUD_CHECK_DELAY_MS);
-                }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-                catch (InterruptedException e) {
+                } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return new PaymentError.ProcessingFailed(e).promise();
                 }
@@ -296,24 +281,25 @@ import java.util.Random;
             }
 
             private Promise<Money> validatePaymentAmount(Money amount) {
-                if ( amount.isZero()) {return new PaymentError.InvalidAmount("Amount cannot be zero").promise();}
-                if ( amount.amount().compareTo(BigDecimal.valueOf(50000)) > 0) {return new PaymentError.InvalidAmount("Amount exceeds maximum ($50,000)").promise();}
+                if (amount.isZero()) {return new PaymentError.InvalidAmount("Amount cannot be zero").promise();}
+                if (amount.amount().compareTo(BigDecimal.valueOf(50000)) > 0) {return new PaymentError.InvalidAmount("Amount exceeds maximum ($50,000)").promise();}
                 return Promise.success(amount);
             }
 
             private Promise<PaymentResult> simulateAuthorization(ProcessPaymentRequest request) {
-                if ( random.nextDouble() < DECLINE_RATE) {return new PaymentError.Declined("Card declined by issuer").promise();}
+                if (random.nextDouble() <DECLINE_RATE) {return new PaymentError.Declined("Card declined by issuer").promise();}
                 return checkCardNumber(request);
             }
 
             private Promise<PaymentResult> checkCardNumber(ProcessPaymentRequest request) {
                 var cardNumber = request.paymentMethod().cardNumber();
-                if ( cardNumber.endsWith("0000")) {return new PaymentError.Declined("Insufficient funds").promise();}
-                if ( cardNumber.endsWith("1111")) {return new PaymentError.Declined("Card expired").promise();}
-                if ( cardNumber.endsWith("2222")) {return new PaymentError.FraudSuspected().promise();}
+                if (cardNumber.endsWith("0000")) {return new PaymentError.Declined("Insufficient funds").promise();}
+                if (cardNumber.endsWith("1111")) {return new PaymentError.Declined("Card expired").promise();}
+                if (cardNumber.endsWith("2222")) {return new PaymentError.FraudSuspected().promise();}
                 return Promise.success(PaymentResult.authorized(request.orderId(),
                                                                 request.amount(),
-                                                                request.paymentMethod()).capture());
+                                                                request.paymentMethod())
+                .capture());
             }
 
             private Promise<PaymentResult> persistTransaction(PaymentResult result) {
@@ -329,7 +315,8 @@ import java.util.Random;
                                               .getCurrencyCode(),
                                  result.cardType(),
                                  result.maskedCard(),
-                                 result.status().name()).map(_ -> result);
+                                 result.status().name())
+                .map(_ -> result);
             }
 
             private Promise<RefundResult> persistRefund(String originalTransactionId, Money refundAmount) {
@@ -344,7 +331,8 @@ import java.util.Random;
                                  refundAmount.currency().getCurrencyCode(),
                                  "REFUND",
                                  "",
-                                 "REFUNDED").map(_ -> refund);
+                                 "REFUNDED")
+                .map(_ -> refund);
             }
         }
         return new paymentService(db, new Random());

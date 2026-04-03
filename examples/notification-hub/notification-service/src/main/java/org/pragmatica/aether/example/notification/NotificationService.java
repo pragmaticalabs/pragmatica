@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+
 @Slice public interface NotificationService {
     @Codec record SendRequest(String message, String channel){}
 
@@ -50,6 +51,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
     record notificationService(StreamPublisher<NotificationEvent> publisher,
                                CopyOnWriteArrayList<NotificationEvent> recentNotifications) implements NotificationService {
         private static final int MAX_RECENT = 100;
+
         private static final String ALL_CHANNELS = "all";
 
         @Override public Promise<NotificationResponse> send(SendRequest request) {
@@ -87,7 +89,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
         }
 
         private void trimRecent() {
-            while ( recentNotifications.size() > MAX_RECENT) {recentNotifications.removeFirst();}
+            while (recentNotifications.size() > MAX_RECENT) {recentNotifications.removeFirst();}
         }
     }
 }

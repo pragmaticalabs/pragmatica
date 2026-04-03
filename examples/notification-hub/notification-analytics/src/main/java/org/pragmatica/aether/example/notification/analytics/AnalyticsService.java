@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.pragmatica.aether.example.notification.analytics.AnalyticsResponse.analyticsResponse;
 
+
 @Slice public interface AnalyticsService {
     @Codec record StatsRequest(){}
 

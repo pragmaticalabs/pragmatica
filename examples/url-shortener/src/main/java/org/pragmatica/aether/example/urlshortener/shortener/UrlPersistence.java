@@ -6,6 +6,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+
 /// Persistence adapter for URL shortener.
 ///
 /// Manages short code to URL mappings in PostgreSQL.

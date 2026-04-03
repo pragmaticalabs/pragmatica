@@ -6,7 +6,8 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
-public record Address( String street, String city, String state, String postalCode, String country) {
+
+public record Address(String street, String city, String state, String postalCode, String country) {
     private static final Fn1<Cause, String> BLANK_FIELD = Causes.forOneValue("Address field cannot be blank: %s");
 
     public static Result<Address> address(String street, String city, String state, String postalCode, String country) {
@@ -14,7 +15,8 @@ public record Address( String street, String city, String state, String postalCo
                           validateField(city, "city"),
                           validateField(state, "state"),
                           validateField(postalCode, "postalCode"),
-                          validateField(country, "country")).map(Address::new);
+                          validateField(country, "country"))
+        .map(Address::new);
     }
 
     private static Result<String> validateField(String value, String fieldName) {

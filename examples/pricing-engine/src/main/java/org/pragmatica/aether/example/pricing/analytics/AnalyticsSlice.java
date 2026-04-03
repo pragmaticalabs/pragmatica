@@ -11,6 +11,7 @@ import org.pragmatica.lang.Unit;
 
 import java.util.List;
 
+
 @Slice public interface AnalyticsSlice {
     record EmptyRequest(){}
 
@@ -36,13 +37,18 @@ import java.util.List;
     Promise<HighValueSummary> getHighValueSummary(EmptyRequest request);
 
     static AnalyticsSlice analyticsSlice(@Sql SqlConnector db) {
-        record analyticsSlice( SqlConnector db) implements AnalyticsSlice {
+        record analyticsSlice(SqlConnector db) implements AnalyticsSlice {
             private static final String INSERT_ORDER = "INSERT INTO high_value_orders (product_id, quantity, total_cents, region_code) VALUES (?, ?, ?, ?)";
+
             private static final String SELECT_HOURLY = "SELECT EXTRACT(HOUR FROM created_at) AS hr, COUNT(*) AS order_count, SUM(total_cents) AS revenue" + " FROM high_value_orders WHERE created_at >= CURRENT_DATE" + " GROUP BY EXTRACT(HOUR FROM created_at) ORDER BY hr";
+
             private static final RowMapper<HourlyBucket> BUCKET_MAPPER = analyticsSlice::mapBucket;
 
             private static Result<HourlyBucket> mapBucket(RowMapper.RowAccessor row) {
-                return Result.all(row.getInt("hr"), row.getInt("order_count"), row.getLong("revenue")).map(HourlyBucket::new);
+                return Result.all(row.getInt("hr"),
+                                  row.getInt("order_count"),
+                                  row.getLong("revenue"))
+                .map(HourlyBucket::new);
             }
 
             @Override public Promise<Unit> onHighValueOrder(HighValueOrderEvent event) {

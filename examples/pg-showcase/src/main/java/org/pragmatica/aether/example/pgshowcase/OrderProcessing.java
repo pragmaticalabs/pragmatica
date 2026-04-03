@@ -11,10 +11,12 @@ import org.pragmatica.lang.Verify;
 
 import java.math.BigDecimal;
 
+
 /// Order processing slice demonstrating @PgSql persistence usage.
 @Slice public interface OrderProcessing {
     record PlaceOrderRequest(String userId, String total) {
         private static final Cause EMPTY_USER_ID = OrderError.validationFailed("User ID cannot be empty");
+
         private static final Cause EMPTY_TOTAL = OrderError.validationFailed("Total cannot be empty");
 
         public static Result<PlaceOrderRequest> placeOrderRequest(String userId, String total) {
@@ -54,8 +56,9 @@ import java.math.BigDecimal;
     Promise<Option<OrderRow>> getOrder(GetOrderRequest request);
 
     static OrderProcessing orderProcessing(OrderPersistence orders, UserPersistence users) {
-        record orderProcessing( OrderPersistence orders, UserPersistence users) implements OrderProcessing {
+        record orderProcessing(OrderPersistence orders, UserPersistence users) implements OrderProcessing {
             private static final Cause INVALID_USER_ID = OrderError.validationFailed("User ID must be a positive number");
+
             private static final Cause INVALID_TOTAL = OrderError.validationFailed("Total must be a positive number");
 
             @Override public Promise<OrderConfirmation> placeOrder(PlaceOrderRequest request) {
@@ -71,9 +74,9 @@ import java.math.BigDecimal;
 
             private Promise<ValidInput> verifyUserExists(ValidInput valid) {
                 return users.existsById(valid.userId())
-                .flatMap(exists -> exists
-                                  ? Promise.success(valid)
-                                  : OrderError.validationFailed("User does not exist").promise());
+                                       .flatMap(exists -> exists
+                                                         ? Promise.success(valid)
+                                                         : OrderError.validationFailed("User does not exist").promise());
             }
 
             private Promise<OrderRow> createOrder(ValidInput valid) {
@@ -90,7 +93,8 @@ import java.math.BigDecimal;
 
             private static Result<BigDecimal> parseBigDecimal(String value) {
                 return Result.lift(() -> new BigDecimal(value.trim()))
-                .filter(_ -> INVALID_TOTAL, total -> total.compareTo(BigDecimal.ZERO) > 0);
+                                  .filter(_ -> INVALID_TOTAL,
+                                          total -> total.compareTo(BigDecimal.ZERO) > 0);
             }
         }
         return new orderProcessing(orders, users);
