@@ -25,7 +25,7 @@ test_tls_active() {
 
 test_rotation_under_load() {
     # Start load
-    start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/api/health"
+    start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/health/live"
     sleep 5
 
     # Check if TLS is configured before attempting rotation
