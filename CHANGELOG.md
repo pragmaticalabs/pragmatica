@@ -32,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 - **Flow-based JBCT formatter** — completely replaced trivia-entangled CstPrinter with FlowPrinter that makes layout decisions from code structure + width measurement only. Eliminates all blank-line accumulation bugs by design. 0 non-idempotent files across 1,970-file codebase
 - **DeploymentMap renamed** — `DeploymentMapImpl` → `IndexedDeploymentMap` (JBCT naming compliance)
+- **Standalone example POMs** — `url-shortener` (1.0.0) and `url-shortener-v2` (1.0.1) decoupled from parent POM version, produce same `org.pragmatica.aether.example:url-shortener` artifact at different versions for deployment strategy testing
 - **Aether Store branding** — PostgreSQL persistence adapter branded as "Aether Store" in all user-facing documentation
 - **build.sh** — replaced `-q` with grep filtering, JBCT formatting warnings visible, no more stalls on large files
 - **Format logging** — JBCT formatter now logs reformatted files at WARN level (was DEBUG)
@@ -59,10 +60,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **CLI SLF4J warnings** — added `slf4j-nop` to CLI dependencies
 - **Docker healthcheck** — uses `/health/live` (no auth required) instead of `/api/health`
 - **Audit logging** — set to WARN level, suppresses debug auth success noise
-- **QUIC reconnection storm** — three fixes: exclude self node from reconciliation loop (was firing ConnectNode(self) every 5s), prefer new connections over potentially stale ones in `onPeerConnected`, add `connectingInProgress` guard to prevent TOCTOU race in `connectPeer`
-- **DeployCommand JSON bodies** — CLI now sends correct nested JSON matching API's `DeployRequest` schema: `"blueprint"` field (was `"coordinates"`), nested `"canary"/"blueGreen"/"rolling"` strategy configs, nested `"thresholds"` object
+- **QUIC reconnection storm** — root cause was 2-part PEERS format creating wrong NodeIds (`node-aether-node-X-6000`). Fixed with 3-part format (`nodeId:host:port`). Also: self-connection guards in `onPeerConnected` and `processViewChange`, self-exclusion from reconciliation loop, `connectingInProgress` dedup guard
+- **Deploy list endpoint** — CLI `deploy list` used wrong path `/api/deployments` (404), corrected to `GET /api/deploy`
+- **Deploy immediate field** — CLI `deployImmediate()` used `"blueprint"` field, corrected to `"artifact"` for `/api/blueprint/deploy`
+- **DeployCommand JSON bodies** — CLI now sends correct nested JSON matching API's `DeployRequest` schema: nested `"canary"/"blueGreen"/"rolling"` strategy configs, nested `"thresholds"` object
 - **Slice processor FQCN in provide() calls** — `generateResourceProvideCall` and plain interface factory params now use `ImportTracker` for simple names instead of fully-qualified class names
 - **Integration test scripts** — fixed JSON field paths (08-http-client), OOM prevention with RPS cap (04-under-load), temp file race condition (13-concurrent-deploys), strengthened disruption budget assertions (13-disruption-budget), relaxed error rate threshold
+- **Integration test helpers** — added missing `schema_status()`, `drain_node()`, `activate_node()` functions; drain endpoint uses path params not JSON body
+- **Integration test TLS handling** — certificate-status and cert-rotation tests handle `NOT_CONFIGURED` state when TLS is disabled
+- **Integration test load target** — cert-rotation load test uses management endpoint `/health/live` (was app endpoint)
+- **Smoke test node count** — uses `>=` assertion to accommodate passive LB node
+- **Storage management test** — handles empty `{}` response when no storage configured
 - **JBCT formatter blank-line artifacts** — removed 13,911 blank lines across 91 aether files from previous formatter bug
 
 ### Removed
