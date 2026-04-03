@@ -16,16 +16,12 @@ SKIP_CLEANUP="${SKIP_CLEANUP:-false}"
 # Bootstrap cluster
 # ---------------------------------------------------------------------------
 if [ "$SKIP_BOOTSTRAP" != "true" ]; then
-    log_step "Bootstrapping test cluster"
-    if command -v aether &>/dev/null; then
-        aether cluster bootstrap --yes 2>/dev/null || log_warn "Bootstrap returned non-zero"
-    else
-        log_warn "aether CLI not found — assuming cluster is already running"
-    fi
+    log_step "Setting up integration test cluster"
+    bash "${SCRIPT_DIR}/setup.sh"
+else
+    log_step "Waiting for cluster to become ready"
+    wait_for_cluster 180
 fi
-
-log_step "Waiting for cluster to become ready"
-wait_for_cluster 180
 
 # ---------------------------------------------------------------------------
 # Run suites in order
@@ -76,9 +72,7 @@ done
 # ---------------------------------------------------------------------------
 if [ "$SKIP_CLEANUP" != "true" ]; then
     log_step "Destroying test cluster"
-    if command -v aether &>/dev/null; then
-        aether cluster destroy --yes 2>/dev/null || true
-    fi
+    bash "${SCRIPT_DIR}/cleanup.sh" 2>/dev/null || true
 fi
 
 # ---------------------------------------------------------------------------

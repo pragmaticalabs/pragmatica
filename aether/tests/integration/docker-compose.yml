@@ -1,0 +1,119 @@
+# Aether Integration Test Cluster
+#
+# 5-node cluster + PostgreSQL + passive LB for full integration test suite.
+#
+# Usage:
+#   docker-compose up -d                 # Start cluster
+#   docker-compose up -d --build         # Rebuild image and start
+#   docker-compose down -v               # Stop and remove volumes
+#
+# Requires: Docker image 'aether-node:local' built from aether/docker/aether-node/Dockerfile
+# Build:    cd <repo-root>/aether && docker build -t aether-node:local -f docker/aether-node/Dockerfile .
+
+x-node-common: &node-common
+  image: aether-node:local
+  networks:
+    - aether-network
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+  environment: &node-env
+    CLUSTER_PORT: "6000"
+    MANAGEMENT_PORT: "8080"
+    PEERS: "node-1:aether-node-1:6000,node-2:aether-node-2:6000,node-3:aether-node-3:6000,node-4:aether-node-4:6000,node-5:aether-node-5:6000"
+    CORE_MAX: "5"
+    JAVA_OPTS: "-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
+  healthcheck:
+    test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
+    interval: 10s
+    timeout: 5s
+    retries: 6
+    start_period: 30s
+  restart: unless-stopped
+
+services:
+  # --- PostgreSQL (for database/schema tests and @PgSql persistence) ---
+  postgres:
+    image: postgres:17-alpine
+    container_name: forge-postgres
+    hostname: forge-postgres
+    networks:
+      - aether-network
+    environment:
+      POSTGRES_USER: forge
+      POSTGRES_PASSWORD: forge
+      POSTGRES_DB: forge
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- 5-node Aether cluster ---
+  aether-node-1:
+    <<: *node-common
+    container_name: aether-node-1
+    hostname: aether-node-1
+    environment:
+      <<: *node-env
+      NODE_ID: "node-1"
+    ports:
+      - "5150:8080"   # Management API
+      - "8070:8070"   # App HTTP
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  aether-node-2:
+    <<: *node-common
+    container_name: aether-node-2
+    hostname: aether-node-2
+    environment:
+      <<: *node-env
+      NODE_ID: "node-2"
+    ports:
+      - "5151:8080"
+      - "8071:8070"
+
+  aether-node-3:
+    <<: *node-common
+    container_name: aether-node-3
+    hostname: aether-node-3
+    environment:
+      <<: *node-env
+      NODE_ID: "node-3"
+    ports:
+      - "5152:8080"
+      - "8072:8070"
+
+  aether-node-4:
+    <<: *node-common
+    container_name: aether-node-4
+    hostname: aether-node-4
+    environment:
+      <<: *node-env
+      NODE_ID: "node-4"
+    ports:
+      - "5153:8080"
+      - "8073:8070"
+
+  aether-node-5:
+    <<: *node-common
+    container_name: aether-node-5
+    hostname: aether-node-5
+    environment:
+      <<: *node-env
+      NODE_ID: "node-5"
+    ports:
+      - "5154:8080"
+      - "8074:8070"
+
+networks:
+  aether-network:
+    driver: bridge
+
+volumes:
+  pgdata:
