@@ -40,6 +40,7 @@
             return true;
         },
         show: function() {
+            if (this.isVisible()) return; // Don't reset input if already showing
             this.overlay.style.display = 'flex';
             document.getElementById('auth-error').style.display = 'none';
             document.getElementById('auth-key-input').value = '';
