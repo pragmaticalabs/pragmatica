@@ -86,6 +86,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private final Map<NodeId, QuicPeerConnection> peerLinks = new ConcurrentHashMap<>();
     private final Map<NodeId, Long> connectionEstablishedAt = new ConcurrentHashMap<>();
+    private final Set<NodeId> connectingInProgress = ConcurrentHashMap.newKeySet();
     private final Set<NodeId> passivePeers = ConcurrentHashMap.newKeySet();
     private final Map<NodeId, Map<StreamType, Queue<byte[]>>> outboundQueues = new ConcurrentHashMap<>();
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
@@ -323,8 +324,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
             log.debug("Skipping connection to {}: higher NodeId does not initiate", peerId);
             return;
         }
+        // Prevent concurrent connection attempts to the same peer (TOCTOU race between
+        // containsKey check above and the async connect call below).
+        if (!connectingInProgress.add(peerId)) {
+            return;
+        }
         var address = new InetSocketAddress(peer.address().host(), peer.address().port());
         client.connect(peerId, address)
+              .onResult(_ -> connectingInProgress.remove(peerId))
               .onSuccess(conn -> onPeerConnected(conn, peer.role(), peer.address()))
               .onFailure(cause -> onConnectFailed(peer, cause));
     }
@@ -350,18 +357,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
             ? buildUnknownNodeInfo(peerId, peerRole, peerAddress)
             : Option.empty();
 
-        var existing = peerLinks.putIfAbsent(peerId, connection);
+        var existing = peerLinks.put(peerId, connection);
         if (existing != null) {
-            if (!existing.isActive()) {
-                // Old connection is stale — replace it with the new one
-                peerLinks.put(peerId, connection);
-                existing.close();
-                log.info("Replaced stale connection for peer {}", peerId);
-            } else {
-                log.debug("Duplicate connection from {}, closing new connection", peerId);
-                connection.close();
-                return;
-            }
+            // Always prefer the new connection — it just completed a Hello handshake so it's known-good.
+            // The old connection may be stale (QUIC transport reports active but application-level traffic
+            // is dead, e.g., after Docker bridge network flap). Closing the old connection prevents the
+            // reconnection storm where both sides hold stale references to each other.
+            existing.close();
+            log.info("Replaced existing connection for peer {} (old active={})", peerId, existing.isActive());
         }
 
         connectionEstablishedAt.put(peerId, System.nanoTime());
