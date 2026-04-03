@@ -129,32 +129,6 @@ public final class ForgeServer {
         }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         catch (Exception e) {
             log.error("Failed to start Forge server", e);
             System.exit(1);
@@ -355,32 +329,6 @@ public final class ForgeServer {
         }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         catch (Exception e) {
             log.trace("Event polling failed: {}", e.getMessage());
         }
@@ -419,32 +367,6 @@ public final class ForgeServer {
                 start = i;}
                 depth++;
             } else
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
             if ( ch == '}') {
@@ -486,32 +408,6 @@ public final class ForgeServer {
         }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -543,32 +439,6 @@ public final class ForgeServer {
             TimeSpan.timeSpan(1).seconds()
                              .sleep();
         } else
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
         {
@@ -662,61 +532,9 @@ public final class ForgeServer {
             } else
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
             {
             log.info("Could not open browser automatically. Please navigate to: {}", url);}
         }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
         catch (Exception e) {

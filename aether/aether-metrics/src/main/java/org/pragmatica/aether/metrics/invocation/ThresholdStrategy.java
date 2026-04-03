@@ -169,32 +169,6 @@ public sealed interface ThresholdStrategy {
                 } while (
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
                 !ema.compareAndSet(currentEma, newEma));
             }
         }

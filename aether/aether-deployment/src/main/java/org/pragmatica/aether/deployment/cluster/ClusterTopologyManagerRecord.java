@@ -1,5 +1,6 @@
 package org.pragmatica.aether.deployment.cluster;
 
+import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.ProvisionSpec;
@@ -26,8 +27,11 @@ import org.pragmatica.lang.concurrent.CancellableTask;
 import java.net.SocketAddress;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -39,12 +43,16 @@ import static org.pragmatica.lang.Unit.unit;
 
 /// Implementation of ClusterTopologyManager that delegates read-only operations to
 /// TopologyObserver and manages cluster size via a NodeReconcilerState state machine.
+/// @SuppressWarnings: void callbacks required by TopologyManager/ClusterTopologyManager interfaces
 @SuppressWarnings("JBCT-RET-01") record ClusterTopologyManagerRecord( TopologyObserver observer,
                                                                       NodeLifecycleManager lifecycleManager,
                                                                       AutoHealConfig autoHealConfig,
+                                                                      DeploymentMap deploymentMap,
+                                                                      AtomicInteger configuredSizeRef,
                                                                       AtomicInteger desiredSizeRef,
                                                                       AtomicReference<NodeReconcilerState> stateRef,
                                                                       AtomicBoolean active,
+                                                                      ConcurrentHashMap<NodeId, Instant> nodeJoinTimes,
                                                                       CancellableTask recheckFuture) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
@@ -52,13 +60,18 @@ import static org.pragmatica.lang.Unit.unit;
 
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
-                                                                     AutoHealConfig config) {
+                                                                     AutoHealConfig config,
+                                                                     DeploymentMap deploymentMap) {
+        var initialSize = observer.clusterSize();
         return new ClusterTopologyManagerRecord(observer,
                                                 lifecycleManager,
                                                 config,
-                                                new AtomicInteger(observer.clusterSize()),
+                                                deploymentMap,
+                                                new AtomicInteger(initialSize),
+                                                new AtomicInteger(initialSize),
                                                 new AtomicReference<>(new NodeReconcilerState.Inactive("not yet activated")),
                                                 new AtomicBoolean(false),
+                                                new ConcurrentHashMap<>(),
                                                 CancellableTask.cancellableTask());
     }
 
@@ -70,6 +83,7 @@ import static org.pragmatica.lang.Unit.unit;
     @Override public Result<Unit> setDesiredSize(int size) {
         if ( size < MINIMUM_CLUSTER_SIZE) {
         return Causes.cause("Cluster size cannot be below " + MINIMUM_CLUSTER_SIZE + " (quorum requirement)").result();}
+        configuredSizeRef.set(size);
         desiredSizeRef.set(size);
         observer.handleSetClusterSize(new TopologyManagementMessage.SetClusterSize(size));
         reconcile();
@@ -78,6 +92,10 @@ import static org.pragmatica.lang.Unit.unit;
 
     @Override public int desiredSize() {
         return desiredSizeRef.get();
+    }
+
+    @Override public int configuredSize() {
+        return configuredSizeRef.get();
     }
 
     @Override public void onNodeReady(NodeId nodeId) {
@@ -93,80 +111,68 @@ import static org.pragmatica.lang.Unit.unit;
         if ( !active.get()) {
         return;}
         switch ( topologyChange) {
-            case NodeAdded added -> {
-                log.info("CTM: Node {} added, triggering reconciliation", added.nodeId());
-                reconcile();
-            }
-            case NodeRemoved removed -> {
-                log.info("CTM: Node {} removed, triggering reconciliation", removed.nodeId());
-                reconcile();
-            }
-            case NodeDown down -> {
-                log.warn("CTM: Node {} is down, triggering immediate reconciliation", down.nodeId());
-                reconcile();
-            }
+            case NodeAdded added -> handleNodeAdded(added);
+            case NodeRemoved removed -> handleNodeRemoved(removed);
+            case NodeDown down -> handleNodeDown(down);
             default -> {}
         }
+    }
+
+    private void handleNodeAdded(NodeAdded added) {
+        nodeJoinTimes.putIfAbsent(added.nodeId(), Instant.now());
+        log.info("CTM: Node {} added, triggering reconciliation", added.nodeId());
+        reconcile();
+    }
+
+    private void handleNodeRemoved(NodeRemoved removed) {
+        nodeJoinTimes.remove(removed.nodeId());
+        log.info("CTM: Node {} removed, triggering reconciliation", removed.nodeId());
+        reconcile();
+    }
+
+    private void handleNodeDown(NodeDown down) {
+        log.warn("CTM: Node {} is down, triggering immediate reconciliation", down.nodeId());
+        reconcile();
     }
 
     @Override public void activate() {
         if ( !active.compareAndSet(false, true)) {
         return;}
+        seedJoinTimesForExistingNodes();
+        activateWithCurrentTopology();
+    }
+
+    private void seedJoinTimesForExistingNodes() {
+        for ( var nodeId : observer.topology()) {
+        nodeJoinTimes.putIfAbsent(nodeId, Instant.now());}
+    }
+
+    private void activateWithCurrentTopology() {
         var actual = observer.activeNodeCount();
-        var desired = desiredSizeRef.get();
-        log.info("CTM: Activated, desired size={}, current active nodes={}", desired, actual);
-        // Use readyNodeCount (ON_DUTY nodes tracked by observer) — includes dynamically provisioned
-        // nodes that may not be in the local QUIC topology yet (e.g., after leader failover)
+        var desired = configuredSizeRef.get();
         var readyCount = observer.readyNodeCount();
         var effectiveActual = Math.max(actual, readyCount);
-        log.info("CTM: Observer sees {} active, {} ready (ON_DUTY)", actual, readyCount);
-        // readyCount > 0 means nodes previously registered ON_DUTY — cluster was already formed.
-        // readyCount == 0 means initial formation — no nodes have registered yet.
         var clusterWasFormed = readyCount > 0;
+        log.info("CTM: Activated, desired={}, active={}, ready={}", desired, actual, readyCount);
         if ( effectiveActual >= desired) {
             transitionTo(new NodeReconcilerState.Converged());
             log.info("CTM: Cluster at target size, skipping formation");
         } else
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         if ( clusterWasFormed && effectiveActual >= desired - 1) {
-            // Leader failover: one node short (the dead leader). Immediate reconciliation.
-            transitionTo(new NodeReconcilerState.Converged());
-            log.info("CTM: Leader failover detected ({}/{}), enabling immediate reconciliation",
-                     effectiveActual,
-                     desired);
-            handleDeficit(effectiveActual, desired);
-        } else {
-            // Initial formation or significant node loss — wait for nodes to join
-            transitionTo(new NodeReconcilerState.Forming(Instant.now()));
-            SharedScheduler.schedule(this::checkFormationComplete, autoHealConfig.startupCooldown());
-        }
+        activateWithLeaderFailover(effectiveActual, desired);} else {
+        activateWithFormation();}
+    }
+
+    private void activateWithLeaderFailover(int effectiveActual, int desired) {
+        transitionTo(new NodeReconcilerState.Converged());
+        log.info("CTM: Leader failover detected ({}/{}), enabling immediate reconciliation", effectiveActual, desired);
+        handleDeficit(effectiveActual, desired);
+    }
+
+    private void activateWithFormation() {
+        transitionTo(new NodeReconcilerState.Forming(Instant.now()));
+        SharedScheduler.schedule(this::checkFormationComplete, autoHealConfig.startupCooldown());
     }
 
     @Override public void deactivate() {
@@ -241,46 +247,20 @@ import static org.pragmatica.lang.Unit.unit;
         if ( ! (stateRef.get() instanceof NodeReconcilerState.Forming)) {
         return;}
         var actual = observer.activeNodeCount();
-        var desired = desiredSizeRef.get();
+        var desired = configuredSizeRef.get();
         if ( actual >= desired) {
             transitionTo(new NodeReconcilerState.Converged());
             log.info("CTM: Cluster formation complete ({}/{})", actual, desired);
         } else
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         {
-            // Cooldown expired but not all nodes joined — transition to CONVERGED
-            // to enable provisioning on next reconciliation cycle
-            log.info("CTM: Formation cooldown expired, cluster at {}/{}, enabling reconciliation", actual, desired);
-            transitionTo(new NodeReconcilerState.Converged());
-            handleDeficit(actual, desired);
-        }
+        handleFormationCooldownExpired(actual, desired);}
+    }
+
+    private void handleFormationCooldownExpired(int actual, int desired) {
+        log.info("CTM: Formation cooldown expired, cluster at {}/{}, enabling reconciliation", actual, desired);
+        transitionTo(new NodeReconcilerState.Converged());
+        handleDeficit(actual, desired);
     }
 
     private void reconcile() {
@@ -289,60 +269,144 @@ import static org.pragmatica.lang.Unit.unit;
         var currentState = stateRef.get();
         if ( currentState instanceof NodeReconcilerState.Inactive) {
         return;}
-        // FORMING state: only check if formation is complete, never provision
         if ( currentState instanceof NodeReconcilerState.Forming) {
-            var actual = observer.activeNodeCount();
-            var desired = desiredSizeRef.get();
-            if ( actual >= desired) {
-                transitionTo(new NodeReconcilerState.Converged());
-                log.info("CTM: Cluster formation complete ({}/{})", actual, desired);
-            }
+            reconcileForming();
             return;
         }
+        reconcileActive(currentState);
+    }
+
+    private void reconcileForming() {
         var actual = observer.activeNodeCount();
-        var desired = desiredSizeRef.get();
-        if ( actual == desired) {
+        var configured = configuredSizeRef.get();
+        if ( actual >= configured) {
+            transitionTo(new NodeReconcilerState.Converged());
+            log.info("CTM: Cluster formation complete ({}/{})", actual, configured);
+        }
+    }
+
+    private void reconcileActive(NodeReconcilerState currentState) {
+        var actual = observer.activeNodeCount();
+        var configured = configuredSizeRef.get();
+        if ( actual == configured) {
             cancelRecheck();
+            desiredSizeRef.set(configured);
             if ( ! (currentState instanceof NodeReconcilerState.Converged)) {
             transitionTo(new NodeReconcilerState.Converged());}
             return;
         }
-        if (actual < desired) {
-            handleDeficit(actual, desired);
-        } else {
-            handleSurplus(actual, desired);
-        }
+        if ( actual < configured) {
+            desiredSizeRef.set(configured);
+            handleDeficit(actual, configured);
+        } else
+
+        {
+        handleSurplus(actual, configured);}
     }
 
     private void handleDeficit(int actual, int desired) {
-        // Already reconciling — don't provision again, wait for in-flight to complete
-        if ( stateRef.get() instanceof NodeReconcilerState.Reconciling) {
+        var current = stateRef.get();
+        if ( current instanceof NodeReconcilerState.Reconciling) {
             log.debug("CTM: Already reconciling, waiting for in-flight provisions to complete");
             return;
         }
         var deficit = desired - actual;
         if ( !lifecycleManager.isCloudManaged()) {
+            var next = new NodeReconcilerState.Reconciling(desired, actual, List.of(), List.of(), Instant.now());
+            if ( !stateRef.compareAndSet(current, next)) {
+            return;}
             log.debug("CTM: Cluster deficit of {} but no ComputeProvider, cannot auto-provision", deficit);
-            transitionTo(new NodeReconcilerState.Reconciling(desired, actual, List.of(), Instant.now()));
             return;
         }
         var batchSize = provisionBatchSize(deficit);
+        var next = new NodeReconcilerState.Reconciling(desired,
+                                                       actual,
+                                                       buildInFlightList(batchSize),
+                                                       List.of(),
+                                                       Instant.now());
+        if ( !stateRef.compareAndSet(current, next)) {
+        return;}
         log.info("CTM: Cluster at {}/{}, provisioning {} replacement(s)", actual, desired, batchSize);
-        transitionTo(new NodeReconcilerState.Reconciling(desired, actual, buildInFlightList(batchSize), Instant.now()));
         provisionNodes(batchSize);
         scheduleRecheck();
     }
 
-    private void handleSurplus(int actual, int desired) {
-        var surplus = actual - desired;
-        log.info("CTM: Cluster has {} nodes (desired {}), {} surplus — adjusting desired size to match", actual, desired, surplus);
-        // When the cluster has more nodes than desired (e.g., after multiple kill/provision cycles
-        // where provisions from a previous leader overlap with the new leader), adjust the desired
-        // size upward to match reality. The auto-scaler will later scale down if needed.
-        // This prevents the CTM from refusing to provision replacements for future node deaths
-        // because it thinks the cluster is already over-provisioned.
-        desiredSizeRef.set(actual);
-        transitionTo(new NodeReconcilerState.Converged());
+    private void handleSurplus(int actual, int configured) {
+        var current = stateRef.get();
+        if ( current instanceof NodeReconcilerState.Reconciling) {
+            log.debug("CTM: Already reconciling, waiting for in-flight terminations to complete");
+            return;
+        }
+        var surplus = actual - configured;
+        if ( !lifecycleManager.isCloudManaged()) {
+            log.info("CTM: Cluster has {} surplus nodes but no ComputeProvider, cannot auto-terminate", surplus);
+            desiredSizeRef.set(actual);
+            transitionTo(new NodeReconcilerState.Converged());
+            return;
+        }
+        var nodesToTerminate = selectNodesForTermination(surplus);
+        if ( nodesToTerminate.isEmpty()) {
+            log.warn("CTM: {} surplus nodes but no candidates for termination", surplus);
+            return;
+        }
+        var next = new NodeReconcilerState.Reconciling(configured, actual, List.of(), nodesToTerminate, Instant.now());
+        if ( !stateRef.compareAndSet(current, next)) {
+        return;}
+        log.info("CTM: Cluster at {}/{}, terminating {} surplus node(s): {}",
+                 actual,
+                 configured,
+                 nodesToTerminate.size(),
+                 nodesToTerminate);
+        terminateNodes(nodesToTerminate);
+        scheduleRecheck();
+    }
+
+    /// Selects nodes for termination when cluster has surplus.
+    /// Selection priority:
+    /// 1. (Future) Spot instances — terminate first to minimize cost
+    /// 2. Nodes without any slice deployments — safest to remove
+    /// 3. Most recently joined nodes — least established in the cluster
+    /// Never selects self (current leader) for termination.
+    private List<NodeId> selectNodesForTermination(int count) {
+        var selfId = observer.self().id();
+        var activeNodes = observer.topology().stream()
+                                           .filter(id -> !id.equals(selfId))
+                                           .toList();
+        // TODO: When spot instance support is added, select spot instances first
+        // before applying the no-slices / most-recent heuristic below.
+        // Note: DeploymentMap uses ConcurrentHashMap with weakly-consistent iteration.
+        // A node that just received a slice may still appear "empty". This is acceptable
+        // because terminated nodes' slices will be redistributed by CDM.
+        var emptyNodes = deploymentMap.nodesWithoutSlices(activeNodes);
+        var sortedCandidates = activeNodes.stream().sorted(surplusNodeComparator(emptyNodes))
+                                                 .toList();
+        return sortedCandidates.stream().limit(Math.min(count, MAX_WAVE_SIZE))
+                                      .toList();
+    }
+
+    /// Comparator for surplus node selection: nodes without slices first, then most recently joined.
+    private Comparator<NodeId> surplusNodeComparator(Set<NodeId> emptyNodes) {
+        return Comparator.<NodeId, Boolean>comparing(id -> !emptyNodes.contains(id))
+                         .thenComparing(id -> nodeJoinTimes.getOrDefault(id, Instant.EPOCH),
+                                        Comparator.reverseOrder());
+    }
+
+    private void terminateNodes(List<NodeId> nodes) {
+        for ( var nodeId : nodes) {
+        terminateSingleNode(nodeId);}
+    }
+
+    private void terminateSingleNode(NodeId nodeId) {
+        lifecycleManager.terminateNode(nodeId).onSuccess(_ -> handleTerminationSuccess(nodeId))
+                                      .onFailure(cause -> log.warn("CTM: Node {} termination failed: {}",
+                                                                   nodeId,
+                                                                   cause.message()));
+    }
+
+    private void handleTerminationSuccess(NodeId nodeId) {
+        nodeJoinTimes.remove(nodeId);
+        log.info("CTM: Node {} terminated successfully", nodeId);
+        reconcile();
     }
 
     private void provisionNodes(int count) {

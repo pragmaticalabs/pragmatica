@@ -77,32 +77,6 @@ public final class GCMetricsCollector {
         }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         catch (Exception e) {
             log.warn("Failed to register GC listener for {}: {}", gcBean.getName(), e.getMessage());
         }}}
@@ -121,32 +95,6 @@ public final class GCMetricsCollector {
         try {
             emitter.removeNotificationListener(listener);
         }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
         catch (Exception e) {
@@ -187,32 +135,6 @@ public final class GCMetricsCollector {
             youngGcCount.increment();
             youngGcPauseMs.add(duration);
         } else
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
         {

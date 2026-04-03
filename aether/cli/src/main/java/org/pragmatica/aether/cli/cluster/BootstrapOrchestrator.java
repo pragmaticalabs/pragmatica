@@ -278,32 +278,6 @@ sealed interface BootstrapOrchestrator {
             } else
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
             {
             System.err.printf("  Node %s did not become healthy within %d seconds.%n",
                               node.nodeId(),
@@ -500,32 +474,6 @@ sealed interface BootstrapOrchestrator {
         try {
             Thread.sleep(millis);
         }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
         catch (InterruptedException _) {

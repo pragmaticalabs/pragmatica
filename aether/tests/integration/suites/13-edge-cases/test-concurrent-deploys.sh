@@ -61,6 +61,10 @@ test_concurrent_deploy() {
     kill "$pid_a" 2>/dev/null; wait "$pid_a" 2>/dev/null || true
     kill "$pid_b" 2>/dev/null; wait "$pid_b" 2>/dev/null || true
 
+    # Wait for temp files to be written (filesystem flush lag after wait)
+    for i in $(seq 1 50); do [ -s "$result_a_file" ] && break; sleep 0.1; done
+    for i in $(seq 1 50); do [ -s "$result_b_file" ] && break; sleep 0.1; done
+
     local status_a status_b
     status_a=$(cat "$result_a_file" 2>/dev/null || echo "000")
     status_b=$(cat "$result_b_file" 2>/dev/null || echo "000")

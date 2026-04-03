@@ -1,5 +1,7 @@
 package org.pragmatica.aether.deployment.cluster;
 
+import org.pragmatica.consensus.NodeId;
+
 import java.time.Instant;
 import java.util.List;
 
@@ -15,10 +17,11 @@ public sealed interface NodeReconcilerState {
     /// Cluster at desired size, monitoring for deficit.
     record Converged() implements NodeReconcilerState{}
 
-    /// Provisioning or draining in progress to reach desired size.
+    /// Provisioning or terminating nodes in progress to reach desired size.
     record Reconciling(int targetSize,
                        int currentSize,
                        List<ProvisionAttempt> inFlight,
+                       List<NodeId> terminating,
                        Instant startedAt) implements NodeReconcilerState{}
 
     /// Tracks a single provision attempt.

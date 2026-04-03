@@ -742,32 +742,6 @@ class SliceInvokerImpl implements SliceInvoker {
         }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         catch (Exception e) {
             log.error("[requestId={}] Error notifying failure listener: {}", requestId, e.getMessage());
         }

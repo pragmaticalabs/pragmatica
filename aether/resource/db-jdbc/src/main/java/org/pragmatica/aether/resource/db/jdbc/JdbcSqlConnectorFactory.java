@@ -34,33 +34,6 @@ public final class JdbcSqlConnectorFactory implements ResourceFactory<SqlConnect
         }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         catch (Exception e) {
             dataSource.close();
             throw e;

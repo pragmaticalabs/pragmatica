@@ -94,32 +94,6 @@ class MetricsSchedulerImpl implements MetricsScheduler {
         } else
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         {
             log.info("Node {} is no longer leader, stopping metrics scheduler", self);
             stopPinging();
@@ -170,32 +144,6 @@ class MetricsSchedulerImpl implements MetricsScheduler {
                                   .forEach(nodeId -> network.send(nodeId, ping));
             log.trace("Sent MetricsPing to {} nodes", currentTopology.size() - 1);
         }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
         catch (Exception e) {

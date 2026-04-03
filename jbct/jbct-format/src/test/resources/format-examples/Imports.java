@@ -27,8 +27,8 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 
+
 public class Imports {
-    // Use imports to verify they're all needed
     Result<String> useImports() {
         Cause cause = Causes.cause("test");
         Fn1<String, String> fn = String::trim;

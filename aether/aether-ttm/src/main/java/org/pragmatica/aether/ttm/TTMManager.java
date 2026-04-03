@@ -139,32 +139,6 @@ public interface TTMManager {
             } else
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
             {
                 log.info("Node is no longer leader, stopping TTM evaluation");
                 stopEvaluation();

@@ -1,4 +1,5 @@
 package examples;
+
 public enum Status {
     ACTIVE,
     INACTIVE,

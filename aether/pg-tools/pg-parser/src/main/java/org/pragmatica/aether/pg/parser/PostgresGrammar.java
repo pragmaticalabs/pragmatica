@@ -20,20 +20,6 @@ public final class PostgresGrammar {
         }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         catch (IOException e) {
             return Causes.cause("Failed to load postgres.peg: " + e.getMessage()).result();
         }
