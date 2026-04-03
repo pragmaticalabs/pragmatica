@@ -47,13 +47,9 @@ test_blue_green_complete() {
     deployments=$(deploy_list)
     did=$(deploy_extract_id "$deployments")
     assert_ne "$did" "" "Got deployment ID"
-    deploy_promote "$did"
-    sleep 3
-    deploy_complete "$did"
-    sleep 3
-    local status_result
-    status_result=$(deploy_status "$did")
-    assert_contains "$status_result" "COMPLETED" "Blue-green completed"
+    local result
+    result=$(aether_failover deploy complete "$did" --format json 2>/dev/null)
+    assert_contains "$result" "COMPLETED" "Blue-green completed"
 }
 
 cleanup() {

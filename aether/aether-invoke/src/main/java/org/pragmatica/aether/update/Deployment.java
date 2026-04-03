@@ -79,6 +79,10 @@ public record Deployment(String deploymentId,
         return transitionTo(DeploymentState.DEPLOYING);
     }
 
+    public Result<Deployment> deployed() {
+        return transitionTo(DeploymentState.DEPLOYED);
+    }
+
     public Result<Deployment> route(VersionRouting newRouting) {
         return transitionTo(DeploymentState.ROUTING).map(d -> d.withRouting(newRouting));
     }

@@ -43,11 +43,10 @@ test_canary_complete() {
     local deployments did
     deployments=$(deploy_list)
     did=$(deploy_extract_id "$deployments")
-    deploy_complete "$did"
-    sleep 3
-    local status_result
-    status_result=$(deploy_status "$did")
-    assert_contains "$status_result" "COMPLETED" "Canary completed"
+    # Capture complete response directly — status endpoint won't show terminal deployments
+    local result
+    result=$(aether_failover deploy complete "$did" --format json 2>/dev/null)
+    assert_contains "$result" "COMPLETED" "Canary completed"
 }
 
 cleanup() {

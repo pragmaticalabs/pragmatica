@@ -208,8 +208,14 @@ final class DeploymentManagerImpl implements DeploymentManager {
                                                cleanupPolicy,
                                                context.artifacts(),
                                                instances);
-        var commands = buildStartCommands(deployment, context);
-        return applyConsensus(commands).map(_ -> cacheDeployment(deployment));
+        // Advance through initial states: PENDING → DEPLOYING → DEPLOYED.
+        // The blueprint slices are already running, so the deploy phase is immediate.
+        return deployment.deploy()
+                         .flatMap(Deployment::deployed)
+                         .flatMap(deployed -> {
+                             var commands = buildStartCommands(deployed, context);
+                             return applyConsensus(commands).map(_ -> cacheDeployment(deployed));
+                         });
     }
 
     private List<KVCommand<AetherKey>> buildStartCommands(Deployment deployment, SliceContext context) {
