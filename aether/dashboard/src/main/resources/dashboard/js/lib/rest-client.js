@@ -108,6 +108,8 @@ window.RestClient = {
     },
 
     handleUnauthorized: function() {
+        // Don't interrupt if user is already entering their key
+        if (window.AetherAuth && window.AetherAuth.isVisible()) return;
         sessionStorage.removeItem('aether-api-key');
         if (window.AetherAuth) window.AetherAuth.show();
     },

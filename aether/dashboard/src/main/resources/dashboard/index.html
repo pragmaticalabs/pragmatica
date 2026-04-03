@@ -46,6 +46,7 @@
             setTimeout(function() { document.getElementById('auth-key-input').focus(); }, 100);
         },
         hide: function() { this.overlay.style.display = 'none'; },
+        isVisible: function() { return this.overlay && this.overlay.style.display === 'flex'; },
         submit: function(key) {
             var self = this;
             sessionStorage.setItem('aether-api-key', key);
