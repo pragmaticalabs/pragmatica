@@ -319,7 +319,7 @@ public class FactoryClassGenerator {
         var entries = new ArrayList<AllEntry>();
         // Resource deps
         for (var resource : resourceDeps) {
-            entries.add(new AllEntry(resource.parameterName(), generateResourceProvideCall(resource)));
+            entries.add(new AllEntry(resource.parameterName(), generateResourceProvideCall(resource, importTracker)));
         }
         // Interceptor deps (deduplicated)
         var interceptorEntries = collectUniqueInterceptors(model);
@@ -342,7 +342,7 @@ public class FactoryClassGenerator {
                 plainInterfaceParams.put(dep.parameterName(), params);
                 for (var param : params) {
                     entries.add(new AllEntry(param.varName(),
-                        "ctx.resources().provide(" + param.qualifiedResourceTypeName() + ".class, \""
+                        "ctx.resources().provide(" + importTracker.use(param.qualifiedResourceTypeName()) + ".class, \""
                         + escapeJavaString(param.qualifier().configSection()) + "\")"));
                 }
             }
@@ -1042,10 +1042,11 @@ public class FactoryClassGenerator {
     /// Publisher and stream resources require ProvisioningContext for runtime extensions.
     /// When the resource type differs from the parameter type (e.g., @PgSql persistence interfaces),
     /// wraps the connector in a factory call: InterfaceFactory.interface(connector).
-    private String generateResourceProvideCall(DependencyModel resource) {
+    private String generateResourceProvideCall(DependencyModel resource, ImportTracker importTracker) {
         return resource.resourceQualifier()
                        .map(qualifier -> {
-                           var typeName = qualifier.resourceType().toString();
+                           var qualifiedTypeName = qualifier.resourceType().toString();
+                           var typeName = importTracker.use(qualifiedTypeName);
                            var configSection = escapeJavaString(qualifier.configSection());
                            var provideCall = resource.isPublisher() || resource.isStreamResource()
                                ? "ctx.resources().provide(" + typeName + ".class, \""
@@ -1053,8 +1054,8 @@ public class FactoryClassGenerator {
                                : "ctx.resources().provide(" + typeName + ".class, \"" + configSection + "\")";
                            // If resource type differs from parameter type, wrap in factory call
                            // e.g., @PgSql AnalyticsPersistence -> provide PgSqlConnector, wrap via factory
-                           if (!typeName.equals(resource.interfaceQualifiedName())) {
-                               var factoryClass = resource.interfaceQualifiedName() + "Factory";
+                           if (!qualifiedTypeName.equals(resource.interfaceQualifiedName())) {
+                               var factoryClass = importTracker.use(resource.interfaceQualifiedName() + "Factory");
                                var factoryMethod = lowercaseFirst(resource.interfaceSimpleName());
                                return provideCall + ".map(" + factoryClass + "::" + factoryMethod + ")";
                            }
