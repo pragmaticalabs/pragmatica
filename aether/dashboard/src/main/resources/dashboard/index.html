@@ -13,7 +13,7 @@
 </head>
 <body>
     <!-- Auth overlay — shown when no API key in sessionStorage -->
-    <div id="auth-overlay" style="display:none; position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.85); display:flex; align-items:center; justify-content:center;">
+    <div id="auth-overlay" style="display:none; position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.85); align-items:center; justify-content:center;">
         <div style="background:var(--surface-1, #1a1a2e); border:1px solid var(--border, #333); border-radius:8px; padding:2rem; min-width:320px; text-align:center;">
             <h2 style="color:var(--text-1, #e0e0e0); margin:0 0 0.5rem; font-size:1.2rem;">AETHER</h2>
             <p style="color:var(--text-2, #999); margin:0 0 1.5rem; font-size:0.85rem;">Enter API key to access the dashboard</p>
@@ -50,7 +50,7 @@
             var self = this;
             sessionStorage.setItem('aether-api-key', key);
             fetch('/api/status', { headers: { 'x-api-key': key } }).then(function(r) {
-                if (r.ok) { self.hide(); location.reload(); }
+                if (r.ok) { self.hide(); }
                 else { sessionStorage.removeItem('aether-api-key'); document.getElementById('auth-error').style.display = 'block'; }
             }).catch(function() { sessionStorage.removeItem('aether-api-key'); document.getElementById('auth-error').style.display = 'block'; });
         }
