@@ -5,19 +5,19 @@ import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
 
 import java.util.List;
 
+
 /// A potentially schema-qualified name: schema.name or just name.
-public record QualifiedName( SourceSpan span, List<Identifier> parts) {
+public record QualifiedName(SourceSpan span, List<Identifier> parts) {
     public Identifier name() {
         return parts.getLast();
     }
 
     public Option<Identifier> schema() {
         return parts.size() > 1
-               ? Option.present(parts.getFirst())
-               : Option.empty();
+              ? Option.present(parts.getFirst())
+              : Option.empty();
     }
 
-    /// Returns the normalized fully-qualified name string.
     public String normalized() {
         return String.join(".",
                            parts.stream().map(Identifier::normalized)

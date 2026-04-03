@@ -22,14 +22,12 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Result.success;
 
+
 /// GCP Cloud NEG-based load balancer provider.
 /// Manages network endpoints on a pre-existing GCP Network Endpoint Group (NEG).
-public record GcpLoadBalancerProvider( GcpClient client,
-                                       String negName,
-                                       int destinationPort) implements LoadBalancerProvider {
+public record GcpLoadBalancerProvider(GcpClient client, String negName, int destinationPort) implements LoadBalancerProvider {
     private static final Logger log = LoggerFactory.getLogger(GcpLoadBalancerProvider.class);
 
-    /// Factory method for creating a GcpLoadBalancerProvider.
     public static Result<GcpLoadBalancerProvider> gcpLoadBalancerProvider(GcpClient client,
                                                                           String negName,
                                                                           int destinationPort) {
@@ -56,7 +54,6 @@ public record GcpLoadBalancerProvider( GcpClient client,
         return client.listNetworkEndpoints(negName).map(this::toLoadBalancerInfo);
     }
 
-    // --- Leaf: map network endpoints to LoadBalancerInfo ---
     private LoadBalancerInfo toLoadBalancerInfo(List<NetworkEndpoint> endpoints) {
         var targetInfos = endpoints.stream().map(ep -> new LoadBalancerInfo.TargetInfo(ep.ipAddress(),
                                                                                        "healthy",
@@ -74,41 +71,33 @@ public record GcpLoadBalancerProvider( GcpClient client,
                                           .flatMap(currentIps -> reconcileDiff(currentIps, desiredIps));
     }
 
-    // --- Leaf: attach a single endpoint ---
     private Promise<Unit> attachEndpoint(String ip) {
         return client.attachNetworkEndpoint(negName, toEndpoint(ip)).mapToUnit();
     }
 
-    // --- Leaf: detach a single endpoint ---
     private Promise<Unit> detachEndpoint(String ip) {
         return client.detachNetworkEndpoint(negName, toEndpoint(ip)).mapToUnit();
     }
 
-    // --- Leaf: create a NetworkEndpoint from IP ---
-    @SuppressWarnings("JBCT-RET-03")
-    private NetworkEndpoint toEndpoint(String ip) {
+    @SuppressWarnings("JBCT-RET-03") private NetworkEndpoint toEndpoint(String ip) {
         return new NetworkEndpoint(ip, destinationPort, null);
     }
 
-    // --- Leaf: resolve current IPs from network endpoints ---
     private static Set<String> currentIpsFromEndpoints(List<NetworkEndpoint> endpoints) {
         return endpoints.stream().map(NetworkEndpoint::ipAddress)
                                .collect(Collectors.toSet());
     }
 
-    // --- Leaf: compute IPs present in desired but missing from current ---
     private static List<String> missingIps(Set<String> currentIps, Set<String> desiredIps) {
         return desiredIps.stream().filter(Predicate.not(currentIps::contains))
                                 .toList();
     }
 
-    // --- Leaf: compute IPs present in current but not in desired ---
     private static List<String> surplusIps(Set<String> currentIps, Set<String> desiredIps) {
         return currentIps.stream().filter(Predicate.not(desiredIps::contains))
                                 .toList();
     }
 
-    // --- Sequencer: compute and apply diff between current and desired state ---
     private Promise<Unit> reconcileDiff(Set<String> currentIps, Set<String> desiredIps) {
         var ipsToAttach = missingIps(currentIps, desiredIps);
         var ipsToDetach = surplusIps(currentIps, desiredIps);
@@ -119,13 +108,11 @@ public record GcpLoadBalancerProvider( GcpClient client,
         return combineAll(all);
     }
 
-    // --- Leaf: combine a collection of Promise<Unit> into a single Promise<Unit> ---
     private static Promise<Unit> combineAll(Collection<Promise<Unit>> promises) {
         return Promise.allOf(promises).map(GcpLoadBalancerProvider::collectResults)
                             .flatMap(Result::async);
     }
 
-    // --- Leaf: collect results into a single unit ---
     private static Result<Unit> collectResults(List<Result<Unit>> results) {
         return Result.allOf(results).map(Unit::toUnit);
     }

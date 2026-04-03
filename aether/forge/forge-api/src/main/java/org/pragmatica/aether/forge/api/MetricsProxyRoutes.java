@@ -15,6 +15,7 @@ import java.time.Duration;
 import static org.pragmatica.http.routing.QueryParameter.aString;
 import static org.pragmatica.http.routing.Route.in;
 
+
 /// Proxy routes for metrics history endpoint.
 /// Forwards requests from the dashboard port to the leader's management port.
 public sealed interface MetricsProxyRoutes {
@@ -27,8 +28,7 @@ public sealed interface MetricsProxyRoutes {
         return in("/api/metrics").serve(historyRoute(cluster, http));
     }
 
-    private static Route<HistoryResponse> historyRoute(EmberCluster cluster,
-                                                       JdkHttpOperations http) {
+    private static Route<HistoryResponse> historyRoute(EmberCluster cluster, JdkHttpOperations http) {
         return Route.<HistoryResponse>get("/history")
                     .withQuery(aString("range"))
                     .to(range -> proxyHistory(cluster, http, range))

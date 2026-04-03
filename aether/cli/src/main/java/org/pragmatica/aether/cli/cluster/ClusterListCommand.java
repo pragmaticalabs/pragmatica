@@ -10,6 +10,7 @@ import java.util.concurrent.Callable;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
+
 /// Lists all registered clusters with a current-context marker.
 ///
 /// Output format:
@@ -20,8 +21,7 @@ import picocli.CommandLine.Command;
 ///
 /// * = active context
 /// ```
-@Command(name = "list", description = "List all registered clusters")
-@SuppressWarnings("JBCT-RET-01") class ClusterListCommand implements Callable<Integer> {
+@Command(name = "list", description = "List all registered clusters") @SuppressWarnings("JBCT-RET-01") class ClusterListCommand implements Callable<Integer> {
     private static final OutputFormatter.TableSpec TABLE_SPEC = new OutputFormatter.TableSpec("Clusters",
                                                                                               List.of(new OutputFormatter.Column("",
                                                                                                                                  "marker",
@@ -45,7 +45,7 @@ import picocli.CommandLine.Command;
 
     private int printList(ClusterRegistry registry) {
         var entries = registry.entries();
-        if ( entries.isEmpty()) {
+        if (entries.isEmpty()) {
             System.out.println("No clusters registered. Use 'aether cluster add' to register a cluster.");
             return ExitCode.SUCCESS;
         }
@@ -53,14 +53,12 @@ import picocli.CommandLine.Command;
         return OutputFormatter.printQuery(json, parent.outputOptions(), TABLE_SPEC);
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    private static String buildEntriesJson(ClusterRegistry registry) {
+    @SuppressWarnings("JBCT-PAT-01") private static String buildEntriesJson(ClusterRegistry registry) {
         var currentName = registry.currentContext().or("");
         var sb = new StringBuilder("[");
         var first = true;
-        for ( var entry : registry.entries()) {
-            if ( !first) {
-            sb.append(',');}
+        for (var entry : registry.entries()) {
+            if (!first) {sb.append(',');}
             first = false;
             appendEntryJson(sb, entry, currentName);
         }
@@ -70,8 +68,8 @@ import picocli.CommandLine.Command;
 
     private static void appendEntryJson(StringBuilder sb, ClusterRegistry.ClusterEntry entry, String currentName) {
         var marker = entry.name().equals(currentName)
-                     ? "*"
-                     : " ";
+                    ? "*"
+                    : " ";
         var apiKeyEnv = entry.apiKeyEnv().or("-");
         sb.append("{\"marker\":\"").append(marker)
                  .append("\",\"name\":\"")

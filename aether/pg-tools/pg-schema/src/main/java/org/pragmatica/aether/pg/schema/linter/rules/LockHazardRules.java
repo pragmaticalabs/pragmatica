@@ -11,6 +11,7 @@ import java.util.Set;
 
 import static org.pragmatica.aether.pg.schema.linter.LintDiagnostic.Severity.WARNING;
 
+
 /// Rules detecting DDL operations that acquire dangerous locks.
 public final class LockHazardRules {
     private LockHazardRules() {}
@@ -31,7 +32,6 @@ public final class LockHazardRules {
                        new AlterColumnSetDefault());
     }
 
-    /// PG001: ADD COLUMN NOT NULL without DEFAULT
     record AddColumnNotNullWithoutDefault() implements LintRule {
         public String id() {
             return "PG001";
@@ -46,17 +46,16 @@ public final class LockHazardRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if ( event instanceof SchemaEvent.ColumnAdded e && !e.column().nullable() && e.column().defaultExpr()
-                                                                                                 .isEmpty()) {
-            return List.of(LintDiagnostic.warning(id(),
-                                                  "Adding NOT NULL column '" + e.column().name() + "' without DEFAULT requires table rewrite on large tables",
-                                                  e.span(),
-                                                  "Add a DEFAULT value, or add nullable column first, backfill, then SET NOT NULL"));}
+            if (event instanceof SchemaEvent.ColumnAdded e && !e.column().nullable() && e.column().defaultExpr()
+                                                                                                .isEmpty()) {return List.of(LintDiagnostic.warning(id(),
+                                                                                                                                                   "Adding NOT NULL column '" + e.column()
+                                                                                                                                                                                        .name() + "' without DEFAULT requires table rewrite on large tables",
+                                                                                                                                                   e.span(),
+                                                                                                                                                   "Add a DEFAULT value, or add nullable column first, backfill, then SET NOT NULL"));}
             return List.of();
         }
     }
 
-    /// PG002: CREATE INDEX without CONCURRENTLY
     record CreateIndexWithoutConcurrently() implements LintRule {
         public String id() {
             return "PG002";
@@ -71,16 +70,15 @@ public final class LockHazardRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if ( event instanceof SchemaEvent.IndexCreated e && !e.index().concurrent()) {
-            return List.of(LintDiagnostic.warning(id(),
-                                                  "CREATE INDEX without CONCURRENTLY blocks writes on '" + e.index().table() + "'",
-                                                  e.span(),
-                                                  "Use CREATE INDEX CONCURRENTLY"));}
+            if (event instanceof SchemaEvent.IndexCreated e && !e.index().concurrent()) {return List.of(LintDiagnostic.warning(id(),
+                                                                                                                               "CREATE INDEX without CONCURRENTLY blocks writes on '" + e.index()
+                                                                                                                                                                                               .table() + "'",
+                                                                                                                               e.span(),
+                                                                                                                               "Use CREATE INDEX CONCURRENTLY"));}
             return List.of();
         }
     }
 
-    /// PG003: ALTER COLUMN TYPE causes table rewrite
     record AlterColumnTypeRewrite() implements LintRule {
         public String id() {
             return "PG003";
@@ -95,23 +93,21 @@ public final class LockHazardRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if ( event instanceof SchemaEvent.ColumnTypeChanged e) {
+            if (event instanceof SchemaEvent.ColumnTypeChanged e) {
                 var table = schema.table(e.table());
-                if ( table.isEmpty()) return List.of();
+                if (table.isEmpty()) return List.of();
                 var col = table.unwrap().column(e.column());
-                if ( col.isEmpty()) return List.of();
-                if ( !SafeTypeChanges.isSafe(col.unwrap().type(),
-                                             e.newType())) {
-                return List.of(LintDiagnostic.warning(id(),
-                                                      "Changing column '" + e.column() + "' type requires table rewrite with ACCESS EXCLUSIVE lock",
-                                                      e.span(),
-                                                      "Consider add-new-column, backfill, swap, drop-old pattern"));}
+                if (col.isEmpty()) return List.of();
+                if (!SafeTypeChanges.isSafe(col.unwrap().type(),
+                                            e.newType())) {return List.of(LintDiagnostic.warning(id(),
+                                                                                                 "Changing column '" + e.column() + "' type requires table rewrite with ACCESS EXCLUSIVE lock",
+                                                                                                 e.span(),
+                                                                                                 "Consider add-new-column, backfill, swap, drop-old pattern"));}
             }
             return List.of();
         }
     }
 
-    /// PG004: SET NOT NULL directly
     record SetNotNullDirectly() implements LintRule {
         public String id() {
             return "PG004";
@@ -126,16 +122,14 @@ public final class LockHazardRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if ( event instanceof SchemaEvent.ColumnNullabilityChanged e && !e.nullable()) {
-            return List.of(LintDiagnostic.warning(id(),
-                                                  "SET NOT NULL on '" + e.column() + "' requires full table scan under ACCESS EXCLUSIVE lock",
-                                                  e.span(),
-                                                  "Add CHECK constraint NOT VALID first, VALIDATE separately, then SET NOT NULL (PG12+ instant if CHECK exists)"));}
+            if (event instanceof SchemaEvent.ColumnNullabilityChanged e && !e.nullable()) {return List.of(LintDiagnostic.warning(id(),
+                                                                                                                                 "SET NOT NULL on '" + e.column() + "' requires full table scan under ACCESS EXCLUSIVE lock",
+                                                                                                                                 e.span(),
+                                                                                                                                 "Add CHECK constraint NOT VALID first, VALIDATE separately, then SET NOT NULL (PG12+ instant if CHECK exists)"));}
             return List.of();
         }
     }
 
-    /// PG005: ADD CONSTRAINT UNIQUE/PK builds index under lock
     record AddConstraintUniqueOrPkBuildsIndex() implements LintRule {
         public String id() {
             return "PG005";
@@ -150,18 +144,15 @@ public final class LockHazardRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if ( event instanceof SchemaEvent.ConstraintAdded e &&
-            (e.constraint() instanceof Constraint.PrimaryKey || e.constraint() instanceof Constraint.Unique)) {
-            return List.of(LintDiagnostic.warning(id(),
-                                                  "ADD CONSTRAINT " + e.constraint().name()
-                                                                                  .or("(unnamed)") + " builds index under ACCESS EXCLUSIVE lock",
-                                                  e.span(),
-                                                  "Create index CONCURRENTLY first, then ADD CONSTRAINT USING INDEX"));}
+            if (event instanceof SchemaEvent.ConstraintAdded e && (e.constraint() instanceof Constraint.PrimaryKey || e.constraint() instanceof Constraint.Unique)) {return List.of(LintDiagnostic.warning(id(),
+                                                                                                                                                                                                           "ADD CONSTRAINT " + e.constraint().name()
+                                                                                                                                                                                                                                           .or("(unnamed)") + " builds index under ACCESS EXCLUSIVE lock",
+                                                                                                                                                                                                           e.span(),
+                                                                                                                                                                                                           "Create index CONCURRENTLY first, then ADD CONSTRAINT USING INDEX"));}
             return List.of();
         }
     }
 
-    /// PG006: ADD FOREIGN KEY without NOT VALID
     record AddForeignKeyWithoutNotValid() implements LintRule {
         public String id() {
             return "PG006";
@@ -176,16 +167,14 @@ public final class LockHazardRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if ( event instanceof SchemaEvent.ConstraintAdded e && e.constraint() instanceof Constraint.ForeignKey) {
-            return List.of(LintDiagnostic.warning(id(),
-                                                  "ADD FOREIGN KEY validates all rows under SHARE ROW EXCLUSIVE lock on both tables",
-                                                  e.span(),
-                                                  "Add with NOT VALID, then VALIDATE CONSTRAINT separately"));}
+            if (event instanceof SchemaEvent.ConstraintAdded e && e.constraint() instanceof Constraint.ForeignKey) {return List.of(LintDiagnostic.warning(id(),
+                                                                                                                                                          "ADD FOREIGN KEY validates all rows under SHARE ROW EXCLUSIVE lock on both tables",
+                                                                                                                                                          e.span(),
+                                                                                                                                                          "Add with NOT VALID, then VALIDATE CONSTRAINT separately"));}
             return List.of();
         }
     }
 
-    /// PG007: DROP INDEX without CONCURRENTLY
     record DropIndexWithoutConcurrently() implements LintRule {
         public String id() {
             return "PG007";
@@ -200,16 +189,14 @@ public final class LockHazardRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if ( event instanceof SchemaEvent.IndexDropped e) {
-            return List.of(LintDiagnostic.warning(id(),
-                                                  "DROP INDEX acquires ACCESS EXCLUSIVE lock on the table",
-                                                  e.span(),
-                                                  "Use DROP INDEX CONCURRENTLY"));}
+            if (event instanceof SchemaEvent.IndexDropped e) {return List.of(LintDiagnostic.warning(id(),
+                                                                                                    "DROP INDEX acquires ACCESS EXCLUSIVE lock on the table",
+                                                                                                    e.span(),
+                                                                                                    "Use DROP INDEX CONCURRENTLY"));}
             return List.of();
         }
     }
 
-    /// PG008: ADD CHECK constraint without NOT VALID
     record AddCheckConstraintWithoutNotValid() implements LintRule {
         public String id() {
             return "PG008";
@@ -224,16 +211,14 @@ public final class LockHazardRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if ( event instanceof SchemaEvent.ConstraintAdded e && e.constraint() instanceof Constraint.Check) {
-            return List.of(LintDiagnostic.warning(id(),
-                                                  "ADD CHECK constraint requires full table scan under SHARE ROW EXCLUSIVE lock",
-                                                  e.span(),
-                                                  "Add with NOT VALID, then VALIDATE CONSTRAINT separately"));}
+            if (event instanceof SchemaEvent.ConstraintAdded e && e.constraint() instanceof Constraint.Check) {return List.of(LintDiagnostic.warning(id(),
+                                                                                                                                                     "ADD CHECK constraint requires full table scan under SHARE ROW EXCLUSIVE lock",
+                                                                                                                                                     e.span(),
+                                                                                                                                                     "Add with NOT VALID, then VALIDATE CONSTRAINT separately"));}
             return List.of();
         }
     }
 
-    /// PG009: RENAME COLUMN breaks app queries
     record RenameColumn() implements LintRule {
         public String id() {
             return "PG009";
@@ -248,16 +233,14 @@ public final class LockHazardRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if ( event instanceof SchemaEvent.ColumnRenamed e) {
-            return List.of(LintDiagnostic.warning(id(),
-                                                  "Renaming column '" + e.oldName() + "' to '" + e.newName() + "' — deploy app reading both names first",
-                                                  e.span(),
-                                                  "Use a view or deploy app changes before renaming"));}
+            if (event instanceof SchemaEvent.ColumnRenamed e) {return List.of(LintDiagnostic.warning(id(),
+                                                                                                     "Renaming column '" + e.oldName() + "' to '" + e.newName() + "' — deploy app reading both names first",
+                                                                                                     e.span(),
+                                                                                                     "Use a view or deploy app changes before renaming"));}
             return List.of();
         }
     }
 
-    /// PG010: RENAME TABLE breaks app queries
     record RenameTable() implements LintRule {
         public String id() {
             return "PG010";
@@ -272,16 +255,14 @@ public final class LockHazardRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if ( event instanceof SchemaEvent.TableRenamed e) {
-            return List.of(LintDiagnostic.warning(id(),
-                                                  "Renaming table '" + e.oldName() + "' to '" + e.newName() + "' breaks all app queries",
-                                                  e.span(),
-                                                  "Create new table, dual-write, migrate, then drop old"));}
+            if (event instanceof SchemaEvent.TableRenamed e) {return List.of(LintDiagnostic.warning(id(),
+                                                                                                    "Renaming table '" + e.oldName() + "' to '" + e.newName() + "' breaks all app queries",
+                                                                                                    e.span(),
+                                                                                                    "Create new table, dual-write, migrate, then drop old"));}
             return List.of();
         }
     }
 
-    /// PG011: DROP COLUMN acquires ACCESS EXCLUSIVE
     record DropColumnOnLargeTable() implements LintRule {
         public String id() {
             return "PG011";
@@ -296,16 +277,14 @@ public final class LockHazardRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if ( event instanceof SchemaEvent.ColumnDropped e) {
-            return List.of(LintDiagnostic.warning(id(),
-                                                  "DROP COLUMN acquires ACCESS EXCLUSIVE lock — brief but blocks all queries",
-                                                  e.span(),
-                                                  "Deploy app ignoring the column first, then drop"));}
+            if (event instanceof SchemaEvent.ColumnDropped e) {return List.of(LintDiagnostic.warning(id(),
+                                                                                                     "DROP COLUMN acquires ACCESS EXCLUSIVE lock — brief but blocks all queries",
+                                                                                                     e.span(),
+                                                                                                     "Deploy app ignoring the column first, then drop"));}
             return List.of();
         }
     }
 
-    /// PG012: EXCLUDE constraint requires full scan under ACCESS EXCLUSIVE
     record AddExclusionConstraint() implements LintRule {
         public String id() {
             return "PG012";
@@ -320,16 +299,14 @@ public final class LockHazardRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if ( event instanceof SchemaEvent.ConstraintAdded e && e.constraint() instanceof Constraint.Exclusion) {
-            return List.of(LintDiagnostic.warning(id(),
-                                                  "EXCLUDE constraint requires full scan under ACCESS EXCLUSIVE lock — no safe alternative",
-                                                  e.span(),
-                                                  "Minimize lock time; schedule during low-traffic window"));}
+            if (event instanceof SchemaEvent.ConstraintAdded e && e.constraint() instanceof Constraint.Exclusion) {return List.of(LintDiagnostic.warning(id(),
+                                                                                                                                                         "EXCLUDE constraint requires full scan under ACCESS EXCLUSIVE lock — no safe alternative",
+                                                                                                                                                         e.span(),
+                                                                                                                                                         "Minimize lock time; schedule during low-traffic window"));}
             return List.of();
         }
     }
 
-    /// PG013: ALTER COLUMN SET DEFAULT acquires ACCESS EXCLUSIVE
     record AlterColumnSetDefault() implements LintRule {
         public String id() {
             return "PG013";
@@ -344,11 +321,10 @@ public final class LockHazardRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if ( event instanceof SchemaEvent.ColumnDefaultChanged e && e.newDefault().isPresent()) {
-            return List.of(LintDiagnostic.warning(id(),
-                                                  "SET DEFAULT acquires brief ACCESS EXCLUSIVE lock",
-                                                  e.span(),
-                                                  "Brief lock, but be aware during high traffic"));}
+            if (event instanceof SchemaEvent.ColumnDefaultChanged e && e.newDefault().isPresent()) {return List.of(LintDiagnostic.warning(id(),
+                                                                                                                                          "SET DEFAULT acquires brief ACCESS EXCLUSIVE lock",
+                                                                                                                                          e.span(),
+                                                                                                                                          "Brief lock, but be aware during high traffic"));}
             return List.of();
         }
     }

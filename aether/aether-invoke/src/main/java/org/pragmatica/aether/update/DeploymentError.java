@@ -2,9 +2,9 @@ package org.pragmatica.aether.update;
 
 import org.pragmatica.lang.Cause;
 
+
 /// Errors that can occur during deployment operations.
 public sealed interface DeploymentError extends Cause {
-    /// Deployment not found.
     record DeploymentNotFound(String deploymentId) implements DeploymentError {
         public static DeploymentNotFound deploymentNotFound(String deploymentId) {
             return new DeploymentNotFound(deploymentId);
@@ -15,7 +15,6 @@ public sealed interface DeploymentError extends Cause {
         }
     }
 
-    /// Active deployment already exists for this blueprint.
     record DeploymentAlreadyExists(String blueprintId) implements DeploymentError {
         public static DeploymentAlreadyExists deploymentAlreadyExists(String blueprintId) {
             return new DeploymentAlreadyExists(blueprintId);
@@ -26,7 +25,6 @@ public sealed interface DeploymentError extends Cause {
         }
     }
 
-    /// Blueprint not found in KV-Store.
     record BlueprintNotFound(String blueprintId) implements DeploymentError {
         public static BlueprintNotFound blueprintNotFound(String blueprintId) {
             return new BlueprintNotFound(blueprintId);
@@ -37,7 +35,6 @@ public sealed interface DeploymentError extends Cause {
         }
     }
 
-    /// No current version exists for a slice (initial deployment).
     record NoCurrentVersion(String artifactBase) implements DeploymentError {
         public static NoCurrentVersion noCurrentVersion(String artifactBase) {
             return new NoCurrentVersion(artifactBase);
@@ -48,7 +45,6 @@ public sealed interface DeploymentError extends Cause {
         }
     }
 
-    /// Consensus apply failed.
     record ConsensusFailure(Cause cause) implements DeploymentError {
         public static ConsensusFailure consensusFailure(Cause cause) {
             return new ConsensusFailure(cause);
@@ -59,7 +55,6 @@ public sealed interface DeploymentError extends Cause {
         }
     }
 
-    /// General errors with fixed messages.
     enum General implements DeploymentError {
         NOT_LEADER("Deployment operations can only be performed by the leader node"),
         NOT_ACTIVE("Deployment is not in an active state"),

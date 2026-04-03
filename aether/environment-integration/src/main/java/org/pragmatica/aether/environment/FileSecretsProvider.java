@@ -5,9 +5,10 @@ import org.pragmatica.lang.Promise;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+
 /// SecretsProvider that reads secrets from files in a base directory.
 /// Path conversion: `database/password` becomes file `{baseDir}/database_password`.
-public record FileSecretsProvider( Path baseDir) implements SecretsProvider {
+public record FileSecretsProvider(Path baseDir) implements SecretsProvider {
     private static final Path DEFAULT_BASE_DIR = Path.of("/run/secrets");
 
     public static FileSecretsProvider fileSecretsProvider() {

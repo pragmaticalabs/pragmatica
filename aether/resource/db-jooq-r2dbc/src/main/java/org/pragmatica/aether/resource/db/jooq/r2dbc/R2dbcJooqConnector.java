@@ -23,6 +23,7 @@ import org.jooq.ResultQuery;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
 
+
 /// R2DBC implementation of JooqConnector for reactive type-safe SQL queries.
 ///
 /// Combines jOOQ's type-safe query building with R2DBC's reactive execution.
@@ -42,11 +43,6 @@ public final class R2dbcJooqConnector implements JooqConnector {
         this.operations = JooqR2dbcOperations.jooqR2dbcOperations(connectionFactory, dialect);
     }
 
-    /// Creates an R2DBC jOOQ connector with the given configuration and connection factory.
-    ///
-    /// @param config            Connector configuration
-    /// @param connectionFactory R2DBC ConnectionFactory
-    /// @return New R2dbcJooqConnector instance
     public static R2dbcJooqConnector r2dbcJooqConnector(DatabaseConnectorConfig config,
                                                         ConnectionFactory connectionFactory) {
         var dialect = JooqConnector.mapDialect(config.effectiveType());
@@ -106,8 +102,9 @@ public final class R2dbcJooqConnector implements JooqConnector {
     }
 
     @Override public Promise<Unit> stop() {
-        if ( connectionFactory instanceof AutoCloseable closeable) {
-        return Promise.lift(DatabaseConnectorError::databaseFailure, closeable::close).mapToUnit();}
+        if (connectionFactory instanceof AutoCloseable closeable) {return Promise.lift(DatabaseConnectorError::databaseFailure,
+                                                                                       closeable::close)
+        .mapToUnit();}
         return Promise.success(Unit.unit());
     }
 
@@ -126,41 +123,49 @@ public final class R2dbcJooqConnector implements JooqConnector {
     }
 
     static DatabaseConnectorError toConnectorError(Cause cause) {
-        if ( cause instanceof R2dbcError r2dbcError) {
-        return switch (r2dbcError) {case R2dbcError.NoResult _ -> DatabaseConnectorError.ResultNotFound.INSTANCE;case R2dbcError.MultipleResults m -> DatabaseConnectorError.multipleResults(m.count());case R2dbcError.ConnectionFailed c -> DatabaseConnectorError.connectionFailed(c.message());case R2dbcError.ConstraintViolation v -> DatabaseConnectorError.constraintViolation(v.constraint());case R2dbcError.Timeout t -> DatabaseConnectorError.timeout(t.operation());case R2dbcError.QueryFailed q -> DatabaseConnectorError.queryFailed("",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      q.message());case R2dbcError.DatabaseFailure d -> DatabaseConnectorError.databaseFailure(d.cause());};}
+        if (cause instanceof R2dbcError r2dbcError) {return switch (r2dbcError){
+            case R2dbcError.NoResult _ -> DatabaseConnectorError.ResultNotFound.INSTANCE;
+            case R2dbcError.MultipleResults m -> DatabaseConnectorError.multipleResults(m.count());
+            case R2dbcError.ConnectionFailed c -> DatabaseConnectorError.connectionFailed(c.message());
+            case R2dbcError.ConstraintViolation v -> DatabaseConnectorError.constraintViolation(v.constraint());
+            case R2dbcError.Timeout t -> DatabaseConnectorError.timeout(t.operation());
+            case R2dbcError.QueryFailed q -> DatabaseConnectorError.queryFailed("", q.message());
+            case R2dbcError.DatabaseFailure d -> DatabaseConnectorError.databaseFailure(d.cause());
+        };}
         return DatabaseConnectorError.databaseFailure(new RuntimeException(cause.message()));
     }
 
-    /// A JooqConnector bound to a specific R2DBC Connection for transactional operations.
     private record TransactionalR2dbcJooqConnector(DatabaseConnectorConfig config,
                                                    Connection connection,
-                                                   SQLDialect dialect)
-    implements JooqConnector {
+                                                   SQLDialect dialect) implements JooqConnector {
         @Override public DSLContext dsl() {
             return DSL.using(dialect);
         }
 
         @Override public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
-            return Promise.lift(e -> mapException(e, query.getSQL()),
+            return Promise.lift(e -> mapException(e,
+                                                  query.getSQL()),
                                 () -> JooqConnector.extractSingleResult(DSL.using(connection, dialect).fetch(query)))
             .mapError(R2dbcJooqConnector::toConnectorError);
         }
 
         @Override public <R extends Record> Promise<Option<R>> fetchOptional(ResultQuery<R> query) {
-            return Promise.lift(e -> mapException(e, query.getSQL()),
+            return Promise.lift(e -> mapException(e,
+                                                  query.getSQL()),
                                 () -> JooqConnector.extractOptionalResult(DSL.using(connection, dialect).fetch(query)))
             .mapError(R2dbcJooqConnector::toConnectorError);
         }
 
         @Override public <R extends Record> Promise<List<R>> fetch(ResultQuery<R> query) {
-            return Promise.lift(e -> mapException(e, query.getSQL()),
+            return Promise.lift(e -> mapException(e,
+                                                  query.getSQL()),
                                 () -> List.copyOf(DSL.using(connection, dialect).fetch(query)))
             .mapError(R2dbcJooqConnector::toConnectorError);
         }
 
         @Override public Promise<Integer> execute(Query query) {
-            return Promise.lift(e -> mapException(e, query.getSQL()),
+            return Promise.lift(e -> mapException(e,
+                                                  query.getSQL()),
                                 () -> DSL.using(connection, dialect).execute(query))
             .mapError(R2dbcJooqConnector::toConnectorError);
         }

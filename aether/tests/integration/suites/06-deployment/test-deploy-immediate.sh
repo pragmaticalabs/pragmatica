@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
-BLUEPRINT="org.pragmatica.aether.example:url-shortener:1.0.0-alpha"
+BLUEPRINT="org.pragmatica.aether.example:url-shortener:1.0.0"
 
 test_cluster_ready() {
     wait_for_cluster 60

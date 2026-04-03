@@ -35,6 +35,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.QueryParameter.aString;
 
+
 /// Routes for metrics endpoints: node metrics, artifact metrics, invocation metrics, prometheus.
 public final class MetricsRoutes implements RouteSource {
     private static final ContentType PROMETHEUS_CONTENT_TYPE = ContentType.contentType("text/plain; version=0.0.4; charset=utf-8",
@@ -53,8 +54,7 @@ public final class MetricsRoutes implements RouteSource {
     }
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<MetricsFullResponse>get("/api/metrics")
-                              .toJson(this::buildMetricsResponse),
+        return Stream.of(Route.<MetricsFullResponse>get("/api/metrics").toJson(this::buildMetricsResponse),
                          Route.<ComprehensiveMetricsResponse>get("/api/metrics/comprehensive")
                               .toJson(this::buildComprehensiveMetricsResponse),
                          Route.<DerivedMetricsResponse>get("/api/metrics/derived")
@@ -62,8 +62,7 @@ public final class MetricsRoutes implements RouteSource {
                          Route.<String>get("/api/metrics/prometheus")
                               .to(_ -> Promise.success(observability.scrape()))
                               .as(PROMETHEUS_CONTENT_TYPE),
-                         Route.<List<NodeMetric>>get("/api/node-metrics")
-                              .toJson(this::buildNodeMetricsResponse),
+                         Route.<List<NodeMetric>>get("/api/node-metrics").toJson(this::buildNodeMetricsResponse),
                          Route.<ArtifactMetricsResponse>get("/api/artifact-metrics")
                               .toJson(this::buildArtifactMetricsResponse),
                          Route.<InvocationMetricsResponse>get("/api/invocation-metrics")
@@ -99,17 +98,16 @@ public final class MetricsRoutes implements RouteSource {
 
     private Map<String, Map<String, Double>> buildLoadMetrics(AetherNode node) {
         Map<String, Map<String, Double>> load = new HashMap<>();
-        for ( var entry : node.metricsCollector().allMetrics()
-                                               .entrySet()) {
-        load.put(entry.getKey().id(),
-                 entry.getValue());}
+        for (var entry : node.metricsCollector().allMetrics()
+                                              .entrySet()) {load.put(entry.getKey().id(),
+                                                                     entry.getValue());}
         return load;
     }
 
     private Map<String, List<DeploymentMetrics>> buildDeploymentMetrics(AetherNode node) {
         Map<String, List<DeploymentMetrics>> deployments = new HashMap<>();
-        for ( var entry : node.deploymentMetricsCollector().allDeploymentMetrics()
-                                                         .entrySet()) {
+        for (var entry : node.deploymentMetricsCollector().allDeploymentMetrics()
+                                                        .entrySet()) {
             var metricsList = entry.getValue().stream()
                                             .map(this::toDeploymentMetrics)
                                             .toList();
@@ -133,8 +131,7 @@ public final class MetricsRoutes implements RouteSource {
         var node = nodeSupplier.get();
         var recent = node.snapshotCollector().minuteAggregator()
                                            .recent(1);
-        if ( recent.isEmpty()) {
-        return new ComprehensiveMetricsResponse(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);}
+        if (recent.isEmpty()) {return new ComprehensiveMetricsResponse(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);}
         var agg = recent.getFirst();
         return new ComprehensiveMetricsResponse(agg.minuteTimestamp(),
                                                 agg.avgCpuUsage(),
@@ -174,7 +171,7 @@ public final class MetricsRoutes implements RouteSource {
         var node = nodeSupplier.get();
         var allMetrics = node.metricsCollector().allMetrics();
         var result = new ArrayList<NodeMetric>();
-        for ( var entry : allMetrics.entrySet()) {
+        for (var entry : allMetrics.entrySet()) {
             var nodeId = entry.getKey();
             var metrics = entry.getValue();
             result.add(new NodeMetric(nodeId.id(),
@@ -225,8 +222,8 @@ public final class MetricsRoutes implements RouteSource {
     private InvocationSnapshot toInvocationSnapshot(InvocationMetricsCollector.MethodSnapshot snapshot) {
         var metrics = snapshot.metrics();
         var avgDurationMs = metrics.count() > 0
-                            ? metrics.totalDurationNs() / metrics.count() / 1_000_000.0
-                            : 0;
+                           ? metrics.totalDurationNs() / metrics.count() / 1_000_000.0
+                           : 0;
         return new InvocationSnapshot(snapshot.artifact().asString(),
                                       snapshot.methodName().name(),
                                       metrics.count(),
@@ -267,35 +264,44 @@ public final class MetricsRoutes implements RouteSource {
         var historicalData = node.metricsCollector().historicalMetrics();
         var cutoff = System.currentTimeMillis() - parseTimeRange(range);
         Map<String, List<Map<String, Object>>> nodes = new HashMap<>();
-        for ( var nodeEntry : historicalData.entrySet()) {
+        for (var nodeEntry : historicalData.entrySet()) {
             var snapshots = new ArrayList<Map<String, Object>>();
-            for ( var snapshot : nodeEntry.getValue()) {
-                if ( snapshot.timestamp() < cutoff) continue;
+            for (var snapshot : nodeEntry.getValue()) {
+                if (snapshot.timestamp() <cutoff) continue;
                 var point = new HashMap<String, Object>();
                 point.put("timestamp", snapshot.timestamp());
                 point.put("metrics", snapshot.metrics());
                 snapshots.add(point);
             }
-            if ( !snapshots.isEmpty()) {
-            nodes.put(nodeEntry.getKey().id(),
-                      snapshots);}
+            if (!snapshots.isEmpty()) {nodes.put(nodeEntry.getKey().id(),
+                                                 snapshots);}
         }
         return Map.of("timeRange", range, "nodes", nodes);
     }
 
     private static long parseTimeRange(String range) {
-        return switch (range) {case "5m" -> 5 * 60 * 1000L; case "15m" -> 15 * 60 * 1000L; case "1h" -> 60 * 60 * 1000L; case "2h" -> 2 * 60 * 60 * 1000L; default -> 60 * 60 * 1000L;};
+        return switch (range){
+            case "5m" -> 5 * 60 * 1000L;
+            case "15m" -> 15 * 60 * 1000L;
+            case "1h" -> 60 * 60 * 1000L;
+            case "2h" -> 2 * 60 * 60 * 1000L;
+            default -> 60 * 60 * 1000L;
+        };
     }
 
     private StrategyResponse buildStrategyResponse() {
         var node = nodeSupplier.get();
         var strategy = node.invocationMetrics().thresholdStrategy();
-        return switch (strategy) {case ThresholdStrategy.Fixed f -> new StrategyResponse.Fixed("fixed",
-                                                                                               f.thresholdNs() / 1_000_000);case ThresholdStrategy.Adaptive a -> new StrategyResponse.Adaptive("adaptive",
-                                                                                                                                                                                               a.minThresholdNs() / 1_000_000,
-                                                                                                                                                                                               a.maxThresholdNs() / 1_000_000,
-                                                                                                                                                                                               a.multiplier());case ThresholdStrategy.PerMethod p -> new StrategyResponse.PerMethod("perMethod",
-                                                                                                                                                                                                                                                                                    p.defaultThresholdNs() / 1_000_000);case ThresholdStrategy.Composite _ -> new StrategyResponse.Composite("composite");case ThresholdStrategy.unused _ -> new StrategyResponse.Fixed("none",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                        0);};
+        return switch (strategy){
+            case ThresholdStrategy.Fixed f -> new StrategyResponse.Fixed("fixed", f.thresholdNs() / 1_000_000);
+            case ThresholdStrategy.Adaptive a -> new StrategyResponse.Adaptive("adaptive",
+                                                                               a.minThresholdNs() / 1_000_000,
+                                                                               a.maxThresholdNs() / 1_000_000,
+                                                                               a.multiplier());
+            case ThresholdStrategy.PerMethod p -> new StrategyResponse.PerMethod("perMethod",
+                                                                                 p.defaultThresholdNs() / 1_000_000);
+            case ThresholdStrategy.Composite _ -> new StrategyResponse.Composite("composite");
+            case ThresholdStrategy.unused _ -> new StrategyResponse.Fixed("none", 0);
+        };
     }
 }

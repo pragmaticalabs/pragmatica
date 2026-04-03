@@ -4,22 +4,23 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
+
 /// Centralized timeout configuration for all Aether subsystems.
 /// All duration fields use TimeSpan; TOML values use human-readable strings ("5s", "500ms").
-public record TimeoutsConfig( InvocationTimeouts invocation,
-                              ForwardingTimeouts forwarding,
-                              DeploymentTimeouts deployment,
-                              RollingUpdateTimeouts rollingUpdate,
-                              ClusterTimeouts cluster,
-                              ConsensusTimeouts consensus,
-                              ElectionTimeouts election,
-                              SwimTimeouts swim,
-                              ObservabilityTimeouts observability,
-                              DhtTimeouts dht,
-                              WorkerTimeouts worker,
-                              SecurityTimeouts security,
-                              RepositoryTimeouts repository,
-                              ScalingTimeouts scaling) {
+public record TimeoutsConfig(InvocationTimeouts invocation,
+                             ForwardingTimeouts forwarding,
+                             DeploymentTimeouts deployment,
+                             RollingUpdateTimeouts rollingUpdate,
+                             ClusterTimeouts cluster,
+                             ConsensusTimeouts consensus,
+                             ElectionTimeouts election,
+                             SwimTimeouts swim,
+                             ObservabilityTimeouts observability,
+                             DhtTimeouts dht,
+                             WorkerTimeouts worker,
+                             SecurityTimeouts security,
+                             RepositoryTimeouts repository,
+                             ScalingTimeouts scaling) {
     public static TimeoutsConfig timeoutsConfig() {
         return new TimeoutsConfig(InvocationTimeouts.invocationTimeouts(),
                                   ForwardingTimeouts.forwardingTimeouts(),
@@ -37,7 +38,6 @@ public record TimeoutsConfig( InvocationTimeouts invocation,
                                   ScalingTimeouts.scalingTimeouts());
     }
 
-    // --- Nested records ---
     public record InvocationTimeouts(TimeSpan timeout,
                                      TimeSpan invokerTimeout,
                                      TimeSpan retryBaseDelay,
@@ -47,8 +47,7 @@ public record TimeoutsConfig( InvocationTimeouts invocation,
         }
     }
 
-    public record ForwardingTimeouts(TimeSpan retryDelay,
-                                     int maxRetries) {
+    public record ForwardingTimeouts(TimeSpan retryDelay, int maxRetries) {
         public static ForwardingTimeouts forwardingTimeouts() {
             return new ForwardingTimeouts(timeSpan(200).millis(), 3);
         }
@@ -112,17 +111,13 @@ public record TimeoutsConfig( InvocationTimeouts invocation,
         }
     }
 
-    public record ElectionTimeouts(TimeSpan baseDelay,
-                                   TimeSpan perRankDelay,
-                                   TimeSpan retryDelay) {
+    public record ElectionTimeouts(TimeSpan baseDelay, TimeSpan perRankDelay, TimeSpan retryDelay) {
         public static ElectionTimeouts electionTimeouts() {
             return new ElectionTimeouts(timeSpan(2).seconds(), timeSpan(1).seconds(), timeSpan(500).millis());
         }
     }
 
-    public record SwimTimeouts(TimeSpan period,
-                               TimeSpan probeTimeout,
-                               TimeSpan suspectTimeout) {
+    public record SwimTimeouts(TimeSpan period, TimeSpan probeTimeout, TimeSpan suspectTimeout) {
         public static SwimTimeouts swimTimeouts() {
             return new SwimTimeouts(timeSpan(1).seconds(), timeSpan(500).millis(), timeSpan(5).seconds());
         }
@@ -146,31 +141,25 @@ public record TimeoutsConfig( InvocationTimeouts invocation,
         }
     }
 
-    public record DhtTimeouts(TimeSpan operation,
-                              TimeSpan antiEntropyInterval) {
+    public record DhtTimeouts(TimeSpan operation, TimeSpan antiEntropyInterval) {
         public static DhtTimeouts dhtTimeouts() {
             return new DhtTimeouts(timeSpan(10).seconds(), timeSpan(30).seconds());
         }
     }
 
-    public record WorkerTimeouts(TimeSpan heartbeatInterval,
-                                 TimeSpan heartbeatTimeout,
-                                 TimeSpan metricsAggregation) {
+    public record WorkerTimeouts(TimeSpan heartbeatInterval, TimeSpan heartbeatTimeout, TimeSpan metricsAggregation) {
         public static WorkerTimeouts workerTimeouts() {
             return new WorkerTimeouts(timeSpan(500).millis(), timeSpan(2).seconds(), timeSpan(5).seconds());
         }
     }
 
-    public record SecurityTimeouts(TimeSpan websocketAuth,
-                                   TimeSpan dnsQuery,
-                                   TimeSpan certRenewalRetry) {
+    public record SecurityTimeouts(TimeSpan websocketAuth, TimeSpan dnsQuery, TimeSpan certRenewalRetry) {
         public static SecurityTimeouts securityTimeouts() {
             return new SecurityTimeouts(timeSpan(5).seconds(), timeSpan(10).seconds(), timeSpan(1).hours());
         }
     }
 
-    public record RepositoryTimeouts(TimeSpan httpTimeout,
-                                     TimeSpan locateTimeout) {
+    public record RepositoryTimeouts(TimeSpan httpTimeout, TimeSpan locateTimeout) {
         public static RepositoryTimeouts repositoryTimeouts() {
             return new RepositoryTimeouts(timeSpan(30).seconds(), timeSpan(10).seconds());
         }

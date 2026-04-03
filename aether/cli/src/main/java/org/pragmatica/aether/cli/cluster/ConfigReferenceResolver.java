@@ -11,6 +11,7 @@ import java.util.regex.Pattern;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
+
 /// Resolves ${env:xxx} and ${secrets:xxx} references in raw TOML configuration strings.
 ///
 /// Resolution happens at the string level BEFORE TOML parsing, so any value
@@ -30,23 +31,19 @@ sealed interface ConfigReferenceResolver {
 
     Pattern REFERENCE_PATTERN = Pattern.compile("\\$\\{(env|secrets):([^}]+)}");
 
-    /// Resolve all references in a raw TOML string.
-    /// Returns the TOML string with all references replaced by their values.
-    /// If ANY reference cannot be resolved, returns failure listing ALL unresolved references.
     static Result<String> resolveAll(String tomlContent) {
         var matcher = REFERENCE_PATTERN.matcher(tomlContent);
         var unresolved = new LinkedHashSet<String>();
         var resolved = new ArrayList<ResolvedMatch>();
         collectMatches(matcher, unresolved, resolved);
-        if ( !unresolved.isEmpty()) {
-        return new ClusterConfigError.SecretResolutionFailed(formatUnresolved(unresolved)).result();}
+        if (!unresolved.isEmpty()) {return new ClusterConfigError.SecretResolutionFailed(formatUnresolved(unresolved)).result();}
         return success(applyReplacements(tomlContent, resolved));
     }
 
     private static void collectMatches(Matcher matcher,
                                        LinkedHashSet<String> unresolved,
                                        ArrayList<ResolvedMatch> resolved) {
-        while ( matcher.find()) {
+        while (matcher.find()) {
             var type = matcher.group(1);
             var name = matcher.group(2);
             var fullRef = matcher.group(0);
@@ -58,8 +55,8 @@ sealed interface ConfigReferenceResolver {
 
     private static String resolveEnvVarName(String type, String name) {
         return "secrets".equals(type)
-               ? "AETHER_" + name.toUpperCase().replace('-', '_')
-               : name;
+              ? "AETHER_" + name.toUpperCase().replace('-', '_')
+              : name;
     }
 
     private static String formatUnresolved(LinkedHashSet<String> unresolved) {
@@ -68,11 +65,9 @@ sealed interface ConfigReferenceResolver {
 
     private static String applyReplacements(String content, ArrayList<ResolvedMatch> resolved) {
         var result = content;
-        for ( var match : resolved) {
-        result = result.replace(match.reference(), match.value());}
+        for (var match : resolved) {result = result.replace(match.reference(), match.value());}
         return result;
     }
 
-    /// A resolved reference match with its replacement value.
     record ResolvedMatch(String reference, String value){}
 }

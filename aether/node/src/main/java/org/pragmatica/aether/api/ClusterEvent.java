@@ -3,6 +3,7 @@ package org.pragmatica.aether.api;
 import java.time.Instant;
 import java.util.Map;
 
+
 /// Structured cluster event for dashboard timeline and LLM consumption.
 ///
 /// Events are created by ClusterEventAggregator from MessageRouter fan-out
@@ -13,11 +14,11 @@ import java.util.Map;
 /// @param severity the severity level
 /// @param summary human-readable description
 /// @param details context-specific key-value pairs
-public record ClusterEvent( Instant timestamp,
-                            EventType type,
-                            Severity severity,
-                            String summary,
-                            Map<String, String> details) {
+public record ClusterEvent(Instant timestamp,
+                           EventType type,
+                           Severity severity,
+                           String summary,
+                           Map<String, String> details) {
     public enum EventType {
         NODE_JOINED,
         NODE_LEFT,
@@ -51,7 +52,6 @@ public record ClusterEvent( Instant timestamp,
         CRITICAL
     }
 
-    /// Factory method following JBCT naming convention.
     public static ClusterEvent clusterEvent(EventType type,
                                             Severity severity,
                                             String summary,

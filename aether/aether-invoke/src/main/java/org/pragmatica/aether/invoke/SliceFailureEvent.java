@@ -9,6 +9,7 @@ import org.pragmatica.messaging.Message;
 
 import java.util.List;
 
+
 /// Events related to slice invocation failures.
 ///
 ///
@@ -21,21 +22,6 @@ import java.util.List;
 ///
 /// @see org.pragmatica.messaging.MessageRouter.Entry.SealedBuilder
 public sealed interface SliceFailureEvent extends Message.Local {
-    /// Emitted when all instances of a slice have failed during invocation.
-    ///
-    ///
-    /// This is a critical condition indicating:
-    ///
-    ///   - All available endpoints were tried and failed
-    ///   - The slice may need rollback or manual intervention
-    ///
-    ///
-    /// @param requestId the distributed tracing ID
-    /// @param artifact the failing slice
-    /// @param method the method being invoked
-    /// @param lastError the last error encountered (may be absent if no attempts were made)
-    /// @param attemptedNodes nodes that were tried
-    /// @param timestamp when the failure was detected
     record AllInstancesFailed(String requestId,
                               Artifact artifact,
                               MethodName method,

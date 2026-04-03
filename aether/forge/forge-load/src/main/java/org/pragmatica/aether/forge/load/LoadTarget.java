@@ -16,6 +16,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
+
 /// Configuration for a single load generation target.
 ///
 /// @param name     Optional name for this target (auto-generated from target if not specified)
@@ -24,25 +25,21 @@ import static org.pragmatica.lang.Result.success;
 /// @param duration How long to run (null or Duration.ZERO = continuous)
 /// @param pathVars Pattern templates for path variables
 /// @param body     Body template with pattern placeholders
-public record LoadTarget( Option<String> name,
-                          String target,
-                          Rate rate,
-                          Option<Duration> duration,
-                          Map<String, String> pathVars,
-                          Option<String> body) {
+public record LoadTarget(Option<String> name,
+                         String target,
+                         Rate rate,
+                         Option<Duration> duration,
+                         Map<String, String> pathVars,
+                         Option<String> body) {
     private static final Fn1<Cause, String> INVALID_TARGET = Causes.forOneValue("Invalid target: %s");
 
     private static final Fn1<Cause, String> INVALID_RATE = Causes.forOneValue("Invalid rate format: %s");
 
-    /// Rate specification with value and time unit.
-    ///
-    ///
-    /// Use the {@link #rate(String)} factory method to create instances with validation.
-    ///
-    /// Note: Constructor assumes pre-validated inputs from factory method.
     public record Rate(int value, TimeUnit unit) {
         private static final Pattern RATE_PATTERN = Pattern.compile("^(\\d+)/(s|m|h)$");
+
         private static final Cause NON_POSITIVE_RATE = Causes.cause("Rate value must be positive");
+
         private static final Cause NULL_TIME_UNIT = Causes.cause("Rate time unit cannot be null");
 
         public enum TimeUnit {
@@ -56,21 +53,25 @@ public record LoadTarget( Option<String> name,
                 this.secondsMultiplier = secondsMultiplier;
             }
             public static Option<TimeUnit> fromSymbol(String symbol) {
-                return switch (symbol) {case "s" -> some(SECOND);case "m" -> some(MINUTE);case "h" -> some(HOUR);default -> none();};
+                return switch (symbol){
+                    case "s" -> some(SECOND);
+                    case "m" -> some(MINUTE);
+                    case "h" -> some(HOUR);
+                    default -> none();
+                };
             }
             public int toRequestsPerSecond(int value) {
-                return switch (this) {case SECOND -> value;case MINUTE -> value / 60;case HOUR -> value / 3600;};
+                return switch (this){
+                    case SECOND -> value;
+                    case MINUTE -> value / 60;
+                    case HOUR -> value / 3600;
+                };
             }
         }
 
-        /// Factory method to create a Rate from a string specification.
-        ///
-        /// @param rateStr Rate string in format "value/unit" where unit is s, m, or h
-        /// @return Result containing valid Rate or error
         public static Result<Rate> rate(String rateStr) {
             var matcher = RATE_PATTERN.matcher(rateStr.trim());
-            if ( !matcher.matches()) {
-            return INVALID_RATE.apply(rateStr).result();}
+            if (!matcher.matches()) {return INVALID_RATE.apply(rateStr).result();}
             return Number.parseInt(matcher.group(1)).flatMap(Rate::ensurePositive)
                                   .flatMap(val -> rate(val,
                                                        matcher.group(2),
@@ -79,8 +80,8 @@ public record LoadTarget( Option<String> name,
 
         private static Result<Integer> ensurePositive(int value) {
             return value <= 0
-                   ? NON_POSITIVE_RATE.result()
-                   : success(value);
+                  ? NON_POSITIVE_RATE.result()
+                  : success(value);
         }
 
         private static Result<Rate> rate(int value, TimeUnit unit) {
@@ -101,17 +102,15 @@ public record LoadTarget( Option<String> name,
         }
     }
 
-    /// Creates a LoadTarget with validation.
     public static Result<LoadTarget> loadTarget(Option<String> name,
                                                 String target,
                                                 String rateStr,
                                                 Option<Duration> duration,
                                                 Map<String, String> pathVars,
                                                 Option<String> body) {
-        var validTarget = option(target).filter(s -> !s.isBlank())
-                                .toResult(INVALID_TARGET.apply("target is required"));
+        var validTarget = option(target).filter(s -> !s.isBlank()).toResult(INVALID_TARGET.apply("target is required"));
         return validTarget.flatMap(_ -> Rate.rate(rateStr))
-        .flatMap(rate -> loadTarget(name, target, rate, duration, pathVars, body));
+                                  .flatMap(rate -> loadTarget(name, target, rate, duration, pathVars, body));
     }
 
     private static Result<LoadTarget> loadTarget(Option<String> name,
@@ -121,54 +120,47 @@ public record LoadTarget( Option<String> name,
                                                  Map<String, String> pathVars,
                                                  Option<String> body) {
         var resolvedName = some(name.or(deriveNameFromTarget(target)));
-        var safePathVars = option(pathVars).map(Map::copyOf)
-                                 .or(Map.of());
+        var safePathVars = option(pathVars).map(Map::copyOf).or(Map.of());
         return success(new LoadTarget(resolvedName, target, rate, duration, safePathVars, body));
     }
 
     private static final Pattern HTTP_METHOD_PREFIX = Pattern.compile("^(GET|POST|PUT|DELETE|PATCH)\\s+");
 
-    /// Returns true if target is an HTTP path (starts with / or HTTP method).
     public boolean isHttpPath() {
         return target.startsWith("/") || HTTP_METHOD_PREFIX.matcher(target).find();
     }
 
-    /// Extracts the HTTP method from target if present.
     public Option<String> httpMethod() {
         var matcher = HTTP_METHOD_PREFIX.matcher(target);
         return matcher.find()
-               ? some(matcher.group(1))
-               : none();
+              ? some(matcher.group(1))
+              : none();
     }
 
-    /// Extracts the path from target, stripping HTTP method prefix if present.
     public String httpPath() {
         return HTTP_METHOD_PREFIX.matcher(target).replaceFirst("");
     }
 
-    /// Derives a name from target, using path up to first variable or method name.
     private static String deriveNameFromTarget(String target) {
         var path = HTTP_METHOD_PREFIX.matcher(target).replaceFirst("");
         return path.startsWith("/")
-               ? deriveFromHttpPath(path)
-               : path;
+              ? deriveFromHttpPath(path)
+              : path;
     }
 
     private static String deriveFromHttpPath(String path) {
         var bracketIdx = path.indexOf('{');
         var effectivePath = bracketIdx > 0
-                            ? path.substring(0, bracketIdx)
-                            : path;
+                           ? path.substring(0, bracketIdx)
+                           : path;
         effectivePath = effectivePath.replaceAll("^/|/$", "");
         return effectivePath.replace('/', '-');
     }
 
-    /// Returns true if this target should run continuously.
     public boolean isContinuous() {
         return duration.map(Duration::isZero).or(true);
     }
 
-    /// Creates a new LoadTarget with the rate scaled by the given multiplier.
     public LoadTarget withScaledRate(double multiplier) {
         var scaledValue = (int) Math.max(1, rate.requestsPerSecond() * multiplier);
         return loadTarget(name, target, scaledValue, duration, pathVars, body).unwrap();
@@ -181,6 +173,6 @@ public record LoadTarget( Option<String> name,
                                                  Map<String, String> pathVars,
                                                  Option<String> body) {
         return Rate.rate(scaledValue, Rate.TimeUnit.SECOND)
-        .flatMap(r -> success(new LoadTarget(name, target, r, duration, pathVars, body)));
+                        .flatMap(r -> success(new LoadTarget(name, target, r, duration, pathVars, body)));
     }
 }

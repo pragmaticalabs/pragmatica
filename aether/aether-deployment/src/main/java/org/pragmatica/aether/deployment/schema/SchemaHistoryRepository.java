@@ -12,38 +12,19 @@ import java.util.List;
 
 import static org.pragmatica.lang.Result.all;
 
+
 /// Repository for the `aether_schema_history` table tracking applied migrations.
 public interface SchemaHistoryRepository {
-    /// Creates the schema history table if it does not already exist.
     Promise<Unit> bootstrap(SqlConnector connector);
-
-    /// Returns all previously applied migrations ordered by version.
     Promise<List<AppliedMigration>> queryApplied(SqlConnector connector);
-
-    /// Records a successfully applied migration in the history table.
     Promise<Unit> recordMigration(SqlConnector connector, AppliedMigration migration);
-
-    /// Removes a migration record by version and type (used during undo).
     Promise<Unit> removeMigration(SqlConnector connector, int version, MigrationType type);
-
-    /// Returns the checksum of the last applied repeatable migration with the given description.
     Promise<Option<Long>> queryRepeatableChecksum(SqlConnector connector, String description);
 
-    /// Creates a new SchemaHistoryRepository instance.
     static SchemaHistoryRepository schemaHistoryRepository() {
         return new DefaultSchemaHistoryRepository();
     }
 
-    /// A record of a migration that has been applied to the database.
-    ///
-    /// @param version     migration version number
-    /// @param type        migration type
-    /// @param description human-readable description
-    /// @param script      filename of the migration script
-    /// @param checksum    CRC32 checksum of the SQL content
-    /// @param appliedBy   node identifier that applied the migration
-    /// @param appliedAt   epoch millis when the migration was applied
-    /// @param executionMs time in milliseconds the migration took to execute
     record AppliedMigration(int version,
                             MigrationType type,
                             String description,
@@ -90,7 +71,7 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
 
     private static final RowMapper<SchemaHistoryRepository.AppliedMigration> APPLIED_MIGRATION_MAPPER = row -> all(row.getInt("version"),
                                                                                                                    row.getString("type")
-    .map(MigrationType::valueOf),
+                                                                                                                                .map(MigrationType::valueOf),
                                                                                                                    row.getString("description"),
                                                                                                                    row.getString("script"),
                                                                                                                    row.getLong("checksum"),

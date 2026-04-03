@@ -31,6 +31,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
+
 /// Main entry point for starting an Aether cluster node.
 ///
 ///
@@ -48,9 +49,9 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 ///
 /// When --config is provided, values from the config file are used as defaults,
 /// but can be overridden by command-line arguments.
-@SuppressWarnings("JBCT-RET-01")
-public record Main( String[] args) {
+@SuppressWarnings("JBCT-RET-01") public record Main(String[] args) {
     private static final Logger log = LoggerFactory.getLogger(Main.class);
+
     private static final int DEFAULT_CLUSTER_PORT = 8090;
 
     public static void main(String[] args) {
@@ -96,8 +97,7 @@ public record Main( String[] args) {
                                    .or(config);
     }
 
-    private static AetherNodeConfig wireBackupIfConfigured(AetherNodeConfig config,
-                                                           Option<AetherConfig> aetherConfig) {
+    private static AetherNodeConfig wireBackupIfConfigured(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
         return aetherConfig.map(AetherConfig::backup).filter(BackupConfig::enabled)
                                .filter(b -> !b.path().isBlank())
                                .map(config::withBackupConfig)
@@ -143,8 +143,7 @@ public record Main( String[] args) {
     private void warnInsecureTlsInNonLocal(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
         var isNonLocal = aetherConfig.map(AetherConfig::environment).filter(env -> env != Environment.LOCAL)
                                          .isPresent();
-        if ( isNonLocal && config.tls().isEmpty()) {
-        log.warn("*** SECURITY WARNING: Running without TLS in non-LOCAL environment. " + "Cluster transport will use insecure self-signed certificates with no mutual authentication. " + "Configure TLS via [tls] section in aether.toml for production deployments. ***");}
+        if (isNonLocal && config.tls().isEmpty()) {log.warn("*** SECURITY WARNING: Running without TLS in non-LOCAL environment. " + "Cluster transport will use insecure self-signed certificates with no mutual authentication. " + "Configure TLS via [tls] section in aether.toml for production deployments. ***");}
     }
 
     private AetherNodeConfig wireTlsIfEnabled(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
@@ -154,8 +153,7 @@ public record Main( String[] args) {
                                   .or(config);
     }
 
-    private AetherNodeConfig wireAutoTls(AetherNodeConfig config,
-                                         org.pragmatica.aether.config.TlsConfig tlsCfg) {
+    private AetherNodeConfig wireAutoTls(AetherNodeConfig config, org.pragmatica.aether.config.TlsConfig tlsCfg) {
         return resolveClusterSecret(tlsCfg).flatMap(SelfSignedCertificateProvider::selfSignedCertificateProvider)
                                    .flatMap(provider -> wireProviderToConfig(config, provider))
                                    .onFailure(cause -> log.error("Failed to setup TLS: {}",
@@ -177,7 +175,8 @@ public record Main( String[] args) {
         var nodeId = config.self().id();
         var hostname = findHostname(config);
         return org.pragmatica.net.tcp.TlsConfig.fromProvider(provider, nodeId, hostname)
-        .map(tlsConfig -> config.withTls(tlsConfig).withCertificateProvider(provider));
+                                                            .map(tlsConfig -> config.withTls(tlsConfig)
+                                                                                            .withCertificateProvider(provider));
     }
 
     private static String findHostname(AetherNodeConfig config) {
@@ -255,10 +254,7 @@ public record Main( String[] args) {
     private void waitForInterrupt() {
         try {
             Thread.currentThread().join();
-        }
-
-
-        catch (InterruptedException e) {
+        } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
     }
@@ -294,8 +290,7 @@ public record Main( String[] args) {
 
     private int managementPortFromConfig(Option<AetherConfig> aetherConfig) {
         return aetherConfig.map(cfg -> cfg.cluster().ports()
-                                                  .management())
-        .or(AetherNodeConfig.DEFAULT_MANAGEMENT_PORT);
+                                                  .management()).or(AetherNodeConfig.DEFAULT_MANAGEMENT_PORT);
     }
 
     private List<NodeInfo> parsePeers(NodeId self, int selfPort, Option<AetherConfig> aetherConfig) {
@@ -317,8 +312,8 @@ public record Main( String[] args) {
 
     private NodeInfo createNodeInfoForIndex(int index, int clusterPort, Environment env) {
         var host = env == Environment.DOCKER
-                   ? "aether-node-" + index
-                   : "localhost";
+                  ? "aether-node-" + index
+                  : "localhost";
         var port = clusterPort + (env == Environment.LOCAL
                                   ? index
                                   : 0);
@@ -336,7 +331,7 @@ public record Main( String[] args) {
 
     private List<NodeInfo> ensureSelfIncluded(List<NodeInfo> peers, NodeId self, NodeInfo selfInfo) {
         var selfMissing = peers.stream().noneMatch(p -> p.id().equals(self));
-        if ( selfMissing) {
+        if (selfMissing) {
             var allPeers = new ArrayList<>(peers);
             allPeers.add(selfInfo);
             return List.copyOf(allPeers);
@@ -346,15 +341,18 @@ public record Main( String[] args) {
 
     private Option<NodeInfo> parsePeerAddress(String peerStr) {
         var parts = peerStr.split(":");
-        return switch (parts.length) {case 2 -> parseHostPortPeer(parts);case 3 -> parseIdHostPortPeer(parts);default -> logInvalidPeerFormat(peerStr);};
+        return switch (parts.length){
+            case 2 -> parseHostPortPeer(parts);
+            case 3 -> parseIdHostPortPeer(parts);
+            default -> logInvalidPeerFormat(peerStr);
+        };
     }
 
     private Option<NodeInfo> parseHostPortPeer(String[] parts) {
         var host = parts[0];
         var port = Integer.parseInt(parts[1]);
         var nodeId = NodeId.nodeId("node-" + host + "-" + port).unwrap();
-        return nodeAddress(host, port).map(addr -> NodeInfo.nodeInfo(nodeId, addr))
-                          .option();
+        return nodeAddress(host, port).map(addr -> NodeInfo.nodeInfo(nodeId, addr)).option();
     }
 
     private Option<NodeInfo> parseIdHostPortPeer(String[] parts) {

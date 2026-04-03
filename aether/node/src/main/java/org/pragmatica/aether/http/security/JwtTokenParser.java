@@ -11,12 +11,12 @@ import java.util.Map;
 
 import static org.pragmatica.lang.Result.success;
 
+
 /// Parses JWT tokens into header, payload, and signature components.
 ///
 /// Uses JDK Base64url decoder and Jackson for JSON parsing.
 /// No external JWT library dependencies.
-@SuppressWarnings("JBCT-RET-03")
-final class JwtTokenParser {
+@SuppressWarnings("JBCT-RET-03") final class JwtTokenParser {
     private static final JsonMapper JSON = JsonMapper.defaultJsonMapper();
 
     private static final TypeToken<Map<String, Object>> MAP_TYPE = new TypeToken<>() {};
@@ -25,15 +25,10 @@ final class JwtTokenParser {
 
     private JwtTokenParser() {}
 
-    /// Parsed JWT with decoded header, payload, and raw signature bytes.
     record JwtHeader(String alg, String kid){}
 
-    record ParsedJwt(JwtHeader header,
-                     Map<String, Object> payload,
-                     byte[] signature,
-                     String signedContent){}
+    record ParsedJwt(JwtHeader header, Map<String, Object> payload, byte[] signature, String signedContent){}
 
-    /// Parse a raw JWT string into its three components.
     static Result<ParsedJwt> parseToken(String token) {
         return splitToken(token).flatMap(JwtTokenParser::decodeComponents);
     }
@@ -41,15 +36,15 @@ final class JwtTokenParser {
     private static Result<String[]> splitToken(String token) {
         var parts = token.split("\\.");
         return parts.length == 3
-               ? success(parts)
-               : SecurityError.MALFORMED_TOKEN.result();
+              ? success(parts)
+              : SecurityError.MALFORMED_TOKEN.result();
     }
 
     private static Result<ParsedJwt> decodeComponents(String[] parts) {
-        return decodeHeader(parts[0])
-        .flatMap(header -> decodePayload(parts[1])
-        .flatMap(payload -> decodeSignature(parts[2])
-        .map(sig -> new ParsedJwt(header, payload, sig, parts[0] + "." + parts[1]))));
+        return decodeHeader(parts[0]).flatMap(header -> decodePayload(parts[1]).flatMap(payload -> decodeSignature(parts[2]).map(sig -> new ParsedJwt(header,
+                                                                                                                                                      payload,
+                                                                                                                                                      sig,
+                                                                                                                                                      parts[0] + "." + parts[1]))));
     }
 
     private static Result<JwtHeader> decodeHeader(String headerB64) {
@@ -77,8 +72,7 @@ final class JwtTokenParser {
                                 .flatMap(json -> JSON.readString(json, MAP_TYPE));
     }
 
-    @SuppressWarnings("JBCT-EX-01")
-    private static Result<byte[]> decodeBase64Bytes(String base64) {
+    @SuppressWarnings("JBCT-EX-01") private static Result<byte[]> decodeBase64Bytes(String base64) {
         return Result.lift(JwtTokenParser::decodeFailed, () -> BASE64URL.decode(base64));
     }
 

@@ -4,6 +4,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+
 /// Two-level cache combining a fast local L1 with a distributed L2 backend.
 ///
 /// Read path: L1 hit returns immediately. L1 miss checks L2. L2 hit promotes to L1.
@@ -38,8 +39,9 @@ final class TieredCache implements CacheBackend {
 
     private Promise<Option<Object>> promoteFromL2(Object key) {
         return l2.get(key)
-        .flatMap(l2Result -> l2Result.isPresent()
-                            ? l1.put(key, l2Result.unwrap()).map(_ -> l2Result)
-                            : Promise.success(Option.none()));
+                     .flatMap(l2Result -> l2Result.isPresent()
+                                         ? l1.put(key,
+                                                  l2Result.unwrap()).map(_ -> l2Result)
+                                         : Promise.success(Option.none()));
     }
 }

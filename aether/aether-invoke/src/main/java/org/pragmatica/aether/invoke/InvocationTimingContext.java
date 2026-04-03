@@ -3,11 +3,14 @@ package org.pragmatica.aether.invoke;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Records nanosecond-precision stage timings for an invocation.
 /// Zero-overhead when trace logging is disabled — all operations are no-ops.
-@SuppressWarnings("JBCT-RET-01") // Timing methods are fire-and-forget state mutations — void is intentional
+@SuppressWarnings("JBCT-RET-01")
+// Timing methods are fire-and-forget state mutations — void is intentional
 public final class InvocationTimingContext {
     private static final Logger log = LoggerFactory.getLogger(InvocationTimingContext.class);
+
     private static final InvocationTimingContext NOOP = new InvocationTimingContext(false);
 
     private final boolean active;
@@ -25,57 +28,53 @@ public final class InvocationTimingContext {
 
     private InvocationTimingContext(boolean active) {
         this.active = active;
-        if ( active) {
-        this.startNs = System.nanoTime();}
+        if (active) {this.startNs = System.nanoTime();}
     }
 
-    /// Factory: returns a real context if trace logging is enabled, otherwise NOOP.
     public static InvocationTimingContext invocationTimingContext() {
         return log.isTraceEnabled()
-               ? new InvocationTimingContext(true)
-               : NOOP;
+              ? new InvocationTimingContext(true)
+              : NOOP;
     }
 
     public void routeResolved() {
-        if ( active) routeResolvedNs = System.nanoTime();
+        if (active) routeResolvedNs = System.nanoTime();
     }
 
     public void serialized() {
-        if ( active) serializedNs = System.nanoTime();
+        if (active) serializedNs = System.nanoTime();
     }
 
     public void endpointSelected() {
-        if ( active) endpointSelectedNs = System.nanoTime();
+        if (active) endpointSelectedNs = System.nanoTime();
     }
 
     public void networkSent() {
-        if ( active) networkSentNs = System.nanoTime();
+        if (active) networkSentNs = System.nanoTime();
     }
 
     public void handlerReceived() {
-        if ( active) handlerReceivedNs = System.nanoTime();
+        if (active) handlerReceivedNs = System.nanoTime();
     }
 
     public void bridgeInvoked() {
-        if ( active) bridgeInvokedNs = System.nanoTime();
+        if (active) bridgeInvokedNs = System.nanoTime();
     }
 
     public void responseSerialized() {
-        if ( active) responseSerializedNs = System.nanoTime();
+        if (active) responseSerializedNs = System.nanoTime();
     }
 
     public void networkResponse() {
-        if ( active) networkResponseNs = System.nanoTime();
+        if (active) networkResponseNs = System.nanoTime();
     }
 
     public void deserialized() {
-        if ( active) deserializedNs = System.nanoTime();
+        if (active) deserializedNs = System.nanoTime();
     }
 
-    /// Complete timing and emit structured log.
     public void complete(String artifact, String method) {
-        if ( !active) {
-        return;}
+        if (!active) {return;}
         completedNs = System.nanoTime();
         log.trace("Invocation timing [{}::{}] total={}us route={}us ser={}us endpoint={}us net_send={}us " + "handler={}us bridge={}us resp_ser={}us net_resp={}us deser={}us",
                   artifact,
@@ -94,7 +93,7 @@ public final class InvocationTimingContext {
 
     private static long deltaUs(long from, long to) {
         return to > 0 && from > 0
-               ? (to - from) / 1_000
-               : 0;
+              ? (to - from) / 1_000
+              : 0;
     }
 }

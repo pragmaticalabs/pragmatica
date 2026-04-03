@@ -6,40 +6,32 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 import java.util.Map;
 
+
 /// SPI for provisioning and managing compute instances.
 /// Implementations handle the actual instance lifecycle (Forge local nodes, cloud VMs, etc.).
 /// CDM uses this interface to auto-heal when cluster size drops below target.
 public interface ComputeProvider {
     Promise<InstanceInfo> provision(InstanceType instanceType);
-
     Promise<Unit> terminate(InstanceId instanceId);
-
     Promise<List<InstanceInfo>> listInstances();
-
     Promise<InstanceInfo> instanceStatus(InstanceId instanceId);
 
-    /// Restart an instance. Default implementation returns not-supported error.
     default Promise<Unit> restart(InstanceId id) {
         return EnvironmentError.operationNotSupported("restart").promise();
     }
 
-    /// Apply tags to an instance. Default implementation returns not-supported error.
     default Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
         return EnvironmentError.operationNotSupported("applyTags").promise();
     }
 
-    /// List instances filtered by tags. Default implementation delegates to listInstances()
-    /// and filters client-side by matching all entries in the tag filter.
     default Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
         return listInstances().map(instances -> filterByTags(instances, tagFilter));
     }
 
-    /// Provision with detailed specification. Default delegates to provision(instanceType).
     default Promise<InstanceInfo> provision(ProvisionSpec spec) {
         return provision(spec.instanceType());
     }
 
-    /// List instances filtered by TagSelector. Default delegates to listInstances(Map).
     default Promise<List<InstanceInfo>> listInstances(TagSelector selector) {
         return listInstances(selector.requiredTags());
     }

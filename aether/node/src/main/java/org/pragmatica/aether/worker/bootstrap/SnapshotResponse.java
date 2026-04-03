@@ -5,11 +5,12 @@ import org.pragmatica.serialization.Codec;
 
 import java.util.Arrays;
 
+
 /// Response containing the KV store snapshot for bootstrapping.
 ///
 /// @param kvState        serialized KV store state
 /// @param sequenceNumber the decision sequence number at the time of the snapshot
-@Codec public record SnapshotResponse( byte[] kvState, long sequenceNumber) implements Message.Wired {
+@Codec public record SnapshotResponse(byte[] kvState, long sequenceNumber) implements Message.Wired {
     public SnapshotResponse {
         kvState = kvState.clone();
     }
@@ -19,8 +20,8 @@ import java.util.Arrays;
     }
 
     @Override public boolean equals(Object o) {
-        return o instanceof SnapshotResponse other &&
-        sequenceNumber == other.sequenceNumber && Arrays.equals(kvState, other.kvState);
+        return o instanceof SnapshotResponse other && sequenceNumber == other.sequenceNumber && Arrays.equals(kvState,
+                                                                                                              other.kvState);
     }
 
     @Override public int hashCode() {

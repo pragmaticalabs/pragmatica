@@ -7,7 +7,7 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/load.sh"
 
-BLUEPRINT="${SQL_BLUEPRINT:-org.pragmatica.aether.example:url-shortener:1.0.0-alpha}"
+BLUEPRINT="${SQL_BLUEPRINT:-org.pragmatica.aether.example:url-shortener:1.0.0}"
 POOL_BURST="${POOL_BURST:-50}"
 
 test_cluster_ready() {

@@ -18,21 +18,21 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
+
 /// Manages the cluster registry at `~/.aether/clusters.toml`.
 ///
 /// Stores registered cluster endpoints and tracks the active context.
 /// The registry file uses TOML format with `[current]` section for active context
 /// and `[clusters.<name>]` sections for each registered cluster.
-public record ClusterRegistry( Path registryPath, Option<String> currentContext, List<ClusterEntry> entries) {
+public record ClusterRegistry(Path registryPath, Option<String> currentContext, List<ClusterEntry> entries) {
     private static final String CLUSTERS_PREFIX = "clusters.";
+
     private static final Path DEFAULT_REGISTRY_PATH = Path.of(System.getProperty("user.home"),
                                                               ".aether",
                                                               "clusters.toml");
 
-    /// A single registered cluster entry.
     public record ClusterEntry(String name, String endpoint, Option<String> apiKeyEnv){}
 
-    /// Error types for registry operations.
     public sealed interface RegistryError extends Cause {
         enum General implements RegistryError {
             CLUSTER_NOT_FOUND("Cluster not found in registry"),
@@ -59,30 +59,26 @@ public record ClusterRegistry( Path registryPath, Option<String> currentContext,
         }
     }
 
-    /// Factory method for creating a ClusterRegistry.
-    @SuppressWarnings("JBCT-VO-02")
-    static ClusterRegistry clusterRegistry(Path path, Option<String> context, List<ClusterEntry> entries) {
+    @SuppressWarnings("JBCT-VO-02") static ClusterRegistry clusterRegistry(Path path,
+                                                                           Option<String> context,
+                                                                           List<ClusterEntry> entries) {
         return new ClusterRegistry(path, context, entries);
     }
 
-    /// Load the cluster registry from the default path.
     public static Result<ClusterRegistry> load() {
         return load(DEFAULT_REGISTRY_PATH);
     }
 
-    /// Load the cluster registry from a specific path.
     public static Result<ClusterRegistry> load(Path path) {
         return Files.exists(path)
-               ? loadExisting(path)
-               : success(clusterRegistry(path, none(), List.of()));
+              ? loadExisting(path)
+              : success(clusterRegistry(path, none(), List.of()));
     }
 
-    /// Get the currently active cluster entry.
     public Option<ClusterEntry> current() {
         return currentContext.flatMap(this::findEntry);
     }
 
-    /// Switch the active context to the named cluster.
     public Result<ClusterRegistry> use(String name) {
         return findEntry(name).toResult(RegistryError.General.CLUSTER_NOT_FOUND)
                         .map(entry -> clusterRegistry(registryPath,
@@ -90,7 +86,6 @@ public record ClusterRegistry( Path registryPath, Option<String> currentContext,
                                                       entries));
     }
 
-    /// Register a new cluster.
     public ClusterRegistry add(String name, String endpoint, Option<String> apiKeyEnv) {
         var filtered = removeByName(name);
         var updated = new ArrayList<>(filtered);
@@ -99,13 +94,11 @@ public record ClusterRegistry( Path registryPath, Option<String> currentContext,
         return clusterRegistry(registryPath, option(context), List.copyOf(updated));
     }
 
-    /// Remove a cluster from the registry.
     public Result<ClusterRegistry> remove(String name) {
         return findEntry(name).toResult(RegistryError.General.CLUSTER_NOT_FOUND)
                         .map(entry -> buildRegistryAfterRemoval(name));
     }
 
-    /// Save the registry to disk.
     public Result<Unit> save() {
         return Result.lift(e -> new RegistryError.WriteError(e.getMessage()),
                            this::writeToFile);
@@ -140,11 +133,9 @@ public record ClusterRegistry( Path registryPath, Option<String> currentContext,
         return clusterRegistry(path, context, entries);
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    private static List<ClusterEntry> extractEntries(TomlDocument doc) {
+    @SuppressWarnings("JBCT-PAT-01") private static List<ClusterEntry> extractEntries(TomlDocument doc) {
         var result = new ArrayList<ClusterEntry>();
-        for ( var section : doc.sectionNames()) {
-        if ( section.startsWith(CLUSTERS_PREFIX)) {
+        for (var section : doc.sectionNames()) {if (section.startsWith(CLUSTERS_PREFIX)) {
             var name = section.substring(CLUSTERS_PREFIX.length());
             var endpoint = doc.getString(section, "endpoint").or("");
             var apiKeyEnv = doc.getString(section, "api_key_env");
@@ -153,8 +144,7 @@ public record ClusterRegistry( Path registryPath, Option<String> currentContext,
         return List.copyOf(result);
     }
 
-    @SuppressWarnings({"JBCT-SEQ-01", "JBCT-EX-01"})
-    @Contract private void writeToFile() throws IOException {
+    @SuppressWarnings({"JBCT-SEQ-01", "JBCT-EX-01"}) @Contract private void writeToFile() throws IOException {
         var content = buildFileContent();
         Files.createDirectories(registryPath.getParent());
         Files.writeString(registryPath, content);
@@ -172,10 +162,8 @@ public record ClusterRegistry( Path registryPath, Option<String> currentContext,
                                                  .append("\"\n\n"));
     }
 
-    @Contract
-    @SuppressWarnings("JBCT-PAT-01")
-    private void appendClusterSections(StringBuilder sb) {
-        for ( var entry : entries) {
+    @Contract@SuppressWarnings("JBCT-PAT-01") private void appendClusterSections(StringBuilder sb) {
+        for (var entry : entries) {
             sb.append("[clusters.").append(entry.name())
                      .append("]\n");
             sb.append("endpoint = \"").append(entry.endpoint())

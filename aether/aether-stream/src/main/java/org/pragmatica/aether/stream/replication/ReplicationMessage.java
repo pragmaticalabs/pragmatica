@@ -5,9 +5,9 @@ import org.pragmatica.consensus.NodeId;
 import java.util.Arrays;
 import java.util.List;
 
+
 /// Protocol messages for stream replication between governor and replicas.
 public sealed interface ReplicationMessage {
-    /// Governor to Replica: replicate a batch of events.
     record ReplicateEvents(NodeId governorId,
                            String streamName,
                            int partition,
@@ -35,11 +35,7 @@ public sealed interface ReplicationMessage {
         }
     }
 
-    /// Replica to Governor: acknowledge received events.
-    record ReplicateAck(NodeId replicaId,
-                        String streamName,
-                        int partition,
-                        long confirmedOffset) implements ReplicationMessage {
+    record ReplicateAck(NodeId replicaId, String streamName, int partition, long confirmedOffset) implements ReplicationMessage {
         public static ReplicateAck replicateAck(NodeId replicaId,
                                                 String streamName,
                                                 int partition,
@@ -48,7 +44,6 @@ public sealed interface ReplicationMessage {
         }
     }
 
-    /// Governor to Replica: full batch sync for initial catch-up.
     record BatchSync(NodeId governorId,
                      String streamName,
                      int partition,
@@ -73,11 +68,8 @@ public sealed interface ReplicationMessage {
         }
 
         @Override public boolean equals(Object obj) {
-            return obj instanceof BatchSync other &&
-            governorId.equals(other.governorId) &&
-            streamName.equals(other.streamName) &&
-            partition == other.partition && fromOffset == other.fromOffset && toOffset == other.toOffset && Arrays.equals(compressedBatch,
-                                                                                                                          other.compressedBatch);
+            return obj instanceof BatchSync other && governorId.equals(other.governorId) && streamName.equals(other.streamName) && partition == other.partition && fromOffset == other.fromOffset && toOffset == other.toOffset && Arrays.equals(compressedBatch,
+                                                                                                                                                                                                                                                 other.compressedBatch);
         }
 
         @Override public int hashCode() {
@@ -91,11 +83,7 @@ public sealed interface ReplicationMessage {
         }
     }
 
-    /// Replica to Governor: request catch-up from a specific offset.
-    record CatchupRequest(NodeId replicaId,
-                          String streamName,
-                          int partition,
-                          long fromOffset) implements ReplicationMessage {
+    record CatchupRequest(NodeId replicaId, String streamName, int partition, long fromOffset) implements ReplicationMessage {
         public static CatchupRequest catchupRequest(NodeId replicaId,
                                                     String streamName,
                                                     int partition,
@@ -104,7 +92,6 @@ public sealed interface ReplicationMessage {
         }
     }
 
-    /// Governor to Replica: catch-up response with events from requested offset.
     record CatchupResponse(NodeId governorId,
                            String streamName,
                            int partition,

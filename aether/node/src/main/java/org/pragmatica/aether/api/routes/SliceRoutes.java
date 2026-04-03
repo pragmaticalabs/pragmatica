@@ -42,11 +42,15 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.http.routing.PathParameter.spacer;
 import static org.pragmatica.aether.api.ManagementApiResponses.*;
 
+
 /// Routes for slice management: scale, blueprint, status.
 public final class SliceRoutes implements RouteSource {
     private static final Logger log = LoggerFactory.getLogger(SliceRoutes.class);
+
     private static final Cause MISSING_ARTIFACT_OR_INSTANCES = Causes.cause("Missing 'artifact' or 'instances' field");
+
     private static final Cause BLUEPRINT_NOT_FOUND = Causes.cause("Blueprint not found");
+
     private static final Cause NOT_IN_BLUEPRINT = Causes.cause("Slice is not part of any active blueprint. Deploy via blueprint.");
 
     private final Supplier<AetherNode> nodeSupplier;
@@ -59,29 +63,22 @@ public final class SliceRoutes implements RouteSource {
         return new SliceRoutes(nodeSupplier);
     }
 
-    // Request DTOs - nullable types required for JSON deserialization
     record ScaleRequest(String artifact, Integer instances, String placement){}
 
     record BlueprintDeployRequest(String artifact){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<ClusterSlicesResponse>get("/api/slices")
-                              .toJson(this::buildClusterSlicesResponse),
-                         Route.<SlicesResponse>get("/api/node/slices")
-                              .toJson(this::buildNodeSlicesResponse),
-                         Route.<SlicesStatusResponse>get("/api/slices/status")
-                              .toJson(this::buildSlicesStatusResponse),
-                         Route.<RoutesResponse>get("/api/node/routes")
-                              .toJson(this::buildRoutesResponse),
+        return Stream.of(Route.<ClusterSlicesResponse>get("/api/slices").toJson(this::buildClusterSlicesResponse),
+                         Route.<SlicesResponse>get("/api/node/slices").toJson(this::buildNodeSlicesResponse),
+                         Route.<SlicesStatusResponse>get("/api/slices/status").toJson(this::buildSlicesStatusResponse),
+                         Route.<RoutesResponse>get("/api/node/routes").toJson(this::buildRoutesResponse),
                          Route.<ScaleResponse>post("/api/scale")
                               .withBody(ScaleRequest.class)
                               .toJson(this::handleScale),
                          Route.<BlueprintResponse>post("/api/blueprint")
                               .to(ctx -> handleBlueprint(ctx.bodyAsString()))
                               .asJson(),
-                         // Blueprint management routes
-        Route.<BlueprintListResponse>get("/api/blueprints")
-             .toJson(this::buildBlueprintListResponse),
+                         Route.<BlueprintListResponse>get("/api/blueprints").toJson(this::buildBlueprintListResponse),
                          Route.<BlueprintDetailResponse>get("/api/blueprint")
                               .withPath(aString())
                               .to(this::handleGetBlueprint)
@@ -101,8 +98,7 @@ public final class SliceRoutes implements RouteSource {
                          Route.<BlueprintValidationResponse>post("/api/blueprint/validate")
                               .to(ctx -> handleValidateBlueprint(ctx.bodyAsString()))
                               .asJson(),
-                         Route.<TopologyResponse>get("/api/topology")
-                              .toJson(this::buildTopologyResponse));
+                         Route.<TopologyResponse>get("/api/topology").toJson(this::buildTopologyResponse));
     }
 
     private record ScaleParams(String artifact, int instances, Option<String> placement){}
@@ -140,17 +136,15 @@ public final class SliceRoutes implements RouteSource {
     private Promise<ScaleResponse> executeScale(ValidatedScale vs) {
         return applyDeployCommand(vs.artifact(),
                                   vs.params().instances(),
-                                  vs.params().placement())
-        .map(_ -> new ScaleResponse("scaled",
-                                    vs.artifact().asString(),
-                                    vs.params().instances()));
+                                  vs.params().placement()).map(_ -> new ScaleResponse("scaled",
+                                                                                      vs.artifact().asString(),
+                                                                                      vs.params().instances()));
     }
 
     private static final Cause BELOW_MIN_INSTANCES = Causes.cause("Requested instances is below blueprint minimum");
 
     private Promise<Unit> guardMinInstances(Artifact artifact, int requestedInstances) {
-        if ( requestedInstances < 1) {
-        return BELOW_MIN_INSTANCES.promise();}
+        if (requestedInstances <1) {return BELOW_MIN_INSTANCES.promise();}
         var node = nodeSupplier.get();
         var key = SliceTargetKey.sliceTargetKey(artifact.base());
         return node.kvStore().get(key)
@@ -159,14 +153,14 @@ public final class SliceRoutes implements RouteSource {
                            .map(min -> requestedInstances >= min
                                       ? Promise.unitPromise()
                                       : Causes.cause("Requested " + requestedInstances + " instances but blueprint minimum is " + min)
-        .<Unit>promise())
+                                                    .<Unit>promise())
                            .or(Promise.unitPromise());
     }
 
     private Promise<Unit> guardBlueprintMembership(Artifact artifact) {
         return isPartOfActiveBlueprint(artifact)
-               ? Promise.unitPromise()
-               : NOT_IN_BLUEPRINT.promise();
+              ? Promise.unitPromise()
+              : NOT_IN_BLUEPRINT.promise();
     }
 
     private boolean isPartOfActiveBlueprint(Artifact artifact) {
@@ -295,12 +289,7 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private String determineSliceDeploymentStatus(int target, int active) {
-        if ( active == 0) {
-        return "PENDING";} else
-        if ( active < target) {
-        return "DEPLOYING";} else if ( active == target) {
-        return "DEPLOYED";} else {
-        return "SCALING_DOWN";}
+        if (active == 0) {return "PENDING";} else if (active <target) {return "DEPLOYING";} else if (active == target) {return "DEPLOYED";} else {return "SCALING_DOWN";}
     }
 
     private String computeOverallStatus(List<BlueprintSliceStatus> sliceStatuses) {
@@ -308,12 +297,7 @@ public final class SliceRoutes implements RouteSource {
         var hasDeploying = sliceStatuses.stream().anyMatch(s -> "DEPLOYING".equals(s.status()));
         var hasScalingDown = sliceStatuses.stream().anyMatch(s -> "SCALING_DOWN".equals(s.status()));
         var allDeployed = sliceStatuses.stream().allMatch(s -> "DEPLOYED".equals(s.status()));
-        if ( allDeployed) {
-        return "DEPLOYED";} else
-        if ( hasPending) {
-        return "PENDING";} else if ( hasDeploying || hasScalingDown) {
-        return "IN_PROGRESS";} else {
-        return "PARTIAL";}
+        if (allDeployed) {return "DEPLOYED";} else if (hasPending) {return "PENDING";} else if (hasDeploying || hasScalingDown) {return "IN_PROGRESS";} else {return "PARTIAL";}
     }
 
     private Promise<BlueprintDeleteResponse> handleDeleteBlueprint(String id) {
@@ -444,10 +428,10 @@ public final class SliceRoutes implements RouteSource {
     private Map<String, SliceTargetValue> collectSliceTargets(AetherNode node) {
         var targets = new HashMap<String, SliceTargetValue>();
         node.kvStore()
-        .forEach(SliceTargetKey.class,
-                 SliceTargetValue.class,
-                 (key, value) -> targets.put(key.artifactBase().asString(),
-                                             value));
+                    .forEach(SliceTargetKey.class,
+                             SliceTargetValue.class,
+                             (key, value) -> targets.put(key.artifactBase().asString(),
+                                                         value));
         return targets;
     }
 
@@ -455,8 +439,8 @@ public final class SliceRoutes implements RouteSource {
                                                        Map<String, SliceTargetValue> targets) {
         var artifactStr = info.artifact();
         var artifactBase = artifactStr.contains(":")
-                           ? artifactStr.substring(0, artifactStr.lastIndexOf(':'))
-                           : artifactStr;
+                          ? artifactStr.substring(0, artifactStr.lastIndexOf(':'))
+                          : artifactStr;
         var target = Option.option(targets.get(artifactBase));
         var instances = info.instances().stream()
                                       .map(i -> new ClusterSliceInstance(i.nodeId(),
@@ -506,8 +490,8 @@ public final class SliceRoutes implements RouteSource {
 
     private SliceInstanceInfo toSliceInstanceInfoFromDeployment(DeploymentMap.SliceInstanceInfo inst) {
         var health = inst.state() == SliceState.ACTIVE
-                     ? "HEALTHY"
-                     : "UNHEALTHY";
+                    ? "HEALTHY"
+                    : "UNHEALTHY";
         return new SliceInstanceInfo(inst.nodeId(),
                                      inst.state().name(),
                                      health);

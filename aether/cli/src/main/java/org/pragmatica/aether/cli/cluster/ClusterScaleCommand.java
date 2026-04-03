@@ -12,17 +12,17 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
+
 /// Scales the cluster core node count via the management API.
 ///
 /// Thin wrapper around `POST /api/cluster/scale`. Validates quorum safety
 /// (N >= 3, odd) on the CLI side before sending the request.
-@Command(name = "scale", description = "Scale cluster core node count")
-@SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterScaleCommand implements Callable<Integer> {
+@Command(name = "scale", description = "Scale cluster core node count") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterScaleCommand implements Callable<Integer> {
     private static final int MINIMUM_CORE_COUNT = 3;
+
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
-    @Option(names = "--core", required = true, description = "Target core node count (minimum 3, must be odd)")
-    private int coreCount;
+    @Option(names = "--core", required = true, description = "Target core node count (minimum 3, must be odd)") private int coreCount;
 
     @CommandLine.ParentCommand private ClusterCommand parent;
 
@@ -33,16 +33,14 @@ import picocli.CommandLine.Option;
     }
 
     private Result<Integer> validateCoreCount() {
-        if ( coreCount < MINIMUM_CORE_COUNT) {
-        return new ScaleError.QuorumSafety(coreCount, MINIMUM_CORE_COUNT).result();}
-        if ( coreCount % 2 == 0) {
-        return new ScaleError.MustBeOdd(coreCount).result();}
+        if (coreCount <MINIMUM_CORE_COUNT) {return new ScaleError.QuorumSafety(coreCount, MINIMUM_CORE_COUNT).result();}
+        if (coreCount % 2 == 0) {return new ScaleError.MustBeOdd(coreCount).result();}
         return Result.success(coreCount);
     }
 
     private Result<Long> fetchConfigVersion(int count) {
         return ClusterHttpClient.fetchFromCluster("/api/cluster/config")
-        .flatMap(ClusterScaleCommand::extractConfigVersion);
+                                                 .flatMap(ClusterScaleCommand::extractConfigVersion);
     }
 
     private Result<String> sendScaleRequest(long expectedVersion) {

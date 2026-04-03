@@ -8,8 +8,9 @@ import org.pragmatica.lang.Result;
 
 import io.micrometer.core.instrument.Timer;
 
+
 /// Method interceptor that records timing and success/failure counts via Micrometer.
-public record MetricsMethodInterceptor( MetricsConfig config) implements MethodInterceptor {
+public record MetricsMethodInterceptor(MetricsConfig config) implements MethodInterceptor {
     @Override public <R, T> Fn1<Promise<R>, T> intercept(Fn1<Promise<R>, T> method) {
         return request -> invokeWithMetrics(method, request);
     }
@@ -21,8 +22,8 @@ public record MetricsMethodInterceptor( MetricsConfig config) implements MethodI
 
     @Contract private <R> void recordMetrics(Timer.Sample sample, Result<R> result) {
         var suffix = result.isSuccess()
-                     ? ".success"
-                     : ".failure";
+                    ? ".success"
+                    : ".failure";
         var tagsArray = config.tags().toArray(new String[0]);
         sample.stop(config.registry().timer(config.name() + suffix, tagsArray));
     }

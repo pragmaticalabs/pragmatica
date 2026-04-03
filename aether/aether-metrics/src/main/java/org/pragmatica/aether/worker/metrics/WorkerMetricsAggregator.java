@@ -20,6 +20,7 @@ import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Aggregates worker metrics on the governor and feeds the CommunityScalingEvaluator.
 /// Created on governor election, destroyed on demotion.
 ///
@@ -29,26 +30,14 @@ import org.slf4j.LoggerFactory;
 ///   3. Aggregate stored follower pongs + own metrics
 ///   4. Feed snapshot to CommunityScalingEvaluator
 ///   5. If evaluator returns scaling request, send via PassiveNode Broadcast
-@SuppressWarnings({"JBCT-RET-01", "JBCT-ZONE-02", "JBCT-ZONE-03"})
-public interface WorkerMetricsAggregator {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-ZONE-02", "JBCT-ZONE-03"}) public interface WorkerMetricsAggregator {
     Logger LOG = LoggerFactory.getLogger(WorkerMetricsAggregator.class);
 
-    /// Start the aggregation cycle.
     void start();
-
-    /// Stop the aggregation cycle.
     void stop();
-
-    /// Called when a follower sends a metrics pong.
     void onMetricsPong(WorkerMetricsPong pong);
-
-    /// Called when core requests a community metrics snapshot.
     void onSnapshotRequest(CommunityMetricsSnapshotRequest request);
-
-    /// Access the pong store (used by tests).
     ConcurrentHashMap<NodeId, WorkerMetricsPong> pongStore();
-
-    /// Access the scaling evaluator (used by tests).
     CommunityScalingEvaluator evaluator();
 
     static WorkerMetricsAggregator workerMetricsAggregator(NodeId self,
@@ -57,15 +46,15 @@ public interface WorkerMetricsAggregator {
                                                            Supplier<String> communityIdSupplier,
                                                            Supplier<List<NodeId>> followerSupplier,
                                                            long aggregationIntervalMs) {
-        @SuppressWarnings({"JBCT-STY-05", "JBCT-RET-01", "JBCT-ZONE-02", "JBCT-ZONE-03", "JBCT-EX-01"}) record workerMetricsAggregator( NodeId self,
-                                                                                                                                        DelegateRouter delegateRouter,
-                                                                                                                                        PassiveNode<?, ?> passiveNode,
-                                                                                                                                        Supplier<String> communityIdSupplier,
-                                                                                                                                        Supplier<List<NodeId>> followerSupplier,
-                                                                                                                                        long aggregationIntervalMs,
-                                                                                                                                        ConcurrentHashMap<NodeId, WorkerMetricsPong> pongStore,
-                                                                                                                                        CommunityScalingEvaluator evaluator,
-                                                                                                                                        CancellableTask task) implements WorkerMetricsAggregator {
+        @SuppressWarnings({"JBCT-STY-05", "JBCT-RET-01", "JBCT-ZONE-02", "JBCT-ZONE-03", "JBCT-EX-01"}) record workerMetricsAggregator(NodeId self,
+                                                                                                                                       DelegateRouter delegateRouter,
+                                                                                                                                       PassiveNode<?, ?> passiveNode,
+                                                                                                                                       Supplier<String> communityIdSupplier,
+                                                                                                                                       Supplier<List<NodeId>> followerSupplier,
+                                                                                                                                       long aggregationIntervalMs,
+                                                                                                                                       ConcurrentHashMap<NodeId, WorkerMetricsPong> pongStore,
+                                                                                                                                       CommunityScalingEvaluator evaluator,
+                                                                                                                                       CancellableTask task) implements WorkerMetricsAggregator {
             private static final int STALE_MULTIPLIER = 2;
 
             @Override public void start() {
@@ -88,8 +77,7 @@ public interface WorkerMetricsAggregator {
 
             @Override public void onSnapshotRequest(CommunityMetricsSnapshotRequest request) {
                 var communityId = communityIdSupplier.get();
-                if ( !communityId.equals(request.communityId())) {
-                return;}
+                if (!communityId.equals(request.communityId())) {return;}
                 var snapshot = buildSnapshot(communityId, request.requestId());
                 passiveNode.delegateRouter().route(new NetworkServiceMessage.Broadcast(snapshot));
             }
@@ -101,10 +89,7 @@ public interface WorkerMetricsAggregator {
                     cleanupStalePongs();
                     var sample = aggregateMetrics(ownMetrics);
                     evaluateAndScale(sample);
-                }
-
-
-                catch (Exception e) {
+                } catch (Exception e) {
                     LOG.error("Metrics aggregation cycle error: {}", e.getMessage(), e);
                 }
             }
@@ -112,7 +97,8 @@ public interface WorkerMetricsAggregator {
             private void sendPingToFollowers() {
                 var ping = WorkerMetricsPing.workerMetricsPing(self);
                 followerSupplier.get()
-                .forEach(followerId -> delegateRouter.route(new NetworkServiceMessage.Send(followerId, ping)));
+                                    .forEach(followerId -> delegateRouter.route(new NetworkServiceMessage.Send(followerId,
+                                                                                                               ping)));
             }
 
             private WorkerMetricsPong collectOwnMetrics() {
@@ -123,14 +109,14 @@ public interface WorkerMetricsAggregator {
                 var heapUsed = memBean.getHeapMemoryUsage().getUsed();
                 var heapMax = memBean.getHeapMemoryUsage().getMax();
                 var heapUsage = heapMax > 0
-                                ? (double) heapUsed / heapMax
-                                : 0.0;
+                               ? (double) heapUsed / heapMax
+                               : 0.0;
                 return WorkerMetricsPong.workerMetricsPong(self, cpuLoad, heapUsage, 0L, 0.0, 0.0);
             }
 
             private void cleanupStalePongs() {
                 var cutoff = System.currentTimeMillis() - (STALE_MULTIPLIER * aggregationIntervalMs);
-                pongStore.entrySet().removeIf(entry -> entry.getValue().timestampMs() < cutoff);
+                pongStore.entrySet().removeIf(entry -> entry.getValue().timestampMs() <cutoff);
             }
 
             private WindowSample aggregateMetrics(WorkerMetricsPong ownMetrics) {

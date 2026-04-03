@@ -13,6 +13,7 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// DecisionTreeController enhanced with TTM predictions.
 ///
 /// Adjusts thresholds based on TTM forecasts for proactive scaling.
@@ -22,24 +23,17 @@ import org.slf4j.LoggerFactory;
 ///   - Tier 2: TTM predictions (proactive, 1-minute evaluations)
 ///
 public interface AdaptiveDecisionTree extends ClusterController {
-    /// Get the underlying decision tree controller.
     ClusterController baseController();
-
-    /// Get the TTM manager.
     TTMManager ttmManager();
-
-    /// Get current effective configuration (with TTM adjustments).
     ControllerConfig effectiveConfig();
 
-    /// Create adaptive controller.
     static AdaptiveDecisionTree adaptiveDecisionTree(DecisionTreeController baseController, TTMManager ttmManager) {
-        record adaptiveDecisionTree( DecisionTreeController baseController, TTMManager ttmManager) implements AdaptiveDecisionTree {
+        record adaptiveDecisionTree(DecisionTreeController baseController, TTMManager ttmManager) implements AdaptiveDecisionTree {
             private static final Logger log = LoggerFactory.getLogger(adaptiveDecisionTree.class);
 
             adaptiveDecisionTree(DecisionTreeController baseController, TTMManager ttmManager) {
                 this.baseController = baseController;
                 this.ttmManager = ttmManager;
-                // Register for forecast updates to adjust thresholds
                 ttmManager.onForecast(this::onForecast);
             }
 
@@ -61,19 +55,18 @@ public interface AdaptiveDecisionTree extends ClusterController {
 
             private ControlDecisions mergeDecisions(List<BlueprintChange> preemptiveChanges,
                                                     ControlDecisions decisions) {
-                if ( preemptiveChanges.isEmpty()) {
-                return decisions;}
+                if (preemptiveChanges.isEmpty()) {return decisions;}
                 var merged = new ArrayList<>(preemptiveChanges);
                 merged.addAll(decisions.changes());
                 return new ControlDecisions(merged);
             }
 
             private void onForecast(TTMForecast forecast) {
-                switch ( forecast.recommendation()) {
+                switch (forecast.recommendation()){
                     case ScalingRecommendation.AdjustThresholds adjust -> {
                         var current = baseController.configuration();
                         var updated = current.withCpuScaleUpThreshold(adjust.newCpuScaleUpThreshold())
-                        .withCpuScaleDownThreshold(adjust.newCpuScaleDownThreshold());
+                                                                     .withCpuScaleDownThreshold(adjust.newCpuScaleDownThreshold());
                         log.info("TTM adjusting thresholds: scaleUp={} -> {}, scaleDown={} -> {}",
                                  current.cpuScaleUpThreshold(),
                                  adjust.newCpuScaleUpThreshold(),
@@ -91,49 +84,43 @@ public interface AdaptiveDecisionTree extends ClusterController {
                 }
             }
 
-            /// Generate preemptive scaling changes based on TTM forecast.
-            ///
-            /// Current implementation applies scaling to the first scalable blueprint.
-            /// Future enhancement: distribute scaling across blueprints based on load contribution.
             private List<BlueprintChange> getPreemptiveChanges(TTMForecast forecast, ControlContext context) {
-                return switch (forecast.recommendation()) {case ScalingRecommendation.PreemptiveScaleUp scaleUp -> {
-                    // Find first blueprint with room to scale up
-                    var candidate = context.blueprints().values()
-                                                      .stream()
-                                                      .filter(b -> b.instances() > 0)
-                                                      .findFirst();
-                    if ( candidate.isEmpty()) {
-                    yield List.of();}
-                    var blueprint = candidate.get();
-                    int additional = Math.max(1,
-                                              scaleUp.suggestedInstances() - blueprint.instances());
-                    if ( additional <= 0) {
-                    yield List.of();}
-                    log.debug("Preemptive scale up: {} +{} instances (predicted CPU peak: {})",
-                              blueprint.artifact(),
-                              additional,
-                              scaleUp.predictedCpuPeak());
-                    yield List.of(new BlueprintChange.ScaleUp(blueprint.artifact(), additional));
-                }case ScalingRecommendation.PreemptiveScaleDown scaleDown -> {
-                    // Find first blueprint with room to scale down
-                    var candidate = context.blueprints().values()
-                                                      .stream()
-                                                      .filter(b -> b.instances() > 1)
-                                                      .findFirst();
-                    if ( candidate.isEmpty()) {
-                    yield List.of();}
-                    var blueprint = candidate.get();
-                    int reduction = Math.min(blueprint.instances() - 1,
-                                             Math.max(1,
-                                                      blueprint.instances() - scaleDown.suggestedInstances()));
-                    if ( reduction <= 0) {
-                    yield List.of();}
-                    log.debug("Preemptive scale down: {} -{} instances (predicted CPU trough: {})",
-                              blueprint.artifact(),
-                              reduction,
-                              scaleDown.predictedCpuTrough());
-                    yield List.of(new BlueprintChange.ScaleDown(blueprint.artifact(), reduction));
-                }case ScalingRecommendation.AdjustThresholds _, ScalingRecommendation.NoAction _ -> List.of();};
+                return switch (forecast.recommendation()){
+                    case ScalingRecommendation.PreemptiveScaleUp scaleUp -> {
+                        var candidate = context.blueprints().values()
+                                                          .stream()
+                                                          .filter(b -> b.instances() > 0)
+                                                          .findFirst();
+                        if (candidate.isEmpty()) {yield List.of();}
+                        var blueprint = candidate.get();
+                        int additional = Math.max(1,
+                                                  scaleUp.suggestedInstances() - blueprint.instances());
+                        if (additional <= 0) {yield List.of();}
+                        log.debug("Preemptive scale up: {} +{} instances (predicted CPU peak: {})",
+                                  blueprint.artifact(),
+                                  additional,
+                                  scaleUp.predictedCpuPeak());
+                        yield List.of(new BlueprintChange.ScaleUp(blueprint.artifact(), additional));
+                    }
+                    case ScalingRecommendation.PreemptiveScaleDown scaleDown -> {
+                        var candidate = context.blueprints().values()
+                                                          .stream()
+                                                          .filter(b -> b.instances() > 1)
+                                                          .findFirst();
+                        if (candidate.isEmpty()) {yield List.of();}
+                        var blueprint = candidate.get();
+                        int reduction = Math.min(blueprint.instances() - 1,
+                                                 Math.max(1,
+                                                          blueprint.instances() - scaleDown.suggestedInstances()));
+                        if (reduction <= 0) {yield List.of();}
+                        log.debug("Preemptive scale down: {} -{} instances (predicted CPU trough: {})",
+                                  blueprint.artifact(),
+                                  reduction,
+                                  scaleDown.predictedCpuTrough());
+                        yield List.of(new BlueprintChange.ScaleDown(blueprint.artifact(), reduction));
+                    }
+                    case ScalingRecommendation.AdjustThresholds _, ScalingRecommendation.NoAction _ -> List.of();
+                };
             }
         }
         return new adaptiveDecisionTree(baseController, ttmManager);

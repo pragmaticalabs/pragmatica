@@ -2,15 +2,15 @@ package org.pragmatica.aether.pg.schema.model;
 
 import org.pragmatica.lang.Option;
 
+
 /// A table column definition.
-public record Column(
- String name,
- PgType type,
- boolean nullable,
- Option<String> defaultExpr,
- Option<String> generatedExpr,
- Option<IdentitySpec> identity,
- Option<String> comment) {
+public record Column(String name,
+                     PgType type,
+                     boolean nullable,
+                     Option<String> defaultExpr,
+                     Option<String> generatedExpr,
+                     Option<IdentitySpec> identity,
+                     Option<String> comment) {
     public record IdentitySpec(IdentityKind kind){}
 
     public enum IdentityKind {

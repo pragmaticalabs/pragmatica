@@ -8,9 +8,9 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
+
 /// Error types for transaction operations.
 public sealed interface TransactionError extends Cause {
-    /// Transaction not active when operation required one.
     record NoActiveTransaction(String operation) implements TransactionError {
         public static Result<NoActiveTransaction> noActiveTransaction(String operation) {
             return success(new NoActiveTransaction(operation));
@@ -21,7 +21,6 @@ public sealed interface TransactionError extends Cause {
         }
     }
 
-    /// Transaction already active when operation required none.
     record TransactionAlreadyActive(String operation) implements TransactionError {
         public static Result<TransactionAlreadyActive> transactionAlreadyActive(String operation) {
             return success(new TransactionAlreadyActive(operation));
@@ -32,7 +31,6 @@ public sealed interface TransactionError extends Cause {
         }
     }
 
-    /// Transaction timed out.
     record TransactionTimedOut(String transactionId) implements TransactionError {
         public static Result<TransactionTimedOut> transactionTimedOut(String transactionId) {
             return success(new TransactionTimedOut(transactionId));
@@ -43,7 +41,6 @@ public sealed interface TransactionError extends Cause {
         }
     }
 
-    /// Transaction rollback occurred.
     record TransactionRolledBack(String transactionId, Option<Throwable> cause) implements TransactionError {
         public static Result<TransactionRolledBack> transactionRolledBack(String transactionId,
                                                                           Option<Throwable> cause) {
@@ -59,7 +56,6 @@ public sealed interface TransactionError extends Cause {
         }
     }
 
-    /// Invalid transaction configuration.
     record InvalidConfig(String reason) implements TransactionError {
         public static Result<InvalidConfig> invalidConfig(String reason) {
             return success(new InvalidConfig(reason));
@@ -70,7 +66,6 @@ public sealed interface TransactionError extends Cause {
         }
     }
 
-    /// Transaction operation failed.
     record OperationFailed(String operation, Option<Throwable> cause) implements TransactionError {
         public static Result<OperationFailed> operationFailed(String operation, Option<Throwable> cause) {
             return success(new OperationFailed(operation, cause));
@@ -85,7 +80,6 @@ public sealed interface TransactionError extends Cause {
         }
     }
 
-    // Convenience factory methods
     static NoActiveTransaction noActiveTransaction(String operation) {
         return NoActiveTransaction.noActiveTransaction(operation).unwrap();
     }
@@ -119,7 +113,7 @@ public sealed interface TransactionError extends Cause {
     }
 
     record unused() implements TransactionError {
-        public static Result<unused> unused() {
+        public static Result<unused > unused() {
             return success(new unused());
         }
 

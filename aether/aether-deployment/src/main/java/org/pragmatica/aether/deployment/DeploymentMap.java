@@ -15,6 +15,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
+
 /// Event-driven slice-to-node index.
 /// Subscribes to KV store ValuePut/ValueRemove notifications and maintains
 /// a bidirectional index of slice deployments across nodes.
@@ -23,26 +24,15 @@ import java.util.stream.Collectors;
 /// and writes (consensus thread). Weakly consistent iteration is acceptable
 /// for dashboard display.
 public sealed interface DeploymentMap {
-    /// Handle NodeArtifactKey put — extracts state from compound value.
     @SuppressWarnings("JBCT-RET-01") void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
-
-    /// Handle NodeArtifactKey remove.
     @SuppressWarnings("JBCT-RET-01") void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
-
     Map<Artifact, SliceState> byNode(NodeId nodeId);
-
     Map<NodeId, SliceState> byArtifact(Artifact artifact);
-
     List<SliceDeploymentInfo> allDeployments();
-
     int deploymentCount();
-
-    /// Returns the set of nodes from the given active node list that have no slices deployed.
     Set<NodeId> nodesWithoutSlices(List<NodeId> activeNodes);
 
-    record SliceDeploymentInfo(String artifact,
-                               SliceState aggregateState,
-                               List<SliceInstanceInfo> instances){}
+    record SliceDeploymentInfo(String artifact, SliceState aggregateState, List<SliceInstanceInfo> instances){}
 
     record SliceInstanceInfo(String nodeId, SliceState state){}
 
@@ -54,16 +44,14 @@ public sealed interface DeploymentMap {
 final class IndexedDeploymentMap implements DeploymentMap {
     private final ConcurrentHashMap<SliceNodeKey, SliceState> index = new ConcurrentHashMap<>();
 
-    @SuppressWarnings("JBCT-RET-01")
-    @Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+    @SuppressWarnings("JBCT-RET-01") @Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
         var key = valuePut.cause().key();
         var value = valuePut.cause().value();
         index.put(new SliceNodeKey(key.artifact(), key.nodeId()),
                   value.state());
     }
 
-    @SuppressWarnings("JBCT-RET-01")
-    @Override public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+    @SuppressWarnings("JBCT-RET-01") @Override public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
         var key = valueRemove.cause().key();
         index.remove(new SliceNodeKey(key.artifact(), key.nodeId()));
     }
@@ -126,14 +114,11 @@ final class IndexedDeploymentMap implements DeploymentMap {
     }
 
     private static SliceState higherState(SliceState a, SliceState b) {
-        if ( a == SliceState.ACTIVE || b == SliceState.ACTIVE) {
-        return SliceState.ACTIVE;}
-        if ( a == SliceState.FAILED) {
-        return b;}
-        if ( b == SliceState.FAILED) {
-        return a;}
+        if (a == SliceState.ACTIVE || b == SliceState.ACTIVE) {return SliceState.ACTIVE;}
+        if (a == SliceState.FAILED) {return b;}
+        if (b == SliceState.FAILED) {return a;}
         return a.ordinal() >= b.ordinal()
-               ? a
-               : b;
+              ? a
+              : b;
     }
 }

@@ -13,6 +13,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
+
 /// Main entry point for starting an Aether passive load balancer.
 ///
 /// Usage: java -jar aether-lb.jar --peers=host1:6000,host2:6000 [options]
@@ -22,11 +23,13 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 ///   --node-id=<id>          Node identifier (default: lb-passive)
 ///   --cluster-port=<port>   Cluster communication port (default: 7000)
 ///   --peers=<host:port,...>  Comma-separated list of cluster node addresses (required)
-@SuppressWarnings("JBCT-RET-01")
-public record Main( String[] args) {
+@SuppressWarnings("JBCT-RET-01") public record Main(String[] args) {
     private static final Logger log = LoggerFactory.getLogger(Main.class);
+
     private static final int DEFAULT_HTTP_PORT = 8080;
+
     private static final int DEFAULT_CLUSTER_PORT = 7000;
+
     private static final String DEFAULT_NODE_ID = "lb-passive";
 
     public static void main(String[] args) {
@@ -38,7 +41,7 @@ public record Main( String[] args) {
         var clusterPort = parseIntOption("--cluster-port=", "LB_CLUSTER_PORT").or(DEFAULT_CLUSTER_PORT);
         var nodeId = parseNodeId();
         var peers = parsePeers();
-        if ( peers.isEmpty()) {
+        if (peers.isEmpty()) {
             log.error("No peers specified. Use --peers=host1:port1,host2:port2 or set PEERS env var");
             System.exit(1);
         }
@@ -57,10 +60,8 @@ public record Main( String[] args) {
     }
 
     private List<NodeInfo> parsePeers() {
-        var peersStr = findArg("--peers=").orElse(findEnv("PEERS"))
-                              .or("");
-        if ( peersStr.isBlank()) {
-        return List.of();}
+        var peersStr = findArg("--peers=").orElse(findEnv("PEERS")).or("");
+        if (peersStr.isBlank()) {return List.of();}
         return Arrays.stream(peersStr.split(",")).map(String::trim)
                             .filter(s -> !s.isEmpty())
                             .map(this::parsePeerAddress)
@@ -70,7 +71,7 @@ public record Main( String[] args) {
 
     private Option<NodeInfo> parsePeerAddress(String hostPort) {
         var parts = hostPort.split(":");
-        if ( parts.length != 2) {
+        if (parts.length != 2) {
             log.warn("Invalid peer address (expected host:port): {}", hostPort);
             return Option.none();
         }
@@ -81,8 +82,7 @@ public record Main( String[] args) {
     }
 
     private Option<Integer> parseIntOption(String argPrefix, String envName) {
-        return findArg(argPrefix).map(Integer::parseInt)
-                      .orElse(findEnv(envName).map(Integer::parseInt));
+        return findArg(argPrefix).map(Integer::parseInt).orElse(findEnv(envName).map(Integer::parseInt));
     }
 
     private Option<String> findArg(String prefix) {
@@ -129,10 +129,7 @@ public record Main( String[] args) {
     private static void waitForInterrupt() {
         try {
             Thread.currentThread().join();
-        }
-
-
-        catch (InterruptedException e) {
+        } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
     }

@@ -6,29 +6,29 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Codec;
 
-@Codec public record Artifact( GroupId groupId, ArtifactId artifactId, Version version) {
+
+@Codec public record Artifact(GroupId groupId, ArtifactId artifactId, Version version) {
     private static final Fn1<Cause, String> INVALID_FORMAT = Causes.forOneValue("Invalid artifact format %s");
 
     public static Result<Artifact> artifact(String artifactString) {
         var parts = artifactString.split(":", 3);
-        if ( parts.length != 3) {
-        return INVALID_FORMAT.apply(artifactString).result();}
-        return Result.all(GroupId.groupId(parts[0]), ArtifactId.artifactId(parts[1]), Version.version(parts[2]))
+        if (parts.length != 3) {return INVALID_FORMAT.apply(artifactString).result();}
+        return Result.all(GroupId.groupId(parts[0]),
+                          ArtifactId.artifactId(parts[1]),
+                          Version.version(parts[2]))
         .map(Artifact::new);
     }
 
-    @SuppressWarnings("JBCT-VO-02")
-    public static Artifact artifact(GroupId groupId, ArtifactId artifactId, Version version) {
+    @SuppressWarnings("JBCT-VO-02") public static Artifact artifact(GroupId groupId,
+                                                                    ArtifactId artifactId,
+                                                                    Version version) {
         return new Artifact(groupId, artifactId, version);
     }
 
-    /// Creates an artifact from an artifact base and version.
-    @SuppressWarnings("JBCT-VO-02")
-    public static Artifact artifact(ArtifactBase base, Version version) {
+    @SuppressWarnings("JBCT-VO-02") public static Artifact artifact(ArtifactBase base, Version version) {
         return new Artifact(base.groupId(), base.artifactId(), version);
     }
 
-    /// Extracts the version-agnostic artifact base (groupId:artifactId).
     public ArtifactBase base() {
         return ArtifactBase.artifactBase(this);
     }

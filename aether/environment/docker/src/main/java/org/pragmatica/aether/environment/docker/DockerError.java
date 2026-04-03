@@ -3,6 +3,7 @@ package org.pragmatica.aether.environment.docker;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 
+
 /// Error types specific to Docker compute provider operations.
 public sealed interface DockerError extends Cause {
     Fn1<DockerError, Throwable> COMMAND_EXECUTION_FAILED = CommandExecutionFailed::new;

@@ -25,13 +25,13 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Manages dynamic configuration overrides persisted to consensus KV-Store.
 ///
 /// <p>Configuration values are stored in the cluster KV-Store for consistency
 /// and survival across node restarts. Supports both cluster-wide and
 /// node-scoped configuration overrides.
-@SuppressWarnings("JBCT-RET-01")
-public class DynamicConfigManager {
+@SuppressWarnings("JBCT-RET-01") public class DynamicConfigManager {
     private static final Logger log = LoggerFactory.getLogger(DynamicConfigManager.class);
 
     private final RabiaNode<KVCommand<AetherKey>> clusterNode;
@@ -49,7 +49,6 @@ public class DynamicConfigManager {
         this.self = self;
     }
 
-    /// Factory method following JBCT naming convention.
     public static DynamicConfigManager dynamicConfigManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                             KVStore<AetherKey, AetherValue> kvStore,
                                                             DynamicConfigurationProvider provider,
@@ -59,7 +58,6 @@ public class DynamicConfigManager {
         return manager;
     }
 
-    /// Load config overrides from KV-Store on startup.
     private void loadFromKvStore() {
         kvStore.forEach(ConfigKey.class, ConfigValue.class, this::loadConfig);
         log.info("Loaded {} config overrides from KV-Store",
@@ -67,11 +65,8 @@ public class DynamicConfigManager {
     }
 
     private void loadConfig(ConfigKey key, ConfigValue value) {
-        if ( key.isClusterWide()) {
-        applyLoadedConfig(value);} else
-        {
-        key.nodeScope().filter(self::equals)
-                     .onPresent(_ -> applyLoadedConfig(value));}
+        if (key.isClusterWide()) {applyLoadedConfig(value);} else {key.nodeScope().filter(self::equals)
+                                                                                .onPresent(_ -> applyLoadedConfig(value));}
     }
 
     private void applyLoadedConfig(ConfigValue value) {
@@ -81,15 +76,10 @@ public class DynamicConfigManager {
                   redactIfSensitive(value.key(), value.value()));
     }
 
-    /// Handle KV-Store update notification for config changes from other nodes.
-    ///
-    /// <p>Called by AetherNode when it receives KV-Store value updates.
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    public void onConfigPut(ValuePut<ConfigKey, ConfigValue> valuePut) {
+    @MessageReceiver@SuppressWarnings("JBCT-RET-01") public void onConfigPut(ValuePut<ConfigKey, ConfigValue> valuePut) {
         var configKey = valuePut.cause().key();
         var configValue = valuePut.cause().value();
-        if ( shouldApply(configKey)) {
+        if (shouldApply(configKey)) {
             provider.put(configValue.key(), configValue.value());
             log.debug("Config updated from cluster: {}={}",
                       configValue.key(),
@@ -97,24 +87,15 @@ public class DynamicConfigManager {
         }
     }
 
-    /// Handle KV-Store remove notification for config deletions from other nodes.
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    public void onConfigRemove(ValueRemove<ConfigKey, ConfigValue> valueRemove) {
+    @MessageReceiver@SuppressWarnings("JBCT-RET-01") public void onConfigRemove(ValueRemove<ConfigKey, ConfigValue> valueRemove) {
         var configKey = valueRemove.cause().key();
-        if ( shouldApply(configKey)) {
+        if (shouldApply(configKey)) {
             provider.remove(configKey.key());
             log.debug("Config removed from cluster: {}", configKey.key());
         }
     }
 
-    /// Handle BlueprintResourcesKey put — loads resources.toml endpoint config into overlay.
-    ///
-    /// Parses the TOML content from the blueprint resources and extracts [endpoints.*] sections,
-    /// making them available for slice resource provisioning via the configuration hierarchy.
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    public void onBlueprintResourcesPut(ValuePut<BlueprintResourcesKey, BlueprintResourcesValue> valuePut) {
+    @MessageReceiver@SuppressWarnings("JBCT-RET-01") public void onBlueprintResourcesPut(ValuePut<BlueprintResourcesKey, BlueprintResourcesValue> valuePut) {
         var tomlContent = valuePut.cause().value()
                                         .tomlContent();
         TomlParser.parse(tomlContent).onSuccess(this::applyBlueprintEndpoints)
@@ -122,11 +103,9 @@ public class DynamicConfigManager {
                                                       cause.message()));
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    private void applyBlueprintEndpoints(org.pragmatica.config.toml.TomlDocument doc) {
-        for ( var sectionName : doc.sectionNames()) {
-        if ( sectionName.startsWith("endpoints.")) {
-        loadEndpointSection(doc, sectionName);}}
+    @SuppressWarnings("JBCT-PAT-01") private void applyBlueprintEndpoints(org.pragmatica.config.toml.TomlDocument doc) {
+        for (var sectionName : doc.sectionNames()) {if (sectionName.startsWith("endpoints.")) {loadEndpointSection(doc,
+                                                                                                                   sectionName);}}
         log.info("Blueprint resources loaded into configuration overlay");
     }
 
@@ -137,11 +116,7 @@ public class DynamicConfigManager {
         doc.getString(sectionName, "password").onPresent(v -> provider.put(sectionName + ".password", v));
     }
 
-    /// Set a cluster-wide configuration value and persist to KV-Store.
-    ///
-    /// @return Promise that completes when config is persisted across cluster
-    @SuppressWarnings("unchecked")
-    public Promise<Unit> setConfig(String key, String value) {
+    @SuppressWarnings("unchecked") public Promise<Unit> setConfig(String key, String value) {
         var configKey = ConfigKey.forKey(key);
         var configValue = ConfigValue.configValue(key, value);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(configKey, configValue);
@@ -152,11 +127,7 @@ public class DynamicConfigManager {
                                                         cause.message()));
     }
 
-    /// Set a node-scoped configuration value and persist to KV-Store.
-    ///
-    /// @return Promise that completes when config is persisted across cluster
-    @SuppressWarnings("unchecked")
-    public Promise<Unit> setNodeConfig(String key, String value, NodeId nodeId) {
+    @SuppressWarnings("unchecked") public Promise<Unit> setNodeConfig(String key, String value, NodeId nodeId) {
         var configKey = ConfigKey.forKey(key, nodeId);
         var configValue = ConfigValue.configValue(key, value);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(configKey, configValue);
@@ -168,11 +139,7 @@ public class DynamicConfigManager {
                                                         cause.message()));
     }
 
-    /// Remove a cluster-wide configuration value and persist removal to KV-Store.
-    ///
-    /// @return Promise that completes when removal is persisted across cluster
-    @SuppressWarnings("unchecked")
-    public Promise<Unit> removeConfig(String key) {
+    @SuppressWarnings("unchecked") public Promise<Unit> removeConfig(String key) {
         var configKey = ConfigKey.forKey(key);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(configKey);
         return clusterNode.<Unit>apply(List.of(command))
@@ -182,11 +149,7 @@ public class DynamicConfigManager {
                                                         cause.message()));
     }
 
-    /// Remove a node-scoped configuration value and persist removal to KV-Store.
-    ///
-    /// @return Promise that completes when removal is persisted across cluster
-    @SuppressWarnings("unchecked")
-    public Promise<Unit> removeNodeConfig(String key, NodeId nodeId) {
+    @SuppressWarnings("unchecked") public Promise<Unit> removeNodeConfig(String key, NodeId nodeId) {
         var configKey = ConfigKey.forKey(key, nodeId);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(configKey);
         return clusterNode.<Unit>apply(List.of(command))
@@ -197,17 +160,14 @@ public class DynamicConfigManager {
                                                         cause.message()));
     }
 
-    /// Get all current overlay overrides.
     public Map<String, String> overrides() {
         return provider.overlayMap();
     }
 
-    /// Get all merged configuration (base + overrides) as JSON.
     public String allConfigAsJson() {
         return mapToJson(provider.asMap());
     }
 
-    /// Get only the overlay overrides as JSON.
     public String overridesAsJson() {
         return mapToJson(provider.overlayMap());
     }
@@ -219,8 +179,7 @@ public class DynamicConfigManager {
     }
 
     private Unit applyNodeConfig(String key, String value, NodeId nodeId) {
-        if ( nodeId.equals(self)) {
-        provider.put(key, value);}
+        if (nodeId.equals(self)) {provider.put(key, value);}
         log.info("Node config set and persisted: {}={} for node {}", key, redactIfSensitive(key, value), nodeId.id());
         return Unit.unit();
     }
@@ -232,15 +191,13 @@ public class DynamicConfigManager {
     }
 
     private Unit removeNodeScopedConfig(String key, NodeId nodeId) {
-        if ( nodeId.equals(self)) {
-        provider.remove(key);}
+        if (nodeId.equals(self)) {provider.remove(key);}
         log.info("Node config removed and persisted: {} for node {}", key, nodeId.id());
         return Unit.unit();
     }
 
     private boolean shouldApply(ConfigKey configKey) {
-        if ( configKey.isClusterWide()) {
-        return true;}
+        if (configKey.isClusterWide()) {return true;}
         return configKey.nodeScope().filter(self::equals)
                                   .isPresent();
     }
@@ -249,8 +206,8 @@ public class DynamicConfigManager {
         var sb = new StringBuilder();
         sb.append("{");
         boolean first = true;
-        for ( var entry : map.entrySet()) {
-            if ( !first) sb.append(",");
+        for (var entry : map.entrySet()) {
+            if (!first) sb.append(",");
             sb.append("\"").append(escapeJson(entry.getKey()))
                      .append("\":\"")
                      .append(escapeJson(redactIfSensitive(entry.getKey(),
@@ -263,7 +220,7 @@ public class DynamicConfigManager {
     }
 
     private String escapeJson(String s) {
-        if ( s == null) return "";
+        if (s == null) return "";
         return s.replace("\\", "\\\\").replace("\"", "\\\"")
                         .replace("\n", "\\n")
                         .replace("\r", "\\r")
@@ -274,8 +231,7 @@ public class DynamicConfigManager {
 
     private static String redactIfSensitive(String key, String value) {
         var lower = key.toLowerCase();
-        if ( lower.contains("password") || lower.contains("secret") || lower.contains("key") || lower.contains("token")) {
-        return "***REDACTED***";}
+        if (lower.contains("password") || lower.contains("secret") || lower.contains("key") || lower.contains("token")) {return "***REDACTED***";}
         return value;
     }
 }

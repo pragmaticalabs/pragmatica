@@ -9,6 +9,7 @@ import org.pragmatica.lang.utils.Causes;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
+
 /// Deployment environment with environment-specific defaults.
 ///
 ///
@@ -45,9 +46,6 @@ public enum Environment {
     public boolean defaultTls() {
         return defaultTls;
     }
-    /// Parse environment from string, case-insensitive.
-    ///
-    /// @return parsed environment, or failure if unknown
     public static Result<Environment> environment(String value) {
         return option(value).map(String::trim)
                      .filter(s -> !s.isEmpty())
@@ -55,7 +53,11 @@ public enum Environment {
                            Environment::fromNormalized);
     }
     private static Result<Environment> fromNormalized(String value) {
-        return switch (value.toLowerCase()) {case "local" -> success(LOCAL);case "docker" -> success(DOCKER);case "kubernetes", "k8s" -> success(KUBERNETES);default -> UNKNOWN_ENVIRONMENT.apply(value)
-        .result();};
+        return switch (value.toLowerCase()){
+            case "local" -> success(LOCAL);
+            case "docker" -> success(DOCKER);
+            case "kubernetes", "k8s" -> success(KUBERNETES);
+            default -> UNKNOWN_ENVIRONMENT.apply(value).result();
+        };
     }
 }

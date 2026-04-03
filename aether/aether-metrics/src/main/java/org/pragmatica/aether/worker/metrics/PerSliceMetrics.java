@@ -3,6 +3,7 @@ package org.pragmatica.aether.worker.metrics;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.serialization.Codec;
 
+
 /// Per-slice metrics within a community snapshot.
 ///
 /// @param artifact          slice artifact
@@ -10,12 +11,11 @@ import org.pragmatica.serialization.Codec;
 /// @param p95LatencyMs      P95 latency in milliseconds
 /// @param errorRate         error rate (0.0-1.0)
 /// @param totalCalls        total calls observed
-@Codec public record PerSliceMetrics( Artifact artifact,
-                                      long activeInvocations,
-                                      double p95LatencyMs,
-                                      double errorRate,
-                                      long totalCalls) {
-    /// Factory following JBCT naming convention.
+@Codec public record PerSliceMetrics(Artifact artifact,
+                                     long activeInvocations,
+                                     double p95LatencyMs,
+                                     double errorRate,
+                                     long totalCalls) {
     public static PerSliceMetrics perSliceMetrics(Artifact artifact,
                                                   long activeInvocations,
                                                   double p95LatencyMs,

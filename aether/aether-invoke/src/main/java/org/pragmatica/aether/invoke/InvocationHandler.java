@@ -25,6 +25,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
+
 /// Server-side component that handles incoming slice invocation requests.
 ///
 ///
@@ -32,42 +33,15 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// finds the local slice, invokes the method, and optionally sends
 /// the response back.
 public interface InvocationHandler {
-    /// Handle incoming invocation request.
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01") void onInvokeRequest(InvokeRequest request);
-
-    /// Register a slice bridge for handling invocations.
-    /// Called when a slice becomes active.
+    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onInvokeRequest(InvokeRequest request);
     @SuppressWarnings("JBCT-RET-01") void registerSlice(Artifact artifact, SliceBridge bridge);
-
-    /// Unregister a slice.
-    /// Called when a slice is deactivated.
     @SuppressWarnings("JBCT-RET-01") void unregisterSlice(Artifact artifact);
-
-    /// Get a local slice bridge for direct invocation.
-    ///
-    /// @param artifact The slice artifact
-    /// @return Option containing the SliceBridge if registered
     Option<SliceBridge> localSlice(Artifact artifact);
-
-    /// Find the bridge for a given classloader.
-    /// Used by SliceInvoker to find the sender's bridge for serialization.
-    ///
-    /// @param classLoader The classloader to look up
-    /// @return Option containing the SliceBridge if found
     Option<SliceBridge> findBridgeByClassLoader(ClassLoader classLoader);
-
-    /// Get the metrics collector if configured.
-    ///
-    /// @return Option containing the metrics collector
     Option<InvocationMetricsCollector> metricsCollector();
 
-    /// Default invocation timeout (15 seconds).
-    /// Must be shorter than client-side SliceInvoker timeout (20s) so the server
-    /// responds with a proper error before the client's timeout fires and orphans the correlationId.
     TimeSpan DEFAULT_INVOCATION_TIMEOUT = timeSpan(15).seconds();
 
-    /// Create a new InvocationHandler without metrics or HTTP routing.
     static InvocationHandler invocationHandler(NodeId self, ClusterNetwork network) {
         return new InvocationHandlerImpl(self,
                                          network,
@@ -79,9 +53,6 @@ public interface InvocationHandler {
                                          ObservabilityInterceptor.noOp());
     }
 
-    /// Create a new InvocationHandler with metrics collection.
-    ///
-    /// @param metricsCollector The metrics collector to use
     static InvocationHandler invocationHandler(NodeId self,
                                                ClusterNetwork network,
                                                InvocationMetricsCollector metricsCollector) {
@@ -95,12 +66,6 @@ public interface InvocationHandler {
                                          ObservabilityInterceptor.noOp());
     }
 
-    /// Create a new InvocationHandler with metrics collection, serialization, and HTTP routing.
-    ///
-    /// @param metricsCollector   The metrics collector to use
-    /// @param serializer         Serializer for response serialization
-    /// @param deserializer       Deserializer for payload deserialization
-    /// @param httpRoutePublisher HTTP route publisher for SliceRouter access
     static InvocationHandler invocationHandler(NodeId self,
                                                ClusterNetwork network,
                                                InvocationMetricsCollector metricsCollector,
@@ -117,10 +82,6 @@ public interface InvocationHandler {
                                          ObservabilityInterceptor.noOp());
     }
 
-    /// Create a new InvocationHandler with metrics collection and custom timeout.
-    ///
-    /// @param metricsCollector  The metrics collector to use
-    /// @param invocationTimeout Timeout for slice invocations
     static InvocationHandler invocationHandler(NodeId self,
                                                ClusterNetwork network,
                                                InvocationMetricsCollector metricsCollector,
@@ -135,8 +96,6 @@ public interface InvocationHandler {
                                          ObservabilityInterceptor.noOp());
     }
 
-    /// Create a new InvocationHandler with metrics, serialization, HTTP routing, and observability interceptor.
-    /// Use this when the same interceptor should be shared with SliceInvoker.
     static InvocationHandler invocationHandler(NodeId self,
                                                ClusterNetwork network,
                                                InvocationMetricsCollector metricsCollector,
@@ -154,7 +113,6 @@ public interface InvocationHandler {
                                  observabilityInterceptor);
     }
 
-    /// Create a new InvocationHandler with metrics, serialization, HTTP routing, observability, and custom timeout.
     static InvocationHandler invocationHandler(NodeId self,
                                                ClusterNetwork network,
                                                InvocationMetricsCollector metricsCollector,
@@ -186,8 +144,8 @@ class InvocationHandlerImpl implements InvocationHandler {
     private final Option<HttpRoutePublisher> httpRoutePublisher;
     private final ObservabilityInterceptor observabilityInterceptor;
 
-    // Local slice bridges available for invocation
     private final Map<Artifact, SliceBridge> localSlices = new ConcurrentHashMap<>();
+
     private final Map<ClassLoader, SliceBridge> classLoaderBridges = new ConcurrentHashMap<>();
 
     InvocationHandlerImpl(NodeId self,
@@ -208,20 +166,15 @@ class InvocationHandlerImpl implements InvocationHandler {
         this.observabilityInterceptor = observabilityInterceptor;
     }
 
-    @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void registerSlice(Artifact artifact, SliceBridge bridge) {
+    @Override@SuppressWarnings("JBCT-RET-01") public void registerSlice(Artifact artifact, SliceBridge bridge) {
         localSlices.put(artifact, bridge);
         classLoaderBridges.put(bridge.classLoader(), bridge);
         log.debug("Registered slice for invocation: {}", artifact);
     }
 
-    @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void unregisterSlice(Artifact artifact) {
+    @Override@SuppressWarnings("JBCT-RET-01") public void unregisterSlice(Artifact artifact) {
         var bridge = localSlices.remove(artifact);
-        if ( bridge != null) {
-        classLoaderBridges.remove(bridge.classLoader());}
+        if (bridge != null) {classLoaderBridges.remove(bridge.classLoader());}
         log.debug("Unregistered slice from invocation: {}", artifact);
     }
 
@@ -237,16 +190,12 @@ class InvocationHandlerImpl implements InvocationHandler {
         return metricsCollector;
     }
 
-    @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void onInvokeRequest(InvokeRequest request) {
-        if ( log.isDebugEnabled()) {
-        log.debug("[requestId={}] Received InvokeRequest [{}]: {}.{}",
-                  request.requestId(),
-                  request.correlationId(),
-                  request.targetSlice(),
-                  request.method());}
-        // Run within full invocation context scope for chain propagation
+    @Override@SuppressWarnings("JBCT-RET-01") public void onInvokeRequest(InvokeRequest request) {
+        if (log.isDebugEnabled()) {log.debug("[requestId={}] Received InvokeRequest [{}]: {}.{}",
+                                             request.requestId(),
+                                             request.correlationId(),
+                                             request.targetSlice(),
+                                             request.method());}
         InvocationContext.runWithContext(request.requestId(),
                                          null,
                                          null,
@@ -262,23 +211,19 @@ class InvocationHandlerImpl implements InvocationHandler {
 
     private void handleSliceNotFound(InvokeRequest request) {
         log.warn("[requestId={}] Slice not found for invocation: {}", request.requestId(), request.targetSlice());
-        if ( request.expectResponse()) {
-        sendErrorResponse(request, "Slice not found: " + request.targetSlice());}
+        if (request.expectResponse()) {sendErrorResponse(request, "Slice not found: " + request.targetSlice());}
     }
 
     private void invokeSliceMethod(InvokeRequest request, SliceBridge bridge) {
         var startTime = System.nanoTime();
         var requestBytes = request.payload().length;
-        // Record invocation start for active invocation tracking
         metricsCollector.onPresent(mc -> mc.recordStart(request.targetSlice(), request.method()));
-        // Delegate observability to interceptor, then handle response/metrics
         observabilityInterceptor.intercept(request.targetSlice(),
                                            request.method(),
                                            request.requestId(),
                                            request.depth(),
                                            true,
-                                           // local=true for server-side handler
-        () -> invokeWithHttpRouting(request, bridge)).timeout(invocationTimeout)
+                                           () -> invokeWithHttpRouting(request, bridge)).timeout(invocationTimeout)
                                           .onSuccess(data -> handleInvocationSuccess(request,
                                                                                      data,
                                                                                      startTime,
@@ -289,10 +234,6 @@ class InvocationHandlerImpl implements InvocationHandler {
                                                                                       requestBytes));
     }
 
-    /// Invoke a method on the target slice via its bridge.
-    ///
-    /// HTTP forwarding between nodes uses the dedicated HttpForwardMessage mechanism
-    /// (AppHttpServer), so this method delegates directly to the SliceBridge.
     private Promise<byte[]> invokeWithHttpRouting(InvokeRequest request, SliceBridge bridge) {
         return bridge.invoke(request.method().name(),
                              request.payload());
@@ -301,8 +242,7 @@ class InvocationHandlerImpl implements InvocationHandler {
     private void handleInvocationSuccess(InvokeRequest request, byte[] responseData, long startTime, int requestBytes) {
         var durationNs = System.nanoTime() - startTime;
         var responseBytes = responseData.length;
-        if ( request.expectResponse()) {
-        sendSuccessResponse(request, responseData);}
+        if (request.expectResponse()) {sendSuccessResponse(request, responseData);}
         log.debug("[requestId={}] Invocation completed in {}ms: {}.{}",
                   request.requestId(),
                   durationNs / 1_000_000,
@@ -320,18 +260,14 @@ class InvocationHandlerImpl implements InvocationHandler {
         mc.recordSuccess(request.targetSlice(), request.method(), durationNs, requestBytes, responseBytes);
     }
 
-    private void handleInvocationFailure(InvokeRequest request,
-                                         Cause cause,
-                                         long startTime,
-                                         int requestBytes) {
+    private void handleInvocationFailure(InvokeRequest request, Cause cause, long startTime, int requestBytes) {
         var durationNs = System.nanoTime() - startTime;
         var errorType = cause.getClass().getSimpleName();
         log.error("[requestId={}] Failed to complete invocation [{}]: {}",
                   request.requestId(),
                   request.correlationId(),
                   cause.message());
-        if ( request.expectResponse()) {
-        sendErrorResponse(request, cause.message());}
+        if (request.expectResponse()) {sendErrorResponse(request, cause.message());}
         metricsCollector.onPresent(mc -> recordFailureMetrics(mc, request, durationNs, requestBytes, errorType));
     }
 

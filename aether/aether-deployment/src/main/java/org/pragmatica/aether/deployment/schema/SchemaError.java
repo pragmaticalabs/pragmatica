@@ -2,6 +2,7 @@ package org.pragmatica.aether.deployment.schema;
 
 import org.pragmatica.lang.Cause;
 
+
 /// Error types for schema migration failures.
 public sealed interface SchemaError extends Cause {
     record ChecksumMismatch(String datasource, int version, long expected, long actual) implements SchemaError {

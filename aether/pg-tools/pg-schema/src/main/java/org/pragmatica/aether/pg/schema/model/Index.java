@@ -4,16 +4,16 @@ import org.pragmatica.lang.Option;
 
 import java.util.List;
 
+
 /// An index definition.
-public record Index(
- String name,
- String table,
- List<IndexElement> elements,
- IndexMethod method,
- boolean unique,
- boolean concurrent,
- Option<String> whereClause,
- List<String> includeColumns) {
+public record Index(String name,
+                    String table,
+                    List<IndexElement> elements,
+                    IndexMethod method,
+                    boolean unique,
+                    boolean concurrent,
+                    Option<String> whereClause,
+                    List<String> includeColumns) {
     public record IndexElement(String expression, Option<SortOrder> order, Option<NullsOrder> nullsOrder){}
 
     public enum IndexMethod {

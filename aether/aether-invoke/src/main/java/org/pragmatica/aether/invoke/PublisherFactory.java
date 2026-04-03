@@ -9,6 +9,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// ResourceFactory SPI implementation for provisioning Publisher instances.
 ///
 /// Discovered via ServiceLoader. Creates TopicPublisher instances using
@@ -31,9 +32,9 @@ public final class PublisherFactory implements ResourceFactory<Publisher, TopicC
 
     @Override public Promise<Publisher> provision(TopicConfig config, ProvisioningContext context) {
         return context.extension(TopicSubscriptionRegistry.class).flatMap(registry -> context.extension(SliceInvoker.class)
-        .map(invoker -> (Publisher) new TopicPublisher<>(config.topicName(),
-                                                         registry,
-                                                         invoker)))
+                                                                                                       .map(invoker -> (Publisher) new TopicPublisher<>(config.topicName(),
+                                                                                                                                                        registry,
+                                                                                                                                                        invoker)))
                                 .async();
     }
 }

@@ -11,6 +11,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
+
 /// Root configuration for Aether cluster.
 ///
 ///
@@ -51,21 +52,20 @@ import static org.pragmatica.lang.Result.success;
 /// @param timeouts       Centralized timeout configuration
 /// @param storage        Named hierarchical storage instance configurations from [storage.*] sections
 /// @param endpoints      Infrastructure endpoint configurations from [endpoints.*] sections
-public record AetherConfig( ClusterConfig cluster,
-                            NodeConfig node,
-                            Option<TlsConfig> tls,
-                            Option<DockerConfig> docker,
-                            Option<KubernetesConfig> kubernetes,
-                            TtmConfig ttm,
-                            SliceConfig slice,
-                            AppHttpConfig appHttp,
-                            BackupConfig backup,
-                            DhtReplicationConfig dhtReplication,
-                            TimeoutsConfig timeouts,
-                            Map<String, StorageConfig> storage,
-                            Option<CloudConfig> cloud,
-                            Map<String, EndpointConfig> endpoints) {
-    /// Factory method following JBCT naming convention.
+public record AetherConfig(ClusterConfig cluster,
+                           NodeConfig node,
+                           Option<TlsConfig> tls,
+                           Option<DockerConfig> docker,
+                           Option<KubernetesConfig> kubernetes,
+                           TtmConfig ttm,
+                           SliceConfig slice,
+                           AppHttpConfig appHttp,
+                           BackupConfig backup,
+                           DhtReplicationConfig dhtReplication,
+                           TimeoutsConfig timeouts,
+                           Map<String, StorageConfig> storage,
+                           Option<CloudConfig> cloud,
+                           Map<String, EndpointConfig> endpoints) {
     public static Result<AetherConfig> aetherConfig(ClusterConfig cluster,
                                                     NodeConfig node,
                                                     Option<TlsConfig> tls,
@@ -93,9 +93,7 @@ public record AetherConfig( ClusterConfig cluster,
                                         Map.of()));
     }
 
-    /// Create configuration with defaults for specified environment.
-    @SuppressWarnings("JBCT-SEQ-01")
-    public static AetherConfig aetherConfig(Environment env) {
+    @SuppressWarnings("JBCT-SEQ-01") public static AetherConfig aetherConfig(Environment env) {
         return aetherConfig(ClusterConfig.clusterConfig(env),
                             NodeConfig.nodeConfig(env),
                             tlsForEnvironment(env),
@@ -109,23 +107,19 @@ public record AetherConfig( ClusterConfig cluster,
                             TimeoutsConfig.timeoutsConfig()).unwrap();
     }
 
-    /// Create default configuration (Docker environment).
     public static AetherConfig aetherConfig() {
         return aetherConfig(Environment.DOCKER);
     }
 
-    /// Get the environment from cluster config.
     public Environment environment() {
         return cluster.environment();
     }
 
-    /// Check if TLS is enabled.
     public boolean tlsEnabled() {
         return cluster.tls();
     }
 
-    @SuppressWarnings("JBCT-VO-02")
-    public AetherConfig withStorage(Map<String, StorageConfig> storage) {
+    @SuppressWarnings("JBCT-VO-02") public AetherConfig withStorage(Map<String, StorageConfig> storage) {
         return new AetherConfig(cluster,
                                 node,
                                 tls,
@@ -142,8 +136,7 @@ public record AetherConfig( ClusterConfig cluster,
                                 endpoints);
     }
 
-    @SuppressWarnings("JBCT-VO-02")
-    public AetherConfig withEndpoints(Map<String, EndpointConfig> endpoints) {
+    @SuppressWarnings("JBCT-VO-02") public AetherConfig withEndpoints(Map<String, EndpointConfig> endpoints) {
         return new AetherConfig(cluster,
                                 node,
                                 tls,
@@ -160,8 +153,7 @@ public record AetherConfig( ClusterConfig cluster,
                                 endpoints);
     }
 
-    @SuppressWarnings("JBCT-VO-02")
-    public AetherConfig withCloud(CloudConfig cloud) {
+    @SuppressWarnings("JBCT-VO-02") public AetherConfig withCloud(CloudConfig cloud) {
         return new AetherConfig(cluster,
                                 node,
                                 tls,
@@ -178,31 +170,31 @@ public record AetherConfig( ClusterConfig cluster,
                                 endpoints);
     }
 
-    /// Builder for fluent configuration.
     public static Builder builder() {
         return new Builder();
     }
 
     private static Option<TlsConfig> tlsForEnvironment(Environment env) {
         return env.defaultTls()
-               ? some(TlsConfig.tlsConfig())
-               : none();
+              ? some(TlsConfig.tlsConfig())
+              : none();
     }
 
     private static Option<DockerConfig> dockerForEnvironment(Environment env) {
         return env == Environment.DOCKER
-               ? some(DockerConfig.dockerConfig())
-               : none();
+              ? some(DockerConfig.dockerConfig())
+              : none();
     }
 
     private static Option<KubernetesConfig> kubernetesForEnvironment(Environment env) {
         return env == Environment.KUBERNETES
-               ? some(KubernetesConfig.kubernetesConfig())
-               : none();
+              ? some(KubernetesConfig.kubernetesConfig())
+              : none();
     }
 
     public static class Builder {
         private Environment environment = Environment.DOCKER;
+
         private Integer nodes;
         private Boolean tls;
         private String heap;
@@ -222,8 +214,7 @@ public record AetherConfig( ClusterConfig cluster,
         private Map<String, StorageConfig> storageConfig;
         private Map<String, EndpointConfig> endpointsConfig;
 
-        @SuppressWarnings("JBCT-NAM-01")
-        public Builder withEnvironment(Environment environment) {
+        @SuppressWarnings("JBCT-NAM-01") public Builder withEnvironment(Environment environment) {
             this.environment = environment;
             return this;
         }
@@ -345,31 +336,25 @@ public record AetherConfig( ClusterConfig cluster,
             .unwrap();
             var finalStorage = storageFor();
             var withStorage = finalStorage.isEmpty()
-                              ? config
-                              : config.withStorage(finalStorage);
+                             ? config
+                             : config.withStorage(finalStorage);
             var finalEndpoints = endpointsFor();
             var withEp = finalEndpoints.isEmpty()
-                         ? withStorage
-                         : withStorage.withEndpoints(finalEndpoints);
+                        ? withStorage
+                        : withStorage.withEndpoints(finalEndpoints);
             return option(cloudConfig).fold(() -> withEp, withEp::withCloud);
         }
 
         private ClusterConfig applyClusterOverrides(ClusterConfig base) {
-            var withNodes = option(nodes).map(base::withNodes)
-                                  .or(base);
-            var withTls = option(tls).map(withNodes::withTls)
-                                .or(withNodes);
-            var withPorts = option(ports).map(withTls::withPorts)
-                                  .or(withTls);
-            return option(coreMax).map(withPorts::withCoreMax)
-                         .or(withPorts);
+            var withNodes = option(nodes).map(base::withNodes).or(base);
+            var withTls = option(tls).map(withNodes::withTls).or(withNodes);
+            var withPorts = option(ports).map(withTls::withPorts).or(withTls);
+            return option(coreMax).map(withPorts::withCoreMax).or(withPorts);
         }
 
         private NodeConfig applyNodeOverrides(NodeConfig base) {
-            var withHeap = option(heap).map(base::withHeap)
-                                 .or(base);
-            return option(gc).map(withHeap::withGc)
-                         .or(withHeap);
+            var withHeap = option(heap).map(base::withHeap).or(base);
+            return option(gc).map(withHeap::withGc).or(withHeap);
         }
 
         private Option<TlsConfig> tlsFor(ClusterConfig clusterCfg) {
@@ -378,8 +363,8 @@ public record AetherConfig( ClusterConfig cluster,
 
         private static Option<TlsConfig> defaultTlsFor(ClusterConfig clusterCfg) {
             return clusterCfg.tls()
-                   ? some(TlsConfig.tlsConfig())
-                   : none();
+                  ? some(TlsConfig.tlsConfig())
+                  : none();
         }
 
         private Option<DockerConfig> dockerFor() {

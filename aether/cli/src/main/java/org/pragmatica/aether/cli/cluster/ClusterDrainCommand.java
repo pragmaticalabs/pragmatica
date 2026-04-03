@@ -12,24 +12,23 @@ import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 import tools.jackson.databind.JsonNode;
 
+
 /// Drains a node by transitioning it from ON_DUTY to DRAINING state.
 ///
 /// Delegates to `POST /api/node/drain/{nodeId}`. Optionally waits for
 /// the node to reach DECOMMISSIONED state before returning.
-@Command(name = "drain", description = "Drain a node (evacuate slices)")
-@SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01"}) class ClusterDrainCommand implements Callable<Integer> {
+@Command(name = "drain", description = "Drain a node (evacuate slices)") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01"}) class ClusterDrainCommand implements Callable<Integer> {
     private static final int POLL_INTERVAL_MS = 2000;
+
     private static final int DEFAULT_TIMEOUT_SECONDS = 120;
+
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
-    @Parameters(index = "0", description = "Node ID to drain")
-    private String nodeId;
+    @Parameters(index = "0", description = "Node ID to drain") private String nodeId;
 
-    @Option(names = "--wait", description = "Wait for drain to complete (DECOMMISSIONED)")
-    private boolean waitForCompletion;
+    @Option(names = "--wait", description = "Wait for drain to complete (DECOMMISSIONED)") private boolean waitForCompletion;
 
-    @Option(names = "--timeout", description = "Timeout in seconds when waiting (default: 120)")
-    private int timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
+    @Option(names = "--timeout", description = "Timeout in seconds when waiting (default: 120)") private int timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
 
     @CommandLine.ParentCommand private ClusterCommand parent;
 
@@ -42,16 +41,14 @@ import tools.jackson.databind.JsonNode;
         var success = root.path("success").asBoolean(false);
         var state = root.path("state").asText("UNKNOWN");
         var message = root.path("message").asText("");
-        if ( !success) {
-        return handleDrainRejection(state, message);}
+        if (!success) {return handleDrainRejection(state, message);}
         System.out.printf("Drain initiated for node %s (state: %s)%n", nodeId, state);
-        if ( waitForCompletion) {
-        return pollUntilDecommissioned();}
+        if (waitForCompletion) {return pollUntilDecommissioned();}
         return ExitCode.SUCCESS;
     }
 
     private static int handleDrainRejection(String state, String message) {
-        if ( state.contains("DRAINING") || state.contains("DECOMMISSIONED")) {
+        if (state.contains("DRAINING") || state.contains("DECOMMISSIONED")) {
             System.out.printf("Node already %s: %s%n", state, message);
             return ExitCode.SUCCESS;
         }
@@ -59,13 +56,12 @@ import tools.jackson.databind.JsonNode;
         return ExitCode.ERROR;
     }
 
-    @SuppressWarnings("JBCT-SEQ-01")
-    private int pollUntilDecommissioned() {
+    @SuppressWarnings("JBCT-SEQ-01") private int pollUntilDecommissioned() {
         System.out.printf("Waiting for node %s to reach DECOMMISSIONED (timeout: %ds)...%n", nodeId, timeoutSeconds);
         var deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
-        while ( System.currentTimeMillis() < deadline) {
+        while (System.currentTimeMillis() <deadline) {
             var stateResult = queryNodeLifecycleState();
-            if ( "DECOMMISSIONED".equals(stateResult)) {
+            if ("DECOMMISSIONED".equals(stateResult)) {
                 System.out.printf("Node %s is now DECOMMISSIONED.%n", nodeId);
                 return ExitCode.SUCCESS;
             }
@@ -86,14 +82,10 @@ import tools.jackson.databind.JsonNode;
         return node.path("state").asText("UNKNOWN");
     }
 
-    @SuppressWarnings("JBCT-EX-01")
-    private static void sleepQuietly() {
+    @SuppressWarnings("JBCT-EX-01") private static void sleepQuietly() {
         try {
             Thread.sleep(POLL_INTERVAL_MS);
-        }
-
-
-        catch (InterruptedException _) {
+        } catch (InterruptedException _) {
             Thread.currentThread().interrupt();
         }
     }

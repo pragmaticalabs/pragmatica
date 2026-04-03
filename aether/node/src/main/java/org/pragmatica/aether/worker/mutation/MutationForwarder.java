@@ -11,42 +11,30 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Forwards mutations from worker nodes to core cluster via the governor.
 ///
 /// Path: Worker -> Governor -> Core (any node, since Rabia is leaderless).
 /// If the governor is FAULTY, falls back to sending directly to any core node
 /// via the PassiveNode's cluster network.
-@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
-public interface MutationForwarder {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) public interface MutationForwarder {
     Logger LOG = LoggerFactory.getLogger(MutationForwarder.class);
 
-    /// Forward a mutation. If this node IS the governor, send directly to core.
-    /// Otherwise, send to the governor for relay.
     void forward(WorkerMutation mutation);
-
-    /// Called on the governor when receiving a mutation from a follower.
-    /// The governor forwards it to any core node.
     void onMutationFromFollower(WorkerMutation mutation);
-
-    /// Update the known governor.
     void updateGovernor(Option<NodeId> governor);
 
-    /// Factory method using PassiveNode.
-    static MutationForwarder mutationForwarder(NodeId selfId,
-                                               PassiveNode<?, ?> passiveNode) {
+    static MutationForwarder mutationForwarder(NodeId selfId, PassiveNode<?, ?> passiveNode) {
         return mutationForwarder(selfId, passiveNode.delegateRouter());
     }
 
-    /// Factory method using DelegateRouter directly.
-    /// Used by AetherNode where a RabiaNode (not PassiveNode) provides the network.
-    static MutationForwarder mutationForwarder(NodeId selfId,
-                                               DelegateRouter delegateRouter) {
-        record mutationForwarder( NodeId selfId,
-                                  DelegateRouter delegateRouter,
-                                  AtomicReference<Option<NodeId>> currentGovernor) implements MutationForwarder {
+    static MutationForwarder mutationForwarder(NodeId selfId, DelegateRouter delegateRouter) {
+        record mutationForwarder(NodeId selfId,
+                                 DelegateRouter delegateRouter,
+                                 AtomicReference<Option<NodeId>> currentGovernor) implements MutationForwarder {
             @Override public void forward(WorkerMutation mutation) {
                 var governor = currentGovernor.get();
-                if ( governor.isEmpty() || isGovernor(governor)) {
+                if (governor.isEmpty() || isGovernor(governor)) {
                     forwardToCore(mutation);
                     return;
                 }

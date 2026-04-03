@@ -5,6 +5,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.serialization.Codec;
 
+
 /// Request from a governor to the core cluster to scale a community.
 /// Only sent when the CommunityScalingEvaluator detects a sustained threshold breach.
 /// Zero traffic when community is healthy.
@@ -16,14 +17,13 @@ import org.pragmatica.serialization.Codec;
 /// @param currentInstances  current instance count
 /// @param requestedInstances desired instance count
 /// @param evidence          scaling evidence from sliding window
-@Codec public record CommunityScalingRequest( String communityId,
-                                              NodeId governorId,
-                                              Artifact artifact,
-                                              String direction,
-                                              int currentInstances,
-                                              int requestedInstances,
-                                              ScalingEvidence evidence) implements Message.Wired {
-    /// Factory following JBCT naming convention.
+@Codec public record CommunityScalingRequest(String communityId,
+                                             NodeId governorId,
+                                             Artifact artifact,
+                                             String direction,
+                                             int currentInstances,
+                                             int requestedInstances,
+                                             ScalingEvidence evidence) implements Message.Wired {
     public static CommunityScalingRequest communityScalingRequest(String communityId,
                                                                   NodeId governorId,
                                                                   Artifact artifact,

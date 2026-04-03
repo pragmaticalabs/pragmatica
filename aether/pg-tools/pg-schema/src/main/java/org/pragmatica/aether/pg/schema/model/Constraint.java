@@ -4,6 +4,7 @@ import org.pragmatica.lang.Option;
 
 import java.util.List;
 
+
 /// Table constraint types.
 public sealed interface Constraint {
     Option<String> name();
@@ -15,8 +16,7 @@ public sealed interface Constraint {
                       String refTable,
                       List<String> refColumns,
                       FkAction onUpdate,
-                      FkAction onDelete)
-    implements Constraint{}
+                      FkAction onDelete) implements Constraint{}
 
     record Unique(Option<String> name, List<String> columns) implements Constraint{}
 

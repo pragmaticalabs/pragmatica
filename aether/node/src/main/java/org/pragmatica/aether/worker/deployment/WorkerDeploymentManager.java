@@ -27,22 +27,16 @@ import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Manages slice deployment lifecycle on worker nodes.
 /// Watches WorkerSliceDirective entries and self-assigns instances via consistent hashing.
-@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01", "JBCT-STY-05"})
-public interface WorkerDeploymentManager {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01", "JBCT-STY-05"}) public interface WorkerDeploymentManager {
     Logger log = LoggerFactory.getLogger(WorkerDeploymentManager.class);
 
-    /// Called when a WorkerSliceDirective is put to KVStore.
     void onDirectivePut(WorkerSliceDirectiveValue directive);
-
-    /// Called when a WorkerSliceDirective is removed from KVStore.
     void onDirectiveRemove(Artifact artifact);
-
-    /// Called when SWIM membership changes -- recompute instance assignments.
     void onMembershipChange(List<NodeId> aliveMembers);
 
-    /// Deployment state for a single artifact on this worker.
     enum DeploymentState {
         IDLE,
         LOADING,
@@ -52,10 +46,7 @@ public interface WorkerDeploymentManager {
         FAILED
     }
 
-    /// Tracks a single artifact deployment on this worker.
-    record WorkerSliceDeployment(Artifact artifact,
-                                 DeploymentState state,
-                                 int assignedInstances) {
+    record WorkerSliceDeployment(Artifact artifact, DeploymentState state, int assignedInstances) {
         WorkerSliceDeployment withState(DeploymentState newState) {
             return new WorkerSliceDeployment(artifact, newState, assignedInstances);
         }
@@ -65,23 +56,21 @@ public interface WorkerDeploymentManager {
         }
     }
 
-    /// Create an active WorkerDeploymentManager with community identity supplier.
     static WorkerDeploymentManager workerDeploymentManager(NodeId self,
                                                            SliceStore sliceStore,
                                                            MutationForwarder mutationForwarder,
                                                            List<NodeId> initialMembers,
                                                            Supplier<String> communityIdSupplier) {
-        @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01", "JBCT-STY-05", "JBCT-SEQ-01", "JBCT-LAM-01"}) record workerDeploymentManager( NodeId self,
-                                                                                                                                      SliceStore sliceStore,
-                                                                                                                                      MutationForwarder mutationForwarder,
-                                                                                                                                      ConcurrentHashMap<Artifact, WorkerSliceDeployment> deployments,
-                                                                                                                                      ConcurrentHashMap<Artifact, WorkerSliceDirectiveValue> directives,
-                                                                                                                                      AtomicReference<List<NodeId>> aliveMembers,
-                                                                                                                                      AtomicLong correlationCounter,
-                                                                                                                                      Supplier<String> communityIdSupplier) implements WorkerDeploymentManager {
+        @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01", "JBCT-STY-05", "JBCT-SEQ-01", "JBCT-LAM-01"}) record workerDeploymentManager(NodeId self,
+                                                                                                                                     SliceStore sliceStore,
+                                                                                                                                     MutationForwarder mutationForwarder,
+                                                                                                                                     ConcurrentHashMap<Artifact, WorkerSliceDeployment> deployments,
+                                                                                                                                     ConcurrentHashMap<Artifact, WorkerSliceDirectiveValue> directives,
+                                                                                                                                     AtomicReference<List<NodeId>> aliveMembers,
+                                                                                                                                     AtomicLong correlationCounter,
+                                                                                                                                     Supplier<String> communityIdSupplier) implements WorkerDeploymentManager {
             @Override public void onDirectivePut(WorkerSliceDirectiveValue directive) {
-                if ( isDirectiveForDifferentCommunity(directive)) {
-                return;}
+                if (isDirectiveForDifferentCommunity(directive)) {return;}
                 var artifact = directive.artifact();
                 directives.put(artifact, directive);
                 log.info("Received worker directive for {} with {} target instances",
@@ -94,11 +83,10 @@ public interface WorkerDeploymentManager {
                 var myCommunity = communityIdSupplier.get();
                 var isDifferent = directive.targetCommunity().map(target -> !target.equals(myCommunity))
                                                            .or(false);
-                if ( isDifferent) {
-                log.debug("Skipping directive for {} — targets community '{}', this worker is in '{}'",
-                          directive.artifact(),
-                          directive.targetCommunity().or(""),
-                          myCommunity);}
+                if (isDifferent) {log.debug("Skipping directive for {} — targets community '{}', this worker is in '{}'",
+                                            directive.artifact(),
+                                            directive.targetCommunity().or(""),
+                                            myCommunity);}
                 return isDifferent;
             }
 
@@ -121,17 +109,13 @@ public interface WorkerDeploymentManager {
                                                                           aliveMembers.get(),
                                                                           self);
                 var current = Option.option(deployments.get(artifact));
-                if ( assigned > 0 && needsDeploy(current)) {
+                if (assigned > 0 && needsDeploy(current)) {
                     deployments.put(artifact, new WorkerSliceDeployment(artifact, DeploymentState.LOADING, assigned));
                     loadAndActivateSlice(artifact);
-                } else
-
-
-                if ( assigned == 0 && needsUndeploy(current)) {
+                } else if (assigned == 0 && needsUndeploy(current)) {
                     deployments.remove(artifact);
                     teardownSlice(artifact);
-                } else {
-                current.onPresent(c -> deployments.put(artifact, c.withInstances(assigned)));}
+                } else {current.onPresent(c -> deployments.put(artifact, c.withInstances(assigned)));}
             }
 
             private static boolean needsDeploy(Option<WorkerSliceDeployment> current) {
@@ -140,7 +124,7 @@ public interface WorkerDeploymentManager {
 
             private static boolean needsUndeploy(Option<WorkerSliceDeployment> current) {
                 return current.map(c -> c.state() == DeploymentState.LOADED || c.state() == DeploymentState.ACTIVE)
-                .or(false);
+                                  .or(false);
             }
 
             private void loadAndActivateSlice(Artifact artifact) {
@@ -203,8 +187,7 @@ public interface WorkerDeploymentManager {
 
             private Promise<Unit> publishEndpointsForSlice(Artifact artifact, Slice slice) {
                 var methods = slice.methods();
-                if ( methods.isEmpty()) {
-                return Promise.unitPromise();}
+                if (methods.isEmpty()) {return Promise.unitPromise();}
                 int instanceNumber = Math.abs(self.id().hashCode());
                 var methodNames = methods.stream().map(m -> m.name().name())
                                                 .toList();
@@ -223,16 +206,13 @@ public interface WorkerDeploymentManager {
 
             private Promise<Unit> unpublishEndpointsForSlice(Artifact artifact, Slice slice) {
                 var methods = slice.methods();
-                if ( methods.isEmpty()) {
-                return Promise.unitPromise();}
-                // Write NodeArtifactKey with empty methods to clear endpoint info
+                if (methods.isEmpty()) {return Promise.unitPromise();}
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, artifact);
                 var nodeArtifactValue = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
                 forwardPut(nodeArtifactKey, nodeArtifactValue, "unpublish-endpoints-" + artifact);
                 return Promise.unitPromise();
             }
 
-            /// Forward NodeArtifactKey state update via MutationForwarder.
             private void forwardSliceStateUpdate(SliceNodeKey sliceKey, SliceState state) {
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, sliceKey.artifact());
                 var nodeArtifactValue = NodeArtifactValue.nodeArtifactValue(state);
@@ -240,21 +220,21 @@ public interface WorkerDeploymentManager {
                 forwardPut(nodeArtifactKey, nodeArtifactValue, correlationId);
             }
 
-            /// Forward removal of NodeArtifactKey via MutationForwarder.
             private void forwardSliceRemoval(SliceNodeKey sliceKey) {
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, sliceKey.artifact());
                 var correlationId = nextCorrelationId("remove");
                 forwardRemove(nodeArtifactKey, correlationId);
             }
 
-            @SuppressWarnings("unchecked")
-            private<K extends AetherKey> void forwardPut(K key, Object value, String correlationId) {
+            @SuppressWarnings("unchecked") private <K extends AetherKey> void forwardPut(K key,
+                                                                                         Object value,
+                                                                                         String correlationId) {
                 KVCommand<AetherKey> command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
                 mutationForwarder.forward(WorkerMutation.workerMutation(self, correlationId, command));
             }
 
-            @SuppressWarnings("unchecked")
-            private<K extends AetherKey> void forwardRemove(K key, String correlationId) {
+            @SuppressWarnings("unchecked") private <K extends AetherKey> void forwardRemove(K key,
+                                                                                            String correlationId) {
                 KVCommand<AetherKey> command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
                 mutationForwarder.forward(WorkerMutation.workerMutation(self, correlationId, command));
             }
@@ -283,7 +263,6 @@ public interface WorkerDeploymentManager {
                                            communityIdSupplier);
     }
 
-    /// Create an active WorkerDeploymentManager with default community identity.
     static WorkerDeploymentManager workerDeploymentManager(NodeId self,
                                                            SliceStore sliceStore,
                                                            MutationForwarder mutationForwarder,

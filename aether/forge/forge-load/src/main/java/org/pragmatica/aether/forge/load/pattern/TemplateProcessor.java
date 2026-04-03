@@ -12,6 +12,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
 
+
 /// Processes templates containing pattern placeholders like `${type:args`}.
 ///
 /// A template can contain multiple patterns intermixed with literal text.
@@ -22,7 +23,6 @@ public final class TemplateProcessor {
     private final String template;
     private final List<Segment> segments;
 
-    /// A segment is either literal text or a pattern generator.
     private sealed interface Segment {
         String render();
 
@@ -58,12 +58,6 @@ public final class TemplateProcessor {
         this.segments = segments;
     }
 
-    /// Compiles a template string into a processor.
-    ///
-    /// Parses all patterns at compile time and validates them.
-    ///
-    /// @param template the template string
-    /// @return Result containing the processor or an error
     public static Result<TemplateProcessor> compile(String template) {
         return option(template).filter(s -> !s.isEmpty())
                      .map(TemplateProcessor::buildAndWrap)
@@ -92,8 +86,8 @@ public final class TemplateProcessor {
 
     private static Result<List<Segment>> toSegments(String template, List<MatchInfo> matches) {
         return matches.isEmpty()
-               ? success(literalOnlySegments(template))
-               : compileGenerators(template, matches);
+              ? success(literalOnlySegments(template))
+              : compileGenerators(template, matches);
     }
 
     private static Result<List<Segment>> compileGenerators(String template, List<MatchInfo> matches) {
@@ -104,8 +98,8 @@ public final class TemplateProcessor {
 
     private static List<Segment> literalOnlySegments(String template) {
         return template.isEmpty()
-               ? List.of()
-               : List.of(new Segment.Literal(template));
+              ? List.of()
+              : List.of(new Segment.Literal(template));
     }
 
     private static List<Segment> assembleSegments(String template,
@@ -113,8 +107,13 @@ public final class TemplateProcessor {
                                                   List<PatternGenerator> generators) {
         var segments = new ArrayList<Segment>();
         var lastEnd = new int[]{0};
-        IntStream.range(0, matches.size())
-        .forEach(i -> addSegment(segments, template, matches.get(i), generators.get(i), lastEnd));
+        IntStream.range(0,
+                        matches.size())
+        .forEach(i -> addSegment(segments,
+                                 template,
+                                 matches.get(i),
+                                 generators.get(i),
+                                 lastEnd));
         addTrailingLiteral(segments, template, lastEnd[0]);
         return List.copyOf(segments);
     }
@@ -124,24 +123,19 @@ public final class TemplateProcessor {
                                    MatchInfo match,
                                    PatternGenerator generator,
                                    int[] lastEnd) {
-        if ( match.start() > lastEnd[0]) {
-        segments.add(new Segment.Literal(template.substring(lastEnd[0], match.start())));}
+        if (match.start() > lastEnd[0]) {segments.add(new Segment.Literal(template.substring(lastEnd[0], match.start())));}
         segments.add(new Segment.Generator(generator));
         lastEnd[0] = match.end();
     }
 
     private static void addTrailingLiteral(List<Segment> segments, String template, int lastEnd) {
-        if ( lastEnd < template.length()) {
-        segments.add(new Segment.Literal(template.substring(lastEnd)));}
+        if (lastEnd <template.length()) {segments.add(new Segment.Literal(template.substring(lastEnd)));}
     }
 
-    /// Processes the template, replacing all patterns with generated values.
-    ///
-    /// @return the processed string
     public String process() {
         return segments.isEmpty()
-               ? template
-               : renderSegments();
+              ? template
+              : renderSegments();
     }
 
     private String renderSegments() {
@@ -150,23 +144,19 @@ public final class TemplateProcessor {
                               .toString();
     }
 
-    /// Returns the original template string.
     public String template() {
         return template;
     }
 
-    /// Returns true if this template contains any patterns.
     public boolean hasPatterns() {
         return segments.stream().anyMatch(s -> s instanceof Segment.Generator);
     }
 
-    /// Returns the number of pattern generators in this template.
     public int patternCount() {
         return (int) segments.stream().filter(s -> s instanceof Segment.Generator)
                                     .count();
     }
 
-    /// Resets all sequence generators in this template.
     public Result<Unit> resetSequences() {
         var sequenceGenerators = segments.stream().filter(TemplateProcessor::isSequenceSegment)
                                                 .map(TemplateProcessor::toSequenceGenerator);

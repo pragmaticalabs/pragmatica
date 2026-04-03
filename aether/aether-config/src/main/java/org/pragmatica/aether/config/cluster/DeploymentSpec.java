@@ -4,6 +4,7 @@ import org.pragmatica.lang.Option;
 
 import java.util.Map;
 
+
 /// Deployment specification describing HOW to provision the cluster.
 ///
 /// @param type deployment provider type
@@ -14,15 +15,14 @@ import java.util.Map;
 /// @param tls TLS configuration
 /// @param nodes static node inventory (on-premises only)
 /// @param ssh SSH configuration for on-premises bootstrap
-public record DeploymentSpec( DeploymentType type,
-                              Map<String, String> instances,
-                              RuntimeConfig runtime,
-                              Map<String, String> zones,
-                              PortMapping ports,
-                              Option<TlsDeploymentConfig> tls,
-                              Option<Map<String, String>> nodes,
-                              Option<SshConfig> ssh) {
-    /// Factory method with all fields.
+public record DeploymentSpec(DeploymentType type,
+                             Map<String, String> instances,
+                             RuntimeConfig runtime,
+                             Map<String, String> zones,
+                             PortMapping ports,
+                             Option<TlsDeploymentConfig> tls,
+                             Option<Map<String, String>> nodes,
+                             Option<SshConfig> ssh) {
     public static DeploymentSpec deploymentSpec(DeploymentType type,
                                                 Map<String, String> instances,
                                                 RuntimeConfig runtime,
@@ -41,7 +41,6 @@ public record DeploymentSpec( DeploymentType type,
                                   ssh);
     }
 
-    /// Backward-compatible factory method without SSH config.
     public static DeploymentSpec deploymentSpec(DeploymentType type,
                                                 Map<String, String> instances,
                                                 RuntimeConfig runtime,

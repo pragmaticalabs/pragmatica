@@ -11,6 +11,7 @@ import org.pragmatica.serialization.Serializer;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
+
 /// StreamPublisher implementation backed by StreamPartitionManager.
 ///
 /// Routes events to partitions using either a @PartitionKey extractor
@@ -47,7 +48,6 @@ public final class StreamPublisherImpl<T> implements StreamPublisher<T> {
         this.consensusPath = consensusPath;
     }
 
-    /// Create a StreamPublisher for EVENTUAL consistency (Phase 1 default).
     public static <T> StreamPublisherImpl<T> streamPublisher(StreamPartitionManager partitionManager,
                                                              Serializer serializer,
                                                              String streamName,
@@ -62,7 +62,6 @@ public final class StreamPublisherImpl<T> implements StreamPublisher<T> {
                                          Option.none());
     }
 
-    /// Create a StreamPublisher with explicit consistency mode and optional consensus path.
     public static <T> StreamPublisherImpl<T> streamPublisher(StreamPartitionManager partitionManager,
                                                              Serializer serializer,
                                                              String streamName,
@@ -83,9 +82,10 @@ public final class StreamPublisherImpl<T> implements StreamPublisher<T> {
         var bytes = serializer.encode(event);
         var partition = resolvePartition(event);
         var timestamp = System.currentTimeMillis();
-        return switch (consistencyMode) {case EVENTUAL -> publishEventual(partition, bytes, timestamp);case STRONG -> publishStrong(partition,
-                                                                                                                                    bytes,
-                                                                                                                                    timestamp);};
+        return switch (consistencyMode){
+            case EVENTUAL -> publishEventual(partition, bytes, timestamp);
+            case STRONG -> publishStrong(partition, bytes, timestamp);
+        };
     }
 
     private Promise<Unit> publishEventual(int partition, byte[] bytes, long timestamp) {

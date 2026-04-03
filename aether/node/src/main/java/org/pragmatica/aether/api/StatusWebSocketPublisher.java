@@ -12,21 +12,21 @@ import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Scheduled publisher that broadcasts status JSON via WebSocket.
 /// Short-circuits when no clients are connected.
-@SuppressWarnings("JBCT-RET-01")
-public class StatusWebSocketPublisher {
+@SuppressWarnings("JBCT-RET-01") public class StatusWebSocketPublisher {
     private static final Logger log = LoggerFactory.getLogger(StatusWebSocketPublisher.class);
 
     private final StatusWebSocketHandler handler;
     private final Supplier<String> jsonSupplier;
     private final long intervalMs;
+
     private final AtomicReference<Option<ScheduledFuture<?>>> taskRef = new AtomicReference<>(Option.none());
+
     private final AtomicBoolean running = new AtomicBoolean(false);
 
-    private StatusWebSocketPublisher(StatusWebSocketHandler handler,
-                                     Supplier<String> jsonSupplier,
-                                     long intervalMs) {
+    private StatusWebSocketPublisher(StatusWebSocketHandler handler, Supplier<String> jsonSupplier, long intervalMs) {
         this.handler = handler;
         this.jsonSupplier = jsonSupplier;
         this.intervalMs = intervalMs;
@@ -44,30 +44,24 @@ public class StatusWebSocketPublisher {
     }
 
     public void start() {
-        if ( !running.compareAndSet(false, true)) {
-        return;}
+        if (!running.compareAndSet(false, true)) {return;}
         taskRef.set(Option.some(SharedScheduler.scheduleAtFixedRate(this::publish,
                                                                     TimeSpan.timeSpan(intervalMs).millis())));
         log.info("Status WebSocket publisher started ({}ms interval)", intervalMs);
     }
 
     public void stop() {
-        if ( !running.compareAndSet(true, false)) {
-        return;}
+        if (!running.compareAndSet(true, false)) {return;}
         taskRef.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
         log.info("Status WebSocket publisher stopped");
     }
 
     private void publish() {
-        if ( handler.connectedClients() == 0) {
-        return;}
+        if (handler.connectedClients() == 0) {return;}
         try {
             var json = jsonSupplier.get();
             handler.broadcast(json);
-        }
-
-
-        catch (Exception e) {
+        } catch (Exception e) {
             log.error("Error publishing status via WebSocket", e);
         }
     }

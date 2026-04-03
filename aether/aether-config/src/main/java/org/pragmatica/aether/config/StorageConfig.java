@@ -13,16 +13,15 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.aether.config;
-public record StorageConfig( long memoryMaxBytes,
-                             long diskMaxBytes,
-                             String diskPath,
-                             String snapshotPath,
-                             int snapshotMutationThreshold,
-                             String snapshotMaxInterval,
-                             int snapshotRetentionCount) {
-    /// Default storage instance config with generic paths.
+
+public record StorageConfig(long memoryMaxBytes,
+                            long diskMaxBytes,
+                            String diskPath,
+                            String snapshotPath,
+                            int snapshotMutationThreshold,
+                            String snapshotMaxInterval,
+                            int snapshotRetentionCount) {
     public static StorageConfig storageConfig() {
         return new StorageConfig(256 * 1024 * 1024,
                                  10L * 1024 * 1024 * 1024,
@@ -33,7 +32,6 @@ public record StorageConfig( long memoryMaxBytes,
                                  5);
     }
 
-    /// Full factory.
     public static StorageConfig storageConfig(long memoryMaxBytes,
                                               long diskMaxBytes,
                                               String diskPath,

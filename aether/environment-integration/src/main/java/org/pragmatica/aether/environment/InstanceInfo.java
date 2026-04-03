@@ -7,12 +7,13 @@ import java.util.Map;
 
 import static org.pragmatica.lang.Result.success;
 
+
 /// Information about a compute instance.
-public record InstanceInfo( InstanceId id,
-                            InstanceStatus status,
-                            List<String> addresses,
-                            InstanceType type,
-                            Map<String, String> tags) {
+public record InstanceInfo(InstanceId id,
+                           InstanceStatus status,
+                           List<String> addresses,
+                           InstanceType type,
+                           Map<String, String> tags) {
     public static Result<InstanceInfo> instanceInfo(InstanceId id,
                                                     InstanceStatus status,
                                                     List<String> addresses,

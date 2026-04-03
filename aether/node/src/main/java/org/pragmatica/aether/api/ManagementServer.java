@@ -73,6 +73,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// HTTP management API server for cluster administration.
 ///
 ///
@@ -90,10 +91,7 @@ import static org.pragmatica.lang.Unit.unit;
 /// Uses pragmatica-lite's HttpServer infrastructure.
 public interface ManagementServer {
     Promise<Unit> start();
-
     Promise<Unit> stop();
-
-    /// Rotate TLS certificate by restarting HTTP servers with the new bundle.
     Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle);
 
     static ManagementServer managementServer(int port,
@@ -135,9 +133,9 @@ public interface ManagementServer {
 
 class ManagementServerImpl implements ManagementServer {
     private static final Logger log = LoggerFactory.getLogger(ManagementServerImpl.class);
+
     private static final int MAX_CONTENT_LENGTH = 64 * 1024 * 1024;
 
-    // 64MB for artifact uploads
     private final int port;
     private final Supplier<AetherNode> nodeSupplier;
     private final AlertManager alertManager;
@@ -158,19 +156,15 @@ class ManagementServerImpl implements ManagementServer {
     private final Option<EventLoopGroup> workerGroup;
     private final WebSocketAuthenticator wsAuthenticator;
     private final HttpProtocol httpProtocol;
+
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
+
     private final AtomicReference<HttpServer> h3ServerRef = new AtomicReference<>();
 
     private final StaticFileHandler staticFileHandler;
-
-    // Route-based router (new pattern)
     private final ManagementRouter router;
-
-    // Status routes for probe endpoints (need direct access for status code control)
     private final StatusRoutes statusRoutes;
     private final JsonMapper probeJsonMapper;
-
-    // Legacy route handlers (old pattern - to be migrated)
     private final List<RouteHandler> legacyRoutes;
 
     ManagementServerImpl(int port,
@@ -216,7 +210,6 @@ class ManagementServerImpl implements ManagementServer {
         this.requestObserver = HttpRequestObserver.httpRequestObserver(observability);
         this.tls = tls;
         this.probeJsonMapper = JsonMapper.defaultJsonMapper();
-        // Route-based router for migrated routes — build route sources dynamically
         var routeSources = new ArrayList<RouteSource>();
         this.statusRoutes = StatusRoutes.statusRoutes(nodeSupplier,
                                                       () -> nodeSupplier.get().appHttpServer());
@@ -245,31 +238,31 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(StorageRoutes.storageRoutes(nodeSupplier));
         dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm, nodeSupplier)));
         this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));
-        // Legacy routes using RouteHandler for dynamic content types
         this.legacyRoutes = List.of(MavenProtocolRoutes.mavenProtocolRoutes(nodeSupplier));
     }
 
     @Override public Promise<Unit> start() {
         log.info("Starting management server on port {} (protocol: {})", port, httpProtocol);
-        if ( httpProtocol.includesH1()) {
-        return startH1Server().flatMap(_ -> httpProtocol.includesH3()
-                                           ? startH3Server()
-                                           : Promise.success(unit()));}
+        if (httpProtocol.includesH1()) {return startH1Server().flatMap(_ -> httpProtocol.includesH3()
+                                                                           ? startH3Server()
+                                                                           : Promise.success(unit()));}
         return startH3Server();
     }
 
     private Promise<Unit> startH1Server() {
         var serverConfig = buildServerConfig();
         java.util.function.BiConsumer<RequestContext, ResponseWriter> handler = httpProtocol == HttpProtocol.BOTH
-                                                                                ? this::handleRequestWithAltSvc
-                                                                                : this::handleRequest;
+                                                                               ? this::handleRequestWithAltSvc
+                                                                               : this::handleRequest;
         var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
                                                                                                 handler,
                                                                                                 bg,
                                                                                                 wg)))
         .or(HttpServer.httpServer(serverConfig, handler));
         return serverPromise.map(this::registerStartedH1Server)
-        .onFailure(cause -> log.error("Failed to start management server on port {}: {}", port, cause.message()));
+                                .onFailure(cause -> log.error("Failed to start management server on port {}: {}",
+                                                              port,
+                                                              cause.message()));
     }
 
     private Promise<Unit> startH3Server() {
@@ -281,14 +274,16 @@ class ManagementServerImpl implements ManagementServer {
 
     private Promise<Unit> startH3WithSslContext(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
         var serverConfig = HttpServerConfig.httpServerConfig("management-h3", port)
-        .withMaxContentLength(MAX_CONTENT_LENGTH);
+                                                            .withMaxContentLength(MAX_CONTENT_LENGTH);
         var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
                                                                          quicSslContext,
                                                                          this::handleRequest,
                                                                          wg))
         .or(HttpServer.http3Server(serverConfig, quicSslContext, this::handleRequest));
         return serverPromise.map(this::registerStartedH3Server)
-        .onFailure(cause -> log.error("Failed to start management HTTP/3 server on port {}: {}", port, cause.message()));
+                                .onFailure(cause -> log.error("Failed to start management HTTP/3 server on port {}: {}",
+                                                              port,
+                                                              cause.message()));
     }
 
     private HttpServerConfig buildServerConfig() {
@@ -325,10 +320,10 @@ class ManagementServerImpl implements ManagementServer {
         statusWsPublisher.stop();
         eventWsPublisher.stop();
         var h1Stop = Option.option(serverRef.get()).map(server -> server.stop()
-        .onSuccessRun(() -> log.info("Management HTTP/1.1 server stopped")))
+                                                                             .onSuccessRun(() -> log.info("Management HTTP/1.1 server stopped")))
                                   .or(Promise.success(unit()));
         var h3Stop = Option.option(h3ServerRef.get()).map(server -> server.stop()
-        .onSuccessRun(() -> log.info("Management HTTP/3 server stopped")))
+                                                                               .onSuccessRun(() -> log.info("Management HTTP/3 server stopped")))
                                   .or(Promise.success(unit()));
         return h1Stop.flatMap(_ -> h3Stop);
     }
@@ -346,14 +341,12 @@ class ManagementServerImpl implements ManagementServer {
         return h1Stop.flatMap(_ -> h3Stop);
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Lifecycle: rebuild TLS config from bundle and restart servers
-    private Promise<Unit> restartWithNewBundle(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
+    @SuppressWarnings("JBCT-PAT-01") private Promise<Unit> restartWithNewBundle(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
         var newTlsConfig = buildTlsFromBundle(newBundle);
         var protocol = httpProtocol;
-        if ( protocol.includesH1()) {
-        return restartH1WithTls(newTlsConfig).flatMap(_ -> protocol.includesH3()
-                                                          ? restartH3WithBundle(newBundle)
-                                                          : Promise.success(unit()));}
+        if (protocol.includesH1()) {return restartH1WithTls(newTlsConfig).flatMap(_ -> protocol.includesH3()
+                                                                                      ? restartH3WithBundle(newBundle)
+                                                                                      : Promise.success(unit()));}
         return restartH3WithBundle(newBundle);
     }
 
@@ -368,8 +361,8 @@ class ManagementServerImpl implements ManagementServer {
                                                       .withWebSocket(eventWsEndpoint);
         var serverConfig = newTls.map(config::withTls).or(config);
         java.util.function.BiConsumer<RequestContext, ResponseWriter> handler = httpProtocol == HttpProtocol.BOTH
-                                                                                ? this::handleRequestWithAltSvc
-                                                                                : this::handleRequest;
+                                                                               ? this::handleRequestWithAltSvc
+                                                                               : this::handleRequest;
         var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
                                                                                                 handler,
                                                                                                 bg,
@@ -399,8 +392,8 @@ class ManagementServerImpl implements ManagementServer {
         eventWsPublisher.start();
         observability.registerTransportMetrics(() -> nodeSupplier.get().transportMetrics());
         var transport = tls.isPresent()
-                        ? "HTTPS"
-                        : "HTTP";
+                       ? "HTTPS"
+                       : "HTTP";
         log.info("{} management server started on port {} (protocol: {}, dashboard at /)", transport, port, httpProtocol);
     }
 
@@ -408,8 +401,7 @@ class ManagementServerImpl implements ManagementServer {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Sequencer: gathers node data, delegates to focused helpers
-    private static String buildStatusJson(Supplier<AetherNode> nodeSupplier) {
+    @SuppressWarnings("JBCT-PAT-01") private static String buildStatusJson(Supplier<AetherNode> nodeSupplier) {
         var node = nodeSupplier.get();
         var leaderId = node.leader().map(leader -> leader.id())
                                   .or("");
@@ -424,15 +416,13 @@ class ManagementServerImpl implements ManagementServer {
         return sb.toString();
     }
 
-    /// Iteration: appends the `nodeMetrics` JSON array from collected metrics.
-    @SuppressWarnings("JBCT-PAT-01")
-    private static void appendNodeMetrics(StringBuilder sb,
-                                          Map<NodeId, Map<String, Double>> allMetrics,
-                                          String leaderId) {
+    @SuppressWarnings("JBCT-PAT-01") private static void appendNodeMetrics(StringBuilder sb,
+                                                                           Map<NodeId, Map<String, Double>> allMetrics,
+                                                                           String leaderId) {
         sb.append(",\"nodeMetrics\":[");
         boolean first = true;
-        for ( var entry : allMetrics.entrySet()) {
-            if ( !first) sb.append(",");
+        for (var entry : allMetrics.entrySet()) {
+            if (!first) sb.append(",");
             appendSingleNodeMetric(sb,
                                    entry.getKey().id(),
                                    entry.getValue(),
@@ -442,7 +432,6 @@ class ManagementServerImpl implements ManagementServer {
         sb.append("]");
     }
 
-    /// Leaf: appends a single node metric JSON object.
     private static void appendSingleNodeMetric(StringBuilder sb,
                                                String nodeId,
                                                Map<String, Double> metrics,
@@ -459,22 +448,19 @@ class ManagementServerImpl implements ManagementServer {
         sb.append("}");
     }
 
-    /// Iteration: appends the `slices` JSON array from deployment info.
-    @SuppressWarnings("JBCT-PAT-01")
-    private static void appendSlices(StringBuilder sb, List<SliceDeploymentInfo> deployments) {
+    @SuppressWarnings("JBCT-PAT-01") private static void appendSlices(StringBuilder sb,
+                                                                      List<SliceDeploymentInfo> deployments) {
         sb.append(",\"slices\":[");
         boolean first = true;
-        for ( var info : deployments) {
-            if ( !first) sb.append(",");
+        for (var info : deployments) {
+            if (!first) sb.append(",");
             appendSingleSlice(sb, info);
             first = false;
         }
         sb.append("]");
     }
 
-    /// Sequencer: appends a single slice JSON object with its nested instances array.
-    @SuppressWarnings("JBCT-PAT-01")
-    private static void appendSingleSlice(StringBuilder sb, SliceDeploymentInfo info) {
+    @SuppressWarnings("JBCT-PAT-01") private static void appendSingleSlice(StringBuilder sb, SliceDeploymentInfo info) {
         sb.append("{\"artifact\":\"").append(escapeJson(info.artifact()))
                  .append("\"");
         sb.append(",\"state\":\"").append(info.aggregateState().name())
@@ -483,13 +469,12 @@ class ManagementServerImpl implements ManagementServer {
         sb.append("}");
     }
 
-    /// Iteration: appends the `instances` JSON array for a slice.
-    @SuppressWarnings("JBCT-PAT-01")
-    private static void appendSliceInstances(StringBuilder sb, List<SliceInstanceInfo> instances) {
+    @SuppressWarnings("JBCT-PAT-01") private static void appendSliceInstances(StringBuilder sb,
+                                                                              List<SliceInstanceInfo> instances) {
         sb.append(",\"instances\":[");
         boolean first = true;
-        for ( var inst : instances) {
-            if ( !first) sb.append(",");
+        for (var inst : instances) {
+            if (!first) sb.append(",");
             sb.append("{\"nodeId\":\"").append(escapeJson(inst.nodeId()))
                      .append("\"");
             sb.append(",\"state\":\"").append(inst.state().name())
@@ -499,15 +484,13 @@ class ManagementServerImpl implements ManagementServer {
         sb.append("]");
     }
 
-    /// Sequencer: appends the `cluster` JSON object with nodes array and leader info.
-    @SuppressWarnings("JBCT-PAT-01")
-    private static void appendClusterInfo(StringBuilder sb,
-                                          Map<NodeId, Map<String, Double>> allMetrics,
-                                          String leaderId) {
+    @SuppressWarnings("JBCT-PAT-01") private static void appendClusterInfo(StringBuilder sb,
+                                                                           Map<NodeId, Map<String, Double>> allMetrics,
+                                                                           String leaderId) {
         sb.append(",\"cluster\":{\"nodes\":[");
         boolean first = true;
-        for ( var entry : allMetrics.entrySet()) {
-            if ( !first) sb.append(",");
+        for (var entry : allMetrics.entrySet()) {
+            if (!first) sb.append(",");
             var nodeId = entry.getKey().id();
             sb.append("{\"id\":\"").append(escapeJson(nodeId))
                      .append("\"");
@@ -521,13 +504,12 @@ class ManagementServerImpl implements ManagementServer {
         sb.append("}");
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    static String buildEventsJson(List<ClusterEvent> events) {
+    @SuppressWarnings("JBCT-PAT-01") static String buildEventsJson(List<ClusterEvent> events) {
         var sb = new StringBuilder(256);
         sb.append("[");
         var first = true;
-        for ( var event : events) {
-            if ( !first) sb.append(",");
+        for (var event : events) {
+            if (!first) sb.append(",");
             appendEventJson(sb, event);
             first = false;
         }
@@ -535,8 +517,7 @@ class ManagementServerImpl implements ManagementServer {
         return sb.toString();
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    private static void appendEventJson(StringBuilder sb, ClusterEvent event) {
+    @SuppressWarnings("JBCT-PAT-01") private static void appendEventJson(StringBuilder sb, ClusterEvent event) {
         sb.append("{\"timestamp\":\"").append(event.timestamp())
                  .append("\"");
         sb.append(",\"type\":\"").append(event.type().name())
@@ -547,8 +528,8 @@ class ManagementServerImpl implements ManagementServer {
                  .append("\"");
         sb.append(",\"details\":{");
         var firstDetail = true;
-        for ( var entry : event.details().entrySet()) {
-            if ( !firstDetail) sb.append(",");
+        for (var entry : event.details().entrySet()) {
+            if (!firstDetail) sb.append(",");
             sb.append("\"").append(escapeJson(entry.getKey()))
                      .append("\":\"")
                      .append(escapeJson(entry.getValue()))
@@ -558,36 +539,29 @@ class ManagementServerImpl implements ManagementServer {
         sb.append("}}");
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // HTTP dispatcher: inherently mixes condition checks and iteration over legacy routes
-    private void handleRequest(RequestContext ctx, ResponseWriter response) {
+    @SuppressWarnings("JBCT-PAT-01") private void handleRequest(RequestContext ctx, ResponseWriter response) {
         var startTime = System.nanoTime();
         var path = ctx.path();
         var method = ctx.method();
         var methodName = method.name();
         log.debug("Received {} {}", method, path);
         var instrumented = InstrumentedResponseWriter.instrumentedResponseWriter(response);
-        // Probe endpoints — handled before router for HTTP status code control
-        if ( handleProbeRequest(path, instrumented)) {
+        if (handleProbeRequest(path, instrumented)) {
             recordRequestMetrics(methodName, path, instrumented, startTime);
             return;
         }
-        // Security check — probes already bypassed
-        if ( securityEnabled && !validateManagementSecurity(ctx, instrumented, path, method)) {
+        if (securityEnabled && !validateManagementSecurity(ctx, instrumented, path, method)) {
             recordRequestMetrics(methodName, path, instrumented, startTime);
             return;
         }
-        // Try route-based routing first
-        if ( router.handle(ctx, instrumented)) {
+        if (router.handle(ctx, instrumented)) {
             recordRequestMetrics(methodName, path, instrumented, startTime);
             return;
         }
-        // Fall back to legacy route handlers
-        for ( var handler : legacyRoutes) {
-        if ( handler.handle(ctx, instrumented)) {
+        for (var handler : legacyRoutes) {if (handler.handle(ctx, instrumented)) {
             recordRequestMetrics(methodName, path, instrumented, startTime);
             return;
         }}
-        // No route matched — fall back to static dashboard files
         staticFileHandler.handle(ctx, instrumented);
         recordRequestMetrics(methodName, path, instrumented, startTime);
     }
@@ -597,17 +571,16 @@ class ManagementServerImpl implements ManagementServer {
         requestObserver.recordRequest(method, path, writer.statusCategory(), durationNanos);
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    private boolean handleProbeRequest(String path, ResponseWriter response) {
-        if ( "/health/live".equals(path)) {
+    @SuppressWarnings("JBCT-PAT-01") private boolean handleProbeRequest(String path, ResponseWriter response) {
+        if ("/health/live".equals(path)) {
             writeProbeJson(response, statusRoutes.buildLivenessResponse(), HttpStatus.OK);
             return true;
         }
-        if ( "/health/ready".equals(path)) {
+        if ("/health/ready".equals(path)) {
             var readiness = statusRoutes.buildReadinessResponse();
             var httpStatus = "UP".equals(readiness.status())
-                             ? HttpStatus.OK
-                             : HttpStatus.SERVICE_UNAVAILABLE;
+                            ? HttpStatus.OK
+                            : HttpStatus.SERVICE_UNAVAILABLE;
             writeProbeJson(response, readiness, httpStatus);
             return true;
         }
@@ -620,11 +593,10 @@ class ManagementServerImpl implements ManagementServer {
                                                                         cause.message()));
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    private boolean validateManagementSecurity(RequestContext ctx,
-                                               ResponseWriter response,
-                                               String path,
-                                               HttpMethod method) {
+    @SuppressWarnings("JBCT-PAT-01") private boolean validateManagementSecurity(RequestContext ctx,
+                                                                                ResponseWriter response,
+                                                                                String path,
+                                                                                HttpMethod method) {
         var httpContext = toManagementRequestContext(ctx, path);
         var policy = SecurityPolicy.apiKeyRequired();
         var methodName = method.name();
@@ -653,21 +625,25 @@ class ManagementServerImpl implements ManagementServer {
                                    String path,
                                    RoutePermission permission) {
         var principal = sc.isAuthenticated()
-                        ? sc.principal().value()
-                        : "anonymous";
+                       ? sc.principal().value()
+                       : "anonymous";
         var actualRole = sc.authorizationRole().name();
         var requiredRole = permission.minimumRole().name();
         AuditLog.accessDenied(principal, method, path, actualRole, requiredRole);
         nodeSupplier.get()
-        .route(OperationalEvent.AccessDenied.accessDenied(principal, method, path, actualRole, requiredRole));
+                        .route(OperationalEvent.AccessDenied.accessDenied(principal,
+                                                                          method,
+                                                                          path,
+                                                                          actualRole,
+                                                                          requiredRole));
     }
 
     private static void logManagementAccess(org.pragmatica.aether.http.handler.security.SecurityContext securityContext,
                                             String method,
                                             String path) {
         var principal = securityContext.isAuthenticated()
-                        ? securityContext.principal().value()
-                        : "anonymous";
+                       ? securityContext.principal().value()
+                       : "anonymous";
         AuditLog.managementAccess("mgmt", principal, method, path);
     }
 
@@ -680,28 +656,43 @@ class ManagementServerImpl implements ManagementServer {
                                                      "mgmt");
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    private void handleManagementSecurityFailure(ResponseWriter response, Cause cause, String path, String method) {
+    @SuppressWarnings("JBCT-PAT-01") private void handleManagementSecurityFailure(ResponseWriter response,
+                                                                                  Cause cause,
+                                                                                  String path,
+                                                                                  String method) {
         AuditLog.authFailure("mgmt", cause.message(), method, path);
         var status = resolveSecurityErrorStatus(cause);
         requestObserver.recordSecurityDenial(classifyDenialType(cause), method, path);
-        if ( status == HttpStatus.UNAUTHORIZED) {
-        response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"").error(status, cause.message());} else
-        {
-        response.error(status, cause.message());}
+        if (status == HttpStatus.UNAUTHORIZED) {response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"")
+                                                               .error(status,
+                                                                      cause.message());} else {response.error(status,
+                                                                                                              cause.message());}
     }
 
     private static String classifyDenialType(Cause cause) {
-        return switch (cause) {case SecurityError.MissingCredentials _ -> "auth_failure";case SecurityError.InvalidCredentials _ -> "auth_failure";case SecurityError.AccessDenied _ -> "insufficient_role";case RoleEnforcer.AuthorizationError.AccessDenied _ -> "insufficient_role";default -> "auth_failure";};
+        return switch (cause){
+            case SecurityError.MissingCredentials _ -> "auth_failure";
+            case SecurityError.InvalidCredentials _ -> "auth_failure";
+            case SecurityError.AccessDenied _ -> "insufficient_role";
+            case RoleEnforcer.AuthorizationError.AccessDenied _ -> "insufficient_role";
+            default -> "auth_failure";
+        };
     }
 
     private static HttpStatus resolveSecurityErrorStatus(Cause cause) {
-        return switch (cause) {case SecurityError.MissingCredentials _ -> HttpStatus.UNAUTHORIZED;case SecurityError.InvalidCredentials _ -> HttpStatus.FORBIDDEN;case SecurityError.AccessDenied _ -> HttpStatus.FORBIDDEN;case RoleEnforcer.AuthorizationError.AccessDenied _ -> HttpStatus.FORBIDDEN;default -> HttpStatus.UNAUTHORIZED;};
+        return switch (cause){
+            case SecurityError.MissingCredentials _ -> HttpStatus.UNAUTHORIZED;
+            case SecurityError.InvalidCredentials _ -> HttpStatus.FORBIDDEN;
+            case SecurityError.AccessDenied _ -> HttpStatus.FORBIDDEN;
+            case RoleEnforcer.AuthorizationError.AccessDenied _ -> HttpStatus.FORBIDDEN;
+            default -> HttpStatus.UNAUTHORIZED;
+        };
     }
 }
 
 /// Response writer wrapper that captures the HTTP status code for metrics recording.
-@SuppressWarnings("JBCT-RET-01") // Implements ResponseWriter interface which uses void returns
+@SuppressWarnings("JBCT-RET-01")
+// Implements ResponseWriter interface which uses void returns
 final class InstrumentedResponseWriter implements ResponseWriter {
     private final ResponseWriter delegate;
     private int statusCode;
@@ -726,12 +717,9 @@ final class InstrumentedResponseWriter implements ResponseWriter {
         return this;
     }
 
-    /// Returns the status category: "2xx", "4xx", or "5xx".
     String statusCategory() {
-        if ( statusCode >= 500) {
-        return "5xx";}
-        if ( statusCode >= 400) {
-        return "4xx";}
+        if (statusCode >= 500) {return "5xx";}
+        if (statusCode >= 400) {return "4xx";}
         return "2xx";
     }
 }

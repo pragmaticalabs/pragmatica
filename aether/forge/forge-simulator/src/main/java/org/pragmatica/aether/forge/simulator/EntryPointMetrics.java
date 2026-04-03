@@ -16,15 +16,16 @@ import java.util.stream.IntStream;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
 
+
 /// Collects per-entry-point metrics for the simulator.
 ///
 /// Provides thread-safe metrics collection with histogram-based latency tracking.
 /// Designed for high-throughput concurrent access.
 public final class EntryPointMetrics {
-    /// Histogram bucket boundaries in milliseconds.
     private static final long[] BUCKET_BOUNDARIES_MS = {1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000};
 
     private final Map<String, EntryPointStats> stats = new ConcurrentHashMap<>();
+
     private final AtomicLong lastSnapshotTime = new AtomicLong(System.currentTimeMillis());
 
     private EntryPointMetrics() {}
@@ -33,25 +34,21 @@ public final class EntryPointMetrics {
         return new EntryPointMetrics();
     }
 
-    /// Record a successful invocation.
     public Result<Unit> recordSuccess(String entryPoint, long latencyNanos) {
         getOrCreate(entryPoint).recordSuccess(latencyNanos);
         return unitResult();
     }
 
-    /// Record a failed invocation.
     public Result<Unit> recordFailure(String entryPoint, long latencyNanos) {
         getOrCreate(entryPoint).recordFailure(latencyNanos);
         return unitResult();
     }
 
-    /// Set the current rate for an entry point.
     public Result<Unit> setRate(String entryPoint, int callsPerSecond) {
         getOrCreate(entryPoint).currentRate.set(callsPerSecond);
         return unitResult();
     }
 
-    /// Take a snapshot of all entry points and reset counters.
     public List<EntryPointSnapshot> snapshotAndReset() {
         var now = System.currentTimeMillis();
         var previousTime = lastSnapshotTime.getAndSet(now);
@@ -61,7 +58,6 @@ public final class EntryPointMetrics {
         return result;
     }
 
-    /// Take a snapshot without resetting.
     public List<EntryPointSnapshot> snapshot() {
         var now = System.currentTimeMillis();
         var elapsedMs = now - lastSnapshotTime.get();
@@ -70,7 +66,6 @@ public final class EntryPointMetrics {
         return result;
     }
 
-    /// Reset all metrics.
     public Result<Unit> reset() {
         stats.values().forEach(EntryPointStats::reset);
         lastSnapshotTime.set(System.currentTimeMillis());
@@ -82,7 +77,6 @@ public final class EntryPointMetrics {
                                      _ -> EntryPointStats.entryPointStats().unwrap());
     }
 
-    /// Per-entry-point statistics.
     private record EntryPointStats(AtomicLong totalCount,
                                    AtomicLong successCount,
                                    AtomicLong failureCount,
@@ -174,26 +168,22 @@ public final class EntryPointMetrics {
         }
 
         private double calculateSuccessRate(long total) {
-            if ( Verify.Is.nonPositive(total)) {
-            return 100.0;}
+            if (Verify.Is.nonPositive(total)) {return 100.0;}
             return successCount.get() * 100.0 / total;
         }
 
         private double calculateAvgLatency(long windowCnt) {
-            if ( Verify.Is.nonPositive(windowCnt)) {
-            return 0.0;}
+            if (Verify.Is.nonPositive(windowCnt)) {return 0.0;}
             return (windowLatencyNanos.get() / windowCnt) / 1_000_000.0;
         }
 
         private static double calculateRps(long windowCnt, long elapsedMs) {
-            if ( Verify.Is.nonPositive(elapsedMs)) {
-            return 0.0;}
+            if (Verify.Is.nonPositive(elapsedMs)) {return 0.0;}
             return windowCnt * 1000.0 / elapsedMs;
         }
 
         private double estimatePercentile(int percentile, long total) {
-            if ( total == 0) {
-            return 0.0;}
+            if (total == 0) {return 0.0;}
             var targetCount = (long)(total * percentile / 100.0);
             return findBucketForPercentile(targetCount);
         }
@@ -203,14 +193,14 @@ public final class EntryPointMetrics {
             var matchingBucket = IntStream.range(0, histogram.length).filter(i -> cumulative.addAndGet(histogram[i].get()) >= targetCount)
                                                 .findFirst();
             return matchingBucket.isPresent()
-                   ? bucketBoundary(matchingBucket.getAsInt())
-                   : 10000.0;
+                  ? bucketBoundary(matchingBucket.getAsInt())
+                  : 10000.0;
         }
 
         private static double bucketBoundary(int bucketIndex) {
-            return bucketIndex < BUCKET_BOUNDARIES_MS.length
-                   ? BUCKET_BOUNDARIES_MS[bucketIndex]
-                   : 10000.0;
+            return bucketIndex <BUCKET_BOUNDARIES_MS.length
+                  ? BUCKET_BOUNDARIES_MS[bucketIndex]
+                  : 10000.0;
         }
 
         void reset() {
@@ -224,14 +214,12 @@ public final class EntryPointMetrics {
         }
     }
 
-    /// Intermediate rates for snapshot calculation.
     private record SnapshotRates(double successRate, double avgLatencyMs, double rps) {
         static Result<SnapshotRates> snapshotRates(double successRate, double avgLatencyMs, double rps) {
             return success(new SnapshotRates(successRate, avgLatencyMs, rps));
         }
     }
 
-    /// Snapshot of entry point metrics.
     public record EntryPointSnapshot(String name,
                                      int rate,
                                      long totalCalls,

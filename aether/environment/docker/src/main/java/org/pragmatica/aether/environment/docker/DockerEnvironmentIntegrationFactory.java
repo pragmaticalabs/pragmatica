@@ -8,6 +8,7 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.aether.environment.docker.DockerConfig.dockerConfig;
 import static org.pragmatica.aether.environment.docker.DockerEnvironmentIntegration.dockerEnvironmentIntegration;
 
+
 /// ServiceLoader factory for creating DockerEnvironmentIntegration from generic CloudConfig.
 public record DockerEnvironmentIntegrationFactory() implements EnvironmentIntegrationFactory {
     @Override public String providerName() {
@@ -19,7 +20,6 @@ public record DockerEnvironmentIntegrationFactory() implements EnvironmentIntegr
                                 .map(EnvironmentIntegration.class::cast);
     }
 
-    // --- Leaf: assemble DockerConfig from generic cloud config maps ---
     private static Result<DockerConfig> buildDockerConfig(CloudConfig config) {
         var compute = config.compute();
         return dockerConfig(compute.getOrDefault("image_name", "aether-node:local"),
@@ -30,10 +30,8 @@ public record DockerEnvironmentIntegrationFactory() implements EnvironmentIntegr
                             compute.getOrDefault("socket_path", "/var/run/docker.sock"));
     }
 
-    // --- Leaf: parse integer with fallback default ---
     private static int parseIntOrDefault(String value, int defaultValue) {
-        if ( value.isEmpty()) {
-        return defaultValue;}
+        if (value.isEmpty()) {return defaultValue;}
         return Result.lift(() -> Integer.parseInt(value)).or(defaultValue);
     }
 }

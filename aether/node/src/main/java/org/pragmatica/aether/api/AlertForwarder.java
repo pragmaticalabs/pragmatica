@@ -17,6 +17,7 @@ import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Forwards alerts to external webhook endpoints.
 ///
 ///
@@ -26,8 +27,7 @@ import org.slf4j.LoggerFactory;
 ///   - Configurable retries
 ///   - Configurable timeout
 ///
-@SuppressWarnings("JBCT-RET-01")
-public class AlertForwarder {
+@SuppressWarnings("JBCT-RET-01") public class AlertForwarder {
     private static final Logger log = LoggerFactory.getLogger(AlertForwarder.class);
 
     private final WebhookConfig config;
@@ -37,30 +37,24 @@ public class AlertForwarder {
     private AlertForwarder(AlertConfig alertConfig) {
         this.config = alertConfig.webhook();
         this.enabled = alertConfig.enabled() && config.enabled();
-        if ( enabled && !config.urls().isEmpty()) {
+        if (enabled && !config.urls().isEmpty()) {
             this.httpOps = Option.some(JdkHttpOperations.jdkHttpOperations(Duration.ofMillis(config.timeout().millis()),
                                                                            java.net.http.HttpClient.Redirect.NORMAL,
                                                                            Option.none()));
             log.info("AlertForwarder initialized with {} webhook URLs",
                      config.urls().size());
-        } else
-
-
-        {
+        } else {
             this.httpOps = Option.none();
             log.info("AlertForwarder disabled");
         }
     }
 
-    /// Factory method following JBCT naming convention.
     public static AlertForwarder alertForwarder(AlertConfig config) {
         return new AlertForwarder(config);
     }
 
-    /// Forward an alert to all configured webhooks.
     public Promise<Unit> forward(AlertEvent event) {
-        if ( !enabled || httpOps.isEmpty()) {
-        return Promise.success(Unit.unit());}
+        if (!enabled || httpOps.isEmpty()) {return Promise.success(Unit.unit());}
         var payload = toJson(event);
         log.debug("Forwarding alert to {} webhooks: {}",
                   config.urls().size(),
@@ -71,12 +65,10 @@ public class AlertForwarder {
         .map(_ -> Unit.unit());
     }
 
-    /// Handle slice failure alert event via MessageRouter.
     @MessageReceiver public void onSliceFailureAlert(AlertEvent.SliceFailureAlert alert) {
         forward(alert).onFailure(cause -> log.error("Failed to forward slice failure alert: {}", cause.message()));
     }
 
-    /// Handle threshold alert event via MessageRouter.
     @MessageReceiver public void onThresholdAlert(AlertEvent.ThresholdAlert alert) {
         forward(alert).onFailure(cause -> log.error("Failed to forward threshold alert: {}", cause.message()));
     }
@@ -87,8 +79,7 @@ public class AlertForwarder {
     }
 
     private Promise<Unit> sendWithRetry(HttpOperations ops, String url, String payload, int attempt) {
-        return doSend(ops, url, payload)
-        .flatMap(statusCode -> handleStatusCode(ops, url, payload, attempt, statusCode));
+        return doSend(ops, url, payload).flatMap(statusCode -> handleStatusCode(ops, url, payload, attempt, statusCode));
     }
 
     private Promise<Integer> doSend(HttpOperations ops, String url, String payload) {
@@ -105,7 +96,7 @@ public class AlertForwarder {
                                            String payload,
                                            int attempt,
                                            int statusCode) {
-        if ( statusCode >= 200 && statusCode < 300) {
+        if (statusCode >= 200 && statusCode <300) {
             log.debug("Alert forwarded to {}", url);
             return Promise.success(Unit.unit());
         }
@@ -114,7 +105,7 @@ public class AlertForwarder {
     }
 
     private Promise<Unit> retryOrFail(HttpOperations ops, String url, String payload, int attempt, String error) {
-        if ( attempt < config.retryCount()) {
+        if (attempt <config.retryCount()) {
             log.debug("Retrying webhook {} (attempt {}/{})", url, attempt + 1, config.retryCount());
             return sendWithRetry(ops, url, payload, attempt + 1);
         }
@@ -131,7 +122,7 @@ public class AlertForwarder {
                  .append(",");
         sb.append("\"severity\":\"").append(event.severity())
                  .append("\",");
-        switch ( event) {
+        switch (event){
             case AlertEvent.SliceFailureAlert sfa -> appendSliceFailureFields(sb, sfa);
             case AlertEvent.ThresholdAlert ta -> appendThresholdFields(sb, ta);
             case AlertEvent.AlertResolved ar -> appendResolvedFields(sb, ar);
@@ -150,8 +141,8 @@ public class AlertForwarder {
                  .append("\",");
         sb.append("\"attemptedNodes\":[");
         var first = true;
-        for ( var nodeId : sfa.attemptedNodes()) {
-            if ( !first) sb.append(",");
+        for (var nodeId : sfa.attemptedNodes()) {
+            if (!first) sb.append(",");
             sb.append("\"").append(nodeId.id())
                      .append("\"");
             first = false;
@@ -186,14 +177,11 @@ public class AlertForwarder {
                             .or("");
     }
 
-    /// Shutdown the forwarder.
     public void shutdown() {
         log.info("AlertForwarder shutdown");
     }
 
-    /// Error hierarchy for AlertForwarder failures.
     public sealed interface AlertForwarderError extends Cause {
-        /// Error for webhook failures.
         record WebhookError(String url, String error) implements AlertForwarderError {
             public static WebhookError webhookError(String url, String error) {
                 return new WebhookError(url, error);

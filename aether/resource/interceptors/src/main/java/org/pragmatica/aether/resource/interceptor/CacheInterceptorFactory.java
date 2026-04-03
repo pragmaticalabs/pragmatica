@@ -14,6 +14,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import static org.pragmatica.lang.Result.success;
 
+
 /// Factory that provisions {@link CacheMethodInterceptor} instances from configuration.
 ///
 /// Shared cache instances: configurations with the same {@link CacheConfig#cacheName()}
@@ -33,9 +34,8 @@ public final class CacheInterceptorFactory implements ResourceFactory<CacheMetho
         return provision(config, ProvisioningContext.provisioningContext());
     }
 
-    @Override
-    @SuppressWarnings("unchecked")
-    public Promise<CacheMethodInterceptor> provision(CacheConfig config, ProvisioningContext context) {
+    @Override@SuppressWarnings("unchecked") public Promise<CacheMethodInterceptor> provision(CacheConfig config,
+                                                                                             ProvisioningContext context) {
         var keyExtractor = (Fn1<Object, ?>) context.keyExtractor().or(Fn1.id());
         return createCache(config, context).map(cache -> cacheRegistry.computeIfAbsent(config.cacheName(),
                                                                                        _ -> cache))
@@ -46,10 +46,11 @@ public final class CacheInterceptorFactory implements ResourceFactory<CacheMetho
     }
 
     private Result<? extends CacheBackend> createCache(CacheConfig config, ProvisioningContext context) {
-        return switch (config.mode()) {case LOCAL -> success(createInMemory(config));case DISTRIBUTED -> createDHTBackend(config,
-                                                                                                                          context);case TIERED -> createDHTBackend(config,
-                                                                                                                                                                   context).map(dhtCache -> createTiered(config,
-                                                                                                                                                                                                         dhtCache));};
+        return switch (config.mode()){
+            case LOCAL -> success(createInMemory(config));
+            case DISTRIBUTED -> createDHTBackend(config, context);
+            case TIERED -> createDHTBackend(config, context).map(dhtCache -> createTiered(config, dhtCache));
+        };
     }
 
     private static TieredCache createTiered(CacheConfig config, CacheBackend dhtCache) {

@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.aether.environment;
 
 import org.pragmatica.lang.Result;
@@ -23,15 +22,16 @@ import java.util.Map;
 
 import static org.pragmatica.lang.Result.success;
 
+
 /// Generic cloud provider configuration parsed from the [cloud] TOML section.
 /// Uses string maps so the config layer doesn't depend on provider-specific types.
 /// Each EnvironmentIntegrationFactory knows how to interpret these maps.
-public record CloudConfig( String provider,
-                           Map<String, String> credentials,
-                           Map<String, String> compute,
-                           Map<String, String> loadBalancer,
-                           Map<String, String> discovery,
-                           Map<String, String> secrets) {
+public record CloudConfig(String provider,
+                          Map<String, String> credentials,
+                          Map<String, String> compute,
+                          Map<String, String> loadBalancer,
+                          Map<String, String> discovery,
+                          Map<String, String> secrets) {
     public static Result<CloudConfig> cloudConfig(String provider,
                                                   Map<String, String> credentials,
                                                   Map<String, String> compute) {
@@ -43,18 +43,15 @@ public record CloudConfig( String provider,
                                        Map.of()));
     }
 
-    @SuppressWarnings("JBCT-VO-02")
-    public CloudConfig withLoadBalancer(Map<String, String> loadBalancer) {
+    @SuppressWarnings("JBCT-VO-02") public CloudConfig withLoadBalancer(Map<String, String> loadBalancer) {
         return new CloudConfig(provider, credentials, compute, Map.copyOf(loadBalancer), discovery, secrets);
     }
 
-    @SuppressWarnings("JBCT-VO-02")
-    public CloudConfig withDiscovery(Map<String, String> discovery) {
+    @SuppressWarnings("JBCT-VO-02") public CloudConfig withDiscovery(Map<String, String> discovery) {
         return new CloudConfig(provider, credentials, compute, loadBalancer, Map.copyOf(discovery), secrets);
     }
 
-    @SuppressWarnings("JBCT-VO-02")
-    public CloudConfig withSecrets(Map<String, String> secrets) {
+    @SuppressWarnings("JBCT-VO-02") public CloudConfig withSecrets(Map<String, String> secrets) {
         return new CloudConfig(provider, credentials, compute, loadBalancer, discovery, Map.copyOf(secrets));
     }
 }

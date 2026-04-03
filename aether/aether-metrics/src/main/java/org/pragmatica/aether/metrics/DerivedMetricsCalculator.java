@@ -10,17 +10,18 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.pragmatica.lang.Result.unitResult;
 
+
 /// Calculates derived metrics from raw comprehensive snapshots.
 ///
 /// Uses a sliding window of recent samples to compute rates, percentiles, and trends.
 public final class DerivedMetricsCalculator {
     private static final int DEFAULT_WINDOW_SIZE = 60;
 
-    // 60 samples = 1 minute at 1/sec
     private static final long EVENT_LOOP_THRESHOLD_NS = EventLoopMetrics.DEFAULT_HEALTH_THRESHOLD_NS;
 
     private final RingBuffer<ComprehensiveSnapshot> samples;
     private final int windowSize;
+
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
 
     private DerivedMetrics current = DerivedMetrics.EMPTY;
@@ -38,7 +39,6 @@ public final class DerivedMetricsCalculator {
         return new DerivedMetricsCalculator(windowSize);
     }
 
-    /// Add a sample and recalculate derived metrics.
     public Result<Unit> addSample(ComprehensiveSnapshot snapshot) {
         lock.writeLock().lock();
         try {
@@ -50,7 +50,6 @@ public final class DerivedMetricsCalculator {
         return unitResult();
     }
 
-    /// Get current derived metrics.
     public DerivedMetrics current() {
         lock.readLock().lock();
         try {
@@ -62,7 +61,7 @@ public final class DerivedMetricsCalculator {
 
     private void recalculate() {
         var sampleList = samples.toList();
-        if ( sampleList.isEmpty()) {
+        if (sampleList.isEmpty()) {
             current = DerivedMetrics.EMPTY;
             return;
         }
@@ -96,7 +95,7 @@ public final class DerivedMetricsCalculator {
     private Totals accumulateTotals(List<ComprehensiveSnapshot> sampleList) {
         long totalInvocations = 0, totalFailed = 0, totalGc = 0, totalBackpressure = 0;
         double sumLatency = 0, sumHeapUsage = 0, sumEventLoopLag = 0;
-        for ( var sample : sampleList) {
+        for (var sample : sampleList) {
             totalInvocations += sample.totalInvocations();
             totalFailed += sample.failedInvocations();
             totalGc += sample.gc().totalGcCount();
@@ -129,19 +128,18 @@ public final class DerivedMetricsCalculator {
     }
 
     private Trends calculateTrends(List<ComprehensiveSnapshot> sampleList, int n, double windowSeconds) {
-        if ( n < 10) {
-        return new Trends(0, 0, 0);}
+        if (n <10) {return new Trends(0, 0, 0);}
         int halfN = n / 2;
         double firstHalfCpu = 0, secondHalfCpu = 0;
         double firstHalfLatency = 0, secondHalfLatency = 0;
         long firstHalfErrors = 0, secondHalfErrors = 0;
-        for ( int i = 0; i < halfN; i++) {
+        for (int i = 0;i <halfN;i++) {
             var sample = sampleList.get(i);
             firstHalfCpu += sample.cpuUsage();
             firstHalfLatency += sample.avgLatencyMs();
             firstHalfErrors += sample.failedInvocations();
         }
-        for ( int i = halfN; i < n; i++) {
+        for (int i = halfN;i <n;i++) {
             var sample = sampleList.get(i);
             secondHalfCpu += sample.cpuUsage();
             secondHalfLatency += sample.avgLatencyMs();
@@ -160,14 +158,12 @@ public final class DerivedMetricsCalculator {
                                        long secondHalfErrors) {
         double firstHalfWindow = halfN / windowSeconds * n;
         double secondHalfWindow = (n - halfN) / windowSeconds * n;
-        if ( firstHalfWindow > 0 && secondHalfWindow > 0) {
-        return (secondHalfErrors / secondHalfWindow) - (firstHalfErrors / firstHalfWindow);}
+        if (firstHalfWindow > 0 && secondHalfWindow > 0) {return (secondHalfErrors / secondHalfWindow) - (firstHalfErrors / firstHalfWindow);}
         return 0;
     }
 
     private double percentile(double[] sorted, int percentile) {
-        if ( sorted.length == 0) {
-        return 0;}
+        if (sorted.length == 0) {return 0;}
         int index = (int) Math.ceil(percentile / 100.0 * sorted.length) - 1;
         return sorted[Math.max(0, Math.min(index, sorted.length - 1))];
     }

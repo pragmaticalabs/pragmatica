@@ -11,16 +11,18 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+
 /// SSH and SCP operations via system ProcessBuilder for on-premises bootstrap.
 ///
 /// Uses the host system's `ssh` and `scp` commands with strict host key checking
 /// disabled for automated provisioning.
-@SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01", "JBCT-RET-01", "JBCT-EX-01"})
-sealed interface RemoteCommandRunner {
+@SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01", "JBCT-RET-01", "JBCT-EX-01"}) sealed interface RemoteCommandRunner {
     record unused() implements RemoteCommandRunner{}
 
     int DEFAULT_COMMAND_TIMEOUT_SECONDS = 120;
+
     int SCP_TIMEOUT_SECONDS = 300;
+
     int SSH_POLL_INTERVAL_MS = 5000;
 
     List<String> SSH_FLAGS = List.of("-o",
@@ -30,25 +32,22 @@ sealed interface RemoteCommandRunner {
                                      "-o",
                                      "ConnectTimeout=10");
 
-    /// Execute a command on a remote host via SSH.
     static Result<String> ssh(String host, String command, SshConfig config) {
         var args = buildSshCommand(host, config);
         args.add(command);
         return executeProcess(args, DEFAULT_COMMAND_TIMEOUT_SECONDS);
     }
 
-    /// Copy a local file to a remote host via SCP.
     static Result<Unit> scp(String localPath, String host, String remotePath, SshConfig config) {
         var args = buildScpCommand(localPath, host, remotePath, config);
         return executeProcess(args, SCP_TIMEOUT_SECONDS).mapToUnit();
     }
 
-    /// Wait until SSH connectivity is established to the given host.
     static Result<Unit> waitForSsh(String host, SshConfig config, Duration timeout) {
         var deadline = System.currentTimeMillis() + timeout.toMillis();
-        while ( System.currentTimeMillis() < deadline) {
+        while (System.currentTimeMillis() <deadline) {
             var result = ssh(host, "echo ok", config);
-            if ( result.isSuccess()) {
+            if (result.isSuccess()) {
                 System.out.printf("  SSH connection established to %s%n", host);
                 return Result.unitResult();
             }
@@ -86,21 +85,18 @@ sealed interface RemoteCommandRunner {
 
     private static Result<String> executeProcess(List<String> command, int timeoutSeconds) {
         try {
-            var process = new ProcessBuilder(command).redirectErrorStream(true)
-                                                     .start();
+            var process = new ProcessBuilder(command).redirectErrorStream(true).start();
             var completed = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-            if ( !completed) {
+            if (!completed) {
                 process.destroyForcibly();
                 return new RemoteCommandError.CommandTimeout(String.join(" ", command), timeoutSeconds).result();
             }
             var output = new String(process.getInputStream().readAllBytes()).trim();
-            if ( process.exitValue() != 0) {
-            return new RemoteCommandError.CommandFailed(String.join(" ", command), process.exitValue(), output).result();}
+            if (process.exitValue() != 0) {return new RemoteCommandError.CommandFailed(String.join(" ", command),
+                                                                                       process.exitValue(),
+                                                                                       output).result();}
             return Result.success(output);
-        }
-
-
-        catch (Exception e) {
+        } catch (Exception e) {
             return new RemoteCommandError.CommandException(String.join(" ", command), e).result();
         }
     }
@@ -108,15 +104,11 @@ sealed interface RemoteCommandRunner {
     private static void sleepQuietly(long millis) {
         try {
             Thread.sleep(millis);
-        }
-
-
-        catch (InterruptedException _) {
+        } catch (InterruptedException _) {
             Thread.currentThread().interrupt();
         }
     }
 
-    /// Error causes for remote command operations.
     sealed interface RemoteCommandError extends Cause {
         record SshTimeout(String host, Duration timeout) implements RemoteCommandError {
             @Override public String message() {

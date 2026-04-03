@@ -5,6 +5,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
+
 /// Specifies the target table for a CRUD method when it cannot be inferred
 /// from the return type or input type alone.
 ///
@@ -15,9 +16,6 @@ import java.lang.annotation.Target;
 /// @Table(UserRow.class)
 /// Promise<Option<UserRow>> findById(long id);
 /// }```
-@Retention(RetentionPolicy.SOURCE)
-@Target(ElementType.METHOD)
-public @interface Table {
-    /// The generated record class whose origin table is used.
+@Retention(RetentionPolicy.SOURCE) @Target(ElementType.METHOD) public@interface Table {
     Class<?> value();
 }

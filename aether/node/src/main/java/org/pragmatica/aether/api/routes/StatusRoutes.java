@@ -35,6 +35,7 @@ import java.util.Map;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+
 /// Routes for cluster status: health, status, nodes, events, liveness and readiness probes.
 public final class StatusRoutes implements RouteSource {
     private final Supplier<AetherNode> nodeSupplier;
@@ -51,16 +52,11 @@ public final class StatusRoutes implements RouteSource {
     }
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<StatusResponse>get("/api/status")
-                              .toJson(this::buildStatusResponse),
-                         Route.<NodesResponse>get("/api/nodes")
-                              .toJson(this::buildNodesResponse),
-                         Route.<HealthResponse>get("/api/health")
-                              .toJson(this::buildHealthResponse),
-                         Route.<LivenessResponse>get("/health/live")
-                              .toJson(this::buildLivenessResponse),
-                         Route.<ReadinessResponse>get("/health/ready")
-                              .toJson(this::buildReadinessResponse),
+        return Stream.of(Route.<StatusResponse>get("/api/status").toJson(this::buildStatusResponse),
+                         Route.<NodesResponse>get("/api/nodes").toJson(this::buildNodesResponse),
+                         Route.<HealthResponse>get("/api/health").toJson(this::buildHealthResponse),
+                         Route.<LivenessResponse>get("/health/live").toJson(this::buildLivenessResponse),
+                         Route.<ReadinessResponse>get("/health/ready").toJson(this::buildReadinessResponse),
                          Route.<List<ClusterEvent>>get("/api/events")
                               .<String>withQuery(QueryParameter.aString("since"))
                               .toValue(this::buildEventsResponse)
@@ -110,14 +106,9 @@ public final class StatusRoutes implements RouteSource {
         var node = nodeSupplier.get();
         var metrics = node.metricsCollector().allMetrics();
         var nodeIds = new LinkedHashSet<String>();
-        // Always include self
         nodeIds.add(node.self().id());
-        // Add connected peers (live view, reflects node departures)
         node.connectedPeerIds().forEach(nid -> nodeIds.add(nid.id()));
-        // Add nodes from metrics
-        for ( NodeId nodeId : metrics.keySet()) {
-        nodeIds.add(nodeId.id());}
-        // Add nodes from KV-Store slice entries
+        for (NodeId nodeId : metrics.keySet()) {nodeIds.add(nodeId.id());}
         node.kvStore().forEach(SliceNodeKey.class,
                                SliceNodeValue.class,
                                (key, _) -> nodeIds.add(key.nodeId().id()));
@@ -131,10 +122,10 @@ public final class StatusRoutes implements RouteSource {
     private static Map<String, String> collectNodeRoles(AetherNode node) {
         var roleMap = new HashMap<String, String>();
         node.kvStore()
-        .forEach(ActivationDirectiveKey.class,
-                 ActivationDirectiveValue.class,
-                 (key, value) -> roleMap.put(key.nodeId().id(),
-                                             value.role()));
+                    .forEach(ActivationDirectiveKey.class,
+                             ActivationDirectiveValue.class,
+                             (key, value) -> roleMap.put(key.nodeId().id(),
+                                                         value.role()));
         return roleMap;
     }
 
@@ -157,21 +148,18 @@ public final class StatusRoutes implements RouteSource {
         var totalNodes = connectedNodeCount + 1;
         var hasQuorum = totalNodes >= 2;
         var status = !ready || !hasQuorum
-                     ? "unhealthy"
-                     : "healthy";
+                    ? "unhealthy"
+                    : "healthy";
         return new HealthResponse(status, ready, hasQuorum, totalNodes, connectedNodeCount, metricsNodeCount, sliceCount);
     }
 
-    /// Build liveness response. Public for direct use from ManagementServer.
     public LivenessResponse buildLivenessResponse() {
         var nodeId = nodeSupplier.get().self()
                                      .id();
         return new LivenessResponse("UP", nodeId);
     }
 
-    /// Build readiness response. Public for direct use from ManagementServer (status code control).
-    @SuppressWarnings("JBCT-PAT-01")
-    public ReadinessResponse buildReadinessResponse() {
+    @SuppressWarnings("JBCT-PAT-01") public ReadinessResponse buildReadinessResponse() {
         var node = nodeSupplier.get();
         var nodeId = node.self().id();
         var components = new ArrayList<ComponentHealth>();
@@ -180,8 +168,8 @@ public final class StatusRoutes implements RouteSource {
         components.add(buildQuorumHealth(node));
         var allUp = components.stream().allMatch(c -> "UP".equals(c.status()));
         var status = allUp
-                     ? "UP"
-                     : "DOWN";
+                    ? "UP"
+                    : "DOWN";
         return new ReadinessResponse(status, nodeId, List.copyOf(components));
     }
 

@@ -5,6 +5,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
+
 /// Specifies the SQL query for a persistence interface method.
 ///
 /// The query uses named parameters with `:paramName` syntax, which the
@@ -15,9 +16,6 @@ import java.lang.annotation.Target;
 /// @Query("SELECT id, name FROM users WHERE email = :email")
 /// Promise<Option<UserRow>> findByEmail(String email);
 /// }```
-@Retention(RetentionPolicy.SOURCE)
-@Target(ElementType.METHOD)
-public @interface Query {
-    /// The SQL query with `:paramName` placeholders.
+@Retention(RetentionPolicy.SOURCE) @Target(ElementType.METHOD) public@interface Query {
     String value();
 }

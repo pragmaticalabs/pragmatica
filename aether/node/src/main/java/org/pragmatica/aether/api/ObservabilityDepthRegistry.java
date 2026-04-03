@@ -21,19 +21,19 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Registry for per-method observability depth threshold configuration.
 ///
 /// <p>Depth thresholds are persisted to consensus KV-Store for cluster-wide consistency
 /// and survival across node restarts. The local registry provides fast lock-free
 /// lookups on the hot path.
-@SuppressWarnings("JBCT-RET-01")
-public class ObservabilityDepthRegistry {
+@SuppressWarnings("JBCT-RET-01") public class ObservabilityDepthRegistry {
     private static final Logger log = LoggerFactory.getLogger(ObservabilityDepthRegistry.class);
 
     private final RabiaNode<KVCommand<AetherKey>> clusterNode;
     private final KVStore<AetherKey, AetherValue> kvStore;
-
     private final ObservabilityConfig defaultConfig;
+
     private final Map<String, ObservabilityConfig> registry = new ConcurrentHashMap<>();
 
     private ObservabilityDepthRegistry(RabiaNode<KVCommand<AetherKey>> clusterNode,
@@ -44,13 +44,11 @@ public class ObservabilityDepthRegistry {
         this.defaultConfig = defaultConfig;
     }
 
-    /// Factory method following JBCT naming convention.
     public static ObservabilityDepthRegistry observabilityDepthRegistry(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                                         KVStore<AetherKey, AetherValue> kvStore) {
         return observabilityDepthRegistry(clusterNode, kvStore, ObservabilityConfig.DEFAULT);
     }
 
-    /// Factory method with custom default configuration.
     public static ObservabilityDepthRegistry observabilityDepthRegistry(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                                         KVStore<AetherKey, AetherValue> kvStore,
                                                                         ObservabilityConfig defaultConfig) {
@@ -59,7 +57,6 @@ public class ObservabilityDepthRegistry {
         return registry;
     }
 
-    /// Load depth configurations from KV-Store on startup.
     private void loadFromKvStore() {
         kvStore.forEach(ObservabilityDepthKey.class, ObservabilityDepthValue.class, this::loadEntry);
         log.info("Loaded {} observability depth configs from KV-Store", registry.size());
@@ -75,11 +72,9 @@ public class ObservabilityDepthRegistry {
                   value.depthThreshold());
     }
 
-    /// Set observability depth for a specific artifact method and persist to KV-Store.
-    ///
-    /// @return Promise that completes when config is persisted across cluster
-    @SuppressWarnings("unchecked")
-    public Promise<Unit> setConfig(String artifactBase, String methodName, int depthThreshold) {
+    @SuppressWarnings("unchecked") public Promise<Unit> setConfig(String artifactBase,
+                                                                  String methodName,
+                                                                  int depthThreshold) {
         var key = ObservabilityDepthKey.observabilityDepthKey(artifactBase, methodName);
         var value = ObservabilityDepthValue.observabilityDepthValue(artifactBase, methodName, depthThreshold);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
@@ -91,11 +86,7 @@ public class ObservabilityDepthRegistry {
                                                         cause.message()));
     }
 
-    /// Remove observability depth configuration for a specific artifact method and persist removal to KV-Store.
-    ///
-    /// @return Promise that completes when removal is persisted across cluster
-    @SuppressWarnings("unchecked")
-    public Promise<Unit> removeConfig(String artifactBase, String methodName) {
+    @SuppressWarnings("unchecked") public Promise<Unit> removeConfig(String artifactBase, String methodName) {
         var key = ObservabilityDepthKey.observabilityDepthKey(artifactBase, methodName);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
         return clusterNode.<Unit>apply(List.of(command))
@@ -106,21 +97,15 @@ public class ObservabilityDepthRegistry {
                                                         cause.message()));
     }
 
-    /// Fast local lookup of the observability config for a given artifact method.
-    /// Returns the node's configured default if no per-method override is set.
     public ObservabilityConfig getConfig(String artifactBase, String methodName) {
         return registry.getOrDefault(artifactBase + "/" + methodName, defaultConfig);
     }
 
-    /// Returns an immutable copy of all configured observability depth overrides.
     public Map<String, ObservabilityConfig> allConfigs() {
         return Map.copyOf(registry);
     }
 
-    /// Handle KV-Store update notification for depth changes from other nodes.
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    public void onDepthPut(ValuePut<ObservabilityDepthKey, ObservabilityDepthValue> valuePut) {
+    @MessageReceiver@SuppressWarnings("JBCT-RET-01") public void onDepthPut(ValuePut<ObservabilityDepthKey, ObservabilityDepthValue> valuePut) {
         var depthKey = valuePut.cause().key();
         var depthValue = valuePut.cause().value();
         var registryKey = depthKey.artifactBase() + "/" + depthKey.methodName();
@@ -132,10 +117,7 @@ public class ObservabilityDepthRegistry {
                   depthValue.depthThreshold());
     }
 
-    /// Handle KV-Store remove notification for depth deletions from other nodes.
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    public void onDepthRemove(ValueRemove<ObservabilityDepthKey, ObservabilityDepthValue> valueRemove) {
+    @MessageReceiver@SuppressWarnings("JBCT-RET-01") public void onDepthRemove(ValueRemove<ObservabilityDepthKey, ObservabilityDepthValue> valueRemove) {
         var depthKey = valueRemove.cause().key();
         var registryKey = depthKey.artifactBase() + "/" + depthKey.methodName();
         registry.remove(registryKey);

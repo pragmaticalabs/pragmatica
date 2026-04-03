@@ -12,6 +12,7 @@ import org.pragmatica.postgres.net.netty.NettyConnectibleBuilder;
 
 import java.util.List;
 
+
 /// SPI factory for creating PgSqlConnector instances.
 ///
 /// Priority 0 (default) -- sole factory for PgSqlConnector.
@@ -55,7 +56,6 @@ public final class PgSqlConnectorFactory implements ResourceFactory<PgSqlConnect
                          .onPresent(builder::validationQuery);
     }
 
-    /// Wrapper that adapts PgAsyncSqlConnector to PgSqlConnector interface.
     record PgSqlConnectorWrapper(PgAsyncSqlConnector delegate) implements PgSqlConnector {
         @Override public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
             return delegate.queryOne(sql, mapper, params);

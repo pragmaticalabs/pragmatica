@@ -2,14 +2,14 @@ package org.pragmatica.aether.pg.codegen;
 
 import java.nio.file.Path;
 
+
 /// Configuration for Java code generation from PostgreSQL schema.
-public record CodegenConfig(
- String targetPackage,
- Path outputDirectory,
- NullableStyle nullableStyle,
- boolean generateStaticFactory,
- boolean generateRowMapper,
- String rowSuffix) {
+public record CodegenConfig(String targetPackage,
+                            Path outputDirectory,
+                            NullableStyle nullableStyle,
+                            boolean generateStaticFactory,
+                            boolean generateRowMapper,
+                            String rowSuffix) {
     public enum NullableStyle {
         OPTION,
         NULLABLE_ANNOTATION
@@ -37,7 +37,6 @@ public record CodegenConfig(
                                  suffix);
     }
 
-    /// Resolve the output file path for a given class name.
     public Path resolveOutputFile(String className) {
         var packagePath = targetPackage.replace('.', '/');
         return outputDirectory.resolve(packagePath).resolve(className + ".java");

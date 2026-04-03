@@ -6,6 +6,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Codec;
 
+
 /// Version-agnostic artifact identifier.
 ///
 ///
@@ -14,47 +15,27 @@ import org.pragmatica.serialization.Codec;
 ///
 ///
 /// Format: groupId:artifactId (e.g., "org.pragmatica-lite.aether:example-slice")
-@Codec public record ArtifactBase( GroupId groupId, ArtifactId artifactId) {
+@Codec public record ArtifactBase(GroupId groupId, ArtifactId artifactId) {
     private static final Fn1<Cause, String> INVALID_FORMAT = Causes.forOneValue("Invalid artifact base format %s");
 
-    /// Parses an artifact base from string format (groupId:artifactId).
-    ///
-    /// @param artifactBaseString the string to parse
-    /// @return parsed artifact base or error
     public static Result<ArtifactBase> artifactBase(String artifactBaseString) {
         var parts = artifactBaseString.split(":", 2);
-        if ( parts.length != 2) {
-        return INVALID_FORMAT.apply(artifactBaseString).result();}
+        if (parts.length != 2) {return INVALID_FORMAT.apply(artifactBaseString).result();}
         return Result.all(GroupId.groupId(parts[0]), ArtifactId.artifactId(parts[1])).map(ArtifactBase::new);
     }
 
-    /// Creates an artifact base from components.
-    @SuppressWarnings("JBCT-VO-02")
-    public static ArtifactBase artifactBase(GroupId groupId, ArtifactId artifactId) {
+    @SuppressWarnings("JBCT-VO-02") public static ArtifactBase artifactBase(GroupId groupId, ArtifactId artifactId) {
         return new ArtifactBase(groupId, artifactId);
     }
 
-    /// Extracts the artifact base from a full artifact.
-    ///
-    /// @param artifact the full artifact with version
-    /// @return the version-agnostic artifact base
-    @SuppressWarnings("JBCT-VO-02")
-    public static ArtifactBase artifactBase(Artifact artifact) {
+    @SuppressWarnings("JBCT-VO-02") public static ArtifactBase artifactBase(Artifact artifact) {
         return new ArtifactBase(artifact.groupId(), artifact.artifactId());
     }
 
-    /// Creates a full artifact by combining this base with a version.
-    ///
-    /// @param version the version to add
-    /// @return full artifact
     public Artifact withVersion(Version version) {
         return Artifact.artifact(groupId, artifactId, version);
     }
 
-    /// Checks if the given artifact matches this base (same groupId and artifactId).
-    ///
-    /// @param artifact the artifact to check
-    /// @return true if artifact matches this base
     public boolean matches(Artifact artifact) {
         return groupId.equals(artifact.groupId()) && artifactId.equals(artifact.artifactId());
     }

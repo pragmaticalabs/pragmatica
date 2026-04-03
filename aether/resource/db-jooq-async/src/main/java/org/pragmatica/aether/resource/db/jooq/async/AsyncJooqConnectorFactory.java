@@ -8,6 +8,7 @@ import org.pragmatica.postgres.net.netty.NettyConnectibleBuilder;
 import org.pragmatica.postgres.r2dbc.PgAsyncConnectionFactory;
 import org.pragmatica.lang.Promise;
 
+
 /// SPI factory for creating postgres-async JooqConnector instances via R2DBC adapter.
 ///
 /// Priority 20 — preferred over both JDBC and R2DBC when asyncUrl is configured.

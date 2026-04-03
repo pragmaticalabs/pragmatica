@@ -2,6 +2,7 @@ package org.pragmatica.aether.pg.schema.validator;
 
 import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
 
+
 /// A query validation finding.
 public sealed interface ValidationError {
     String message();

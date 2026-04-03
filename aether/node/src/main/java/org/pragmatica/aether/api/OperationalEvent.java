@@ -2,6 +2,7 @@ package org.pragmatica.aether.api;
 
 import org.pragmatica.messaging.Message;
 
+
 /// Operational audit events emitted to the cluster event stream.
 /// Covers security, lifecycle, and configuration changes that operators
 /// and AI agents need for full operational awareness.
@@ -24,20 +25,13 @@ public sealed interface OperationalEvent extends Message.Local {
         }
     }
 
-    record NodeLifecycleChanged(String nodeId,
-                                String transition,
-                                String requestedBy,
-                                long timestamp) implements OperationalEvent {
+    record NodeLifecycleChanged(String nodeId, String transition, String requestedBy, long timestamp) implements OperationalEvent {
         public static NodeLifecycleChanged nodeLifecycleChanged(String nodeId, String transition, String requestedBy) {
             return new NodeLifecycleChanged(nodeId, transition, requestedBy, System.currentTimeMillis());
         }
     }
 
-    record ConfigChanged(String key,
-                         String scope,
-                         String action,
-                         String requestedBy,
-                         long timestamp) implements OperationalEvent {
+    record ConfigChanged(String key, String scope, String action, String requestedBy, long timestamp) implements OperationalEvent {
         public static ConfigChanged configChanged(String key, String scope, String action, String requestedBy) {
             return new ConfigChanged(key, scope, action, requestedBy, System.currentTimeMillis());
         }

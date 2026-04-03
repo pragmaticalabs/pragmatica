@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Manages automatic rollback on persistent slice failures.
 ///
 ///
@@ -43,25 +44,16 @@ import org.slf4j.LoggerFactory;
 ///
 ///
 /// Only the leader node performs rollbacks to avoid conflicts.
-@SuppressWarnings("JBCT-RET-01") // MessageReceiver callbacks — void required by messaging framework
+@SuppressWarnings("JBCT-RET-01")
+// MessageReceiver callbacks — void required by messaging framework
 public interface RollbackManager {
     @MessageReceiver void onLeaderChange(LeaderChange leaderChange);
-
     @MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
-
     @MessageReceiver void onPreviousVersionPut(ValuePut<PreviousVersionKey, PreviousVersionValue> valuePut);
-
     @MessageReceiver void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event);
-
-    /// Get rollback statistics for an artifact.
     Option<RollbackStats> getStats(ArtifactBase artifactBase);
-
-    /// Reset rollback count for an artifact (e.g., after manual intervention).
     void resetRollbackCount(ArtifactBase artifactBase);
 
-    // --- Nested types ---
-    /// Immutable rollback state for a single artifact.
-    /// All state transitions return new instances.
     record RollbackState(ArtifactBase artifactBase,
                          Option<Version> previousVersion,
                          Version currentVersion,
@@ -69,12 +61,10 @@ public interface RollbackManager {
                          long lastRollbackTimestamp,
                          Option<Version> lastRolledBackFrom,
                          Option<Version> lastRolledBackTo) {
-        /// Create initial state for first deployment (no previous version).
         public static RollbackState initial(ArtifactBase artifactBase, Version currentVersion) {
             return new RollbackState(artifactBase, Option.none(), currentVersion, 0, 0, Option.none(), Option.none());
         }
 
-        /// Create state from KVStore data.
         public static RollbackState fromKVStore(ArtifactBase artifactBase,
                                                 Version previousVersion,
                                                 Version currentVersion) {
@@ -87,8 +77,6 @@ public interface RollbackManager {
                                      Option.none());
         }
 
-        /// Create new state with version change tracked.
-        /// The current version becomes the previous version.
         public RollbackState withVersionChange(Version newVersion) {
             return new RollbackState(artifactBase,
                                      Option.some(currentVersion),
@@ -99,8 +87,6 @@ public interface RollbackManager {
                                      lastRolledBackTo);
         }
 
-        /// Create new state after rollback completed.
-        /// Clears previous version (next deployment will set it again).
         public RollbackState withRollbackCompleted(Version failedVersion, Version targetVersion, long timestamp) {
             return new RollbackState(artifactBase,
                                      Option.none(),
@@ -111,12 +97,10 @@ public interface RollbackManager {
                                      Option.some(targetVersion));
         }
 
-        /// Create new state with counters reset.
         public RollbackState withReset() {
             return new RollbackState(artifactBase, previousVersion, currentVersion, 0, 0, Option.none(), Option.none());
         }
 
-        /// Create new state from KVStore update (preserves rollback counters).
         public RollbackState withKVStoreUpdate(Version previous, Version current) {
             return new RollbackState(artifactBase,
                                      Option.some(previous),
@@ -127,21 +111,16 @@ public interface RollbackManager {
                                      lastRolledBackTo);
         }
 
-        /// Check if rollback is allowed and return decision if so.
         public Result<RollbackDecision> canRollback(RollbackConfig config, long currentTime) {
-            if ( previousVersion.isEmpty()) {
-            return RollbackError.General.NO_PREVIOUS_VERSION.result();}
+            if (previousVersion.isEmpty()) {return RollbackError.General.NO_PREVIOUS_VERSION.result();}
             var cooldownMs = config.cooldown().millis();
-            if ( lastRollbackTimestamp > 0 && (currentTime - lastRollbackTimestamp) < cooldownMs) {
-            return RollbackError.General.COOLDOWN_ACTIVE.result();}
-            if ( rollbackCount >= config.maxRollbacks()) {
-            return RollbackError.General.MAX_ROLLBACKS_EXCEEDED.result();}
+            if (lastRollbackTimestamp > 0 && (currentTime - lastRollbackTimestamp) <cooldownMs) {return RollbackError.General.COOLDOWN_ACTIVE.result();}
+            if (rollbackCount >= config.maxRollbacks()) {return RollbackError.General.MAX_ROLLBACKS_EXCEEDED.result();}
             return Result.success(RollbackDecision.rollbackDecision(previousVersion.unwrap(),
                                                                     currentVersion,
                                                                     rollbackCount + 1));
         }
 
-        /// Convert to stats record.
         public RollbackStats toStats() {
             return new RollbackStats(artifactBase,
                                      rollbackCount,
@@ -151,16 +130,12 @@ public interface RollbackManager {
         }
     }
 
-    /// Validated rollback decision. Created only when all preconditions are met.
-    record RollbackDecision(Version targetVersion,
-                            Version failedVersion,
-                            int rollbackNumber) {
+    record RollbackDecision(Version targetVersion, Version failedVersion, int rollbackNumber) {
         public static RollbackDecision rollbackDecision(Version target, Version failed, int num) {
             return new RollbackDecision(target, failed, num);
         }
     }
 
-    /// Rollback error types.
     sealed interface RollbackError extends Cause {
         enum General implements RollbackError {
             NOT_LEADER("Rollback skipped: not leader"),
@@ -184,35 +159,30 @@ public interface RollbackManager {
         }
     }
 
-    /// Statistics for rollback tracking per artifact.
     record RollbackStats(ArtifactBase artifactBase,
                          int rollbackCount,
                          long lastRollbackTimestamp,
                          Option<Version> lastRolledBackFrom,
                          Option<Version> lastRolledBackTo){}
 
-    /// Create a rollback manager with local record implementation.
     static RollbackManager rollbackManager(NodeId self,
                                            RollbackConfig config,
                                            ClusterNode<KVCommand<AetherKey>> cluster,
                                            KVStore<AetherKey, AetherValue> kvStore) {
-        record rollbackManager( NodeId self,
-                                RollbackConfig config,
-                                ClusterNode<KVCommand<AetherKey>> cluster,
-                                KVStore<AetherKey, AetherValue> kvStore,
-                                AtomicBoolean isLeader,
-                                ConcurrentHashMap<ArtifactBase, RollbackState> rollbackStates,
-                                Logger log) implements RollbackManager {
+        record rollbackManager(NodeId self,
+                               RollbackConfig config,
+                               ClusterNode<KVCommand<AetherKey>> cluster,
+                               KVStore<AetherKey, AetherValue> kvStore,
+                               AtomicBoolean isLeader,
+                               ConcurrentHashMap<ArtifactBase, RollbackState> rollbackStates,
+                               Logger log) implements RollbackManager {
             @Override public void onLeaderChange(LeaderChange leaderChange) {
                 var wasLeader = isLeader.getAndSet(leaderChange.localNodeIsLeader());
-                if ( leaderChange.localNodeIsLeader() && !wasLeader) {
+                if (leaderChange.localNodeIsLeader() && !wasLeader) {
                     log.info("Node {} became leader, RollbackManager activated", self);
                     loadPreviousVersionsFromKvStore();
-                } else
-
-
-                if ( !leaderChange.localNodeIsLeader() && wasLeader) {
-                log.info("Node {} is no longer leader, RollbackManager deactivated", self);}
+                } else if (!leaderChange.localNodeIsLeader() && wasLeader) {log.info("Node {} is no longer leader, RollbackManager deactivated",
+                                                                                     self);}
             }
 
             @Override public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
@@ -228,15 +198,15 @@ public interface RollbackManager {
             }
 
             @Override public void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event) {
-                if ( !config.enabled()) {
+                if (!config.enabled()) {
                     log.debug("Rollback disabled, ignoring AllInstancesFailed for {}", event.artifact());
                     return;
                 }
-                if ( !config.triggerOnAllInstancesFailed()) {
+                if (!config.triggerOnAllInstancesFailed()) {
                     log.debug("Rollback on AllInstancesFailed disabled, ignoring event for {}", event.artifact());
                     return;
                 }
-                if ( !isLeader.get()) {
+                if (!isLeader.get()) {
                     log.debug("Not leader, skipping rollback decision for {}", event.artifact());
                     return;
                 }
@@ -268,9 +238,8 @@ public interface RollbackManager {
             }
 
             private void loadPreviousVersionEntry(AetherKey key, AetherValue value) {
-                if ( key instanceof PreviousVersionKey previousVersionKey &&
-                value instanceof PreviousVersionValue previousVersionValue) {
-                updateLocalPreviousVersion(previousVersionKey.artifactBase(), previousVersionValue);}
+                if (key instanceof PreviousVersionKey previousVersionKey && value instanceof PreviousVersionValue previousVersionValue) {updateLocalPreviousVersion(previousVersionKey.artifactBase(),
+                                                                                                                                                                    previousVersionValue);}
             }
 
             private void updateLocalPreviousVersion(ArtifactBase artifactBase, PreviousVersionValue value) {
@@ -288,8 +257,7 @@ public interface RollbackManager {
             }
 
             private void trackVersionChange(ArtifactBase artifactBase, SliceTargetValue sliceTargetValue) {
-                if ( !isLeader.get()) {
-                return;}
+                if (!isLeader.get()) {return;}
                 var currentVersion = sliceTargetValue.currentVersion();
                 rollbackStates.compute(artifactBase,
                                        (ab, existing) -> computeVersionTracking(ab,
@@ -316,8 +284,7 @@ public interface RollbackManager {
             private RollbackState computeVersionChange(RollbackState state,
                                                        ArtifactBase artifactBase,
                                                        Version newVersion) {
-                if ( state.currentVersion().equals(newVersion)) {
-                return state;}
+                if (state.currentVersion().equals(newVersion)) {return state;}
                 var previousVersion = state.currentVersion();
                 log.info("Version change detected for {}: {} -> {}",
                          artifactBase,
@@ -348,18 +315,21 @@ public interface RollbackManager {
             }
 
             private void logRollbackSkipped(Cause cause, String requestId, Artifact artifact) {
-                switch ( cause) {
-                    case RollbackError.General.NO_PREVIOUS_VERSION ->
-                    log.warn("[requestId={}] No previous version available for {}, cannot rollback", requestId, artifact);
-                    case RollbackError.General.COOLDOWN_ACTIVE ->
-                    log.warn("[requestId={}] Rollback cooldown active for {}. Skipping rollback.", requestId, artifact);
-                    case RollbackError.General.MAX_ROLLBACKS_EXCEEDED ->
-                    log.error("[requestId={}] CRITICAL: Max rollbacks ({}) exceeded for {}. Manual intervention required.",
-                              requestId,
-                              config.maxRollbacks(),
-                              artifact);
-                    default ->
-                    log.warn("[requestId={}] Rollback skipped for {}: {}", requestId, artifact, cause.message());
+                switch (cause){
+                    case RollbackError.General.NO_PREVIOUS_VERSION -> log.warn("[requestId={}] No previous version available for {}, cannot rollback",
+                                                                               requestId,
+                                                                               artifact);
+                    case RollbackError.General.COOLDOWN_ACTIVE -> log.warn("[requestId={}] Rollback cooldown active for {}. Skipping rollback.",
+                                                                           requestId,
+                                                                           artifact);
+                    case RollbackError.General.MAX_ROLLBACKS_EXCEEDED -> log.error("[requestId={}] CRITICAL: Max rollbacks ({}) exceeded for {}. Manual intervention required.",
+                                                                                   requestId,
+                                                                                   config.maxRollbacks(),
+                                                                                   artifact);
+                    default -> log.warn("[requestId={}] Rollback skipped for {}: {}",
+                                        requestId,
+                                        artifact,
+                                        cause.message());
                 }
             }
 
@@ -421,17 +391,14 @@ public interface RollbackManager {
                                           new AtomicBoolean(false),
                                           new ConcurrentHashMap<>(),
                                           LoggerFactory.getLogger(RollbackManager.class));
-        // Initialize state from KVStore
         manager.loadPreviousVersionsFromKvStore();
         return manager;
     }
 
-    /// Create a no-op rollback manager when rollback is disabled.
     static RollbackManager disabled() {
         return Disabled.INSTANCE;
     }
 
-    /// No-op implementation when rollback is disabled.
     enum Disabled implements RollbackManager {
         INSTANCE;
         private static final Logger log = LoggerFactory.getLogger(RollbackManager.class);

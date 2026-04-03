@@ -17,8 +17,10 @@
 
     <modules>
         <module>pragmatica-lite</module>
-        <module>url-shortener</module>
-        <module>url-shortener-v2</module>
+        <!-- url-shortener and url-shortener-v2 are standalone projects with independent versions
+             (1.0.0 and 1.0.1 respectively). Build them separately after platform install:
+             mvn -f examples/url-shortener/pom.xml install
+             mvn -f examples/url-shortener-v2/pom.xml install -->
         <module>ecommerce</module>
         <module>banking</module>
         <module>pricing-engine</module>

@@ -15,6 +15,7 @@ import org.pragmatica.lang.Promise;
 import static org.pragmatica.http.routing.PathParameter.aInteger;
 import static org.pragmatica.http.routing.Route.in;
 
+
 /// REST API routes for load testing control.
 ///
 /// Provides endpoints for:
@@ -25,23 +26,19 @@ import static org.pragmatica.http.routing.Route.in;
 ///   - Status monitoring (per-target metrics)
 ///
 public sealed interface LoadRoutes {
-    /// Create route source for all load-related endpoints.
     static RouteSource loadRoutes(ConfigurableLoadRunner loadRunner) {
-        return in("/api/load")
-        .serve(getConfigRoute(loadRunner),
-               postConfigRoute(loadRunner),
-               getStatusRoute(loadRunner),
-               startRoute(loadRunner),
-               stopRoute(loadRunner),
-               pauseRoute(loadRunner),
-               resumeRoute(loadRunner),
-               setTotalRateRoute(loadRunner));
+        return in("/api/load").serve(getConfigRoute(loadRunner),
+                                     postConfigRoute(loadRunner),
+                                     getStatusRoute(loadRunner),
+                                     startRoute(loadRunner),
+                                     stopRoute(loadRunner),
+                                     pauseRoute(loadRunner),
+                                     resumeRoute(loadRunner),
+                                     setTotalRateRoute(loadRunner));
     }
 
-    // ========== Route Definitions ==========
     private static Route<LoadConfigResponse> getConfigRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadConfigResponse>get("/config")
-                    .toJson(() -> getConfig(runner));
+        return Route.<LoadConfigResponse>get("/config").toJson(() -> getConfig(runner));
     }
 
     private static Route<LoadConfigUploadResponse> postConfigRoute(ConfigurableLoadRunner runner) {
@@ -52,31 +49,25 @@ public sealed interface LoadRoutes {
     }
 
     private static Route<LoadRunnerStatusResponse> getStatusRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadRunnerStatusResponse>get("/status")
-                    .toJson(() -> getStatus(runner));
+        return Route.<LoadRunnerStatusResponse>get("/status").toJson(() -> getStatus(runner));
     }
 
     private static Route<LoadControlResponse> startRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadControlResponse>post("/start")
-                    .toJson(_ -> start(runner));
+        return Route.<LoadControlResponse>post("/start").toJson(_ -> start(runner));
     }
 
     private static Route<LoadControlResponse> stopRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadControlResponse>post("/stop")
-                    .toJson(_ -> stop(runner));
+        return Route.<LoadControlResponse>post("/stop").toJson(_ -> stop(runner));
     }
 
     private static Route<LoadControlResponse> pauseRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadControlResponse>post("/pause")
-                    .toJson(_ -> pause(runner));
+        return Route.<LoadControlResponse>post("/pause").toJson(_ -> pause(runner));
     }
 
     private static Route<LoadControlResponse> resumeRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadControlResponse>post("/resume")
-                    .toJson(_ -> resume(runner));
+        return Route.<LoadControlResponse>post("/resume").toJson(_ -> resume(runner));
     }
 
-    // ========== Handler Methods ==========
     private static LoadConfigResponse getConfig(ConfigurableLoadRunner runner) {
         var loadConfig = runner.config();
         var targetInfos = loadConfig.targets().stream()
@@ -116,7 +107,7 @@ public sealed interface LoadRoutes {
                                                                                  m.avgLatencyMs(),
                                                                                  m.successRate(),
                                                                                  m.remainingDuration()
-        .map(ForgeApiResponses::formatDuration)))
+                                                                                                    .map(ForgeApiResponses::formatDuration)))
                                               .toList();
         return new LoadRunnerStatusResponse(state.name(), targetInfos.size(), targetInfos);
     }

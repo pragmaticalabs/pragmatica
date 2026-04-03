@@ -15,6 +15,7 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Executes a list of [ConfigChange] actions to converge the cluster to desired state.
 ///
 /// Phase 1 implements: ScaleCore, UpdateAutoHeal, UpdateCoreMin, UpdateCoreMax.
@@ -22,10 +23,8 @@ import org.slf4j.LoggerFactory;
 public sealed interface ClusterConfigApplier {
     Logger log = LoggerFactory.getLogger(ClusterConfigApplier.class);
 
-    /// Apply all actionable changes sequentially.
     Promise<Unit> apply(List<ConfigChange> changes);
 
-    /// Factory method.
     static ClusterConfigApplier clusterConfigApplier(ClusterTopologyManager topologyManager) {
         return new ClusterConfigApplierRecord(topologyManager);
     }
@@ -39,16 +38,22 @@ public sealed interface ClusterConfigApplier {
 
 /// Applies config changes via CTM for scale operations.
 /// Deferred operations (version upgrade, TLS rotation) log warnings.
-@SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-01"}) record ClusterConfigApplierRecord( ClusterTopologyManager topologyManager) implements ClusterConfigApplier {
+@SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-01"}) record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implements ClusterConfigApplier {
     @Override public Promise<Unit> apply(List<ConfigChange> changes) {
         var promise = Promise.unitPromise();
-        for ( var change : changes) {
-        promise = promise.flatMap(_ -> applySingle(change));}
+        for (var change : changes) {promise = promise.flatMap(_ -> applySingle(change));}
         return promise;
     }
 
     private Promise<Unit> applySingle(ConfigChange change) {
-        return switch (change) {case ScaleCore scale -> applyScale(scale);case UpdateCoreMin _ -> logApplied(change);case UpdateCoreMax _ -> logApplied(change);case UpdateAutoHeal _ -> logApplied(change);case UpdateVersion upgrade -> logDeferred(upgrade);default -> logApplied(change);};
+        return switch (change){
+            case ScaleCore scale -> applyScale(scale);
+            case UpdateCoreMin _ -> logApplied(change);
+            case UpdateCoreMax _ -> logApplied(change);
+            case UpdateAutoHeal _ -> logApplied(change);
+            case UpdateVersion upgrade -> logDeferred(upgrade);
+            default -> logApplied(change);
+        };
     }
 
     private Promise<Unit> applyScale(ScaleCore scale) {

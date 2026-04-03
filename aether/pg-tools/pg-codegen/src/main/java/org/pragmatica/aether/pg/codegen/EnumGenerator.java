@@ -3,6 +3,7 @@ package org.pragmatica.aether.pg.codegen;
 import org.pragmatica.aether.pg.schema.model.PgType;
 import org.pragmatica.lang.Result;
 
+
 /// Generates a Java enum from a PostgreSQL enum type.
 public final class EnumGenerator {
     private final CodegenConfig config;
@@ -27,15 +28,14 @@ public final class EnumGenerator {
                  .append("\n");
         sb.append("public enum ").append(className)
                  .append(" {\n");
-        for ( int i = 0; i < enumType.values().size(); i++) {
+        for (int i = 0;i <enumType.values().size();i++) {
             var value = enumType.values().get(i);
             var constant = NamingConvention.toEnumConstant(value);
             sb.append("    ").append(constant)
                      .append("(\"")
                      .append(escapeJavaString(value))
                      .append("\")");
-            if ( i < enumType.values().size() - 1) sb.append(",");else
-            sb.append(";");
+            if (i <enumType.values().size() - 1) sb.append(",");else sb.append(";");
             sb.append("\n");
         }
         sb.append("\n    private final String pgValue;\n\n");

@@ -12,6 +12,7 @@ import org.pragmatica.http.routing.RouteSource;
 import java.util.HashSet;
 import java.util.stream.Stream;
 
+
 /// Topology routes for the Forge dashboard.
 ///
 /// Aggregates slice topology data across all cluster nodes and exposes
@@ -28,12 +29,10 @@ public final class TopologyRoutes implements RouteSource {
     }
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<TopologyResponse>get("/api/topology")
-                              .toJson(this::buildTopology));
+        return Stream.of(Route.<TopologyResponse>get("/api/topology").toJson(this::buildTopology));
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    private TopologyResponse buildTopology() {
+    @SuppressWarnings("JBCT-PAT-01") private TopologyResponse buildTopology() {
         var seen = new HashSet<String>();
         var sliceTopologies = cluster.allNodes().stream()
                                               .flatMap(node -> node.sliceStore().loaded()

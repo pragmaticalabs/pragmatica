@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.net.URL;
 import java.net.URLClassLoader;
 
+
 /// ClassLoader for individual slice isolation.
 ///
 /// Uses child-first delegation strategy for slice code and conflict overrides,
@@ -22,69 +23,43 @@ import java.net.URLClassLoader;
 ///
 ///
 /// @see SharedLibraryClassLoader
-@SuppressWarnings("JBCT-UTIL-02")
-public class SliceClassLoader extends URLClassLoader {
+@SuppressWarnings("JBCT-UTIL-02") public class SliceClassLoader extends URLClassLoader {
     private static final String JAVA_PREFIX = "java.";
+
     private static final String JAVAX_PREFIX = "javax.";
+
     private static final String JDK_PREFIX = "jdk.";
+
     private static final String SUN_PREFIX = "sun.";
 
-    /// Create a new SliceClassLoader.
-    ///
-    /// @param urls   URLs to slice JAR and any conflicting dependency JARs
-    /// @param parent Parent classloader (typically SharedLibraryClassLoader)
     public SliceClassLoader(URL[] urls, ClassLoader parent) {
         super(urls, parent);
     }
 
-    /// JDK override — kept as throws per ClassLoader contract.
-    @SuppressWarnings("JBCT-EX-01")
-    @Override protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-        synchronized ( getClassLoadingLock(name)) {
-            // Check if already loaded
+    @SuppressWarnings("JBCT-EX-01") @Override protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+        synchronized (getClassLoadingLock(name)) {
             var loaded = findLoadedClass(name);
-            if ( loaded != null) {
-            return loaded;}
-            // Parent-first for JDK classes (mandatory - cannot be overridden)
-            if ( isJdkClass(name)) {
-            return super.loadClass(name, resolve);}
-            // Child-first for everything else (slice isolation)
-            // This allows slice code and conflict overrides to shadow parent classes
+            if (loaded != null) {return loaded;}
+            if (isJdkClass(name)) {return super.loadClass(name, resolve);}
             try {
                 var clazz = findClass(name);
-                if ( resolve) {
-                resolveClass(clazz);}
+                if (resolve) {resolveClass(clazz);}
                 return clazz;
-            }
-
-
-            catch (ClassNotFoundException e) {
-                // Fall back to parent (SharedLibraryClassLoader -> Node ClassLoader)
+            } catch (ClassNotFoundException e) {
                 return super.loadClass(name, resolve);
             }
         }
     }
 
-    /// Check if class is a JDK internal class that must be loaded by parent.
-    /// These classes cannot be overridden in child classloaders.
     private boolean isJdkClass(String name) {
         return name.startsWith(JAVA_PREFIX) || name.startsWith(JAVAX_PREFIX) || name.startsWith(JDK_PREFIX) || name.startsWith(SUN_PREFIX);
     }
 
-    /// Add a URL to this classloader's search path.
-    ///
-    /// Used to add dependency slice JARs before loading the slice class,
-    /// ensuring parameter types from dependency slices can be resolved.
-    ///
-    /// @param url URL to add (typically a dependency slice JAR)
-    @SuppressWarnings("JBCT-RET-01")
-    public void addSliceDependencyUrl(URL url) {
+    @SuppressWarnings("JBCT-RET-01") public void addSliceDependencyUrl(URL url) {
         addURL(url);
     }
 
-    /// JDK override — kept as void/throws per URLClassLoader contract.
-    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
-    @Override public void close() throws IOException {
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) @Override public void close() throws IOException {
         super.close();
     }
 }

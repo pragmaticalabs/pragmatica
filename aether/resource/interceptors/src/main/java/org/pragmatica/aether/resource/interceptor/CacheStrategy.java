@@ -1,4 +1,5 @@
 package org.pragmatica.aether.resource.interceptor;
+
 public enum CacheStrategy {
     CACHE_ASIDE,
     READ_THROUGH,

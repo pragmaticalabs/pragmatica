@@ -7,10 +7,10 @@ import java.util.List;
 
 import static org.pragmatica.aether.environment.docker.DockerError.COMMAND_EXECUTION_FAILED;
 
+
 /// Docker command runner that delegates to the system process builder.
 /// Uses ProcessBuilder to invoke Docker CLI commands and captures stdout.
 @Contract public record ProcessCommandRunner() implements DockerCommandRunner {
-    /// Factory method for creating a ProcessCommandRunner.
     public static ProcessCommandRunner processCommandRunner() {
         return new ProcessCommandRunner();
     }
@@ -19,14 +19,11 @@ import static org.pragmatica.aether.environment.docker.DockerError.COMMAND_EXECU
         return Promise.lift(COMMAND_EXECUTION_FAILED, () -> runProcess(command));
     }
 
-    // --- Leaf: run a system process and capture stdout ---
     private static String runProcess(List<String> command) throws Exception {
-        var process = new ProcessBuilder(command).redirectErrorStream(true)
-                                                 .start();
+        var process = new ProcessBuilder(command).redirectErrorStream(true).start();
         var output = new String(process.getInputStream().readAllBytes()).trim();
         var exitCode = process.waitFor();
-        if ( exitCode != 0) {
-        throw new RuntimeException("Docker command failed (exit " + exitCode + "): " + output);}
+        if (exitCode != 0) {throw new RuntimeException("Docker command failed (exit " + exitCode + "): " + output);}
         return output;
     }
 }

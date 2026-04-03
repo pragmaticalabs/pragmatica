@@ -5,10 +5,11 @@ import org.pragmatica.serialization.Codec;
 
 import java.util.List;
 
-@Codec public record ExpandedBlueprint( BlueprintId id,
-                                        List<ResolvedSlice> loadOrder,
-                                        Option<String> resourcesConfig,
-                                        SecurityOverrides securityOverrides) {
+
+@Codec public record ExpandedBlueprint(BlueprintId id,
+                                       List<ResolvedSlice> loadOrder,
+                                       Option<String> resourcesConfig,
+                                       SecurityOverrides securityOverrides) {
     public static ExpandedBlueprint expandedBlueprint(BlueprintId id, List<ResolvedSlice> loadOrder) {
         return new ExpandedBlueprint(id, List.copyOf(loadOrder), Option.none(), SecurityOverrides.EMPTY);
     }

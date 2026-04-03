@@ -5,6 +5,7 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
 
+
 /// Events emitted during slice deployment lifecycle for metrics collection.
 ///
 ///
@@ -20,24 +21,15 @@ import org.pragmatica.messaging.Message;
 ///
 /// @see org.pragmatica.messaging.MessageRouter.Entry.SealedBuilder
 public sealed interface DeploymentEvent extends Message.Local {
-    /// Unused record for sealed utility interface.
     record unused() implements DeploymentEvent{}
 
-    /// Emitted when a deployment is initiated (blueprint change triggers LOAD command).
     record DeploymentStarted(Artifact artifact, NodeId targetNode, long timestamp) implements DeploymentEvent {
-        /// Factory method following JBCT naming convention. */
         public static DeploymentStarted deploymentStarted(Artifact artifact, NodeId targetNode, long timestamp) {
             return new DeploymentStarted(artifact, targetNode, timestamp);
         }
     }
 
-    /// Emitted on each state transition during deployment.
-    record StateTransition(Artifact artifact,
-                           NodeId nodeId,
-                           SliceState from,
-                           SliceState to,
-                           long timestamp) implements DeploymentEvent {
-        /// Factory method following JBCT naming convention. */
+    record StateTransition(Artifact artifact, NodeId nodeId, SliceState from, SliceState to, long timestamp) implements DeploymentEvent {
         public static StateTransition stateTransition(Artifact artifact,
                                                       NodeId nodeId,
                                                       SliceState from,
@@ -47,27 +39,17 @@ public sealed interface DeploymentEvent extends Message.Local {
         }
     }
 
-    /// Emitted when deployment completes (reaches ACTIVE state).
     record DeploymentCompleted(Artifact artifact, NodeId nodeId, long timestamp) implements DeploymentEvent {
-        /// Factory method following JBCT naming convention. */
         public static DeploymentCompleted deploymentCompleted(Artifact artifact, NodeId nodeId, long timestamp) {
             return new DeploymentCompleted(artifact, nodeId, timestamp);
         }
     }
 
-    /// Emitted when deployment fails (reaches FAILED state).
-    ///
-    /// @param artifact the artifact that failed
-    /// @param nodeId the node where it failed
-    /// @param failedAt the state at which failure occurred
-    /// @param errorMessage the failure cause message
-    /// @param timestamp when the failure occurred
     record DeploymentFailed(Artifact artifact,
                             NodeId nodeId,
                             SliceState failedAt,
                             String errorMessage,
                             long timestamp) implements DeploymentEvent {
-        /// Factory method following JBCT naming convention.
         public static DeploymentFailed deploymentFailed(Artifact artifact,
                                                         NodeId nodeId,
                                                         SliceState failedAt,

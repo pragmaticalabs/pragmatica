@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+
 /// Generates per-node `aether.toml` configuration for on-premises deployment.
 ///
 /// Produces a minimal config with node identity, cluster ports, peer list,
@@ -13,7 +14,6 @@ import java.util.stream.IntStream;
 sealed interface NodeConfigTemplate {
     record unused() implements NodeConfigTemplate{}
 
-    /// Render an aether.toml config for a single node.
     static String render(ClusterManagementConfig config,
                          String nodeId,
                          int nodeIndex,
@@ -48,7 +48,7 @@ sealed interface NodeConfigTemplate {
                  .append("\"\n");
         sb.append("peers = \"").append(peers)
                  .append("\"\n");
-        if ( tlsEnabled) {
+        if (tlsEnabled) {
             sb.append('\n');
             sb.append("[tls]\n");
             sb.append("cluster_secret = \"").append(clusterSecret)
@@ -57,7 +57,6 @@ sealed interface NodeConfigTemplate {
         return sb.toString();
     }
 
-    /// Build a comma-separated peers list: "node-1:ip1:port,node-2:ip2:port,..."
     private static String buildPeersList(String clusterName, List<String> nodeIps, int clusterPort) {
         return IntStream.range(0,
                                nodeIps.size()).mapToObj(i -> clusterName + "-" + (i + 1) + ":" + nodeIps.get(i) + ":" + clusterPort)

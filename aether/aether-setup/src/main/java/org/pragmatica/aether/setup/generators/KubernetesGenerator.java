@@ -18,6 +18,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Result.success;
 
+
 /// Generates Kubernetes manifests for Aether cluster deployment.
 ///
 ///
@@ -42,8 +43,7 @@ public final class KubernetesGenerator implements Generator {
         return Result.lift(KubernetesGenerator::toIoError, () -> generateManifests(config, outputDir));
     }
 
-    @SuppressWarnings("JBCT-EX-01")
-    private GeneratorOutput generateManifests(AetherConfig config, Path outputDir) throws Exception {
+    @SuppressWarnings("JBCT-EX-01") private GeneratorOutput generateManifests(AetherConfig config, Path outputDir) throws Exception {
         var manifestsDir = outputDir.resolve("manifests");
         Files.createDirectories(manifestsDir);
         var generatedFiles = new ArrayList<Path>();
@@ -58,14 +58,15 @@ public final class KubernetesGenerator implements Generator {
         return buildOutput(config, outputDir, generatedFiles);
     }
 
-    @SuppressWarnings("JBCT-EX-01")
-    private void writeManifest(Path dir, String name, String content, List<Path> files) throws Exception {
+    @SuppressWarnings("JBCT-EX-01") private void writeManifest(Path dir,
+                                                               String name,
+                                                               String content,
+                                                               List<Path> files) throws Exception {
         Files.writeString(dir.resolve(name), content);
         files.add(Path.of("manifests/" + name));
     }
 
-    @SuppressWarnings("JBCT-EX-01")
-    private void writeScript(Path dir, String name, String content, List<Path> files) throws Exception {
+    @SuppressWarnings("JBCT-EX-01") private void writeScript(Path dir, String name, String content, List<Path> files) throws Exception {
         var path = dir.resolve(name);
         Files.writeString(path, content);
         makeExecutable(path);
@@ -176,8 +177,8 @@ public final class KubernetesGenerator implements Generator {
         return config.node().gc()
                           .toUpperCase()
                           .equals("ZGC")
-               ? "ZGC"
-               : "G1GC";
+              ? "ZGC"
+              : "G1GC";
     }
 
     private String generateStatefulSet(AetherConfig config) {
@@ -378,20 +379,12 @@ public final class KubernetesGenerator implements Generator {
             """;
     }
 
-    @SuppressWarnings("JBCT-SEQ-01")
-    private void makeExecutable(Path path) {
+    @SuppressWarnings("JBCT-SEQ-01") private void makeExecutable(Path path) {
         try {
             Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rwxr-xr-x"));
-        }
-
-
-        catch (UnsupportedOperationException e) {
-            // POSIX permissions not supported on this filesystem (e.g., Windows)
+        } catch (UnsupportedOperationException e) {
             log.debug("Cannot set POSIX permissions on {}: {}", path, e.getMessage());
-        }
-
-
-        catch (Exception e) {
+        } catch (Exception e) {
             log.debug("Failed to set permissions on {}: {}", path, e.getMessage());
         }
     }

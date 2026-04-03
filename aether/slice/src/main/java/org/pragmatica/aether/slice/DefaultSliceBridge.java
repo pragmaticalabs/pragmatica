@@ -17,6 +17,7 @@ import java.util.stream.Collectors;
 
 import static org.pragmatica.lang.Option.option;
 
+
 /// Default implementation of SliceBridge for Node-Slice communication.
 ///
 /// This class bridges the Node (Application ClassLoader) and Slices (isolated ClassLoader)
@@ -41,25 +42,13 @@ import static org.pragmatica.lang.Option.option;
 ///
 /// @see SliceBridge
 /// @see Slice
-@SuppressWarnings("JBCT-NAM-01")
-public record DefaultSliceBridge( Artifact artifact,
-                                  Slice slice,
-                                  Map<String, InternalMethod> methodMap,
-                                  SliceCodec codec) implements SliceBridge {
-    /// Internal method descriptor containing type information for serialization.
-    public record InternalMethod(SliceMethod<?, ?> method,
-                                 TypeToken<?> parameterType,
-                                 TypeToken<?> returnType){}
+@SuppressWarnings("JBCT-NAM-01") public record DefaultSliceBridge(Artifact artifact,
+                                                                  Slice slice,
+                                                                  Map<String, InternalMethod> methodMap,
+                                                                  SliceCodec codec) implements SliceBridge {
+    public record InternalMethod(SliceMethod<?, ?> method, TypeToken<?> parameterType, TypeToken<?> returnType){}
 
-    /// Create a DefaultSliceBridge from a Slice instance.
-    ///
-    /// @param artifact The slice artifact coordinates
-    /// @param slice    The slice instance
-    /// @param codec    SliceCodec for serialization/deserialization
-    /// @return DefaultSliceBridge wrapping the slice
-    public static DefaultSliceBridge defaultSliceBridge(Artifact artifact,
-                                                        Slice slice,
-                                                        SliceCodec codec) {
+    public static DefaultSliceBridge defaultSliceBridge(Artifact artifact, Slice slice, SliceCodec codec) {
         var methodMap = slice.methods().stream()
                                      .collect(Collectors.toMap(m -> m.name().name(),
                                                                m -> new InternalMethod(m,
@@ -69,8 +58,7 @@ public record DefaultSliceBridge( Artifact artifact,
     }
 
     @Override public Promise<byte[]> invoke(String methodName, byte[] input) {
-        return lookupMethod(methodName).async()
-                           .flatMap(method -> invokeWithSerialization(method, input));
+        return lookupMethod(methodName).async().flatMap(method -> invokeWithSerialization(method, input));
     }
 
     @Override public Promise<byte[]> encode(Object input) {
@@ -109,14 +97,13 @@ public record DefaultSliceBridge( Artifact artifact,
         return option(methodMap.get(methodName)).toResult(METHOD_NOT_FOUND.apply(methodName));
     }
 
-    @SuppressWarnings("unchecked")
-    private<T> Promise<T> deserializeInput(byte[] input) {
+    @SuppressWarnings("unchecked") private <T> Promise<T> deserializeInput(byte[] input) {
         return Promise.lift(Causes::fromThrowable, () -> (T) codec.decode(input));
     }
 
-    @SuppressWarnings("unchecked")
-    private<T, R> Promise<R> invokeMethod(SliceMethod<?, ?> method, T parameter) {
-        return Promise.lift(Causes::fromThrowable, () -> ((SliceMethod<R, T>) method).apply(parameter))
+    @SuppressWarnings("unchecked") private <T, R> Promise<R> invokeMethod(SliceMethod<?, ?> method, T parameter) {
+        return Promise.lift(Causes::fromThrowable,
+                            () -> ((SliceMethod<R, T>) method).apply(parameter))
         .flatMap(promise -> promise);
     }
 
@@ -124,6 +111,5 @@ public record DefaultSliceBridge( Artifact artifact,
         return Promise.lift(Causes::fromThrowable, () -> codec.encode(response));
     }
 
-    // Error constants
     private static final Fn1<Cause, String> METHOD_NOT_FOUND = Causes.forOneValue("Method not found: {0}");
 }

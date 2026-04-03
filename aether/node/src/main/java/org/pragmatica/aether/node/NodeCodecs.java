@@ -24,16 +24,15 @@ import static org.pragmatica.serialization.SliceCodec.readString;
 import static org.pragmatica.serialization.SliceCodec.writeCompact;
 import static org.pragmatica.serialization.SliceCodec.writeString;
 
+
 /// Registry of all node-level types for serialization.
 /// Collects generated codec registries from all modules and adds manual entries
 /// for types that can't use the annotation processor (e.g. shared-package conflicts).
-@CodecFor({InetSocketAddress.class, MethodName.class, TimeSpan.class, URI.class, UUID.class, OffsetDateTime.class, Email.class, Url.class, NonBlankString.class, Uuid.class, IsoDateTime.class})
-public sealed interface NodeCodecs {
+@CodecFor({InetSocketAddress.class, MethodName.class, TimeSpan.class, URI.class, UUID.class, OffsetDateTime.class, Email.class, Url.class, NonBlankString.class, Uuid.class, IsoDateTime.class}) public sealed interface NodeCodecs {
     record unused() implements NodeCodecs{}
 
     static SliceCodec nodeCodecs(SliceCodec parent) {
         var all = new ArrayList<TypeCodec<?>>();
-        // Generated registries (produced by @Codec annotation processor)
         all.addAll(org.pragmatica.consensus.ConsensusCodecs.CODECS);
         all.addAll(org.pragmatica.consensus.rabia.RabiaCodecs.CODECS);
         all.addAll(org.pragmatica.consensus.net.NetCodecs.CODECS);
@@ -51,7 +50,6 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.aether.http.handler.HandlerCodecs.CODECS);
         all.addAll(org.pragmatica.aether.http.handler.security.SecurityCodecs.CODECS);
         all.addAll(org.pragmatica.swim.SwimCodecs.CODECS);
-        // Manual entries for types in shared packages (can't use processor without registry name conflict)
         all.add(methodNameCodec());
         all.add(inetSocketAddressCodec());
         all.add(timeSpanCodec());
@@ -78,8 +76,6 @@ public sealed interface NodeCodecs {
         return types;
     }
 
-    /// InetSocketAddress codec — uses createUnresolved to avoid blocking DNS on deserialization.
-    /// Wire format: hostname (string) + port (compact int).
     private static TypeCodec<InetSocketAddress> inetSocketAddressCodec() {
         return new TypeCodec<>(InetSocketAddress.class,
                                deterministicTag("java.net.InetSocketAddress"),
@@ -90,7 +86,6 @@ public sealed interface NodeCodecs {
                                (codec, buf) -> InetSocketAddress.createUnresolved(readString(buf), readCompact(buf)));
     }
 
-    /// TimeSpan codec — serializes as nanos (long).
     private static TypeCodec<TimeSpan> timeSpanCodec() {
         return new TypeCodec<>(TimeSpan.class,
                                deterministicTag("org.pragmatica.lang.io.TimeSpan"),
@@ -98,7 +93,6 @@ public sealed interface NodeCodecs {
                                (codec, buf) -> TimeSpan.timeSpan(buf.readLong()).nanos());
     }
 
-    /// Email codec — serializes as localPart (string) + domain (string).
     private static TypeCodec<Email> emailCodec() {
         return new TypeCodec<>(Email.class,
                                deterministicTag("org.pragmatica.lang.vo.Email"),
@@ -109,7 +103,6 @@ public sealed interface NodeCodecs {
                                (codec, buf) -> new Email(readString(buf), readString(buf)));
     }
 
-    /// Url codec — serializes as URI string.
     private static TypeCodec<Url> urlCodec() {
         return new TypeCodec<>(Url.class,
                                deterministicTag("org.pragmatica.lang.vo.Url"),
@@ -118,7 +111,6 @@ public sealed interface NodeCodecs {
                                (codec, buf) -> new Url(URI.create(readString(buf))));
     }
 
-    /// NonBlankString codec — serializes as string value.
     private static TypeCodec<NonBlankString> nonBlankStringCodec() {
         return new TypeCodec<>(NonBlankString.class,
                                deterministicTag("org.pragmatica.lang.vo.NonBlankString"),
@@ -126,7 +118,6 @@ public sealed interface NodeCodecs {
                                (codec, buf) -> new NonBlankString(readString(buf)));
     }
 
-    /// Uuid codec — serializes as string.
     private static TypeCodec<Uuid> uuidCodec() {
         return new TypeCodec<>(Uuid.class,
                                deterministicTag("org.pragmatica.lang.vo.Uuid"),
@@ -135,7 +126,6 @@ public sealed interface NodeCodecs {
                                (codec, buf) -> new Uuid(java.util.UUID.fromString(readString(buf))));
     }
 
-    /// IsoDateTime codec — serializes as ISO 8601 string.
     private static TypeCodec<IsoDateTime> isoDateTimeCodec() {
         return new TypeCodec<>(IsoDateTime.class,
                                deterministicTag("org.pragmatica.lang.vo.IsoDateTime"),

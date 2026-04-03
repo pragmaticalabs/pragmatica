@@ -4,12 +4,11 @@ import org.pragmatica.lang.Result;
 
 import java.util.List;
 
+
 /// PostgreSQL SQL parser using the generated standalone PEG parser.
 /// Peglib is NOT a runtime dependency — only pragmatica-lite:core.
 public final class PostgresParser {
-    /// Unified CST node types — insulate downstream code from generated parser internals.
-    public sealed interface CstNode permits
-    CstNode.Terminal, CstNode.NonTerminal, CstNode.Token, CstNode.Error {
+    public sealed interface CstNode permits CstNode.Terminal, CstNode.NonTerminal, CstNode.Token, CstNode.Error {
         SourceSpan span();
         String ruleName();
 
@@ -59,17 +58,22 @@ public final class PostgresParser {
     }
 
     private static CstNode convert(PgSqlParser.CstNode node) {
-        return switch (node) {case PgSqlParser.CstNode.NonTerminal nt -> new CstNode.NonTerminal(convertSpan(nt.span()),
-                                                                                                 ruleName(nt.rule()),
-                                                                                                 nt.children().stream()
-                                                                                                            .map(PostgresParser::convert)
-                                                                                                            .toList());case PgSqlParser.CstNode.Token tok -> new CstNode.Token(convertSpan(tok.span()),
-                                                                                                                                                                               ruleName(tok.rule()),
-                                                                                                                                                                               tok.text());case PgSqlParser.CstNode.Terminal term -> new CstNode.Terminal(convertSpan(term.span()),
-                                                                                                                                                                                                                                                          ruleName(term.rule()),
-                                                                                                                                                                                                                                                          term.text());case PgSqlParser.CstNode.Error err -> new CstNode.Error(convertSpan(err.span()),
-                                                                                                                                                                                                                                                                                                                               err.skippedText(),
-                                                                                                                                                                                                                                                                                                                               err.expected());};
+        return switch (node){
+            case PgSqlParser.CstNode.NonTerminal nt -> new CstNode.NonTerminal(convertSpan(nt.span()),
+                                                                               ruleName(nt.rule()),
+                                                                               nt.children().stream()
+                                                                                          .map(PostgresParser::convert)
+                                                                                          .toList());
+            case PgSqlParser.CstNode.Token tok -> new CstNode.Token(convertSpan(tok.span()),
+                                                                    ruleName(tok.rule()),
+                                                                    tok.text());
+            case PgSqlParser.CstNode.Terminal term -> new CstNode.Terminal(convertSpan(term.span()),
+                                                                           ruleName(term.rule()),
+                                                                           term.text());
+            case PgSqlParser.CstNode.Error err -> new CstNode.Error(convertSpan(err.span()),
+                                                                    err.skippedText(),
+                                                                    err.expected());
+        };
     }
 
     private static SourceSpan convertSpan(PgSqlParser.SourceSpan span) {
@@ -83,13 +87,19 @@ public final class PostgresParser {
 
     private static String ruleName(PgSqlParser.RuleId rule) {
         return rule != null
-               ? rule.name()
-               : "";
+              ? rule.name()
+              : "";
     }
 
     private static List<CstNode> extractStatements(CstNode root) {
-        return switch (root) {case CstNode.NonTerminal nt -> nt.children().stream()
-                                                                        .filter(child -> switch (child) {case CstNode.NonTerminal c -> !c.ruleName().equals("EmptyStatement");default -> false;})
-                                                                        .toList();default -> List.of(root);};
+        return switch (root){
+            case CstNode.NonTerminal nt -> nt.children().stream()
+                                                      .filter(child -> switch (child){
+                case CstNode.NonTerminal c -> !c.ruleName().equals("EmptyStatement");
+                default -> false;
+            })
+                                                      .toList();
+            default -> List.of(root);
+        };
     }
 }

@@ -29,17 +29,16 @@ import java.util.UUID;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
+
 /// GCP Cloud implementation of the ComputeProvider SPI.
 /// Delegates to GcpClient for instance lifecycle management and maps
 /// GCP instance models to the environment integration domain types.
-public record GcpComputeProvider( GcpClient client,
-                                  GcpEnvironmentConfig config) implements ComputeProvider {
+public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) implements ComputeProvider {
     private static final String MANAGED_LABEL_KEY = "aether-managed";
+
     private static final String MANAGED_LABEL_VALUE = "true";
 
-    /// Factory method for creating a GcpComputeProvider.
-    public static Result<GcpComputeProvider> gcpComputeProvider(GcpClient client,
-                                                                GcpEnvironmentConfig config) {
+    public static Result<GcpComputeProvider> gcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) {
         return success(new GcpComputeProvider(client, config));
     }
 
@@ -75,18 +74,15 @@ public record GcpComputeProvider( GcpClient client,
         return client.getInstance(id.value()).flatMap(instance -> setLabelsOnInstance(id.value(), instance, tags));
     }
 
-    // --- Leaf: set labels on an instance using its current fingerprint ---
     private Promise<Unit> setLabelsOnInstance(String instanceName, Instance instance, Map<String, String> tags) {
         var fingerprint = extractLabelFingerprint(instance);
         return client.setLabels(instanceName, new SetLabelsRequest(tags, fingerprint)).mapToUnit();
     }
 
-    // --- Leaf: extract label fingerprint from instance (empty string if unavailable) ---
     private static String extractLabelFingerprint(Instance instance) {
         return "";
     }
 
-    // --- Leaf: build insert instance request ---
     private InsertInstanceRequest buildInsertRequest() {
         var name = generateInstanceName();
         var machineType = config.machineType();
@@ -97,30 +93,25 @@ public record GcpComputeProvider( GcpClient client,
         return new InsertInstanceRequest(name, machineType, List.of(disk), List.of(networkInterface), labels, metadata);
     }
 
-    // --- Leaf: build boot disk configuration ---
     private Disk buildBootDisk() {
         return new Disk(true, true, new InitializeParams(config.sourceImage(), 20, "pd-standard"));
     }
 
-    // --- Leaf: build network interface configuration ---
     private NetworkInterfaceConfig buildNetworkInterface() {
         return new NetworkInterfaceConfig(config.network(),
                                           config.subnetwork(),
                                           List.of(new AccessConfig("External NAT", "ONE_TO_ONE_NAT")));
     }
 
-    // --- Leaf: build instance metadata from user data ---
     private Metadata buildMetadata() {
         return new Metadata(List.of(new MetadataItem("startup-script", config.userData())));
     }
 
-    // --- Leaf: generate a unique instance name ---
     private static String generateInstanceName() {
         return "aether-" + UUID.randomUUID().toString()
                                           .substring(0, 8);
     }
 
-    // --- Leaf: map GCP instance to InstanceInfo ---
     static InstanceInfo toInstanceInfo(Instance instance) {
         return new InstanceInfo(new InstanceId(instance.name()),
                                 mapStatus(instance.status()),
@@ -129,35 +120,33 @@ public record GcpComputeProvider( GcpClient client,
                                 safeLabels(instance));
     }
 
-    // --- Leaf: safely extract labels from instance, defaulting to empty map ---
     private static Map<String, String> safeLabels(Instance instance) {
         return option(instance.labels()).or(Map.of());
     }
 
-    // --- Leaf: map list of instances ---
     private static List<InstanceInfo> toInstanceInfoList(List<Instance> instances) {
         return instances.stream().map(GcpComputeProvider::toInstanceInfo)
                                .toList();
     }
 
-    // --- Leaf: map GCP status string to InstanceStatus ---
     static InstanceStatus mapStatus(String gcpStatus) {
-        return switch (gcpStatus) {case "PROVISIONING", "STAGING" -> InstanceStatus.PROVISIONING;case "RUNNING" -> InstanceStatus.RUNNING;case "STOPPING", "TERMINATED", "SUSPENDED", "SUSPENDING" -> InstanceStatus.STOPPING;default -> InstanceStatus.TERMINATED;};
+        return switch (gcpStatus){
+            case "PROVISIONING", "STAGING" -> InstanceStatus.PROVISIONING;
+            case "RUNNING" -> InstanceStatus.RUNNING;
+            case "STOPPING", "TERMINATED", "SUSPENDED", "SUSPENDING" -> InstanceStatus.STOPPING;
+            default -> InstanceStatus.TERMINATED;
+        };
     }
 
-    // --- Leaf: collect all IP addresses from an instance ---
     static List<String> collectAddresses(Instance instance) {
-        return option(instance.networkInterfaces()).map(GcpComputeProvider::extractIpsFromInterfaces)
-                     .or(List.of());
+        return option(instance.networkInterfaces()).map(GcpComputeProvider::extractIpsFromInterfaces).or(List.of());
     }
 
-    // --- Leaf: extract IPs from network interfaces ---
     private static List<String> extractIpsFromInterfaces(List<Instance.NetworkInterface> interfaces) {
         return interfaces.stream().map(Instance.NetworkInterface::networkIP)
                                 .toList();
     }
 
-    // --- Leaf: convert tag filter map to GCP label filter string ---
     static String toLabelFilter(Map<String, String> tagFilter) {
         return tagFilter.entrySet().stream()
                                  .map(GcpComputeProvider::toLabelFilterEntry)
@@ -165,27 +154,22 @@ public record GcpComputeProvider( GcpClient client,
                                  .orElse("");
     }
 
-    // --- Leaf: format a single label filter entry for GCP ---
     private static String toLabelFilterEntry(Map.Entry<String, String> entry) {
         return "labels." + entry.getKey() + "=" + entry.getValue();
     }
 
-    // --- Leaf: combine two filter expressions with AND ---
     private static String combineWithAnd(String a, String b) {
         return a + " AND " + b;
     }
 
-    // --- Leaf: map cause to provision error ---
     private static EnvironmentError toProvisionError(Cause cause) {
         return EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
     }
 
-    // --- Leaf: map cause to terminate error ---
     private static EnvironmentError toTerminateError(InstanceId instanceId, Cause cause) {
         return EnvironmentError.terminateFailed(instanceId, new RuntimeException(cause.message()));
     }
 
-    // --- Leaf: map cause to list instances error ---
     private static EnvironmentError toListInstancesError(Cause cause) {
         return EnvironmentError.listInstancesFailed(new RuntimeException(cause.message()));
     }

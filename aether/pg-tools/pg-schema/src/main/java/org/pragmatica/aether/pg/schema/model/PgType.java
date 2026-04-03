@@ -5,6 +5,7 @@ import org.pragmatica.lang.Option;
 import java.util.ArrayList;
 import java.util.List;
 
+
 /// PostgreSQL type system representation.
 public sealed interface PgType {
     String name();
@@ -31,14 +32,14 @@ public sealed interface PgType {
         public EnumType withValueBefore(String value, String before) {
             var newValues = new ArrayList<>(values);
             int idx = newValues.indexOf(before);
-            if ( idx >= 0) { newValues.add(idx, value);} else { newValues.add(value);}
+            if (idx >= 0) {newValues.add(idx, value);} else {newValues.add(value);}
             return new EnumType(name, schema, List.copyOf(newValues));
         }
 
         public EnumType withValueAfter(String value, String after) {
             var newValues = new ArrayList<>(values);
             int idx = newValues.indexOf(after);
-            if ( idx >= 0) { newValues.add(idx + 1, value);} else { newValues.add(value);}
+            if (idx >= 0) {newValues.add(idx + 1, value);} else {newValues.add(value);}
             return new EnumType(name, schema, List.copyOf(newValues));
         }
     }

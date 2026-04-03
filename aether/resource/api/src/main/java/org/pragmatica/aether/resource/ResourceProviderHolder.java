@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.unitResult;
 
+
 /// Thread-safe holder for the global ResourceProvider instance.
 ///
 /// This is an internal implementation detail. Use {@link ResourceProvider#instance()}

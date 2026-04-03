@@ -7,16 +7,15 @@ import org.pragmatica.messaging.Message;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
 
+
 /// A mutation originating from a worker node, to be forwarded to core for consensus.
 ///
 /// @param sourceWorker   the worker that originated this mutation
 /// @param correlationId  unique ID for tracking the mutation through the pipeline
 /// @param command        the KV command to apply
-@Codec
-@CodecFor(KVCommand.class)
-public record WorkerMutation( NodeId sourceWorker,
-                              String correlationId,
-                              KVCommand<AetherKey> command) implements Message.Wired {
+@Codec@CodecFor(KVCommand.class) public record WorkerMutation(NodeId sourceWorker,
+                                                              String correlationId,
+                                                              KVCommand<AetherKey> command) implements Message.Wired {
     public static WorkerMutation workerMutation(NodeId sourceWorker,
                                                 String correlationId,
                                                 KVCommand<AetherKey> command) {

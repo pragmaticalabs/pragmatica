@@ -11,6 +11,7 @@ import io.r2dbc.pool.ConnectionPoolConfiguration;
 import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactoryOptions;
 
+
 /// SPI factory for creating R2DBC SqlConnector instances.
 ///
 /// Creates R2dbcSqlConnector with R2DBC connection pooling.
@@ -43,7 +44,7 @@ public final class R2dbcSqlConnectorFactory implements ResourceFactory<SqlConnec
         config.effectivePassword().onPresent(p -> optionsBuilder.option(ConnectionFactoryOptions.PASSWORD, p));
         var connectionFactory = ConnectionFactories.get(optionsBuilder.build());
         var poolConfig = ConnectionPoolConfiguration.builder(connectionFactory).maxSize(config.poolConfig()
-        .maxConnections())
+                                                                                                         .maxConnections())
                                                             .initialSize(config.poolConfig().minConnections())
                                                             .maxIdleTime(config.poolConfig().idleTimeout()
                                                                                           .duration())

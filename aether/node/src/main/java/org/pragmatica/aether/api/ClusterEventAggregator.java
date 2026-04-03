@@ -22,45 +22,44 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
+
 /// Aggregates cluster events from MessageRouter fan-out into a bounded ring buffer.
 ///
 /// Listens to topology changes, leader elections, quorum state, deployments,
 /// slice failures, and network events. Each handler creates a structured
 /// ClusterEvent and stores it for dashboard and API consumption.
-@SuppressWarnings("JBCT-RET-01")
-public final class ClusterEventAggregator {
+@SuppressWarnings("JBCT-RET-01") public final class ClusterEventAggregator {
     private final RingBuffer<ClusterEvent> buffer;
+
     private final AtomicLong quorumSequence = new AtomicLong();
+
     private final ConcurrentHashMap<String, Long> deploymentStartTimes = new ConcurrentHashMap<>();
+
     private final ConcurrentHashMap<String, Long> nodeJoinTimes = new ConcurrentHashMap<>();
 
     private ClusterEventAggregator(ClusterEventAggregatorConfig config) {
         this.buffer = RingBuffer.ringBuffer(config.maxEvents());
     }
 
-    /// Factory method following JBCT naming convention.
     public static ClusterEventAggregator clusterEventAggregator(ClusterEventAggregatorConfig config) {
         return new ClusterEventAggregator(config);
     }
 
-    /// Get all events in order from oldest to newest.
     public List<ClusterEvent> events() {
         return buffer.toList();
     }
 
-    /// Get events that occurred after the given timestamp.
     public List<ClusterEvent> eventsSince(Instant since) {
         return buffer.filter(e -> e.timestamp().isAfter(since));
     }
 
-    // --- Message handlers ---
     public void onNodeAdded(TopologyChangeNotification.NodeAdded event) {
         nodeJoinTimes.put(event.nodeId().id(),
                           System.currentTimeMillis());
         buffer.add(ClusterEvent.clusterEvent(EventType.NODE_JOINED,
                                              Severity.INFO,
                                              "Node " + event.nodeId().id() + " joined cluster (now " + event.topology()
-        .size() + " nodes)",
+                                                                                                                     .size() + " nodes)",
                                              Map.of("nodeId",
                                                     event.nodeId().id(),
                                                     "clusterSize",
@@ -71,7 +70,7 @@ public final class ClusterEventAggregator {
         buffer.add(ClusterEvent.clusterEvent(EventType.NODE_LEFT,
                                              Severity.INFO,
                                              "Node " + event.nodeId().id() + " left cluster (now " + event.topology()
-        .size() + " nodes)",
+                                                                                                                   .size() + " nodes)",
                                              Map.of("nodeId",
                                                     event.nodeId().id(),
                                                     "clusterSize",
@@ -99,21 +98,19 @@ public final class ClusterEventAggregator {
     }
 
     public void onQuorumStateChange(QuorumStateNotification event) {
-        if ( !event.advanceSequence(quorumSequence)) {
-        return;}
-        switch ( event.state()) {
-            case ESTABLISHED ->
-            buffer.add(ClusterEvent.clusterEvent(EventType.QUORUM_ESTABLISHED,
-                                                 Severity.INFO,
-                                                 "Quorum established",
-                                                 Map.of()));
-            case DISAPPEARED ->
-            buffer.add(ClusterEvent.clusterEvent(EventType.QUORUM_LOST, Severity.CRITICAL, "Quorum lost", Map.of()));
+        if (!event.advanceSequence(quorumSequence)) {return;}
+        switch (event.state()){
+            case ESTABLISHED -> buffer.add(ClusterEvent.clusterEvent(EventType.QUORUM_ESTABLISHED,
+                                                                     Severity.INFO,
+                                                                     "Quorum established",
+                                                                     Map.of()));
+            case DISAPPEARED -> buffer.add(ClusterEvent.clusterEvent(EventType.QUORUM_LOST,
+                                                                     Severity.CRITICAL,
+                                                                     "Quorum lost",
+                                                                     Map.of()));
         }
     }
 
-    /// Derive deployment events from NodeArtifactKey state transitions in KV-Store.
-    /// This is the authoritative source — visible on ALL nodes via consensus.
     public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> event) {
         var key = event.cause().key();
         var value = event.cause().value();
@@ -121,7 +118,7 @@ public final class ClusterEventAggregator {
         var nodeId = key.nodeId().id();
         var state = value.state();
         var trackingKey = artifact + ":" + nodeId;
-        switch ( state) {
+        switch (state){
             case LOAD -> handleDeploymentStarted(trackingKey, artifact, nodeId);
             case ACTIVE -> handleDeploymentCompleted(trackingKey, artifact, nodeId);
             case FAILED -> handleDeploymentFailed(trackingKey, artifact, nodeId, value);
@@ -147,10 +144,7 @@ public final class ClusterEventAggregator {
                                              buildCompletedMetadata(artifact, nodeId, durationMs)));
     }
 
-    private void handleDeploymentFailed(String trackingKey,
-                                        String artifact,
-                                        String nodeId,
-                                        NodeArtifactValue value) {
+    private void handleDeploymentFailed(String trackingKey, String artifact, String nodeId, NodeArtifactValue value) {
         var durationMs = computeAndRemoveDuration(trackingKey);
         var durationSuffix = durationMs.map(ms -> " after " + formatDuration(ms)).or("");
         var reason = value.failureReason().or("unknown");
@@ -164,7 +158,7 @@ public final class ClusterEventAggregator {
         buffer.add(ClusterEvent.clusterEvent(EventType.SLICE_FAILURE,
                                              Severity.CRITICAL,
                                              "All instances of " + event.artifact().asString() + ":" + event.method()
-        .name() + " failed",
+                                                                                                                   .name() + " failed",
                                              Map.of("artifact",
                                                     event.artifact().asString(),
                                                     "method",
@@ -198,12 +192,12 @@ public final class ClusterEventAggregator {
     }
 
     public void onReconciliationAdjustment(ClusterDeploymentManager.ReconciliationAdjustment event) {
-        var direction = event.currentInstances() < event.desiredInstances()
-                        ? "up"
-                        : "down";
-        var eventType = event.currentInstances() < event.desiredInstances()
-                        ? EventType.SCALE_UP
-                        : EventType.SCALE_DOWN;
+        var direction = event.currentInstances() <event.desiredInstances()
+                       ? "up"
+                       : "down";
+        var eventType = event.currentInstances() <event.desiredInstances()
+                       ? EventType.SCALE_UP
+                       : EventType.SCALE_DOWN;
         buffer.add(ClusterEvent.clusterEvent(eventType,
                                              Severity.INFO,
                                              "Reconciliation: " + event.artifact().asString() + " adjusted " + direction + " from " + event.currentInstances() + " to " + event.desiredInstances() + " instances",
@@ -225,7 +219,6 @@ public final class ClusterEventAggregator {
                                                     event.nodeId().id())));
     }
 
-    // --- Operational event handlers ---
     public void onAccessDenied(OperationalEvent.AccessDenied event) {
         buffer.add(ClusterEvent.clusterEvent(EventType.ACCESS_DENIED,
                                              Severity.WARNING,
@@ -303,7 +296,7 @@ public final class ClusterEventAggregator {
         buffer.add(ClusterEvent.clusterEvent(EventType.CONNECTION_FAILED,
                                              Severity.WARNING,
                                              "Connection to node " + event.nodeId().id() + " failed: " + event.cause()
-        .message(),
+                                                                                                                    .message(),
                                              Map.of("nodeId",
                                                     event.nodeId().id(),
                                                     "cause",
@@ -312,19 +305,23 @@ public final class ClusterEventAggregator {
 
     private Option<Long> computeAndRemoveDuration(String trackingKey) {
         return Option.option(deploymentStartTimes.remove(trackingKey))
-        .map(startTime -> System.currentTimeMillis() - startTime);
+                            .map(startTime -> System.currentTimeMillis() - startTime);
     }
 
     private String buildNodeReadySuffix(String nodeId) {
         var nodeJoinTime = nodeJoinTimes.remove(nodeId);
-        if ( nodeJoinTime == null) {
-        return "";}
+        if (nodeJoinTime == null) {return "";}
         var joinToDeployMs = System.currentTimeMillis() - nodeJoinTime;
         return " (node ready in " + formatDuration(joinToDeployMs) + ")";
     }
 
     private static Map<String, String> buildCompletedMetadata(String artifact, String nodeId, Option<Long> durationMs) {
-        return durationMs.map(ms -> Map.of("artifact", artifact, "nodeId", nodeId, "durationMs", String.valueOf(ms)))
+        return durationMs.map(ms -> Map.of("artifact",
+                                           artifact,
+                                           "nodeId",
+                                           nodeId,
+                                           "durationMs",
+                                           String.valueOf(ms)))
         .or(Map.of("artifact", artifact, "nodeId", nodeId));
     }
 
@@ -335,15 +332,15 @@ public final class ClusterEventAggregator {
         var base = Map.of("artifact", artifact, "nodeId", nodeId, "reason", reason);
         return durationMs.map(ms -> {
                                   var metadata = new java.util.HashMap<>(base);
-                                  metadata.put("durationMs", String.valueOf(ms));
+                                  metadata.put("durationMs",
+                                               String.valueOf(ms));
                                   return Map.copyOf(metadata);
                               })
         .or(base);
     }
 
     private static String formatDuration(long durationMs) {
-        if ( durationMs < 1000) {
-        return durationMs + "ms";}
+        if (durationMs <1000) {return durationMs + "ms";}
         return String.format("%.1fs", durationMs / 1000.0);
     }
 }

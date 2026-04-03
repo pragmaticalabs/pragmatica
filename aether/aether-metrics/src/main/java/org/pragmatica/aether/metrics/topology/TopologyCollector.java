@@ -25,6 +25,7 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.unitResult;
 
+
 /// Collects cluster topology information from various sources.
 ///
 /// Aggregates data from:
@@ -37,11 +38,13 @@ public final class TopologyCollector {
     private static final Logger log = LoggerFactory.getLogger(TopologyCollector.class);
 
     private final AtomicReference<TopologyManager> topologyManager = new AtomicReference<>();
+
     private final AtomicReference<LeaderManager> leaderManager = new AtomicReference<>();
+
     private final AtomicReference<KVStore<AetherKey, AetherValue>> kvStore = new AtomicReference<>();
 
-    // Known nodes tracked via topology change notifications
     private final ConcurrentHashMap<String, NodeInfo> knownNodes = new ConcurrentHashMap<>();
+
     private final ConcurrentHashMap<String, Long> nodeSuspectTimes = new ConcurrentHashMap<>();
 
     private TopologyCollector() {}
@@ -50,27 +53,22 @@ public final class TopologyCollector {
         return new TopologyCollector();
     }
 
-    /// Set the topology manager reference.
     public Result<Unit> setTopologyManager(TopologyManager manager) {
         topologyManager.set(manager);
         option(manager).onPresent(this::registerSelf);
         return unitResult();
     }
 
-    /// Set the leader manager reference.
     public Result<Unit> setLeaderManager(LeaderManager manager) {
         leaderManager.set(manager);
         return unitResult();
     }
 
-    /// Set the KV store reference.
-    @SuppressWarnings("JBCT-ACR-01")
-    public Result<Unit> setKVStore(KVStore<AetherKey, AetherValue> store) {
+    @SuppressWarnings("JBCT-ACR-01") public Result<Unit> setKVStore(KVStore<AetherKey, AetherValue> store) {
         kvStore.set(store);
         return unitResult();
     }
 
-    /// Register a node as known.
     public Result<Unit> registerNode(NodeInfo node) {
         knownNodes.put(node.id().id(),
                        node);
@@ -78,31 +76,27 @@ public final class TopologyCollector {
         return unitResult();
     }
 
-    /// Unregister a node.
     public Result<Unit> unregisterNode(NodeId nodeId) {
         knownNodes.remove(nodeId.id());
         nodeSuspectTimes.remove(nodeId.id());
         return unitResult();
     }
 
-    /// Mark a node as suspected.
     public Result<Unit> markSuspected(String nodeId) {
         nodeSuspectTimes.put(nodeId, System.currentTimeMillis());
         return unitResult();
     }
 
-    /// Clear suspected status for a node.
     public Result<Unit> clearSuspected(String nodeId) {
         nodeSuspectTimes.remove(nodeId);
         return unitResult();
     }
 
-    /// Take a snapshot of current cluster topology.
     public ClusterTopology snapshot() {
         var topology = option(topologyManager.get());
         var leader = option(leaderManager.get());
         var store = option(kvStore.get());
-        if ( topology.isEmpty()) {
+        if (topology.isEmpty()) {
             log.trace("TopologyManager not set, returning empty topology");
             return ClusterTopology.EMPTY;
         }
@@ -132,8 +126,8 @@ public final class TopologyCollector {
         String address = node.address().host() + ":" + node.address().port();
         boolean isLeader = leaderId.map(id -> id.equals(nodeIdStr)).or(false);
         return nodeSuspectTimes.containsKey(nodeIdStr)
-               ? ClusterTopology.NodeInfo.suspectedNodeInfo(nodeIdStr, address)
-               : ClusterTopology.NodeInfo.nodeInfo(nodeIdStr, address, isLeader);
+              ? ClusterTopology.NodeInfo.suspectedNodeInfo(nodeIdStr, address)
+              : ClusterTopology.NodeInfo.nodeInfo(nodeIdStr, address, isLeader);
     }
 
     private int countHealthyNodes() {
@@ -149,10 +143,7 @@ public final class TopologyCollector {
             store.forEach(SliceNodeKey.class, SliceNodeValue.class, (key, _) -> countSlice(sliceCounts, key));
             sliceCounts.forEach((artifact, distribution) -> sliceInfos.put(artifact,
                                                                            buildSliceInfo(artifact, distribution)));
-        }
-
-
-        catch (Exception e) {
+        } catch (Exception e) {
             log.debug("Failed to collect slice info: {}", e.getMessage());
         }
         return sliceInfos;

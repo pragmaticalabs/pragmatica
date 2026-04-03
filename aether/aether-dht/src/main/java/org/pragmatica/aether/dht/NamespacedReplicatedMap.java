@@ -19,6 +19,7 @@ import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Package-private implementation of ReplicatedMap with namespace-prefixed keys.
 final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
     private static final Logger log = LoggerFactory.getLogger(NamespacedReplicatedMap.class);
@@ -30,9 +31,13 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
     private final Function<byte[], K> keyDeserializer;
     private final Function<V, byte[]> valueSerializer;
     private final Function<byte[], V> valueDeserializer;
+
     private final ConcurrentHashMap<K, V> localCache = new ConcurrentHashMap<>();
+
     private final List<MapSubscription<K, V>> subscriptions = new CopyOnWriteArrayList<>();
+
     private final Deque<PendingNotification<K, V>> pendingNotifications = new ArrayDeque<>();
+
     private boolean draining;
 
     private record PendingNotification<K, V>(K key, V value){}
@@ -53,7 +58,8 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
     }
 
     @Override public Promise<Unit> put(K key, V value) {
-        return client.put(prefixKey(keySerializer.apply(key)), valueSerializer.apply(value))
+        return client.put(prefixKey(keySerializer.apply(key)),
+                          valueSerializer.apply(value))
         .withSuccess(_ -> cacheAndNotify(key, value));
     }
 
@@ -63,7 +69,7 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
 
     @Override public Promise<Boolean> remove(K key) {
         return client.remove(prefixKey(keySerializer.apply(key)))
-        .withSuccess(removed -> cacheRemoveAndNotify(key, removed));
+                            .withSuccess(removed -> cacheRemoveAndNotify(key, removed));
     }
 
     @Override public ReplicatedMap<K, V> subscribe(MapSubscription<K, V> subscription) {
@@ -71,7 +77,7 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
         return this;
     }
 
-    @Contract @Override public void forEach(BiConsumer<K, V> consumer) {
+    @Contract@Override public void forEach(BiConsumer<K, V> consumer) {
         localCache.forEach(consumer);
     }
 
@@ -79,21 +85,16 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
         return name;
     }
 
-    /// Dispatch a remote DHT put to local subscribers if the key matches this map's namespace.
-    /// Returns true if the key was dispatched (prefix matched), false otherwise.
     boolean onRemotePut(byte[] rawKey, byte[] rawValue) {
-        if ( !startsWith(rawKey, namespacePrefix)) {
-        return false;}
+        if (!startsWith(rawKey, namespacePrefix)) {return false;}
         var key = keyDeserializer.apply(Arrays.copyOfRange(rawKey, namespacePrefix.length, rawKey.length));
         var value = valueDeserializer.apply(rawValue);
         cacheAndNotify(key, value);
         return true;
     }
 
-    /// Dispatch a remote DHT remove to local subscribers if the key matches this map's namespace.
     boolean onRemoteRemove(byte[] rawKey) {
-        if ( !startsWith(rawKey, namespacePrefix)) {
-        return false;}
+        if (!startsWith(rawKey, namespacePrefix)) {return false;}
         var key = keyDeserializer.apply(Arrays.copyOfRange(rawKey, namespacePrefix.length, rawKey.length));
         localCache.remove(key);
         subscriptions.forEach(sub -> safeOnRemove(sub, key));
@@ -101,11 +102,8 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
     }
 
     private static boolean startsWith(byte[] array, byte[] prefix) {
-        if ( array.length < prefix.length) {
-        return false;}
-        for ( int i = 0; i < prefix.length; i++) {
-        if ( array[i] != prefix[i]) {
-        return false;}}
+        if (array.length <prefix.length) {return false;}
+        for (int i = 0;i <prefix.length;i++) {if (array[i] != prefix[i]) {return false;}}
         return true;
     }
 
@@ -116,11 +114,9 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
         return result;
     }
 
-    @SuppressWarnings("JBCT-RET-01") // Notification side-effect drain loop
-    private void cacheAndNotify(K key, V value) {
+    @SuppressWarnings("JBCT-RET-01") private void cacheAndNotify(K key, V value) {
         pendingNotifications.addLast(new PendingNotification<>(key, value));
-        if ( draining) {
-        return;}
+        if (draining) {return;}
         draining = true;
         try {
             drainPendingNotifications();
@@ -129,48 +125,37 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
         }
     }
 
-    @SuppressWarnings("JBCT-RET-01") // Notification side-effect drain loop
-    private void drainPendingNotifications() {
+    @SuppressWarnings("JBCT-RET-01") private void drainPendingNotifications() {
         PendingNotification<K, V> pending;
-        while ( (pending = pendingNotifications.pollFirst()) != null) {
+        while ((pending = pendingNotifications.pollFirst()) != null) {
             localCache.put(pending.key(), pending.value());
             notifySubscribers(pending.key(), pending.value());
         }
     }
 
-    @SuppressWarnings("JBCT-RET-01") // Notification side-effect - void required
-    private void notifySubscribers(K key, V value) {
+    @SuppressWarnings("JBCT-RET-01") private void notifySubscribers(K key, V value) {
         subscriptions.forEach(sub -> safeOnPut(sub, key, value));
     }
 
-    @SuppressWarnings("JBCT-RET-01") // Notification side-effect - void required
-    private void cacheRemoveAndNotify(K key, boolean removed) {
-        if ( removed) {
+    @SuppressWarnings("JBCT-RET-01") private void cacheRemoveAndNotify(K key, boolean removed) {
+        if (removed) {
             localCache.remove(key);
             subscriptions.forEach(sub -> safeOnRemove(sub, key));
         }
     }
 
-    @SuppressWarnings("JBCT-RET-01") // Notification side-effect - void required
-    private void safeOnPut(MapSubscription<K, V> sub, K key, V value) {
+    @SuppressWarnings("JBCT-RET-01") private void safeOnPut(MapSubscription<K, V> sub, K key, V value) {
         try {
             sub.onPut(key, value);
-        }
-
-
-        catch (Exception e) {
+        } catch (Exception e) {
             log.warn("MapSubscription.onPut failed for map '{}': {}", name, e.getMessage());
         }
     }
 
-    @SuppressWarnings("JBCT-RET-01") // Notification side-effect - void required
-    private void safeOnRemove(MapSubscription<K, V> sub, K key) {
+    @SuppressWarnings("JBCT-RET-01") private void safeOnRemove(MapSubscription<K, V> sub, K key) {
         try {
             sub.onRemove(key);
-        }
-
-
-        catch (Exception e) {
+        } catch (Exception e) {
             log.warn("MapSubscription.onRemove failed for map '{}': {}", name, e.getMessage());
         }
     }

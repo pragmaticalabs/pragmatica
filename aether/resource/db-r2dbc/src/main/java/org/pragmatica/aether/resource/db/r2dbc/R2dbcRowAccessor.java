@@ -7,6 +7,7 @@ import org.pragmatica.lang.Result;
 
 import io.r2dbc.spi.Row;
 
+
 /// R2DBC Row implementation of RowAccessor.
 ///
 /// Uses `Result.lift` at the adapter boundary to convert R2DBC exceptions
@@ -20,37 +21,44 @@ final class R2dbcRowAccessor implements RowAccessor {
     }
 
     @Override public Result<String> getString(String column) {
-        return Result.lift(e -> queryError("getString", column, e), () -> row.get(column, String.class))
+        return Result.lift(e -> queryError("getString", column, e),
+                           () -> row.get(column, String.class))
         .flatMap(v -> Option.option(v).toResult(nullColumnError("getString", column)));
     }
 
     @Override public Result<Integer> getInt(String column) {
-        return Result.lift(e -> queryError("getInt", column, e), () -> row.get(column, Integer.class))
+        return Result.lift(e -> queryError("getInt", column, e),
+                           () -> row.get(column, Integer.class))
         .flatMap(v -> Option.option(v).toResult(nullColumnError("getInt", column)));
     }
 
     @Override public Result<Long> getLong(String column) {
-        return Result.lift(e -> queryError("getLong", column, e), () -> row.get(column, Long.class))
+        return Result.lift(e -> queryError("getLong", column, e),
+                           () -> row.get(column, Long.class))
         .flatMap(v -> Option.option(v).toResult(nullColumnError("getLong", column)));
     }
 
     @Override public Result<Double> getDouble(String column) {
-        return Result.lift(e -> queryError("getDouble", column, e), () -> row.get(column, Double.class))
+        return Result.lift(e -> queryError("getDouble", column, e),
+                           () -> row.get(column, Double.class))
         .flatMap(v -> Option.option(v).toResult(nullColumnError("getDouble", column)));
     }
 
     @Override public Result<Boolean> getBoolean(String column) {
-        return Result.lift(e -> queryError("getBoolean", column, e), () -> row.get(column, Boolean.class))
+        return Result.lift(e -> queryError("getBoolean", column, e),
+                           () -> row.get(column, Boolean.class))
         .flatMap(v -> Option.option(v).toResult(nullColumnError("getBoolean", column)));
     }
 
     @Override public Result<byte[]> getBytes(String column) {
-        return Result.lift(e -> queryError("getBytes", column, e), () -> row.get(column, byte[].class))
+        return Result.lift(e -> queryError("getBytes", column, e),
+                           () -> row.get(column, byte[].class))
         .flatMap(v -> Option.option(v).toResult(nullColumnError("getBytes", column)));
     }
 
     @Override public <V> Result<V> getObject(String column, Class<V> type) {
-        return Result.lift(e -> queryError("getObject", column, e), () -> row.get(column, type))
+        return Result.lift(e -> queryError("getObject", column, e),
+                           () -> row.get(column, type))
         .flatMap(v -> Option.option(v).toResult(nullColumnError("getObject", column)));
     }
 

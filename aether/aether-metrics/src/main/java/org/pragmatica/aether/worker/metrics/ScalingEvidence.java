@@ -2,6 +2,7 @@ package org.pragmatica.aether.worker.metrics;
 
 import org.pragmatica.serialization.Codec;
 
+
 /// Evidence supporting a community scaling request.
 /// Collected from the governor's sliding window of follower metrics.
 ///
@@ -12,14 +13,13 @@ import org.pragmatica.serialization.Codec;
 /// @param avgErrorRate           average error rate across community
 /// @param windowDurationMs       sliding window duration in milliseconds
 /// @param timestampMs            when evidence was collected
-@Codec public record ScalingEvidence( int memberCount,
-                                      double avgCpuUsage,
-                                      double avgP95LatencyMs,
-                                      long totalActiveInvocations,
-                                      double avgErrorRate,
-                                      long windowDurationMs,
-                                      long timestampMs) {
-    /// Factory following JBCT naming convention.
+@Codec public record ScalingEvidence(int memberCount,
+                                     double avgCpuUsage,
+                                     double avgP95LatencyMs,
+                                     long totalActiveInvocations,
+                                     double avgErrorRate,
+                                     long windowDurationMs,
+                                     long timestampMs) {
     public static ScalingEvidence scalingEvidence(int memberCount,
                                                   double avgCpuUsage,
                                                   double avgP95LatencyMs,
@@ -36,7 +36,6 @@ import org.pragmatica.serialization.Codec;
                                    timestampMs);
     }
 
-    /// Factory with current timestamp.
     public static ScalingEvidence scalingEvidence(int memberCount,
                                                   double avgCpuUsage,
                                                   double avgP95LatencyMs,

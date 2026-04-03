@@ -17,6 +17,7 @@ import java.util.concurrent.ConcurrentMap;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 
+
 /// Thread-safe registry for tracking loaded slice instances.
 ///
 /// Maps artifacts to their loaded slice instances. Supports:
@@ -24,72 +25,27 @@ import static org.pragmatica.lang.Option.option;
 /// - Lookup by exact artifact
 /// - Lookup by class name with version pattern matching
 /// - Thread-safe concurrent access
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-ZONE-03"})
-public interface SliceRegistry {
-    /// Create a new empty registry.
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-ZONE-03"}) public interface SliceRegistry {
     static SliceRegistry sliceRegistry() {
         return new SliceRegistryImpl(new ConcurrentHashMap<>());
     }
 
-    /// Register a loaded slice.
-    ///
-    /// @param artifact The artifact identifier
-    /// @param slice    The loaded slice instance
-    ///
-    /// @return Success with Unit, or failure if artifact already registered
     Result<Unit> register(Artifact artifact, Slice slice);
-
-    /// Unregister a slice.
-    ///
-    /// @param artifact The artifact identifier
-    ///
-    /// @return Success with Unit, or failure if artifact not found
     Result<Unit> unregister(Artifact artifact);
-
-    /// Lookup slice by exact artifact.
-    ///
-    /// @param artifact The artifact identifier
-    ///
-    /// @return Option containing the slice if found
     Option<Slice> lookup(Artifact artifact);
-
-    /// Find slice by class name and version pattern.
-    ///
-    /// Searches all registered slices for matching class name,
-    /// then filters by version pattern.
-    ///
-    /// @param className      Fully qualified class name
-    /// @param versionPattern Version pattern to match
-    ///
-    /// @return Option containing the first matching slice
     Option<Slice> find(String className, VersionPattern versionPattern);
-
-    /// Get all registered artifacts.
     List<Artifact> allArtifacts();
-
-    /// Find slice by groupId, artifactId, and version pattern.
-    ///
-    /// Searches all registered slices for matching groupId and artifactId,
-    /// then filters by version pattern.
-    ///
-    /// @param groupId        Group ID (e.g., "org.example")
-    /// @param artifactId     Artifact ID (e.g., "my-lib")
-    /// @param versionPattern Version pattern to match
-    ///
-    /// @return Option containing the first matching slice
     Option<Slice> findByArtifactKey(String groupId, String artifactId, VersionPattern versionPattern);
 
     record SliceRegistryImpl(ConcurrentMap<Artifact, Slice> registry) implements SliceRegistry {
         @Override public Result<Unit> register(Artifact artifact, Slice slice) {
-            // putIfAbsent returns null on success (nothing was there), returns existing value on failure
-            return option(registry.putIfAbsent(artifact, slice))
-            .fold(Result::unitResult,
-                  _ -> ALREADY_REGISTERED.apply(artifact.asString()).result());
+            return option(registry.putIfAbsent(artifact, slice)).fold(Result::unitResult,
+                                                                      _ -> ALREADY_REGISTERED.apply(artifact.asString())
+                                                                                                   .result());
         }
 
         @Override public Result<Unit> unregister(Artifact artifact) {
-            return option(registry.remove(artifact)).toResult(NOT_FOUND.apply(artifact.asString()))
-                         .mapToUnit();
+            return option(registry.remove(artifact)).toResult(NOT_FOUND.apply(artifact.asString())).mapToUnit();
         }
 
         @Override public Option<Slice> lookup(Artifact artifact) {
@@ -129,10 +85,6 @@ public interface SliceRegistry {
         }
 
         private boolean matchesClassName(Artifact artifact, String className) {
-            // Extract class name from artifact ID
-            // Convention: artifact ID is typically the class name or last part of package
-            // For exact matching, we'd need to load the class, but that's expensive
-            // So we use a simple string match on the artifact ID
             return artifact.artifactId().id()
                                       .equals(extractSimpleName(className));
         }
@@ -140,8 +92,8 @@ public interface SliceRegistry {
         private String extractSimpleName(String className) {
             var lastDot = className.lastIndexOf('.');
             return lastDot >= 0
-                   ? className.substring(lastDot + 1)
-                   : className;
+                  ? className.substring(lastDot + 1)
+                  : className;
         }
 
         private static final Fn1<Cause, String> ALREADY_REGISTERED = Causes.forOneValue("Artifact already registered: %s");

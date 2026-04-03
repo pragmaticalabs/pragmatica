@@ -9,6 +9,7 @@ import org.pragmatica.lang.Promise;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 
+
 /// SPI factory for creating JDBC JooqConnector instances.
 ///
 /// Creates JdbcJooqConnector with HikariCP connection pooling.
@@ -26,15 +27,11 @@ public final class JdbcJooqConnectorFactory implements ResourceFactory<JooqConne
         return Promise.lift(DatabaseConnectorError::databaseFailure, () -> connector(config));
     }
 
-    @SuppressWarnings("JBCT-EX-01")
-    private static JooqConnector connector(DatabaseConnectorConfig config) {
+    @SuppressWarnings("JBCT-EX-01") private static JooqConnector connector(DatabaseConnectorConfig config) {
         var dataSource = hikariDataSource(config);
         try {
             return JdbcJooqConnector.jdbcJooqConnector(config, dataSource);
-        }
-
-
-        catch (Exception e) {
+        } catch (Exception e) {
             dataSource.close();
             throw e;
         }

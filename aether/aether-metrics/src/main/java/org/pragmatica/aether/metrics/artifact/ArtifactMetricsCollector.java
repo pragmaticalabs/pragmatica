@@ -6,6 +6,7 @@ import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import java.util.Map;
 import java.util.Set;
 
+
 /// Collects and exposes artifact storage and deployment metrics.
 ///
 ///
@@ -21,30 +22,20 @@ import java.util.Set;
 /// Combines storage metrics from {@link ArtifactStore} and deployment tracking
 /// from {@link ArtifactDeploymentTracker}.
 public interface ArtifactMetricsCollector {
-    // Metric names
     String ARTIFACT_CHUNKS_TOTAL = "artifact.chunks.total";
+
     String ARTIFACT_MEMORY_BYTES = "artifact.memory.bytes";
+
     String ARTIFACT_COUNT = "artifact.count";
+
     String ARTIFACT_DEPLOYED_COUNT = "artifact.deployed.count";
 
-    /// Collect all artifact metrics.
     Map<String, Double> collectMetrics();
-
-    /// Check if an artifact is deployed anywhere in the cluster.
     boolean isDeployed(Artifact artifact);
-
-    /// Get all deployed artifacts.
     Set<Artifact> deployedArtifacts();
-
-    /// Get the artifact store metrics.
     ArtifactStore.Metrics storeMetrics();
-
-    /// Get the deployment tracker for detailed queries.
     ArtifactDeploymentTracker deploymentTracker();
 
-    /// Create an artifact metrics collector.
-    ///
-    /// @param artifactStore the artifact store to collect storage metrics from
     static ArtifactMetricsCollector artifactMetricsCollector(ArtifactStore artifactStore) {
         return new ArtifactMetricsCollectorImpl(artifactStore, ArtifactDeploymentTracker.artifactDeploymentTracker());
     }
@@ -54,8 +45,7 @@ class ArtifactMetricsCollectorImpl implements ArtifactMetricsCollector {
     private final ArtifactStore artifactStore;
     private final ArtifactDeploymentTracker deploymentTracker;
 
-    ArtifactMetricsCollectorImpl(ArtifactStore artifactStore,
-                                 ArtifactDeploymentTracker deploymentTracker) {
+    ArtifactMetricsCollectorImpl(ArtifactStore artifactStore, ArtifactDeploymentTracker deploymentTracker) {
         this.artifactStore = artifactStore;
         this.deploymentTracker = deploymentTracker;
     }

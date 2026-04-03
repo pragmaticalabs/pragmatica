@@ -3,9 +3,9 @@ package org.pragmatica.aether.update;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.lang.Cause;
 
+
 /// Errors that can occur during A/B test deployment operations.
 public sealed interface AbTestDeploymentError extends Cause {
-    /// A/B test not found.
     record TestNotFound(String testId) implements AbTestDeploymentError {
         public static TestNotFound testNotFound(String testId) {
             return new TestNotFound(testId);
@@ -16,7 +16,6 @@ public sealed interface AbTestDeploymentError extends Cause {
         }
     }
 
-    /// Active A/B test already exists for this artifact.
     record TestAlreadyExists(ArtifactBase artifactBase) implements AbTestDeploymentError {
         public static TestAlreadyExists testAlreadyExists(ArtifactBase artifactBase) {
             return new TestAlreadyExists(artifactBase);
@@ -27,7 +26,6 @@ public sealed interface AbTestDeploymentError extends Cause {
         }
     }
 
-    /// Invalid state for the requested operation.
     record InvalidTestState(AbTestState from, AbTestState to) implements AbTestDeploymentError {
         public static InvalidTestState invalidTestState(AbTestState from, AbTestState to) {
             return new InvalidTestState(from, to);
@@ -38,7 +36,6 @@ public sealed interface AbTestDeploymentError extends Cause {
         }
     }
 
-    /// No current version exists (initial deployment).
     record InitialDeployment(ArtifactBase artifactBase) implements AbTestDeploymentError {
         public static InitialDeployment initialDeployment(ArtifactBase artifactBase) {
             return new InitialDeployment(artifactBase);
@@ -49,7 +46,6 @@ public sealed interface AbTestDeploymentError extends Cause {
         }
     }
 
-    /// Winning variant not found in the test.
     record VariantNotFound(String testId, String variant) implements AbTestDeploymentError {
         public static VariantNotFound variantNotFound(String testId, String variant) {
             return new VariantNotFound(testId, variant);
@@ -60,7 +56,6 @@ public sealed interface AbTestDeploymentError extends Cause {
         }
     }
 
-    /// Not the leader node.
     enum NotLeader implements AbTestDeploymentError {
         INSTANCE;
         @Override public String message() {

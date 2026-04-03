@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Handles initial KV state bootstrap for a newly joining worker.
 ///
 /// Bootstrap steps:
@@ -24,46 +25,31 @@ import org.slf4j.LoggerFactory;
 /// 3. Start the Decision stream from the snapshot's sequence number
 ///
 /// The snapshot is requested via the cluster network (QuicClusterNetwork) connection.
-@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
-public interface WorkerBootstrap {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) public interface WorkerBootstrap {
     Logger LOG = LoggerFactory.getLogger(WorkerBootstrap.class);
 
-    /// The sequence number at which the snapshot was taken, or -1 if no snapshot applied.
     long snapshotSequence();
-
-    /// Request a snapshot from the given source node.
     void requestSnapshot(Option<NodeId> source);
-
-    /// Handle a received snapshot response.
     Promise<Unit> onSnapshotReceived(SnapshotResponse response);
-
-    /// Handle incoming snapshot requests (governor responds with snapshot).
     void onSnapshotRequest(SnapshotRequest request, byte[] kvState, long sequenceNumber);
-
-    /// Whether this node has completed bootstrapping.
     boolean isBootstrapped();
-
-    /// Mark bootstrap as complete.
     void markBootstrapped();
-
-    /// Increment the retry counter and return the new value.
     int incrementRetry();
 
-    /// Factory method.
     static WorkerBootstrap workerBootstrap(NodeId selfId, DelegateRouter delegateRouter, KVStore<?, ?> kvStore) {
-        record workerBootstrap( NodeId selfId,
-                                DelegateRouter delegateRouter,
-                                KVStore<?, ?> kvStore,
-                                AtomicBoolean bootstrapped,
-                                AtomicLong snapshotSequenceHolder,
-                                AtomicInteger retryCounter) implements WorkerBootstrap {
+        record workerBootstrap(NodeId selfId,
+                               DelegateRouter delegateRouter,
+                               KVStore<?, ?> kvStore,
+                               AtomicBoolean bootstrapped,
+                               AtomicLong snapshotSequenceHolder,
+                               AtomicInteger retryCounter) implements WorkerBootstrap {
             @Override public long snapshotSequence() {
                 return snapshotSequenceHolder.get();
             }
 
             @Override public void requestSnapshot(Option<NodeId> source) {
                 source.onPresent(this::sendSnapshotRequest)
-                .onEmpty(() -> LOG.warn("No snapshot source available for bootstrap"));
+                                .onEmpty(() -> LOG.warn("No snapshot source available for bootstrap"));
             }
 
             @Override public Promise<Unit> onSnapshotReceived(SnapshotResponse response) {

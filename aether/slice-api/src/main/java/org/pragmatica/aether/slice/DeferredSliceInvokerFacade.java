@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.pragmatica.lang.Option.option;
 
+
 /// A deferred SliceInvokerFacade that can be wired after construction.
 ///
 /// Use this when SliceStore needs to be created before SliceInvoker is available.
@@ -27,12 +28,9 @@ public final class DeferredSliceInvokerFacade implements SliceInvokerFacade {
     }
 
     private static final Cause DELEGATE_ALREADY_SET = Causes.cause("Delegate already set");
+
     private static final Cause NOT_INITIALIZED = Causes.cause("SliceInvokerFacade not initialized");
 
-    /// Set the actual SliceInvokerFacade delegate.
-    /// Must be called before any invocations occur.
-    ///
-    /// @return Result.success if set, or failure if already set
     public Result<Unit> setDelegate(SliceInvokerFacade invoker) {
         return option(delegate.get()).fold(() -> storeDelegate(invoker), _ -> DELEGATE_ALREADY_SET.result());
     }

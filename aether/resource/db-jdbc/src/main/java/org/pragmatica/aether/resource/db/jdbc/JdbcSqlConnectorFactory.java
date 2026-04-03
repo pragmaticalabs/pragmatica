@@ -9,6 +9,7 @@ import org.pragmatica.lang.Promise;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 
+
 /// SPI factory for creating JDBC SqlConnector instances.
 ///
 /// Creates JdbcSqlConnector with HikariCP connection pooling.
@@ -26,15 +27,11 @@ public final class JdbcSqlConnectorFactory implements ResourceFactory<SqlConnect
         return Promise.lift(DatabaseConnectorError::databaseFailure, () -> connector(config));
     }
 
-    @SuppressWarnings("JBCT-EX-01")
-    private static SqlConnector connector(DatabaseConnectorConfig config) {
+    @SuppressWarnings("JBCT-EX-01") private static SqlConnector connector(DatabaseConnectorConfig config) {
         var dataSource = hikariDataSource(config);
         try {
             return JdbcSqlConnector.jdbcSqlConnector(config, dataSource);
-        }
-
-
-        catch (Exception e) {
+        } catch (Exception e) {
             dataSource.close();
             throw e;
         }

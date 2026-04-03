@@ -21,6 +21,7 @@ import static org.pragmatica.http.routing.Route.get;
 import static org.pragmatica.http.routing.Route.post;
 import static org.pragmatica.http.routing.Route.put;
 
+
 /// REST API routes for deployment-related operations.
 /// These endpoints proxy requests to the cluster leader's ManagementServer.
 ///
@@ -34,8 +35,6 @@ import static org.pragmatica.http.routing.Route.put;
 public sealed interface DeploymentRoutes {
     Duration HTTP_TIMEOUT = Duration.ofSeconds(30);
 
-    // ========== Request Records ==========
-    /// Request body for repository PUT operation.
     record RepositoryPutRequest(String groupId, String artifactId, String version, byte[] content) {
         public RepositoryPutRequest {
             content = content.clone();
@@ -46,11 +45,8 @@ public sealed interface DeploymentRoutes {
         }
 
         @Override public boolean equals(Object o) {
-            return o instanceof RepositoryPutRequest other &&
-            groupId.equals(other.groupId) &&
-            artifactId.equals(other.artifactId) &&
-            version.equals(other.version) &&
-            Arrays.equals(content, other.content);
+            return o instanceof RepositoryPutRequest other && groupId.equals(other.groupId) && artifactId.equals(other.artifactId) && version.equals(other.version) && Arrays.equals(content,
+                                                                                                                                                                                     other.content);
         }
 
         @Override public int hashCode() {
@@ -62,26 +58,13 @@ public sealed interface DeploymentRoutes {
         }
     }
 
-    // ========== Response Records ==========
-    /// Generic proxy response wrapper.
-    /// The actual response body comes from the leader's ManagementServer.
     record ProxyResponse(boolean success, String body){}
 
-    /// Slices status response.
-    /// Contains slice data directly from EmberCluster's KV store query.
     record SlicesStatusResponse(java.util.List<EmberCluster.SliceStatus> slices){}
 
-    /// Cluster metrics response from leader.
     record ClusterMetricsResponse(String body){}
 
-    // ========== Route Factory ==========
-    /// Create route source for all deployment-related endpoints.
-    ///
-    /// @param cluster     the EmberCluster for finding the leader node
-    /// @param eventLogger callback to log events for the dashboard
-    /// @return RouteSource containing all deployment routes
-    static RouteSource deploymentRoutes(EmberCluster cluster,
-                                        Consumer<EventLogEntry> eventLogger) {
+    static RouteSource deploymentRoutes(EmberCluster cluster, Consumer<EventLogEntry> eventLogger) {
         var http = JdkHttpOperations.jdkHttpOperations();
         return RouteSource.of(blueprintRoute(cluster, http, eventLogger),
                               slicesStatusRoute(cluster, http),
@@ -89,7 +72,6 @@ public sealed interface DeploymentRoutes {
                               repositoryPutRoute(cluster, eventLogger));
     }
 
-    // ========== Route Definitions ==========
     private static Route<ProxyResponse> blueprintRoute(EmberCluster cluster,
                                                        JdkHttpOperations http,
                                                        Consumer<EventLogEntry> eventLogger) {
@@ -98,14 +80,11 @@ public sealed interface DeploymentRoutes {
                     .toJson(body -> proxyBlueprint(cluster, http, eventLogger, body));
     }
 
-    private static Route<SlicesStatusResponse> slicesStatusRoute(EmberCluster cluster,
-                                                                 JdkHttpOperations http) {
-        return Route.<SlicesStatusResponse>get("/api/slices/status")
-                    .toJson(() -> getSlicesStatus(cluster));
+    private static Route<SlicesStatusResponse> slicesStatusRoute(EmberCluster cluster, JdkHttpOperations http) {
+        return Route.<SlicesStatusResponse>get("/api/slices/status").toJson(() -> getSlicesStatus(cluster));
     }
 
-    private static Route<ClusterMetricsResponse> clusterMetricsRoute(EmberCluster cluster,
-                                                                     JdkHttpOperations http) {
+    private static Route<ClusterMetricsResponse> clusterMetricsRoute(EmberCluster cluster, JdkHttpOperations http) {
         return Route.<ClusterMetricsResponse>get("/api/cluster/metrics")
                     .to(_ -> proxyClusterMetrics(cluster, http))
                     .asJson();
@@ -118,7 +97,6 @@ public sealed interface DeploymentRoutes {
                     .toJson(req -> storeArtifact(cluster, eventLogger, req));
     }
 
-    // ========== Handler Methods ==========
     private static Promise<ProxyResponse> proxyBlueprint(EmberCluster cluster,
                                                          JdkHttpOperations http,
                                                          Consumer<EventLogEntry> eventLogger,
@@ -128,8 +106,7 @@ public sealed interface DeploymentRoutes {
                              .map(body -> logAndBuildBlueprintResponse(eventLogger, body));
     }
 
-    private static ProxyResponse logAndBuildBlueprintResponse(Consumer<EventLogEntry> eventLogger,
-                                                              String body) {
+    private static ProxyResponse logAndBuildBlueprintResponse(Consumer<EventLogEntry> eventLogger, String body) {
         eventLogger.accept(new EventLogEntry("BLUEPRINT", "Applied blueprint"));
         return new ProxyResponse(true, body);
     }
@@ -138,8 +115,7 @@ public sealed interface DeploymentRoutes {
         return new SlicesStatusResponse(cluster.slicesStatus());
     }
 
-    private static Promise<ClusterMetricsResponse> proxyClusterMetrics(EmberCluster cluster,
-                                                                       JdkHttpOperations http) {
+    private static Promise<ClusterMetricsResponse> proxyClusterMetrics(EmberCluster cluster, JdkHttpOperations http) {
         return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
                              .flatMap(port -> proxyGet(http, port, "/api/metrics"))
                              .map(ClusterMetricsResponse::new);
@@ -170,7 +146,6 @@ public sealed interface DeploymentRoutes {
         return new RepositoryPutResponse(true, path, request.content().length);
     }
 
-    // ========== Helper Methods ==========
     private static Option<Integer> findLeaderPort(EmberCluster cluster) {
         return cluster.getLeaderManagementPort();
     }
@@ -178,8 +153,8 @@ public sealed interface DeploymentRoutes {
     private static Option<AetherNode> findAnyNode(EmberCluster cluster) {
         var nodes = cluster.allNodes();
         return nodes.isEmpty()
-               ? Option.none()
-               : Option.some(nodes.getFirst());
+              ? Option.none()
+              : Option.some(nodes.getFirst());
     }
 
     private static String buildRepositoryPath(String groupId, String artifactId, String version) {
@@ -203,8 +178,6 @@ public sealed interface DeploymentRoutes {
         return http.sendString(request).flatMap(result -> result.toResult().async());
     }
 
-    // ========== Error Types ==========
-    /// Error when no leader node is available.
     enum LeaderNotAvailable implements org.pragmatica.lang.Cause {
         INSTANCE;
         @Override public String message() {
@@ -212,7 +185,6 @@ public sealed interface DeploymentRoutes {
         }
     }
 
-    /// Error when no nodes are available in the cluster.
     enum NoNodesAvailable implements org.pragmatica.lang.Cause {
         INSTANCE;
         @Override public String message() {

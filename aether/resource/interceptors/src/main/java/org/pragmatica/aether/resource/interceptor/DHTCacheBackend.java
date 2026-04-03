@@ -10,6 +10,7 @@ import org.pragmatica.serialization.Serializer;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// DHT-backed distributed cache backend.
 ///
 /// Stores cache entries in the cluster's distributed hash table.
@@ -21,10 +22,7 @@ final class DHTCacheBackend implements CacheBackend {
     private final Deserializer deserializer;
     private final String namespace;
 
-    private DHTCacheBackend(DHTClient dhtClient,
-                            Serializer serializer,
-                            Deserializer deserializer,
-                            String namespace) {
+    private DHTCacheBackend(DHTClient dhtClient, Serializer serializer, Deserializer deserializer, String namespace) {
         this.dhtClient = dhtClient;
         this.serializer = serializer;
         this.deserializer = deserializer;

@@ -13,12 +13,14 @@ import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Reads events from sealed segments stored in AHSE.
 /// Used as fallback when the ring buffer no longer holds the requested offset.
 ///
 /// Deserialization format per event: [offset:8][timestamp:8][len:4][data:len]
 public final class SegmentReader {
     private static final Logger log = LoggerFactory.getLogger(SegmentReader.class);
+
     private static final int PER_EVENT_HEADER = Long.BYTES + Long.BYTES + Integer.BYTES;
 
     private final StorageInstance storage;
@@ -29,18 +31,14 @@ public final class SegmentReader {
         this.index = index;
     }
 
-    /// Factory method following JBCT naming convention.
     public static SegmentReader segmentReader(StorageInstance storage, SegmentIndex index) {
         return new SegmentReader(storage, index);
     }
 
-    /// Read up to maxEvents starting from fromOffset for the given stream/partition.
-    /// Returns empty list when no sealed segments cover the requested range.
     public Promise<List<RawEvent>> readEvents(String streamName, int partition, long fromOffset, int maxEvents) {
         var endOffset = fromOffset + maxEvents - 1;
         var refs = index.segmentRange(streamName, partition, fromOffset, endOffset);
-        if ( refs.isEmpty()) {
-        return Promise.success(List.of());}
+        if (refs.isEmpty()) {return Promise.success(List.of());}
         return readFromSegmentRefs(streamName, partition, refs, fromOffset, maxEvents);
     }
 
@@ -59,8 +57,7 @@ public final class SegmentReader {
                                                     long fromOffset,
                                                     int remaining,
                                                     List<RawEvent> accumulated) {
-        if ( refIndex >= refs.size() || remaining <= 0) {
-        return Promise.success(accumulated);}
+        if (refIndex >= refs.size() || remaining <= 0) {return Promise.success(accumulated);}
         var ref = refs.get(refIndex);
         var refName = buildRefName(streamName, partition, ref);
         return storage.resolveRef(refName).async(SegmentError.General.SEGMENT_REF_NOT_FOUND)
@@ -97,10 +94,9 @@ public final class SegmentReader {
     static List<RawEvent> deserializeAndFilter(byte[] serialized, long fromOffset, int maxEvents) {
         var buffer = ByteBuffer.wrap(serialized).order(ByteOrder.BIG_ENDIAN);
         var result = new ArrayList<RawEvent>();
-        while ( buffer.remaining() >= PER_EVENT_HEADER && result.size() < maxEvents) {
+        while (buffer.remaining() >= PER_EVENT_HEADER && result.size() <maxEvents) {
             var event = readSingleEvent(buffer);
-            if ( event.offset() >= fromOffset) {
-            result.add(event);}
+            if (event.offset() >= fromOffset) {result.add(event);}
         }
         return List.copyOf(result);
     }

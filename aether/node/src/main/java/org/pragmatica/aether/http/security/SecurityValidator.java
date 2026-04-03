@@ -12,46 +12,26 @@ import org.pragmatica.lang.Result;
 import java.util.Map;
 import java.util.Set;
 
+
 /// Validates request security based on route policy.
 ///
 /// Extensible interface for different authentication mechanisms.
 /// Implementations validate requests and produce {@link SecurityContext}.
 public interface SecurityValidator {
-    /// Validate request against security policy.
-    ///
-    /// @param request the HTTP request context
-    /// @param policy  the route's security policy
-    /// @return Result containing SecurityContext on success, or failure with SecurityError
     Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy);
 
-    /// Create API key validator with given valid keys.
-    ///
-    /// @param validKeys set of valid API key values
-    /// @return SecurityValidator for API key authentication
     static SecurityValidator apiKeyValidator(Set<String> validKeys) {
         return new ApiKeySecurityValidator(ApiKeySecurityValidator.fromKeySet(validKeys));
     }
 
-    /// Create API key validator with named key entries.
-    ///
-    /// @param keyEntries map of raw API key to entry metadata
-    /// @return SecurityValidator for API key authentication with custom roles
     static SecurityValidator apiKeyValidator(Map<String, ApiKeyEntry> keyEntries) {
         return new ApiKeySecurityValidator(keyEntries);
     }
 
-    /// Create JWT validator with given configuration.
-    ///
-    /// @param jwtConfig JWT configuration including JWKS URL and claim settings
-    /// @return SecurityValidator for JWT Bearer token authentication
     static SecurityValidator jwtValidator(JwtConfig jwtConfig) {
         return new JwtSecurityValidator(jwtConfig);
     }
 
-    /// Create a no-op validator that allows all requests (for disabled security).
-    /// Returns a system principal with full access — used when security is disabled.
-    ///
-    /// @return SecurityValidator that always returns system context
     static SecurityValidator noOpValidator() {
         var systemContext = SecurityContext.securityContext(Principal.principal("system",
                                                                                 Principal.PrincipalType.SERVICE)

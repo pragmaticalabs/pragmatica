@@ -37,6 +37,7 @@ import static org.pragmatica.http.routing.Route.get;
 import static org.pragmatica.http.routing.Route.in;
 import static org.pragmatica.http.routing.Route.post;
 
+
 /// REST API routes for chaos engineering operations.
 /// Provides endpoints for enabling/disabling chaos, injecting events,
 /// and managing cluster nodes (add, kill, rolling restart).
@@ -45,37 +46,26 @@ public final class ChaosRoutes {
 
     private static final Fn1<Cause, String> UNKNOWN_CHAOS_TYPE = Causes.forOneValue("Unknown chaos type: %s");
 
-    /// Creates chaos routes for the Forge API.
-    ///
-    /// @param cluster         the EmberCluster for node management operations
-    /// @param chaosController the ChaosController for chaos injection
-    /// @param events          the event log deque
-    /// @param inventoryState  state for inventory simulation
-    /// @param eventLogger     callback to log events for the dashboard
-    /// @return RouteSource containing all chaos-related routes
     public static RouteSource chaosRoutes(EmberCluster cluster,
                                           ChaosController chaosController,
                                           Deque<ForgeApiResponses.ForgeEvent> events,
                                           InventoryState inventoryState,
                                           Consumer<EventLogEntry> eventLogger) {
-        return in("/api/chaos")
-        .serve(statusRoute(chaosController),
-               enableRoute(chaosController, eventLogger),
-               injectRoute(chaosController, eventLogger),
-               stopRoute(chaosController, eventLogger),
-               stopAllRoute(chaosController, eventLogger),
-               addNodeRoute(cluster, eventLogger),
-               killNodeRoute(cluster, eventLogger),
-               resetMetricsRoute(events, inventoryState, eventLogger),
-               startRollingRestartRoute(cluster, eventLogger),
-               stopRollingRestartRoute(cluster, eventLogger),
-               rollingRestartStatusRoute(cluster));
+        return in("/api/chaos").serve(statusRoute(chaosController),
+                                      enableRoute(chaosController, eventLogger),
+                                      injectRoute(chaosController, eventLogger),
+                                      stopRoute(chaosController, eventLogger),
+                                      stopAllRoute(chaosController, eventLogger),
+                                      addNodeRoute(cluster, eventLogger),
+                                      killNodeRoute(cluster, eventLogger),
+                                      resetMetricsRoute(events, inventoryState, eventLogger),
+                                      startRollingRestartRoute(cluster, eventLogger),
+                                      stopRollingRestartRoute(cluster, eventLogger),
+                                      rollingRestartStatusRoute(cluster));
     }
 
-    // ========== Route Definitions ==========
     private static Route<ChaosStatusResponse> statusRoute(ChaosController chaosController) {
-        return Route.<ChaosStatusResponse>get("/status")
-                    .toJson(() -> chaosStatus(chaosController));
+        return Route.<ChaosStatusResponse>get("/status").toJson(() -> chaosStatus(chaosController));
     }
 
     private static Route<ChaosEnabledResponse> enableRoute(ChaosController chaosController,
@@ -102,18 +92,14 @@ public final class ChaosRoutes {
 
     private static Route<SuccessResponse> stopAllRoute(ChaosController chaosController,
                                                        Consumer<EventLogEntry> eventLogger) {
-        return Route.<SuccessResponse>post("/stop-all")
-                    .toJson(_ -> stopAllChaos(chaosController, eventLogger));
+        return Route.<SuccessResponse>post("/stop-all").toJson(_ -> stopAllChaos(chaosController, eventLogger));
     }
 
-    private static Route<NodeAddedResponse> addNodeRoute(EmberCluster cluster,
-                                                         Consumer<EventLogEntry> eventLogger) {
-        return Route.<NodeAddedResponse>post("/add-node")
-                    .toJson(_ -> addNode(cluster, eventLogger));
+    private static Route<NodeAddedResponse> addNodeRoute(EmberCluster cluster, Consumer<EventLogEntry> eventLogger) {
+        return Route.<NodeAddedResponse>post("/add-node").toJson(_ -> addNode(cluster, eventLogger));
     }
 
-    private static Route<NodeActionResponse> killNodeRoute(EmberCluster cluster,
-                                                           Consumer<EventLogEntry> eventLogger) {
+    private static Route<NodeActionResponse> killNodeRoute(EmberCluster cluster, Consumer<EventLogEntry> eventLogger) {
         return Route.<NodeActionResponse>post("/kill")
                     .withPath(aString())
                     .to(nodeId -> killNode(cluster, eventLogger, nodeId))
@@ -144,11 +130,8 @@ public final class ChaosRoutes {
                     .toJson(() -> rollingRestartStatus(cluster));
     }
 
-    // ========== Request Records ==========
-    /// Request to enable or disable chaos injection.
     public record EnableRequest(boolean enabled){}
 
-    /// Request to inject a chaos event.
     public record InjectRequest(Option<String> type,
                                 Option<String> nodeId,
                                 Option<String> artifact,
@@ -158,30 +141,29 @@ public final class ChaosRoutes {
                                 Option<Long> durationSeconds) {
         public InjectRequest {
             type = type != null
-                   ? type
-                   : Option.none();
+                  ? type
+                  : Option.none();
             nodeId = nodeId != null
-                     ? nodeId
-                     : Option.none();
-            artifact = artifact != null
-                       ? artifact
-                       : Option.none();
-            latencyMs = latencyMs != null
-                        ? latencyMs
-                        : Option.none();
-            level = level != null
-                    ? level
+                    ? nodeId
                     : Option.none();
+            artifact = artifact != null
+                      ? artifact
+                      : Option.none();
+            latencyMs = latencyMs != null
+                       ? latencyMs
+                       : Option.none();
+            level = level != null
+                   ? level
+                   : Option.none();
             failureRate = failureRate != null
-                          ? failureRate
-                          : Option.none();
+                         ? failureRate
+                         : Option.none();
             durationSeconds = durationSeconds != null
-                              ? durationSeconds
-                              : Option.none();
+                             ? durationSeconds
+                             : Option.none();
         }
     }
 
-    // ========== Handler Methods ==========
     private static ChaosStatusResponse chaosStatus(ChaosController controller) {
         ChaosStatus status = controller.status();
         List<ActiveChaosEventInfo> activeEventInfos = status.activeEvents().stream()
@@ -206,8 +188,8 @@ public final class ChaosRoutes {
                                                              EnableRequest request) {
         controller.setEnabled(request.enabled());
         String eventType = request.enabled()
-                           ? "CHAOS_ENABLED"
-                           : "CHAOS_DISABLED";
+                          ? "CHAOS_ENABLED"
+                          : "CHAOS_DISABLED";
         String message = "Chaos controller " + (request.enabled()
                                                 ? "enabled"
                                                 : "disabled");
@@ -236,25 +218,28 @@ public final class ChaosRoutes {
         var optDuration = Option.option(duration);
         var type = request.type().map(String::toUpperCase)
                                .or("");
-        // Extract values with defaults - using fold to convert Option<String> to nullable String at boundary
         var nodeId = request.nodeId().fold(() -> null, s -> s);
         var artifact = request.artifact().fold(() -> null, s -> s);
-        return switch (type) {case "NODE_KILL" -> ChaosEvent.NodeKill.nodeKill(nodeId, optDuration).map(e -> e);case "LATENCY_SPIKE" -> ChaosEvent.LatencySpike.latencySpike(nodeId,
-                                                                                                                                                                             request.latencyMs()
-        .or(500L),
-                                                                                                                                                                             optDuration)
-        .map(e -> e);case "SLICE_CRASH" -> ChaosEvent.SliceCrash.sliceCrash(artifact, request.nodeId(), optDuration)
-        .map(e -> e);case "INVOCATION_FAILURE" -> ChaosEvent.InvocationFailure.invocationFailure(request.artifact(),
-                                                                                                 request.failureRate()
-        .or(0.5),
-                                                                                                 optDuration)
-        .map(e -> e);case "CPU_SPIKE" -> ChaosEvent.CpuSpike.cpuSpike(nodeId,
-                                                                      request.level().or(0.8),
-                                                                      optDuration)
-        .map(e -> e);case "MEMORY_PRESSURE" -> ChaosEvent.MemoryPressure.memoryPressure(nodeId,
-                                                                                        request.level().or(0.9),
+        return switch (type){
+            case "NODE_KILL" -> ChaosEvent.NodeKill.nodeKill(nodeId, optDuration).map(e -> e);
+            case "LATENCY_SPIKE" -> ChaosEvent.LatencySpike.latencySpike(nodeId,
+                                                                         request.latencyMs().or(500L),
+                                                                         optDuration)
+            .map(e -> e);
+            case "SLICE_CRASH" -> ChaosEvent.SliceCrash.sliceCrash(artifact, request.nodeId(), optDuration).map(e -> e);
+            case "INVOCATION_FAILURE" -> ChaosEvent.InvocationFailure.invocationFailure(request.artifact(),
+                                                                                        request.failureRate().or(0.5),
                                                                                         optDuration)
-        .map(e -> e);default -> UNKNOWN_CHAOS_TYPE.apply(type).result();};
+            .map(e -> e);
+            case "CPU_SPIKE" -> ChaosEvent.CpuSpike.cpuSpike(nodeId,
+                                                             request.level().or(0.8),
+                                                             optDuration).map(e -> e);
+            case "MEMORY_PRESSURE" -> ChaosEvent.MemoryPressure.memoryPressure(nodeId,
+                                                                               request.level().or(0.9),
+                                                                               optDuration)
+            .map(e -> e);
+            default -> UNKNOWN_CHAOS_TYPE.apply(type).result();
+        };
     }
 
     private static Promise<ChaosStoppedResponse> stopChaos(ChaosController controller,
@@ -263,8 +248,7 @@ public final class ChaosRoutes {
         return controller.stopChaos(eventId).map(_ -> logAndBuildStopResponse(eventLogger, eventId));
     }
 
-    private static ChaosStoppedResponse logAndBuildStopResponse(Consumer<EventLogEntry> eventLogger,
-                                                                String eventId) {
+    private static ChaosStoppedResponse logAndBuildStopResponse(Consumer<EventLogEntry> eventLogger, String eventId) {
         eventLogger.accept(new EventLogEntry("CHAOS_STOPPED", "Stopped chaos event " + eventId));
         return new ChaosStoppedResponse(true, eventId);
     }
@@ -276,8 +260,7 @@ public final class ChaosRoutes {
         return Promise.success(SuccessResponse.OK);
     }
 
-    private static Promise<NodeAddedResponse> addNode(EmberCluster cluster,
-                                                      Consumer<EventLogEntry> eventLogger) {
+    private static Promise<NodeAddedResponse> addNode(EmberCluster cluster, Consumer<EventLogEntry> eventLogger) {
         eventLogger.accept(new EventLogEntry("ADD_NODE", "Adding new node to cluster"));
         return cluster.addNode().map(nodeId -> logAndBuildNodeAddedResponse(eventLogger, nodeId))
                               .onFailure(cause -> eventLogger.accept(new EventLogEntry("ADD_NODE_FAILED",

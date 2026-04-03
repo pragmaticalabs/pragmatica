@@ -17,6 +17,7 @@ import java.util.StringJoiner;
 import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.http.routing.Route.in;
 
+
 /// Proxy routes for observability endpoints.
 /// Forwards trace and depth configuration requests from the dashboard port to the leader's management port.
 public sealed interface ObservabilityProxyRoutes {
@@ -42,9 +43,7 @@ public sealed interface ObservabilityProxyRoutes {
                                                                       deleteDepthRoute(cluster, http)));
     }
 
-    // --- Trace routes ---
-    private static Route<TraceListResponse> listTracesRoute(EmberCluster cluster,
-                                                            JdkHttpOperations http) {
+    private static Route<TraceListResponse> listTracesRoute(EmberCluster cluster, JdkHttpOperations http) {
         return Route.<TraceListResponse>get("")
                     .to(ctx -> proxyGetWithQuery(cluster,
                                                  http,
@@ -53,31 +52,26 @@ public sealed interface ObservabilityProxyRoutes {
                     .asJson();
     }
 
-    private static Route<TraceStatsResponse> traceStatsRoute(EmberCluster cluster,
-                                                             JdkHttpOperations http) {
+    private static Route<TraceStatsResponse> traceStatsRoute(EmberCluster cluster, JdkHttpOperations http) {
         return Route.<TraceStatsResponse>get("/stats")
                     .to(_ -> proxyGetStats(cluster, http))
                     .asJson();
     }
 
-    private static Route<TraceListResponse> traceByRequestIdRoute(EmberCluster cluster,
-                                                                  JdkHttpOperations http) {
+    private static Route<TraceListResponse> traceByRequestIdRoute(EmberCluster cluster, JdkHttpOperations http) {
         return Route.<TraceListResponse>get("")
                     .withPath(aString())
                     .to(requestId -> proxyGetTraceById(cluster, http, requestId))
                     .asJson();
     }
 
-    // --- Depth routes ---
-    private static Route<DepthListResponse> listDepthRoute(EmberCluster cluster,
-                                                           JdkHttpOperations http) {
+    private static Route<DepthListResponse> listDepthRoute(EmberCluster cluster, JdkHttpOperations http) {
         return Route.<DepthListResponse>get("/depth")
                     .to(_ -> proxyGetDepth(cluster, http))
                     .asJson();
     }
 
-    private static Route<DepthSetResponse> setDepthRoute(EmberCluster cluster,
-                                                         JdkHttpOperations http) {
+    private static Route<DepthSetResponse> setDepthRoute(EmberCluster cluster, JdkHttpOperations http) {
         return Route.<DepthSetResponse>post("/depth")
                     .to(ctx -> proxyPostDepth(cluster,
                                               http,
@@ -85,8 +79,7 @@ public sealed interface ObservabilityProxyRoutes {
                     .asJson();
     }
 
-    private static Route<DepthDeleteResponse> deleteDepthRoute(EmberCluster cluster,
-                                                               JdkHttpOperations http) {
+    private static Route<DepthDeleteResponse> deleteDepthRoute(EmberCluster cluster, JdkHttpOperations http) {
         return Route.<DepthDeleteResponse>delete("/depth")
                     .withPath(aString(),
                               aString())
@@ -94,7 +87,6 @@ public sealed interface ObservabilityProxyRoutes {
                     .asJson();
     }
 
-    // --- Proxy helpers ---
     private static Promise<TraceListResponse> proxyGetWithQuery(EmberCluster cluster,
                                                                 JdkHttpOperations http,
                                                                 String path,
@@ -105,8 +97,7 @@ public sealed interface ObservabilityProxyRoutes {
                                               .map(TraceListResponse::new);
     }
 
-    private static Promise<TraceStatsResponse> proxyGetStats(EmberCluster cluster,
-                                                             JdkHttpOperations http) {
+    private static Promise<TraceStatsResponse> proxyGetStats(EmberCluster cluster, JdkHttpOperations http) {
         return cluster.getLeaderManagementPort().async(LeaderNotAvailable.INSTANCE)
                                               .flatMap(port -> sendGet(http, port, "/api/traces/stats"))
                                               .map(TraceStatsResponse::new);
@@ -120,16 +111,13 @@ public sealed interface ObservabilityProxyRoutes {
                                               .map(TraceListResponse::new);
     }
 
-    private static Promise<DepthListResponse> proxyGetDepth(EmberCluster cluster,
-                                                            JdkHttpOperations http) {
+    private static Promise<DepthListResponse> proxyGetDepth(EmberCluster cluster, JdkHttpOperations http) {
         return cluster.getLeaderManagementPort().async(LeaderNotAvailable.INSTANCE)
                                               .flatMap(port -> sendGet(http, port, "/api/observability/depth"))
                                               .map(DepthListResponse::new);
     }
 
-    private static Promise<DepthSetResponse> proxyPostDepth(EmberCluster cluster,
-                                                            JdkHttpOperations http,
-                                                            String body) {
+    private static Promise<DepthSetResponse> proxyPostDepth(EmberCluster cluster, JdkHttpOperations http, String body) {
         return cluster.getLeaderManagementPort().async(LeaderNotAvailable.INSTANCE)
                                               .flatMap(port -> sendPostWithBody(http,
                                                                                 port,
@@ -146,16 +134,13 @@ public sealed interface ObservabilityProxyRoutes {
                                               .map(resp -> new DepthDeleteResponse(true, resp));
     }
 
-    // --- Query string builder ---
     private static String buildPathWithQuery(String path, Map<String, List<String>> queryParams) {
-        if ( queryParams.isEmpty()) {
-        return path;}
+        if (queryParams.isEmpty()) {return path;}
         var joiner = new StringJoiner("&", path + "?", "");
         queryParams.forEach((name, values) -> values.forEach(value -> joiner.add(name + "=" + value)));
         return joiner.toString();
     }
 
-    // --- HTTP helpers ---
     private static Promise<String> sendGet(JdkHttpOperations http, int port, String path) {
         var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path))
                                             .GET()

@@ -12,6 +12,7 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
+
 /// Context representing an active transaction.
 /// Thread-safe and immutable.
 ///
@@ -20,12 +21,11 @@ import static org.pragmatica.lang.Result.success;
 /// @param status        Current transaction status
 /// @param startTime     When the transaction started
 /// @param parentContext Parent transaction context (for nested transactions)
-public record TransactionContext( String id,
-                                  TransactionConfig config,
-                                  TransactionStatus status,
-                                  Instant startTime,
-                                  Option<TransactionContext> parentContext) {
-    /// Transaction status.
+public record TransactionContext(String id,
+                                 TransactionConfig config,
+                                 TransactionStatus status,
+                                 Instant startTime,
+                                 Option<TransactionContext> parentContext) {
     public enum TransactionStatus {
         ACTIVE,
         COMMITTED,
@@ -41,9 +41,8 @@ public record TransactionContext( String id,
                                               none()));
     }
 
-    /// Creates a nested transaction context.
-    @SuppressWarnings({"JBCT-VO-02", "JBCT-NAM-01"})
-    public static TransactionContext nestedContext(TransactionConfig config, TransactionContext parent) {
+    @SuppressWarnings({"JBCT-VO-02", "JBCT-NAM-01"}) public static TransactionContext nestedContext(TransactionConfig config,
+                                                                                                    TransactionContext parent) {
         return new TransactionContext(UUID.randomUUID().toString(),
                                       config,
                                       TransactionStatus.ACTIVE,
@@ -51,41 +50,30 @@ public record TransactionContext( String id,
                                       option(parent));
     }
 
-    /// Creates a new context with committed status.
-    @SuppressWarnings("JBCT-VO-02")
-    public TransactionContext commit() {
+    @SuppressWarnings("JBCT-VO-02") public TransactionContext commit() {
         return new TransactionContext(id, config, TransactionStatus.COMMITTED, startTime, parentContext);
     }
 
-    /// Creates a new context with rolled back status.
-    @SuppressWarnings("JBCT-VO-02")
-    public TransactionContext rollback() {
+    @SuppressWarnings("JBCT-VO-02") public TransactionContext rollback() {
         return new TransactionContext(id, config, TransactionStatus.ROLLED_BACK, startTime, parentContext);
     }
 
-    /// Creates a new context with suspended status.
-    @SuppressWarnings("JBCT-VO-02")
-    public TransactionContext suspend() {
+    @SuppressWarnings("JBCT-VO-02") public TransactionContext suspend() {
         return new TransactionContext(id, config, TransactionStatus.SUSPENDED, startTime, parentContext);
     }
 
-    /// Creates a new context with active status (resume from suspended).
-    @SuppressWarnings("JBCT-VO-02")
-    public TransactionContext resume() {
+    @SuppressWarnings("JBCT-VO-02") public TransactionContext resume() {
         return new TransactionContext(id, config, TransactionStatus.ACTIVE, startTime, parentContext);
     }
 
-    /// Checks if the transaction is active.
     public boolean isActive() {
         return status == TransactionStatus.ACTIVE;
     }
 
-    /// Checks if the transaction has a parent (is nested).
     public boolean isNested() {
         return parentContext.isPresent();
     }
 
-    /// Checks if the transaction has timed out.
     public boolean isTimedOut() {
         return config.timeout().filter(this::hasExceededTimeout)
                              .isPresent();

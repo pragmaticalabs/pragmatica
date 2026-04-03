@@ -1,17 +1,23 @@
 #!/bin/bash
-# test-deploy-canary.sh — Canary deployment via unified deploy command
+# test-deploy-canary.sh — Canary deployment via unified deploy command (v1 → v2 upgrade)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
-BLUEPRINT="org.pragmatica.aether.example:url-shortener:1.0.0-alpha"
+BLUEPRINT_V1="org.pragmatica.aether.example:url-shortener:1.0.0"
+BLUEPRINT_V2="org.pragmatica.aether.example:url-shortener:1.0.1"
 
 test_canary_start() {
     deploy_cleanup
+    # Register v2 blueprint (immediate deploy registers it in KV-Store)
+    push_blueprint "$BLUEPRINT_V2"
+    deploy_blueprint "$BLUEPRINT_V2"
+    sleep 3
+    # Now start canary strategy deploy
     local result
-    result=$(deploy_start "$BLUEPRINT" canary --traffic 5 --instances 1)
+    result=$(deploy_start "$BLUEPRINT_V2" canary --traffic 5 --instances 1)
     assert_contains "$result" "deploymentId" "Canary started with deployment ID"
 }
 

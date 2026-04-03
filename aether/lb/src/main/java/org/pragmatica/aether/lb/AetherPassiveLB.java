@@ -40,6 +40,7 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.messaging.MessageRouter.Entry.route;
 
+
 /// Passive cluster node that acts as a smart HTTP load balancer.
 ///
 /// Joins the cluster network but never participates in consensus or quorum.
@@ -52,15 +53,16 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
 /// - Smart routing: sends directly to the node hosting the target slice
 /// - Automatic failover via existing retry mechanism
 /// - Live topology awareness via cluster events (no health-check polling)
-@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03", "JBCT-EX-01"})
-public final class AetherPassiveLB {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03", "JBCT-EX-01"}) public final class AetherPassiveLB {
     private static final Logger log = LoggerFactory.getLogger(AetherPassiveLB.class);
+
     private static final int MAX_CONTENT_LENGTH = 16 * 1024 * 1024;
 
     private final PassiveLBConfig config;
     private final PassiveNode<AetherKey, AetherValue> passiveNode;
     private final HttpRouteRegistry routeRegistry;
     private final HttpForwarder httpForwarder;
+
     private volatile Option<HttpServer> httpServer = Option.empty();
 
     private AetherPassiveLB(PassiveLBConfig config,
@@ -73,12 +75,10 @@ public final class AetherPassiveLB {
         this.httpForwarder = httpForwarder;
     }
 
-    /// Create a passive LB node.
     public static AetherPassiveLB aetherPassiveLB(PassiveLBConfig config) {
         var nodeCodec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
         Serializer serializer = nodeCodec;
         Deserializer deserializer = nodeCodec;
-        // Include self in coreNodes — TopologyObserver requires self to be present
         var allNodes = new ArrayList<>(config.clusterNodes());
         allNodes.add(config.selfInfo());
         var topologyConfig = new TopologyConfig(config.selfInfo().id(),
@@ -99,7 +99,6 @@ public final class AetherPassiveLB {
         return new AetherPassiveLB(config, passiveNode, routeRegistry, httpForwarder);
     }
 
-    /// Start the passive LB: start cluster network, then HTTP server.
     public Promise<Unit> start() {
         log.info("Starting passive LB on HTTP port {}, cluster port {}",
                  config.httpPort(),
@@ -112,24 +111,21 @@ public final class AetherPassiveLB {
                                                               cause.message()));
     }
 
-    /// Stop the passive LB.
     public Promise<Unit> stop() {
         log.info("Stopping passive LB");
-        return stopHttpServer().flatMap(_ -> passiveNode.stop())
-                             .onSuccess(_ -> log.info("Passive LB stopped"));
+        return stopHttpServer().flatMap(_ -> passiveNode.stop()).onSuccess(_ -> log.info("Passive LB stopped"));
     }
 
-    /// Get the HTTP port.
     public int port() {
         return config.httpPort();
     }
 
     private Promise<Unit> startHttpServer() {
-        var serverConfig = HttpServerConfig.httpServerConfig("passive-lb", config.httpPort())
+        var serverConfig = HttpServerConfig.httpServerConfig("passive-lb",
+                                                             config.httpPort())
         .withMaxContentLength(MAX_CONTENT_LENGTH);
-        // Use own event loop groups — QUIC transport does not provide a TCP Server
         var serverPromise = Option.some(HttpServer.httpServer(serverConfig, this::handleRequest))
-        .or(HttpServer.httpServer(serverConfig, this::handleRequest));
+                                       .or(HttpServer.httpServer(serverConfig, this::handleRequest));
         return serverPromise.onSuccess(server -> httpServer = Option.some(server)).mapToUnit();
     }
 
@@ -137,12 +133,11 @@ public final class AetherPassiveLB {
         return httpServer.map(HttpServer::stop).or(Promise.success(Unit.unit()));
     }
 
-    // ================== Request Handling ==================
     private void handleRequest(RequestContext request, ResponseWriter response) {
         var method = request.method().name();
         var path = request.path();
         var requestId = request.requestId();
-        if ( isHealthEndpoint(path)) {
+        if (isHealthEndpoint(path)) {
             sendHealthResponse(response, requestId);
             return;
         }
@@ -151,7 +146,7 @@ public final class AetherPassiveLB {
                   path,
                   routeRegistry.allRoutes().size());
         var routeOpt = routeRegistry.findRoute(method, path);
-        if ( routeOpt.isEmpty()) {
+        if (routeOpt.isEmpty()) {
             log.warn("No route found for {} {} — available routes: {}",
                      method,
                      path,
@@ -176,7 +171,6 @@ public final class AetherPassiveLB {
                                                                 cause.message()));
     }
 
-    // ================== Response Helpers ==================
     private static boolean isHealthEndpoint(String path) {
         return "/health".equals(path) || "/health/".equals(path);
     }
@@ -189,24 +183,23 @@ public final class AetherPassiveLB {
         response.header(ResponseWriter.X_REQUEST_ID, requestId);
         responseData.headers().forEach(response::header);
         var status = HttpStatus.OK;
-        for ( var s : HttpStatus.values()) {
-        if ( s.code() == responseData.statusCode()) {
+        for (var s : HttpStatus.values()) {if (s.code() == responseData.statusCode()) {
             status = s;
             break;
         }}
         response.respond(status, new String(responseData.body(), StandardCharsets.UTF_8));
     }
 
-    // ================== Message Wiring ==================
     private static void wireRoutes(PassiveNode<AetherKey, AetherValue> passiveNode,
                                    HttpRouteRegistry routeRegistry,
                                    HttpForwarder httpForwarder) {
         var topologyChangeRoutes = SealedBuilder.from(TopologyChangeNotification.class)
-        .route(route(TopologyChangeNotification.NodeAdded.class,
-                     (TopologyChangeNotification.NodeAdded msg) -> {}),
-               route(TopologyChangeNotification.NodeRemoved.class, httpForwarder::onNodeRemoved),
-               route(TopologyChangeNotification.NodeDown.class, httpForwarder::onNodeDown));
-        // KV notification router for NodeRoutesKey — receives committed KV decisions
+                                                     .route(route(TopologyChangeNotification.NodeAdded.class,
+                                                                  (TopologyChangeNotification.NodeAdded msg) -> {}),
+                                                            route(TopologyChangeNotification.NodeRemoved.class,
+                                                                  httpForwarder::onNodeRemoved),
+                                                            route(TopologyChangeNotification.NodeDown.class,
+                                                                  httpForwarder::onNodeDown));
         var kvRouter = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
                                            .onPut(NodeRoutesKey.class, routeRegistry::onNodeRoutesPut)
                                            .onRemove(NodeRoutesKey.class, routeRegistry::onNodeRoutesRemove)

@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Passive KV-Store watcher maintaining a local cache of topic subscriptions.
 ///
 ///
@@ -29,37 +30,25 @@ import org.slf4j.LoggerFactory;
 /// when multiple instances of the same artifact subscribe to a topic,
 /// only one instance per artifact receives each message (round-robin).
 public interface TopicSubscriptionRegistry {
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01") void onSubscriptionPut(ValuePut<TopicSubscriptionKey, TopicSubscriptionValue> valuePut);
-
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01") void onSubscriptionRemove(ValueRemove<TopicSubscriptionKey, TopicSubscriptionValue> valueRemove);
-
-    /// Find all subscribers for a topic, selecting one node per (artifact, method) group.
+    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onSubscriptionPut(ValuePut<TopicSubscriptionKey, TopicSubscriptionValue> valuePut);
+    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onSubscriptionRemove(ValueRemove<TopicSubscriptionKey, TopicSubscriptionValue> valueRemove);
     List<TopicSubscriber> findSubscribers(String topicName);
-
-    /// All registered subscriptions (for monitoring).
     List<TopicSubscription> allSubscriptions();
 
-    /// A subscription entry in the registry.
     record TopicSubscription(String topicName, Artifact artifact, MethodName methodName, NodeId nodeId) {
         public TopicSubscriptionKey toKey() {
             return TopicSubscriptionKey.topicSubscriptionKey(topicName, artifact, methodName);
         }
     }
 
-    /// A selected subscriber for message delivery (one per artifact+method group).
     record TopicSubscriber(Artifact artifact, MethodName methodName, NodeId nodeId){}
 
-    /// Create a new topic subscription registry.
     static TopicSubscriptionRegistry topicSubscriptionRegistry() {
-        record topicSubscriptionRegistry( Map<TopicSubscriptionKey, TopicSubscription> subscriptions,
-                                          Map<String, AtomicInteger> roundRobinCounters) implements TopicSubscriptionRegistry {
+        record topicSubscriptionRegistry(Map<TopicSubscriptionKey, TopicSubscription> subscriptions,
+                                         Map<String, AtomicInteger> roundRobinCounters) implements TopicSubscriptionRegistry {
             private static final Logger log = LoggerFactory.getLogger(topicSubscriptionRegistry.class);
 
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onSubscriptionPut(ValuePut<TopicSubscriptionKey, TopicSubscriptionValue> valuePut) {
+            @Override@SuppressWarnings("JBCT-RET-01") public void onSubscriptionPut(ValuePut<TopicSubscriptionKey, TopicSubscriptionValue> valuePut) {
                 var key = valuePut.cause().key();
                 var value = valuePut.cause().value();
                 var subscription = new TopicSubscription(key.topicName(),
@@ -70,23 +59,20 @@ public interface TopicSubscriptionRegistry {
                 log.debug("Registered topic subscription: {}", subscription);
             }
 
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onSubscriptionRemove(ValueRemove<TopicSubscriptionKey, TopicSubscriptionValue> valueRemove) {
+            @Override@SuppressWarnings("JBCT-RET-01") public void onSubscriptionRemove(ValueRemove<TopicSubscriptionKey, TopicSubscriptionValue> valueRemove) {
                 var key = valueRemove.cause().key();
                 Option.option(subscriptions.remove(key))
-                .onPresent(removed -> log.debug("Unregistered topic subscription: {}", removed));
+                             .onPresent(removed -> log.debug("Unregistered topic subscription: {}", removed));
             }
 
             @Override public List<TopicSubscriber> findSubscribers(String topicName) {
                 var groups = new LinkedHashMap<String, List<TopicSubscription>>();
-                for ( var sub : subscriptions.values()) {
-                if ( sub.topicName().equals(topicName)) {
+                for (var sub : subscriptions.values()) {if (sub.topicName().equals(topicName)) {
                     var groupKey = sub.artifact().asString() + "/" + sub.methodName().name();
                     groups.computeIfAbsent(groupKey, _ -> new ArrayList<>()).add(sub);
                 }}
                 var result = new ArrayList<TopicSubscriber>();
-                for ( var entry : groups.entrySet()) {
+                for (var entry : groups.entrySet()) {
                     var group = entry.getValue();
                     group.sort(Comparator.comparing(s -> s.nodeId().id()));
                     var counter = roundRobinCounters.computeIfAbsent(entry.getKey(), _ -> new AtomicInteger(0));

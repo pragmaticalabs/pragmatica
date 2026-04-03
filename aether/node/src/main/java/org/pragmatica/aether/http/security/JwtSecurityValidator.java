@@ -19,12 +19,14 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Result.success;
 
+
 /// Validates JWT Bearer tokens against a JWKS endpoint.
 ///
 /// Implements the full JWT validation pipeline:
 /// extract token -> decode header/payload -> fetch JWKS -> verify signature -> validate claims -> build SecurityContext
 @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) class JwtSecurityValidator implements SecurityValidator {
     private static final Logger log = LoggerFactory.getLogger(JwtSecurityValidator.class);
+
     private static final String BEARER_PREFIX = "Bearer ";
 
     private final JwtConfig config;
@@ -35,14 +37,20 @@ import static org.pragmatica.lang.Result.success;
         this.keyStore = new JwksKeyStore(config.jwksUrl(), config.cacheTtlSeconds());
     }
 
-    /// Package-private constructor for testing with a custom key store.
     JwtSecurityValidator(JwtConfig config, JwksKeyStore keyStore) {
         this.config = config;
         this.keyStore = keyStore;
     }
 
     @Override public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
-        return switch (policy) {case SecurityPolicy.Public() -> success(SecurityContext.securityContext());case SecurityPolicy.BearerTokenRequired() -> validateBearerToken(request);case SecurityPolicy.Authenticated() -> validateBearerToken(request);case SecurityPolicy.RoleRequired _ -> validateBearerToken(request);case SecurityPolicy.ApiKeyRequired() -> success(SecurityContext.securityContext());default -> success(SecurityContext.securityContext());};
+        return switch (policy){
+            case SecurityPolicy.Public() -> success(SecurityContext.securityContext());
+            case SecurityPolicy.BearerTokenRequired() -> validateBearerToken(request);
+            case SecurityPolicy.Authenticated() -> validateBearerToken(request);
+            case SecurityPolicy.RoleRequired _ -> validateBearerToken(request);
+            case SecurityPolicy.ApiKeyRequired() -> success(SecurityContext.securityContext());
+            default -> success(SecurityContext.securityContext());
+        };
     }
 
     private Result<SecurityContext> validateBearerToken(HttpRequestContext request) {
@@ -66,8 +74,7 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private Result<Map<String, Object>> validateClaims(Map<String, Object> payload) {
-        return validateExpiration(payload).flatMap(this::validateIssuer)
-                                 .flatMap(this::validateAudience);
+        return validateExpiration(payload).flatMap(this::validateIssuer).flatMap(this::validateAudience);
     }
 
     private Result<Map<String, Object>> validateExpiration(Map<String, Object> payload) {
@@ -80,8 +87,8 @@ import static org.pragmatica.lang.Result.success;
         var now = System.currentTimeMillis() / 1000;
         var skew = config.clockSkewSeconds();
         return expSeconds + skew > now
-               ? success(payload)
-               : new SecurityError.TokenExpired("Token expired").result();
+              ? success(payload)
+              : new SecurityError.TokenExpired("Token expired").result();
     }
 
     private Result<Map<String, Object>> validateIssuer(Map<String, Object> payload) {
@@ -101,13 +108,12 @@ import static org.pragmatica.lang.Result.success;
         var actual = Option.option(payload.get(claimName)).map(Object::toString)
                                   .or("");
         return expected.equals(actual)
-               ? success(payload)
-               : new SecurityError.IssuerMismatch(label + " mismatch").result();
+              ? success(payload)
+              : new SecurityError.IssuerMismatch(label + " mismatch").result();
     }
 
-    @SuppressWarnings("unchecked")
-    private static Result<Map<String, Object>> matchAudienceClaim(Map<String, Object> payload,
-                                                                  String expected) {
+    @SuppressWarnings("unchecked") private static Result<Map<String, Object>> matchAudienceClaim(Map<String, Object> payload,
+                                                                                                 String expected) {
         return Option.option(payload.get("aud")).toResult(new SecurityError.AudienceMismatch("Missing aud claim"))
                             .flatMap(audValue -> checkAudienceValue(audValue, expected, payload));
     }
@@ -115,15 +121,14 @@ import static org.pragmatica.lang.Result.success;
     private static Result<Map<String, Object>> checkAudienceValue(Object audValue,
                                                                   String expected,
                                                                   Map<String, Object> payload) {
-        if ( audValue instanceof String s) {
-        return expected.equals(s)
-               ? success(payload)
-               : new SecurityError.AudienceMismatch("Audience mismatch").result();}
-        if ( audValue instanceof List<?> list) {
+        if (audValue instanceof String s) {return expected.equals(s)
+                                                 ? success(payload)
+                                                 : new SecurityError.AudienceMismatch("Audience mismatch").result();}
+        if (audValue instanceof List<?> list) {
             var match = list.stream().anyMatch(v -> expected.equals(String.valueOf(v)));
             return match
-                   ? success(payload)
-                   : new SecurityError.AudienceMismatch("Audience mismatch").result();
+                  ? success(payload)
+                  : new SecurityError.AudienceMismatch("Audience mismatch").result();
         }
         return new SecurityError.AudienceMismatch("Unexpected aud claim type").result();
     }
@@ -136,7 +141,10 @@ import static org.pragmatica.lang.Result.success;
         var roles = extractRoles(payload, roleClaim);
         var claims = extractStringClaims(payload);
         return SecurityContext.securityContext(subject, roles, claims)
-        .map(ctx -> SecurityContext.securityContext(ctx.principal(), ctx.roles(), ctx.claims(), authRole));
+                                              .map(ctx -> SecurityContext.securityContext(ctx.principal(),
+                                                                                          ctx.roles(),
+                                                                                          ctx.claims(),
+                                                                                          authRole));
     }
 
     private static AuthorizationRole extractAuthorizationRole(Map<String, Object> payload, String roleClaim) {
@@ -147,7 +155,12 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static Option<AuthorizationRole> parseAuthorizationRole(String value) {
-        return switch (value) {case "ADMIN" -> Option.some(AuthorizationRole.ADMIN);case "OPERATOR" -> Option.some(AuthorizationRole.OPERATOR);case "VIEWER" -> Option.some(AuthorizationRole.VIEWER);default -> Option.empty();};
+        return switch (value){
+            case "ADMIN" -> Option.some(AuthorizationRole.ADMIN);
+            case "OPERATOR" -> Option.some(AuthorizationRole.OPERATOR);
+            case "VIEWER" -> Option.some(AuthorizationRole.VIEWER);
+            default -> Option.empty();
+        };
     }
 
     private static Set<Role> extractRoles(Map<String, Object> payload, String roleClaim) {
@@ -201,8 +214,7 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static long tolong(Object value) {
-        if ( value instanceof Number n) {
-        return n.longValue();}
+        if (value instanceof Number n) {return n.longValue();}
         return Long.parseLong(String.valueOf(value));
     }
 }

@@ -24,6 +24,7 @@ import io.netty.handler.codec.http.HttpHeaders;
 import static org.pragmatica.http.routing.Utils.lazy;
 import static org.pragmatica.http.routing.Utils.value;
 
+
 /// RequestContext implementation that wraps HttpRequestContext.
 ///
 /// Provides path parameter extraction, JSON deserialization, and other
@@ -38,12 +39,12 @@ public final class SliceRequestContext implements RequestContext {
     private final HttpHeaders responseHeaders;
 
     private Supplier<List<String>> pathParamsSupplier = lazy(() -> pathParamsSupplier = value(initPathParams()));
+
     private Supplier<Map<String, String>> headersSupplier = lazy(() -> headersSupplier = value(initRequestHeaders()));
+
     private Supplier<Result<MultipartRequest>> multipartSupplier = lazy(() -> multipartSupplier = value(initMultipart()));
 
-    private SliceRequestContext(HttpRequestContext httpContext,
-                                Route<?> route,
-                                JsonMapper jsonMapper) {
+    private SliceRequestContext(HttpRequestContext httpContext, Route<?> route, JsonMapper jsonMapper) {
         this.httpContext = httpContext;
         this.route = route;
         this.jsonMapper = jsonMapper;
@@ -58,12 +59,10 @@ public final class SliceRequestContext implements RequestContext {
         return new SliceRequestContext(httpContext, route, jsonMapper);
     }
 
-    /// Access the original HttpRequestContext for security checks.
     public HttpRequestContext original() {
         return httpContext;
     }
 
-    /// Convenience method to access security context.
     public SecurityContext security() {
         return httpContext.security();
     }
@@ -123,24 +122,18 @@ public final class SliceRequestContext implements RequestContext {
     private List<String> initPathParams() {
         var normalizedPath = PathUtils.normalize(httpContext.path());
         var routePath = route.path();
-        if ( normalizedPath.length() <= routePath.length()) {
-        return List.of();}
+        if (normalizedPath.length() <= routePath.length()) {return List.of();}
         var remainder = normalizedPath.substring(routePath.length());
         var elements = remainder.split("/", PATH_PARAM_LIMIT);
-        if ( elements.length == 0) {
-        return List.of();}
-        // Remove trailing empty element if path ends with /
-        if ( elements[elements.length - 1].isEmpty()) {
-        return List.of(elements).subList(0, elements.length - 1);}
+        if (elements.length == 0) {return List.of();}
+        if (elements[elements.length - 1].isEmpty()) {return List.of(elements).subList(0, elements.length - 1);}
         return List.of(elements);
     }
 
     private Map<String, String> initRequestHeaders() {
         var headers = new java.util.HashMap<String, String>();
-        httpContext.headers()
-        .forEach((key, values) -> {
-            if ( !values.isEmpty()) {
-            headers.put(key, values.getFirst());}
+        httpContext.headers().forEach((key, values) -> {
+            if (!values.isEmpty()) {headers.put(key, values.getFirst());}
         });
         return Map.copyOf(headers);
     }

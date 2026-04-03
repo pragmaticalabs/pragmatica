@@ -27,10 +27,11 @@ import java.util.Map;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+
 /// Routes for hierarchical storage management: per-node instance status and cluster-wide aggregation.
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-PAT-01"})
-public final class StorageRoutes implements RouteSource {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-PAT-01"}) public final class StorageRoutes implements RouteSource {
     private static final Cause STORAGE_NOT_FOUND = Causes.cause("Storage instance not found");
+
     private static final Cause CLUSTER_INSTANCE_NOT_FOUND = Causes.cause("Storage instance not found in cluster");
 
     private final Supplier<AetherNode> nodeSupplier;
@@ -43,7 +44,6 @@ public final class StorageRoutes implements RouteSource {
         return new StorageRoutes(nodeSupplier);
     }
 
-    // --- Response records (per-node) ---
     record TierDetail(TierLevel level, long usedBytes, long maxBytes, double utilizationPct) {
         static TierDetail tierDetail(TierInfo info) {
             return new TierDetail(info.level(),
@@ -68,10 +68,7 @@ public final class StorageRoutes implements RouteSource {
 
     record SnapshotResponse(String name, long epoch, long timestampMs){}
 
-    // --- Response records (cluster) ---
-    record NodeStorageSummary(String nodeId,
-                              List<TierDetail> tiers,
-                              ReadinessDetail readiness){}
+    record NodeStorageSummary(String nodeId, List<TierDetail> tiers, ReadinessDetail readiness){}
 
     record ClusterStorageInstanceSummary(String name,
                                          int nodeCount,
@@ -92,10 +89,8 @@ public final class StorageRoutes implements RouteSource {
                                         long totalMaxBytes,
                                         List<NodeStorageDetail> nodes){}
 
-    // --- Route definitions ---
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<StorageListResponse>get("/api/storage")
-                              .toJson(this::listInstances),
+        return Stream.of(Route.<StorageListResponse>get("/api/storage").toJson(this::listInstances),
                          Route.<StorageDetailResponse>get("/api/storage")
                               .withPath(PathParameter.aString())
                               .toResult(this::instanceDetail)
@@ -114,7 +109,6 @@ public final class StorageRoutes implements RouteSource {
                               .asJson());
     }
 
-    // --- Per-node handlers ---
     private StorageListResponse listInstances() {
         var summaries = nodeSupplier.get().storageSetups()
                                         .values()
@@ -132,26 +126,19 @@ public final class StorageRoutes implements RouteSource {
         return findSetup(name).map(StorageRoutes::triggerSnapshot);
     }
 
-    // --- Cluster handlers ---
-    @SuppressWarnings("unchecked")
-    private Promise<ClusterStorageListResponse> clusterListInstances() {
+    @SuppressWarnings("unchecked") private Promise<ClusterStorageListResponse> clusterListInstances() {
         var node = nodeSupplier.get();
         var commands = buildPublishCommands(node);
-        return node.<Object>apply(commands)
-                   .map(_ -> collectClusterListResponse(node));
+        return node.<Object>apply(commands).map(_ -> collectClusterListResponse(node));
     }
 
-    @SuppressWarnings("unchecked")
-    private Promise<ClusterStorageDetailResponse> clusterInstanceDetail(String name) {
+    @SuppressWarnings("unchecked") private Promise<ClusterStorageDetailResponse> clusterInstanceDetail(String name) {
         var node = nodeSupplier.get();
         var commands = buildPublishCommands(node);
-        return node.<Object>apply(commands)
-                   .flatMap(_ -> buildClusterDetailResponse(node, name));
+        return node.<Object>apply(commands).flatMap(_ -> buildClusterDetailResponse(node, name));
     }
 
-    // --- Cluster aggregation helpers ---
-    @SuppressWarnings("unchecked")
-    private static List<KVCommand<AetherKey>> buildPublishCommands(AetherNode node) {
+    @SuppressWarnings("unchecked") private static List<KVCommand<AetherKey>> buildPublishCommands(AetherNode node) {
         var nodeId = node.self();
         return node.storageSetups().entrySet()
                                  .stream()
@@ -190,8 +177,7 @@ public final class StorageRoutes implements RouteSource {
         return new ClusterStorageListResponse(instances);
     }
 
-    private static ClusterStorageInstanceSummary toClusterInstanceSummary(
-    Map.Entry<String, List<Map.Entry<StorageStatusKey, StorageStatusValue>>> entry) {
+    private static ClusterStorageInstanceSummary toClusterInstanceSummary(Map.Entry<String, List<Map.Entry<StorageStatusKey, StorageStatusValue>>> entry) {
         var name = entry.getKey();
         var entries = entry.getValue();
         var nodes = entries.stream().map(StorageRoutes::toNodeStorageSummary)
@@ -217,8 +203,7 @@ public final class StorageRoutes implements RouteSource {
                              .sum();
     }
 
-    private static NodeStorageSummary toNodeStorageSummary(
-    Map.Entry<StorageStatusKey, StorageStatusValue> entry) {
+    private static NodeStorageSummary toNodeStorageSummary(Map.Entry<StorageStatusKey, StorageStatusValue> entry) {
         var value = entry.getValue();
         var tiers = value.tiers().stream()
                                .map(StorageRoutes::statusTierToDetail)
@@ -230,8 +215,7 @@ public final class StorageRoutes implements RouteSource {
                                       readiness);
     }
 
-    private static Promise<ClusterStorageDetailResponse> buildClusterDetailResponse(AetherNode node,
-                                                                                    String name) {
+    private static Promise<ClusterStorageDetailResponse> buildClusterDetailResponse(AetherNode node, String name) {
         var grouped = collectStatusesByInstance(node);
         return Option.option(grouped.get(name)).filter(entries -> !entries.isEmpty())
                             .map(entries -> assembleClusterDetail(name, entries))
@@ -239,9 +223,8 @@ public final class StorageRoutes implements RouteSource {
                             .async();
     }
 
-    private static ClusterStorageDetailResponse assembleClusterDetail(
-    String name,
-    List<Map.Entry<StorageStatusKey, StorageStatusValue>> entries) {
+    private static ClusterStorageDetailResponse assembleClusterDetail(String name,
+                                                                      List<Map.Entry<StorageStatusKey, StorageStatusValue>> entries) {
         var nodes = entries.stream().map(StorageRoutes::toNodeStorageDetail)
                                   .toList();
         return new ClusterStorageDetailResponse(name,
@@ -251,8 +234,7 @@ public final class StorageRoutes implements RouteSource {
                                                 nodes);
     }
 
-    private static NodeStorageDetail toNodeStorageDetail(
-    Map.Entry<StorageStatusKey, StorageStatusValue> entry) {
+    private static NodeStorageDetail toNodeStorageDetail(Map.Entry<StorageStatusKey, StorageStatusValue> entry) {
         var value = entry.getValue();
         var tiers = value.tiers().stream()
                                .map(StorageRoutes::statusTierToDetail)
@@ -266,13 +248,13 @@ public final class StorageRoutes implements RouteSource {
                                      readiness);
     }
 
-    private static Map<String, List<Map.Entry<StorageStatusKey, StorageStatusValue>>> collectStatusesByInstance(
-    AetherNode node) {
+    private static Map<String, List<Map.Entry<StorageStatusKey, StorageStatusValue>>> collectStatusesByInstance(AetherNode node) {
         var grouped = new LinkedHashMap<String, List<Map.Entry<StorageStatusKey, StorageStatusValue>>>();
         node.kvStore()
-        .forEach(StorageStatusKey.class,
-                 StorageStatusValue.class,
-                 (key, value) -> grouped.computeIfAbsent(key.instanceName(), _ -> new ArrayList<>())
+                    .forEach(StorageStatusKey.class,
+                             StorageStatusValue.class,
+                             (key, value) -> grouped.computeIfAbsent(key.instanceName(),
+                                                                     _ -> new ArrayList<>())
         .add(Map.entry(key, value)));
         return grouped;
     }
@@ -290,7 +272,6 @@ public final class StorageRoutes implements RouteSource {
                                    value.isWriteReady());
     }
 
-    // --- Per-node helpers ---
     private Result<StorageSetup> findSetup(String name) {
         return Option.option(nodeSupplier.get().storageSetups()
                                              .get(name)).toResult(STORAGE_NOT_FOUND);
@@ -333,7 +314,7 @@ public final class StorageRoutes implements RouteSource {
 
     private static double computeUtilization(long usedBytes, long maxBytes) {
         return maxBytes > 0
-               ? Math.round(usedBytes * 1000.0 / maxBytes) / 10.0
-               : 0.0;
+              ? Math.round(usedBytes * 1000.0 / maxBytes) / 10.0
+              : 0.0;
     }
 }

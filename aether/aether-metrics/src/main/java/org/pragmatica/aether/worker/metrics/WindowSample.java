@@ -2,6 +2,7 @@ package org.pragmatica.aether.worker.metrics;
 
 import org.pragmatica.serialization.Codec;
 
+
 /// A single sample from the governor's sliding window.
 ///
 /// @param avgCpuUsage            average CPU usage in this window
@@ -10,13 +11,12 @@ import org.pragmatica.serialization.Codec;
 /// @param avgP95LatencyMs        average P95 latency in milliseconds
 /// @param avgErrorRate           average error rate
 /// @param timestampMs            when this sample was taken
-@Codec public record WindowSample( double avgCpuUsage,
-                                   double avgHeapUsage,
-                                   long totalActiveInvocations,
-                                   double avgP95LatencyMs,
-                                   double avgErrorRate,
-                                   long timestampMs) {
-    /// Factory following JBCT naming convention.
+@Codec public record WindowSample(double avgCpuUsage,
+                                  double avgHeapUsage,
+                                  long totalActiveInvocations,
+                                  double avgP95LatencyMs,
+                                  double avgErrorRate,
+                                  long timestampMs) {
     public static WindowSample windowSample(double avgCpuUsage,
                                             double avgHeapUsage,
                                             long totalActiveInvocations,
@@ -31,7 +31,6 @@ import org.pragmatica.serialization.Codec;
                                 timestampMs);
     }
 
-    /// Factory with current timestamp.
     public static WindowSample windowSample(double avgCpuUsage,
                                             double avgHeapUsage,
                                             long totalActiveInvocations,

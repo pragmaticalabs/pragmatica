@@ -2,6 +2,7 @@ package org.pragmatica.aether.config.cluster;
 
 import org.pragmatica.lang.Cause;
 
+
 /// Errors specific to declarative cluster management operations.
 public sealed interface ClusterConfigError extends Cause {
     record InvalidDeploymentType(String value) implements ClusterConfigError {
@@ -121,10 +122,7 @@ public sealed interface ClusterConfigError extends Cause {
         }
     }
 
-    record BootstrapFailed(String phase,
-                           int nodesProvisioned,
-                           int nodesTotal,
-                           String detail) implements ClusterConfigError {
+    record BootstrapFailed(String phase, int nodesProvisioned, int nodesTotal, String detail) implements ClusterConfigError {
         @Override public String message() {
             return "Bootstrap failed at " + phase + " (" + nodesProvisioned + "/" + nodesTotal + " nodes provisioned): " + detail;
         }
@@ -166,9 +164,7 @@ public sealed interface ClusterConfigError extends Cause {
         }
     }
 
-    record QuorumTimeout(int healthyNodes,
-                         int requiredNodes,
-                         long timeoutSeconds) implements ClusterConfigError {
+    record QuorumTimeout(int healthyNodes, int requiredNodes, long timeoutSeconds) implements ClusterConfigError {
         @Override public String message() {
             return "Quorum not established: " + healthyNodes + "/" + requiredNodes + " healthy nodes after " + timeoutSeconds + " seconds.";
         }
@@ -198,7 +194,6 @@ public sealed interface ClusterConfigError extends Cause {
         }
     }
 
-    /// Seal completeness placeholder.
     record unused() implements ClusterConfigError {
         @Override public String message() {
             return "";

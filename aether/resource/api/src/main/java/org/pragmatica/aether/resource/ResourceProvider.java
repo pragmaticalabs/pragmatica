@@ -6,6 +6,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+
 /// Provider for infrastructure resources based on configuration.
 ///
 /// ResourceProvider uses SPI-discovered {@link ResourceFactory} implementations
@@ -23,71 +24,23 @@ import org.pragmatica.lang.Unit;
 ///     });
 /// }```
 public interface ResourceProvider {
-    /// Provide a resource instance for the given type and configuration section.
-    ///
-    /// If an instance has already been created for this (type, configSection) pair,
-    /// the cached instance is returned. Otherwise, the configuration is loaded
-    /// and a new instance is created via the appropriate {@link ResourceFactory}.
-    ///
-    /// @param resourceType  The resource interface class (e.g., SqlConnector.class)
-    /// @param configSection Dot-separated config section path (e.g., "database.primary")
-    /// @param <T>           Resource type
-    /// @return Promise containing the resource instance or error
     <T> Promise<T> provide(Class<T> resourceType, String configSection);
-
-    /// Provide a resource instance with additional provisioning context.
-    ///
-    /// The context carries type tokens and key extractors that resource factories
-    /// may use for generic type handling or sharded resource creation.
-    ///
-    /// @param resourceType  The resource interface class
-    /// @param configSection Dot-separated config section path
-    /// @param context       Provisioning context with type tokens and key extractor
-    /// @param <T>           Resource type
-    /// @return Promise containing the resource instance or error
     <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context);
-
-    /// Check if a factory is registered for the given resource type.
-    ///
-    /// @param resourceType The resource interface class
-    /// @return true if a factory is registered
     boolean hasFactory(Class<?> resourceType);
-
-    /// Release all resources consumed by the given slice.
-    ///
-    /// @param sliceId Artifact coordinate string identifying the slice
-    /// @return Promise completing when resources are released
     Promise<Unit> releaseAll(String sliceId);
 
-    // Static accessor pattern
-    /// Get the global ResourceProvider instance.
-    ///
-    /// @return ResourceProvider if configured, empty otherwise
     static Option<ResourceProvider> instance() {
         return ResourceProviderHolder.instance();
     }
 
-    /// Set the global ResourceProvider instance.
-    ///
-    /// Called by AetherNode during startup.
-    ///
-    /// @param provider ResourceProvider implementation
     static Result<Unit> setInstance(ResourceProvider provider) {
         return ResourceProviderHolder.setInstance(provider);
     }
 
-    /// Clear the global ResourceProvider instance.
-    ///
-    /// Called during shutdown or in tests.
     static Result<Unit> clear() {
         return ResourceProviderHolder.clear();
     }
 
-    /// Create a default SPI-based ResourceProvider.
-    ///
-    /// Discovers factories via ServiceLoader.
-    ///
-    /// @return New ResourceProvider instance
     static ResourceProvider resourceProvider() {
         return SpiResourceProvider.spiResourceProvider();
     }

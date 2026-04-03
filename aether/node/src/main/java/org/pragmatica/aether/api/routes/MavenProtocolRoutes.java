@@ -14,6 +14,7 @@ import static org.pragmatica.http.HttpMethod.GET;
 import static org.pragmatica.http.HttpMethod.POST;
 import static org.pragmatica.http.HttpMethod.PUT;
 
+
 /// Routes for Maven repository protocol: binary artifact GET/PUT/POST.
 ///
 ///
@@ -31,6 +32,7 @@ import static org.pragmatica.http.HttpMethod.PUT;
 ///
 public final class MavenProtocolRoutes implements RouteHandler {
     private static final String REPOSITORY_PREFIX = "/repository/";
+
     private static final String REPOSITORY_INFO_PREFIX = "/repository/info/";
 
     private final Supplier<AetherNode> nodeSupplier;
@@ -46,14 +48,12 @@ public final class MavenProtocolRoutes implements RouteHandler {
     @Override public boolean handle(RequestContext ctx, ResponseWriter response) {
         var path = ctx.path();
         var method = ctx.method();
-        // Skip /repository/info/ - handled by RepositoryRoutes
-        if ( !path.startsWith(REPOSITORY_PREFIX) || path.startsWith(REPOSITORY_INFO_PREFIX)) {
-        return false;}
-        if ( method == GET) {
+        if (!path.startsWith(REPOSITORY_PREFIX) || path.startsWith(REPOSITORY_INFO_PREFIX)) {return false;}
+        if (method == GET) {
             handleGet(response, path);
             return true;
         }
-        if ( method == POST || method == PUT) {
+        if (method == POST || method == PUT) {
             handlePut(response, path, ctx.body());
             return true;
         }
@@ -82,9 +82,7 @@ public final class MavenProtocolRoutes implements RouteHandler {
     }
 
     private HttpStatus findHttpStatus(int code) {
-        for ( var status : HttpStatus.values()) {
-        if ( status.code() == code) {
-        return status;}}
+        for (var status : HttpStatus.values()) {if (status.code() == code) {return status;}}
         return HttpStatus.OK;
     }
 }

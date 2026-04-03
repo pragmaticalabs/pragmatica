@@ -1,4 +1,5 @@
 package org.pragmatica.aether.pg.codegen.processor;
+
 public final class ProcessorError {
     private ProcessorError() {}
 

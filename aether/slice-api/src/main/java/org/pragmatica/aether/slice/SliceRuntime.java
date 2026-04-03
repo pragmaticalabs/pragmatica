@@ -8,6 +8,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// Provides access to runtime services for slices.
 ///
 /// This is a static holder for runtime services that slices may need.
@@ -35,37 +36,24 @@ import static org.pragmatica.lang.Unit.unit;
 /// acceptable for ambient runtime services that are set once at startup.
 public sealed interface SliceRuntime {
     record unused() implements SliceRuntime {
-        static Result<unused> unused() {
+        static Result<unused > unused() {
             return success(new unused());
         }
     }
 
-    /// Get the SliceInvoker for inter-slice communication.
-    ///
-    /// @return Result containing the SliceInvoker, or failure if not configured
     static Result<SliceInvokerFacade> getSliceInvoker() {
         return option(SliceRuntimeHolder.INVOKER_REF.get()).toResult(SliceRuntimeError.InvokerNotConfigured.INSTANCE);
     }
 
-    /// Get the SliceInvoker if configured.
-    ///
-    /// @return Option containing the SliceInvoker, or empty if not configured
     static Option<SliceInvokerFacade> trySliceInvoker() {
         return option(SliceRuntimeHolder.INVOKER_REF.get());
     }
 
-    /// Configure the SliceInvoker. Called by the runtime during startup.
-    ///
-    /// @param invoker the SliceInvoker to use
-    /// @return Result<Unit> indicating success
     static Result<Unit> setSliceInvoker(SliceInvokerFacade invoker) {
         SliceRuntimeHolder.INVOKER_REF.set(invoker);
         return success(unit());
     }
 
-    /// Clear all runtime services. Called during shutdown.
-    ///
-    /// @return Result<Unit> indicating success
     static Result<Unit> clear() {
         SliceRuntimeHolder.INVOKER_REF.set(null);
         return success(unit());

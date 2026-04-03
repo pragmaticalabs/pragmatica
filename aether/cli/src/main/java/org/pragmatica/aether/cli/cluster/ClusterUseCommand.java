@@ -10,13 +10,12 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
 
+
 /// Switches the active cluster context to the specified name.
 ///
 /// The named cluster must already exist in the registry.
-@Command(name = "use", description = "Switch active cluster context")
-@SuppressWarnings("JBCT-RET-01") class ClusterUseCommand implements Callable<Integer> {
-    @Parameters(index = "0", description = "Cluster name to activate")
-    private String name;
+@Command(name = "use", description = "Switch active cluster context") @SuppressWarnings("JBCT-RET-01") class ClusterUseCommand implements Callable<Integer> {
+    @Parameters(index = "0", description = "Cluster name to activate") private String name;
 
     @CommandLine.ParentCommand private ClusterCommand parent;
 

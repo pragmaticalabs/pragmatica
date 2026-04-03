@@ -37,14 +37,12 @@ import java.util.stream.Collectors;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
+
 /// Azure Cloud implementation of the ComputeProvider SPI.
 /// Delegates to AzureClient for VM lifecycle management and maps
 /// Azure VM models to the environment integration domain types.
-public record AzureComputeProvider( AzureClient client,
-                                    AzureEnvironmentConfig config) implements ComputeProvider {
-    /// Factory method for creating an AzureComputeProvider.
-    public static Result<AzureComputeProvider> azureComputeProvider(AzureClient client,
-                                                                    AzureEnvironmentConfig config) {
+public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig config) implements ComputeProvider {
+    public static Result<AzureComputeProvider> azureComputeProvider(AzureClient client, AzureEnvironmentConfig config) {
         return success(new AzureComputeProvider(client, config));
     }
 
@@ -80,7 +78,6 @@ public record AzureComputeProvider( AzureClient client,
                                     .mapError(AzureComputeProvider::toListInstancesError);
     }
 
-    // --- Leaf: build VM creation request ---
     private CreateVmRequest buildCreateRequest() {
         var name = generateVmName();
         var imageRef = parseImageUrn(config.image());
@@ -98,13 +95,11 @@ public record AzureComputeProvider( AzureClient client,
                                                properties);
     }
 
-    // --- Leaf: generate a unique VM name ---
     private static String generateVmName() {
         return "aether-" + UUID.randomUUID().toString()
                                           .substring(0, 8);
     }
 
-    // --- Leaf: parse image URN (publisher:offer:sku:version) ---
     static ImageReference parseImageUrn(String urn) {
         var parts = urn.split(":");
         return new ImageReference(parts.length > 0
@@ -121,7 +116,6 @@ public record AzureComputeProvider( AzureClient client,
                                   : "latest");
     }
 
-    // --- Leaf: map Azure VM to InstanceInfo ---
     static InstanceInfo toInstanceInfo(VirtualMachine vm) {
         return new InstanceInfo(new InstanceId(vm.name()),
                                 mapStatus(vm),
@@ -130,7 +124,6 @@ public record AzureComputeProvider( AzureClient client,
                                 safeTags(vm));
     }
 
-    // --- Leaf: map resource row to InstanceInfo ---
     static InstanceInfo toInstanceInfoFromRow(ResourceRow row) {
         return new InstanceInfo(new InstanceId(row.name()),
                                 InstanceStatus.RUNNING,
@@ -139,17 +132,14 @@ public record AzureComputeProvider( AzureClient client,
                                 safeTags(row));
     }
 
-    // --- Leaf: safely extract tags from VM, defaulting to empty map ---
     private static Map<String, String> safeTags(VirtualMachine vm) {
         return option(vm.tags()).or(Map.of());
     }
 
-    // --- Leaf: safely extract tags from resource row ---
     private static Map<String, String> safeTags(ResourceRow row) {
         return option(row.tags()).or(Map.of());
     }
 
-    // --- Leaf: convert tag filter map to Azure Resource Graph KQL query ---
     static String buildTagFilterQuery(Map<String, String> tagFilter) {
         var baseQuery = "Resources | where type == \"microsoft.compute/virtualmachines\"";
         var tagClauses = tagFilter.entrySet().stream()
@@ -158,72 +148,69 @@ public record AzureComputeProvider( AzureClient client,
         return baseQuery + tagClauses;
     }
 
-    // --- Leaf: format a single tag filter clause for KQL ---
     private static String toTagClause(Map.Entry<String, String> entry) {
         return " | where tags[\"" + entry.getKey() + "\"] == \"" + entry.getValue() + "\"";
     }
 
-    // --- Leaf: map list of VMs ---
     private static List<InstanceInfo> toInstanceInfoList(List<VirtualMachine> vms) {
         return vms.stream().map(AzureComputeProvider::toInstanceInfo)
                          .toList();
     }
 
-    // --- Leaf: map list of resource rows ---
     private static List<InstanceInfo> toInstanceInfoListFromRows(List<ResourceRow> rows) {
         return rows.stream().map(AzureComputeProvider::toInstanceInfoFromRow)
                           .toList();
     }
 
-    // --- Leaf: map Azure VM status to InstanceStatus ---
     static InstanceStatus mapStatus(VirtualMachine vm) {
         return option(vm.properties()).flatMap(AzureComputeProvider::extractPowerState)
                      .map(AzureComputeProvider::powerStateToStatus)
                      .or(provisioningStateToStatus(vm));
     }
 
-    // --- Leaf: extract power state code from instance view ---
     private static Option<String> extractPowerState(VirtualMachine.VmProperties props) {
         return option(props.instanceView()).flatMap(iv -> option(iv.statuses()))
                      .flatMap(AzureComputeProvider::findPowerStateCode);
     }
 
-    // --- Leaf: find the PowerState code in status list ---
     private static Option<String> findPowerStateCode(List<Status> statuses) {
         return Option.from(statuses.stream().filter(AzureComputeProvider::isPowerState)
                                           .map(Status::code)
                                           .findFirst());
     }
 
-    // --- Leaf: check if status is a power state ---
     private static boolean isPowerState(Status status) {
-        return option(status.code()).map(c -> c.startsWith("PowerState/"))
-                     .or(false);
+        return option(status.code()).map(c -> c.startsWith("PowerState/")).or(false);
     }
 
-    // --- Leaf: map power state code to InstanceStatus ---
     private static InstanceStatus powerStateToStatus(String code) {
-        return switch (code) {case "PowerState/running" -> InstanceStatus.RUNNING;case "PowerState/deallocated", "PowerState/stopped" -> InstanceStatus.STOPPING;case "PowerState/starting" -> InstanceStatus.PROVISIONING;case "PowerState/deallocating", "PowerState/stopping" -> InstanceStatus.STOPPING;default -> InstanceStatus.TERMINATED;};
+        return switch (code){
+            case "PowerState/running" -> InstanceStatus.RUNNING;
+            case "PowerState/deallocated", "PowerState/stopped" -> InstanceStatus.STOPPING;
+            case "PowerState/starting" -> InstanceStatus.PROVISIONING;
+            case "PowerState/deallocating", "PowerState/stopping" -> InstanceStatus.STOPPING;
+            default -> InstanceStatus.TERMINATED;
+        };
     }
 
-    // --- Leaf: map provisioning state to InstanceStatus as fallback ---
     private static InstanceStatus provisioningStateToStatus(VirtualMachine vm) {
-        var state = option(vm.properties()).map(VirtualMachine.VmProperties::provisioningState)
-                          .or("Unknown");
-        return switch (state) {case "Succeeded" -> InstanceStatus.RUNNING;case "Creating", "Updating" -> InstanceStatus.PROVISIONING;case "Deleting", "Failed" -> InstanceStatus.STOPPING;default -> InstanceStatus.TERMINATED;};
+        var state = option(vm.properties()).map(VirtualMachine.VmProperties::provisioningState).or("Unknown");
+        return switch (state){
+            case "Succeeded" -> InstanceStatus.RUNNING;
+            case "Creating", "Updating" -> InstanceStatus.PROVISIONING;
+            case "Deleting", "Failed" -> InstanceStatus.STOPPING;
+            default -> InstanceStatus.TERMINATED;
+        };
     }
 
-    // --- Leaf: map cause to provision error ---
     private static EnvironmentError toProvisionError(Cause cause) {
         return EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
     }
 
-    // --- Leaf: map cause to terminate error ---
     private static EnvironmentError toTerminateError(InstanceId instanceId, Cause cause) {
         return EnvironmentError.terminateFailed(instanceId, new RuntimeException(cause.message()));
     }
 
-    // --- Leaf: map cause to list instances error ---
     private static EnvironmentError toListInstancesError(Cause cause) {
         return EnvironmentError.listInstancesFailed(new RuntimeException(cause.message()));
     }

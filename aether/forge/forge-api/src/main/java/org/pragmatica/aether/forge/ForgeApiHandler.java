@@ -35,23 +35,27 @@ import io.netty.handler.codec.http.HttpVersion;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Handles REST API requests for the Forge dashboard.
 /// Uses RequestRouter for endpoint routing and delegates to domain-specific route handlers.
-@SuppressWarnings("JBCT-RET-01")
-public final class ForgeApiHandler {
+@SuppressWarnings("JBCT-RET-01") public final class ForgeApiHandler {
     private static final Logger log = LoggerFactory.getLogger(ForgeApiHandler.class);
+
     private static final int MAX_EVENTS = 100;
 
     private final RequestRouter router;
     private final JsonCodec jsonCodec;
     private final Deque<ForgeEvent> events;
     private final long startTime;
+
     private final AtomicLong requestCounter = new AtomicLong();
 
-    // Mutable state for modes/config
     private final Object modeLock = new Object();
+
     private volatile SimulatorConfig config = SimulatorConfig.simulatorConfig();
+
     private volatile SimulatorMode currentMode = SimulatorMode.DEVELOPMENT;
+
     private final ChaosController chaosController;
     private final InventoryState inventoryState;
 
@@ -67,7 +71,6 @@ public final class ForgeApiHandler {
         this.events = events;
         this.startTime = startTime;
         this.jsonCodec = JsonCodecAdapter.defaultCodec();
-        // Create router with all route sources
         this.router = ForgeRouter.forgeRouter(cluster,
                                               configurableLoadRunner,
                                               chaosController,
@@ -96,7 +99,7 @@ public final class ForgeApiHandler {
     }
 
     private static void executeChaosEvent(EmberCluster cluster, ChaosEvent event) {
-        switch ( event) {
+        switch (event){
             case ChaosEvent.NodeKill kill -> cluster.killNode(kill.nodeId(), false);
             case ChaosEvent.LatencySpike _ -> {}
             case ChaosEvent.SliceCrash _ -> {}
@@ -124,10 +127,7 @@ public final class ForgeApiHandler {
             var method = convertMethod(request.method());
             router.findRoute(method, path).onEmpty(() -> sendNotFound(response, path))
                             .onPresent(route -> handleRoute(request, response, route, path));
-        }
-
-
-        catch (Exception e) {
+        } catch (Exception e) {
             log.error("Error handling API request: {}", e.getMessage(), e);
             sendError(response, HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
         }
@@ -135,7 +135,6 @@ public final class ForgeApiHandler {
 
     private void handleRoute(RequestContext request, ResponseWriter response, Route<?> route, String path) {
         var requestId = "forge-" + requestCounter.incrementAndGet();
-        // Create a Netty FullHttpRequest for the routing RequestContextImpl
         var nettyRequest = createNettyRequest(request, route.path());
         var context = RequestContextImpl.requestContext(nettyRequest, route, jsonCodec, requestId);
         route.handler().handle(context)
@@ -146,32 +145,36 @@ public final class ForgeApiHandler {
     }
 
     private DefaultFullHttpRequest createNettyRequest(RequestContext request, String routePath) {
-        var method = switch (request.method()) {case GET -> HttpMethod.GET;case POST -> HttpMethod.POST;case PUT -> HttpMethod.PUT;case DELETE -> HttpMethod.DELETE;case PATCH -> HttpMethod.PATCH;case HEAD -> HttpMethod.HEAD;case OPTIONS -> HttpMethod.OPTIONS;case TRACE -> HttpMethod.TRACE;case CONNECT -> HttpMethod.CONNECT;};
-        // Build URI with query string
+        var method = switch (request.method()){
+            case GET -> HttpMethod.GET;
+            case POST -> HttpMethod.POST;
+            case PUT -> HttpMethod.PUT;
+            case DELETE -> HttpMethod.DELETE;
+            case PATCH -> HttpMethod.PATCH;
+            case HEAD -> HttpMethod.HEAD;
+            case OPTIONS -> HttpMethod.OPTIONS;
+            case TRACE -> HttpMethod.TRACE;
+            case CONNECT -> HttpMethod.CONNECT;
+        };
         var uri = request.path();
         var queryString = buildQueryString(request.queryParams().asMap());
-        if ( !queryString.isEmpty()) {
-        uri = uri + "?" + queryString;}
+        if (!queryString.isEmpty()) {uri = uri + "?" + queryString;}
         var nettyRequest = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1,
                                                       method,
                                                       uri,
                                                       Unpooled.wrappedBuffer(request.body()));
-        // Copy headers
-        for ( var entry : request.headers().asMap()
-                                         .entrySet()) {
-        for ( var value : entry.getValue()) {
-        nettyRequest.headers().add(entry.getKey(), value);}}
+        for (var entry : request.headers().asMap()
+                                        .entrySet()) {for (var value : entry.getValue()) {nettyRequest.headers()
+                                                                                                              .add(entry.getKey(),
+                                                                                                                   value);}}
         return nettyRequest;
     }
 
     private String buildQueryString(java.util.Map<String, java.util.List<String>> params) {
-        if ( params.isEmpty()) {
-        return "";}
+        if (params.isEmpty()) {return "";}
         var sb = new StringBuilder();
-        for ( var entry : params.entrySet()) {
-        for ( var value : entry.getValue()) {
-            if ( !sb.isEmpty()) {
-            sb.append("&");}
+        for (var entry : params.entrySet()) {for (var value : entry.getValue()) {
+            if (!sb.isEmpty()) {sb.append("&");}
             sb.append(entry.getKey()).append("=")
                      .append(value);
         }}
@@ -181,8 +184,7 @@ public final class ForgeApiHandler {
     private void sendSuccessResponse(ResponseWriter response, Route<?> route, Object result) {
         var serverContentType = toServerContentType(route.contentType());
         var category = route.contentType().category();
-        // HTML and PLAIN_TEXT String responses must bypass JSON serialization
-        if ( (category == ContentCategory.HTML || category == ContentCategory.PLAIN_TEXT) && result instanceof String text) {
+        if ((category == ContentCategory.HTML || category == ContentCategory.PLAIN_TEXT) && result instanceof String text) {
             response.write(HttpStatus.OK, text.getBytes(StandardCharsets.UTF_8), serverContentType);
             return;
         }
@@ -198,11 +200,27 @@ public final class ForgeApiHandler {
     }
 
     private org.pragmatica.http.ContentType toServerContentType(org.pragmatica.http.routing.ContentType routingContentType) {
-        return switch (routingContentType.category()) {case JSON -> CommonContentType.APPLICATION_JSON;case PLAIN_TEXT -> CommonContentType.TEXT_PLAIN;case HTML -> CommonContentType.TEXT_HTML;case BINARY -> CommonContentType.APPLICATION_OCTET_STREAM;default -> CommonContentType.APPLICATION_OCTET_STREAM;};
+        return switch (routingContentType.category()){
+            case JSON -> CommonContentType.APPLICATION_JSON;
+            case PLAIN_TEXT -> CommonContentType.TEXT_PLAIN;
+            case HTML -> CommonContentType.TEXT_HTML;
+            case BINARY -> CommonContentType.APPLICATION_OCTET_STREAM;
+            default -> CommonContentType.APPLICATION_OCTET_STREAM;
+        };
     }
 
     private org.pragmatica.http.routing.HttpMethod convertMethod(org.pragmatica.http.HttpMethod method) {
-        return switch (method) {case GET -> org.pragmatica.http.routing.HttpMethod.GET;case POST -> org.pragmatica.http.routing.HttpMethod.POST;case PUT -> org.pragmatica.http.routing.HttpMethod.PUT;case DELETE -> org.pragmatica.http.routing.HttpMethod.DELETE;case PATCH -> org.pragmatica.http.routing.HttpMethod.PATCH;case HEAD -> org.pragmatica.http.routing.HttpMethod.HEAD;case OPTIONS -> org.pragmatica.http.routing.HttpMethod.OPTIONS;case TRACE -> org.pragmatica.http.routing.HttpMethod.TRACE;case CONNECT -> org.pragmatica.http.routing.HttpMethod.CONNECT;};
+        return switch (method){
+            case GET -> org.pragmatica.http.routing.HttpMethod.GET;
+            case POST -> org.pragmatica.http.routing.HttpMethod.POST;
+            case PUT -> org.pragmatica.http.routing.HttpMethod.PUT;
+            case DELETE -> org.pragmatica.http.routing.HttpMethod.DELETE;
+            case PATCH -> org.pragmatica.http.routing.HttpMethod.PATCH;
+            case HEAD -> org.pragmatica.http.routing.HttpMethod.HEAD;
+            case OPTIONS -> org.pragmatica.http.routing.HttpMethod.OPTIONS;
+            case TRACE -> org.pragmatica.http.routing.HttpMethod.TRACE;
+            case CONNECT -> org.pragmatica.http.routing.HttpMethod.CONNECT;
+        };
     }
 
     private void sendNotFound(ResponseWriter response, String path) {
@@ -221,16 +239,14 @@ public final class ForgeApiHandler {
                                    "INFO",
                                    message);
         events.addLast(event);
-        while ( events.size() > MAX_EVENTS) {
-        events.pollFirst();}
+        while (events.size() > MAX_EVENTS) {events.pollFirst();}
         log.info("[EVENT] {}: {}", type, message);
     }
 
     public void addNodeEvent(String timestamp, String type, String severity, String message) {
         var event = new ForgeEvent(timestamp, type, severity, message);
         events.addLast(event);
-        while ( events.size() > MAX_EVENTS) {
-        events.pollFirst();}
+        while (events.size() > MAX_EVENTS) {events.pollFirst();}
     }
 
     private String escapeJson(String str) {

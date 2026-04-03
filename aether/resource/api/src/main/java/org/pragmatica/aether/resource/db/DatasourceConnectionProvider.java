@@ -22,28 +22,21 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// Provides SqlConnector instances for named datasources independently of slice lifecycle.
 /// Used by schema migration orchestrator and potentially other infrastructure components.
 ///
 /// Connections are lazily created on first request, cached by datasource name,
 /// and released on demand or during shutdown.
 public interface DatasourceConnectionProvider {
-    /// Get or create a SqlConnector for the named datasource.
-    /// Config is resolved from the exact section name (e.g. "database" or "database.analytics").
     Promise<SqlConnector> connector(String datasourceName);
-
-    /// Release a specific datasource connector (closes pool).
     Promise<Unit> release(String datasourceName);
-
-    /// Release all managed connectors (shutdown).
     Promise<Unit> releaseAll();
 
-    /// Factory method using ConfigService for config resolution.
     static DatasourceConnectionProvider datasourceConnectionProvider() {
         return new DatasourceConnectionProviderInstance(DatasourceConnectionProvider::loadFromConfigService);
     }
 
-    /// Factory method with custom config loader.
     static DatasourceConnectionProvider datasourceConnectionProvider(Fn2<Result<?>, String, Class<?>> configLoader) {
         return new DatasourceConnectionProviderInstance(configLoader);
     }
@@ -56,9 +49,11 @@ public interface DatasourceConnectionProvider {
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) class DatasourceConnectionProviderInstance implements DatasourceConnectionProvider {
     private static final Logger log = LoggerFactory.getLogger(DatasourceConnectionProviderInstance.class);
+
     private static final Cause NO_FACTORY = Causes.cause("No SqlConnector factory found that supports the configuration");
 
     private final ConcurrentHashMap<String, Promise<SqlConnector>> connectors = new ConcurrentHashMap<>();
+
     private final Fn2<Result<?>, String, Class<?>> configLoader;
     private final List<ResourceFactory<SqlConnector, DatabaseConnectorConfig>> factories;
 
@@ -88,8 +83,7 @@ public interface DatasourceConnectionProvider {
         var keys = List.copyOf(connectors.keySet());
         var futures = keys.stream().map(this::release)
                                  .toList();
-        if ( futures.isEmpty()) {
-        return Promise.success(unit());}
+        if (futures.isEmpty()) {return Promise.success(unit());}
         return Promise.allOf(futures).map(_ -> unit());
     }
 
@@ -103,7 +97,7 @@ public interface DatasourceConnectionProvider {
 
     private Promise<DatabaseConnectorConfig> loadConfig(String configSection) {
         var result = configLoader.apply(configSection, DatabaseConnectorConfig.class)
-        .map(DatabaseConnectorConfig.class::cast);
+                                       .map(DatabaseConnectorConfig.class::cast);
         result.onSuccess(config -> log.info("Loaded config for '{}': type={}, jdbcUrl={}, asyncUrl={}, r2dbcUrl={}",
                                             configSection,
                                             config.type(),
@@ -116,17 +110,19 @@ public interface DatasourceConnectionProvider {
                                             config.r2dbcUrl().isPresent()
                                             ? "present"
                                             : "absent"))
-        .onFailure(cause -> log.error("Failed to load config for section '{}': {}", configSection, cause.message()));
+        .onFailure(cause -> log.error("Failed to load config for section '{}': {}",
+                                      configSection,
+                                      cause.message()));
         return result.async();
     }
 
     private Promise<SqlConnector> selectAndProvision(DatabaseConnectorConfig config) {
-        for ( var factory : factories) {
+        for (var factory : factories) {
             log.debug("Checking factory {} (priority {}): supports={}",
                       factory.getClass().getSimpleName(),
                       factory.priority(),
                       factory.supports(config));
-            if ( factory.supports(config)) {
+            if (factory.supports(config)) {
                 log.info("Selected factory {} for provisioning",
                          factory.getClass().getSimpleName());
                 return factory.provision(config);

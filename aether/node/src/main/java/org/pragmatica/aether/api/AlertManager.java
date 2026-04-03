@@ -27,30 +27,31 @@ import java.util.concurrent.LinkedBlockingDeque;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Manages alert thresholds and tracks active alerts.
 ///
 ///
 /// Thresholds are persisted to consensus KV-Store for cluster-wide consistency
 /// and survival across node restarts.
-@SuppressWarnings("JBCT-RET-01")
-public class AlertManager {
+@SuppressWarnings("JBCT-RET-01") public class AlertManager {
     private static final Logger log = LoggerFactory.getLogger(AlertManager.class);
+
     private static final int MAX_ALERT_HISTORY = 100;
 
     private final RabiaNode<KVCommand<AetherKey>> clusterNode;
     private final KVStore<AetherKey, AetherValue> kvStore;
 
     private final Map<String, Threshold> thresholds = new ConcurrentHashMap<>();
+
     private final Map<String, ActiveAlert> activeAlerts = new ConcurrentHashMap<>();
+
     private final LinkedBlockingDeque<AlertHistoryEntry> alertHistory = new LinkedBlockingDeque<>(MAX_ALERT_HISTORY);
 
-    private AlertManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
-                         KVStore<AetherKey, AetherValue> kvStore) {
+    private AlertManager(RabiaNode<KVCommand<AetherKey>> clusterNode, KVStore<AetherKey, AetherValue> kvStore) {
         this.clusterNode = clusterNode;
         this.kvStore = kvStore;
     }
 
-    /// Factory method following JBCT naming convention.
     public static AlertManager alertManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                             KVStore<AetherKey, AetherValue> kvStore) {
         var manager = new AlertManager(clusterNode, kvStore);
@@ -59,7 +60,6 @@ public class AlertManager {
         return manager;
     }
 
-    /// Load thresholds from KV-Store on startup.
     private void loadThresholdsFromKvStore() {
         kvStore.forEach(AlertThresholdKey.class, AlertThresholdValue.class, this::loadThreshold);
         log.info("Loaded {} thresholds from KV-Store", thresholds.size());
@@ -74,21 +74,15 @@ public class AlertManager {
                   thresholdValue.criticalThreshold());
     }
 
-    /// Ensure default thresholds exist if no thresholds were loaded.
     private void ensureDefaultThresholds() {
-        if ( thresholds.isEmpty()) {
-            // Set defaults in-memory, they will be persisted on first explicit setThreshold call
+        if (thresholds.isEmpty()) {
             thresholds.put("cpu.usage", new Threshold(0.7, 0.9));
             thresholds.put("heap.usage", new Threshold(0.7, 0.85));
             log.info("Initialized default thresholds (in-memory only until explicitly set)");
         }
     }
 
-    /// Set threshold for a metric and persist to KV-Store.
-    ///
-    /// @return Promise that completes when threshold is persisted across cluster
-    @SuppressWarnings("unchecked")
-    public Promise<Unit> setThreshold(String metric, double warning, double critical) {
+    @SuppressWarnings("unchecked") public Promise<Unit> setThreshold(String metric, double warning, double critical) {
         var key = new AetherKey.AlertThresholdKey(metric);
         var value = AetherValue.AlertThresholdValue.alertThresholdValue(metric, warning, critical);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
@@ -105,11 +99,7 @@ public class AlertManager {
         log.info("Threshold set and persisted for {}: warning={}, critical={}", metric, warning, critical);
     }
 
-    /// Remove threshold for a metric and persist removal to KV-Store.
-    ///
-    /// @return Promise that completes when removal is persisted across cluster
-    @SuppressWarnings("unchecked")
-    public Promise<Unit> removeThreshold(String metric) {
+    @SuppressWarnings("unchecked") public Promise<Unit> removeThreshold(String metric) {
         var key = new AetherKey.AlertThresholdKey(metric);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
         return clusterNode.<Unit>apply(List.of(command))
@@ -122,31 +112,27 @@ public class AlertManager {
 
     private void applyThresholdRemoval(String metric) {
         Option.option(thresholds.remove(metric))
-        .onPresent(_ -> log.info("Threshold removed and persisted for {}", metric));
+                     .onPresent(_ -> log.info("Threshold removed and persisted for {}", metric));
     }
 
-    /// Get all configured thresholds.
     public Map<String, double[]> getAllThresholds() {
         Map<String, double[]> result = new ConcurrentHashMap<>();
         thresholds.forEach((k, v) -> result.put(k, new double[]{v.warning, v.critical}));
         return result;
     }
 
-    /// Clear all active alerts.
     public void clearAlerts() {
         activeAlerts.clear();
         log.info("All active alerts cleared");
     }
 
-    /// Get count of active alerts.
     public int activeAlertCount() {
         return activeAlerts.size();
     }
 
-    /// Check if a metric value exceeds threshold and return alert JSON if triggered.
     public Option<String> checkThreshold(String metric, NodeId nodeId, double value) {
         return Option.option(thresholds.get(metric))
-        .flatMap(threshold -> evaluateThreshold(threshold, metric, nodeId, value));
+                            .flatMap(threshold -> evaluateThreshold(threshold, metric, nodeId, value));
     }
 
     private Option<String> evaluateThreshold(Threshold threshold, String metric, NodeId nodeId, double value) {
@@ -189,7 +175,7 @@ public class AlertManager {
                                             double value,
                                             Threshold threshold) {
         var shouldTrigger = existing.filter(alert -> alert.severity.equals(severity)).isEmpty();
-        if ( shouldTrigger) {
+        if (shouldTrigger) {
             var alert = new ActiveAlert(metric,
                                         nodeId,
                                         value,
@@ -203,13 +189,7 @@ public class AlertManager {
         return Option.none();
     }
 
-    /// Handle KV-Store update notification for threshold changes from other nodes.
-    ///
-    ///
-    /// Called by AetherNode when it receives KV-Store value updates.
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    public void onAlertThresholdPut(ValuePut<AlertThresholdKey, AlertThresholdValue> valuePut) {
+    @MessageReceiver@SuppressWarnings("JBCT-RET-01") public void onAlertThresholdPut(ValuePut<AlertThresholdKey, AlertThresholdValue> valuePut) {
         var thresholdKey = valuePut.cause().key();
         var thresholdValue = valuePut.cause().value();
         thresholds.put(thresholdKey.metricName(),
@@ -220,10 +200,7 @@ public class AlertManager {
                   thresholdValue.criticalThreshold());
     }
 
-    /// Handle KV-Store remove notification for threshold deletions from other nodes.
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    public void onAlertThresholdRemove(ValueRemove<AlertThresholdKey, AlertThresholdValue> valueRemove) {
+    @MessageReceiver@SuppressWarnings("JBCT-RET-01") public void onAlertThresholdRemove(ValueRemove<AlertThresholdKey, AlertThresholdValue> valueRemove) {
         var thresholdKey = valueRemove.cause().key();
         thresholds.remove(thresholdKey.metricName());
         log.debug("Threshold removed from cluster: {}", thresholdKey.metricName());
@@ -235,19 +212,15 @@ public class AlertManager {
 
     private void addToHistory(String metric, NodeId nodeId, double value, String severity, String status) {
         var entry = new AlertHistoryEntry(System.currentTimeMillis(), metric, nodeId.id(), value, severity, status);
-        // Remove oldest entry if at capacity, then add new entry
-        while ( !alertHistory.offerLast(entry)) {
-        alertHistory.pollFirst();}
+        while (!alertHistory.offerLast(entry)) {alertHistory.pollFirst();}
     }
 
-    /// Get all thresholds as JSON.
-    @SuppressWarnings("JBCT-PAT-01") // Manual JSON serialization — intentional to avoid Jackson dependency in alert path
-    public String thresholdsAsJson() {
+    @SuppressWarnings("JBCT-PAT-01") public String thresholdsAsJson() {
         var sb = new StringBuilder();
         sb.append("{");
         boolean first = true;
-        for ( var entry : thresholds.entrySet()) {
-            if ( !first) sb.append(",");
+        for (var entry : thresholds.entrySet()) {
+            if (!first) sb.append(",");
             sb.append("\"").append(escapeJson(entry.getKey()))
                      .append("\":{");
             sb.append("\"warning\":").append(entry.getValue().warning)
@@ -260,14 +233,12 @@ public class AlertManager {
         return sb.toString();
     }
 
-    /// Get active alerts as JSON.
-    @SuppressWarnings("JBCT-PAT-01") // Manual JSON serialization — intentional to avoid Jackson dependency in alert path
-    public String activeAlertsAsJson() {
+    @SuppressWarnings("JBCT-PAT-01") public String activeAlertsAsJson() {
         var sb = new StringBuilder();
         sb.append("[");
         boolean first = true;
-        for ( var alert : activeAlerts.values()) {
-            if ( !first) sb.append(",");
+        for (var alert : activeAlerts.values()) {
+            if (!first) sb.append(",");
             sb.append("{");
             sb.append("\"metric\":\"").append(escapeJson(alert.metric))
                      .append("\",");
@@ -287,14 +258,12 @@ public class AlertManager {
         return sb.toString();
     }
 
-    /// Get alert history as JSON.
-    @SuppressWarnings("JBCT-PAT-01") // Manual JSON serialization — intentional to avoid Jackson dependency in alert path
-    public String alertHistoryAsJson() {
+    @SuppressWarnings("JBCT-PAT-01") public String alertHistoryAsJson() {
         var sb = new StringBuilder();
         sb.append("[");
         boolean first = true;
-        for ( var entry : alertHistory) {
-            if ( !first) sb.append(",");
+        for (var entry : alertHistory) {
+            if (!first) sb.append(",");
             sb.append("{");
             sb.append("\"timestamp\":").append(entry.timestamp)
                      .append(",");
@@ -315,13 +284,6 @@ public class AlertManager {
         return sb.toString();
     }
 
-    // ============================================
-    // Slice Failure Alerting
-    // ============================================
-    /// Handle slice failure event - all instances of a slice have failed.
-    ///
-    ///
-    /// This is a CRITICAL alert that may trigger automatic rollback.
     @MessageReceiver public void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event) {
         var alertKey = "slice.all_failed:" + event.artifact().asString() + "/" + event.method().name();
         var alert = new SliceFailureAlert(event.artifact(),
@@ -342,6 +304,7 @@ public class AlertManager {
     }
 
     private final Map<String, SliceFailureAlert> activeSliceFailureAlerts = new ConcurrentHashMap<>();
+
     private final LinkedBlockingDeque<SliceFailureHistoryEntry> sliceFailureHistory = new LinkedBlockingDeque<>(MAX_ALERT_HISTORY);
 
     private void addSliceFailureToHistory(SliceFailureEvent.AllInstancesFailed event) {
@@ -354,31 +317,25 @@ public class AlertManager {
                                                                      .toList(),
                                                  event.lastError().map(Cause::message)
                                                                 .or("unknown"));
-        // Remove oldest entry if at capacity, then add new entry
-        while ( !sliceFailureHistory.offerLast(entry)) {
-        sliceFailureHistory.pollFirst();}
+        while (!sliceFailureHistory.offerLast(entry)) {sliceFailureHistory.pollFirst();}
     }
 
-    /// Get active slice failure alerts.
     public List<SliceFailureAlert> getActiveSliceFailureAlerts() {
         return List.copyOf(activeSliceFailureAlerts.values());
     }
 
-    /// Clear a slice failure alert (e.g., after rollback or manual resolution).
     public void clearSliceFailureAlert(Artifact artifact, MethodName method) {
         var alertKey = "slice.all_failed:" + artifact.asString() + "/" + method.name();
         activeSliceFailureAlerts.remove(alertKey);
         log.info("Cleared slice failure alert for {}.{}", artifact, method);
     }
 
-    /// Get slice failure alerts as JSON.
-    @SuppressWarnings("JBCT-PAT-01") // Manual JSON serialization — intentional to avoid Jackson dependency in alert path
-    public String sliceFailureAlertsAsJson() {
+    @SuppressWarnings("JBCT-PAT-01") public String sliceFailureAlertsAsJson() {
         var sb = new StringBuilder();
         sb.append("[");
         boolean first = true;
-        for ( var alert : activeSliceFailureAlerts.values()) {
-            if ( !first) sb.append(",");
+        for (var alert : activeSliceFailureAlerts.values()) {
+            if (!first) sb.append(",");
             sb.append("{");
             sb.append("\"type\":\"SLICE_ALL_INSTANCES_FAILED\",");
             sb.append("\"severity\":\"CRITICAL\",");
@@ -390,8 +347,8 @@ public class AlertManager {
                      .append("\",");
             sb.append("\"attemptedNodes\":[");
             boolean firstNode = true;
-            for ( var nodeId : alert.attemptedNodes) {
-                if ( !firstNode) sb.append(",");
+            for (var nodeId : alert.attemptedNodes) {
+                if (!firstNode) sb.append(",");
                 sb.append("\"").append(escapeJson(nodeId.id()))
                          .append("\"");
                 firstNode = false;
@@ -407,14 +364,12 @@ public class AlertManager {
         return sb.toString();
     }
 
-    /// Get slice failure history as JSON.
-    @SuppressWarnings("JBCT-PAT-01") // Manual JSON serialization — intentional to avoid Jackson dependency in alert path
-    public String sliceFailureHistoryAsJson() {
+    @SuppressWarnings("JBCT-PAT-01") public String sliceFailureHistoryAsJson() {
         var sb = new StringBuilder();
         sb.append("[");
         boolean first = true;
-        for ( var entry : sliceFailureHistory) {
-            if ( !first) sb.append(",");
+        for (var entry : sliceFailureHistory) {
+            if (!first) sb.append(",");
             sb.append("{");
             sb.append("\"timestamp\":").append(entry.timestamp)
                      .append(",");
@@ -426,8 +381,8 @@ public class AlertManager {
                      .append("\",");
             sb.append("\"attemptedNodes\":[");
             boolean firstNode = true;
-            for ( var nodeId : entry.attemptedNodes) {
-                if ( !firstNode) sb.append(",");
+            for (var nodeId : entry.attemptedNodes) {
+                if (!firstNode) sb.append(",");
                 sb.append("\"").append(escapeJson(nodeId))
                          .append("\"");
                 firstNode = false;
@@ -454,7 +409,6 @@ public class AlertManager {
                         .replace("\t", "\\t");
     }
 
-    /// Record for tracking active slice failure alerts.
     public record SliceFailureAlert(Artifact artifact,
                                     MethodName method,
                                     Option<Cause> lastError,
@@ -469,20 +423,17 @@ public class AlertManager {
                                             List<String> attemptedNodes,
                                             String lastError){}
 
-    // ============================================
-    // Threshold-based Alerting (CPU, Heap, etc.)
-    // ============================================
     private record Threshold(double warning, double critical) {
         Option<String> severity(double value) {
-            if ( value >= critical) return Option.option("CRITICAL");
-            if ( value >= warning) return Option.option("WARNING");
+            if (value >= critical) return Option.option("CRITICAL");
+            if (value >= warning) return Option.option("WARNING");
             return Option.none();
         }
 
         double forSeverity(String severity) {
             return "CRITICAL".equals(severity)
-                   ? critical
-                   : warning;
+                  ? critical
+                  : warning;
         }
     }
 

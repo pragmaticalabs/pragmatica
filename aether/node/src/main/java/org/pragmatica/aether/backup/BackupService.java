@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.aether.backup;
 
 import org.pragmatica.lang.Cause;
@@ -22,25 +21,19 @@ import org.pragmatica.lang.Unit;
 
 import java.util.List;
 
+
 /// Service interface for cluster state backup operations.
 public interface BackupService {
-    /// Trigger a manual backup now.
     Result<Unit> backupNow();
-
-    /// List available backup snapshots.
     Result<List<BackupInfo>> listBackups();
-
-    /// Restore cluster state from a specific backup commit.
     Result<Unit> restore(String commitId);
 
-    /// Backup snapshot metadata.
     record BackupInfo(String commitId, String message, String timestamp) {
         public static BackupInfo backupInfo(String commitId, String message, String timestamp) {
             return new BackupInfo(commitId, message, timestamp);
         }
     }
 
-    /// Errors that can occur during backup operations.
     sealed interface BackupError extends Cause {
         record BackupFailed(Cause cause) implements BackupError {
             @Override public String message() {
@@ -83,10 +76,9 @@ public interface BackupService {
         }
     }
 
-    /// No-op implementation for when backup is disabled.
     static BackupService disabled() {
         var disabledError = BackupError.backupDisabled();
-        record disabledBackupService( BackupError error) implements BackupService {
+        record disabledBackupService(BackupError error) implements BackupService {
             @Override public Result<Unit> backupNow() {
                 return error.result();
             }

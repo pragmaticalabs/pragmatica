@@ -44,6 +44,7 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Service for managing application blueprints in the cluster.
 ///
 /// Blueprints define the desired cluster topology (which slices to deploy with how many instances).
@@ -56,61 +57,15 @@ import org.slf4j.LoggerFactory;
 /// - list: List all deployed blueprints
 /// - delete: Remove blueprint from KV-Store
 public interface BlueprintService {
-    /// Publish a new blueprint from DSL string.
-    ///
-    /// Process:
-    /// 1. Parse DSL to Blueprint
-    /// 2. Expand dependencies using Repository
-    /// 3. Store ExpandedBlueprint in KV-Store
-    ///
-    /// @param dsl Blueprint DSL definition
-    ///
-    /// @return ExpandedBlueprint after successful publication
     Promise<ExpandedBlueprint> publish(String dsl);
-
-    /// Publish a blueprint from an artifact stored in ArtifactStore.
-    /// Resolves the artifact, parses it as a blueprint JAR, expands dependencies,
-    /// and stores the blueprint with its resources configuration in the KV-Store.
-    ///
-    /// @param artifactCoords Maven artifact coordinates (groupId:artifactId:version)
-    ///
-    /// @return ExpandedBlueprint after successful publication
     Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords);
-
-    /// Retrieve an existing blueprint by ID.
-    ///
-    /// @param id BlueprintId to look up
-    ///
-    /// @return Option.some(ExpandedBlueprint) if exists, Option.none() otherwise
     Option<ExpandedBlueprint> get(BlueprintId id);
-
-    /// List all published blueprints.
-    ///
-    /// @return List of all ExpandedBlueprints in the cluster
     List<ExpandedBlueprint> list();
-
-    /// Delete a blueprint from the cluster.
-    ///
-    /// Idempotent: deleting non-existing blueprint succeeds with Unit.
-    ///
-    /// @param id BlueprintId to delete
-    ///
-    /// @return Promise of Unit on success
     Promise<Unit> delete(BlueprintId id);
-
-    /// Validate a blueprint DSL string without deploying.
-    ///
-    /// Parses the DSL and checks for syntax errors.
-    /// Does NOT validate artifact availability in repository.
-    ///
-    /// @param dsl Blueprint DSL definition
-    ///
-    /// @return Result containing parsed Blueprint if valid, or error cause if invalid
     Result<Blueprint> validate(String dsl);
 
     Cause ARTIFACT_STORE_NOT_CONFIGURED = Causes.cause("ArtifactStore not configured");
 
-    /// Create a BlueprintService with artifact store support.
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
                                              KVStore<AetherKey, AetherValue> store,
                                              Repository repository,
@@ -118,7 +73,6 @@ public interface BlueprintService {
         return new BlueprintServiceInstance(cluster, store, repository, Option.some(artifactStore));
     }
 
-    /// Create a BlueprintService without artifact store support (backward compatibility).
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
                                              KVStore<AetherKey, AetherValue> store,
                                              Repository repository) {
@@ -132,8 +86,7 @@ public interface BlueprintService {
 
     static int extractVersionNumber(String filename) {
         var underscoreIdx = filename.indexOf("__");
-        if ( underscoreIdx <= 1) {
-        return 0;}
+        if (underscoreIdx <= 1) {return 0;}
         var numPart = filename.substring(1, underscoreIdx);
         return Result.lift1(Causes::fromThrowable, Integer::parseInt, numPart).or(0);
     }
@@ -195,13 +148,13 @@ public interface BlueprintService {
 
     private static ParsedArtifactCoords parseArtifactWithClassifier(String coords) {
         var parts = coords.split(":");
-        if ( parts.length == 4) {
+        if (parts.length == 4) {
             var baseCoords = parts[0] + ":" + parts[1] + ":" + parts[2];
             return ParsedArtifactCoords.parsedArtifactCoords(Artifact.artifact(baseCoords), parts[3], baseCoords);
         }
-        // Default to "blueprint" classifier when only groupId:artifactId:version given
-        if ( parts.length == 3) {
-        return ParsedArtifactCoords.parsedArtifactCoords(Artifact.artifact(coords), "blueprint", coords);}
+        if (parts.length == 3) {return ParsedArtifactCoords.parsedArtifactCoords(Artifact.artifact(coords),
+                                                                                 "blueprint",
+                                                                                 coords);}
         return ParsedArtifactCoords.parsedArtifactCoords(MISSING_CLASSIFIER.result(), "", coords);
     }
 
@@ -209,13 +162,11 @@ public interface BlueprintService {
         return artifactStore.async(ARTIFACT_STORE_NOT_CONFIGURED).flatMap(store -> store.resolve(artifact));
     }
 
-    @SuppressWarnings("JBCT-EX-01") // Infrastructure I/O: URL stream reading
-    private static Promise<byte[]> readLocationBytes(Location location) {
+    @SuppressWarnings("JBCT-EX-01") private static Promise<byte[]> readLocationBytes(Location location) {
         return Promise.lift(Causes::fromThrowable, () -> readStreamBytes(location));
     }
 
-    @SuppressWarnings("JBCT-EX-01") // Adapter boundary: called within Promise.lift
-    private static byte[] readStreamBytes(Location location) throws Exception {
+    @SuppressWarnings("JBCT-EX-01") private static byte[] readStreamBytes(Location location) throws Exception {
         try (var stream = location.url().openStream()) {
             return stream.readAllBytes();
         }
@@ -234,8 +185,9 @@ public interface BlueprintService {
     }
 
     @Override public Promise<Unit> delete(BlueprintId id) {
-        return removeFromStore(AetherKey.AppBlueprintKey.appBlueprintKey(id))
-        .onFailure(cause -> log.warn("Failed to delete blueprint {}: {}", id.asString(), cause.message()));
+        return removeFromStore(AetherKey.AppBlueprintKey.appBlueprintKey(id)).onFailure(cause -> log.warn("Failed to delete blueprint {}: {}",
+                                                                                                          id.asString(),
+                                                                                                          cause.message()));
     }
 
     @Override public Result<Blueprint> validate(String dsl) {
@@ -269,8 +221,7 @@ public interface BlueprintService {
         var commands = new ArrayList<KVCommand<AetherKey>>();
         commands.add(buildBlueprintPutCommand(expanded));
         resourcesConfig.onPresent(content -> commands.add(buildResourcesPutCommand(expanded, content)));
-        if ( !migrations.isEmpty()) {
-        commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords));}
+        if (!migrations.isEmpty()) {commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords));}
         return commands;
     }
 
@@ -310,8 +261,8 @@ public interface BlueprintService {
                                              .max()
                                              .orElse(0);
         var lastFilename = migrationList.isEmpty()
-                           ? ""
-                           : migrationList.getLast().filename();
+                          ? ""
+                          : migrationList.getLast().filename();
         var key = SchemaVersionKey.schemaVersionKey(datasource);
         var value = SchemaVersionValue.schemaVersionValue(datasource,
                                                           maxVersion,
@@ -322,9 +273,8 @@ public interface BlueprintService {
     }
 
     private Promise<ExpandedBlueprint> validatePubSub(ExpandedBlueprint expanded) {
-        return loadAllTopologies(expanded.loadOrder())
-        .flatMap(topologies -> PubSubValidator.validate(topologies).map(_ -> expanded)
-                                                       .async());
+        return loadAllTopologies(expanded.loadOrder()).flatMap(topologies -> PubSubValidator.validate(topologies).map(_ -> expanded)
+                                                                                                     .async());
     }
 
     private Promise<List<SliceTopology>> loadAllTopologies(List<ResolvedSlice> slices) {
@@ -335,8 +285,9 @@ public interface BlueprintService {
 
     private Promise<List<SliceTopology>> loadTopology(ResolvedSlice slice) {
         return repository.locate(slice.artifact())
-        .map(location -> TopologyParser.parseFromJar(location.url(),
-                                                     slice.artifact().asString()).or(List.of()));
+                                .map(location -> TopologyParser.parseFromJar(location.url(),
+                                                                             slice.artifact().asString())
+        .or(List.of()));
     }
 
     private Promise<ExpandedBlueprint> storeBlueprint(ExpandedBlueprint expanded) {
@@ -357,6 +308,9 @@ public interface BlueprintService {
     }
 
     private Option<ExpandedBlueprint> extractBlueprint(AetherValue value) {
-        return switch (value) {case AetherValue.AppBlueprintValue appValue -> Option.some(appValue.blueprint());default -> Option.none();};
+        return switch (value){
+            case AetherValue.AppBlueprintValue appValue -> Option.some(appValue.blueprint());
+            default -> Option.none();
+        };
     }
 }

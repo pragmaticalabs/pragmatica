@@ -6,6 +6,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.util.Arrays;
 
+
 /// Supported upgrade strategies for cluster version changes.
 public enum UpgradeStrategy {
     ROLLING("rolling"),
@@ -18,7 +19,6 @@ public enum UpgradeStrategy {
     public String value() {
         return value;
     }
-    /// Parse an upgrade strategy from its string representation.
     public static Result<UpgradeStrategy> upgradeStrategy(String raw) {
         return Arrays.stream(values()).filter(us -> us.value.equals(raw))
                             .findFirst()

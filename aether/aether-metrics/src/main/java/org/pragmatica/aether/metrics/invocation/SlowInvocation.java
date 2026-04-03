@@ -5,6 +5,7 @@ import org.pragmatica.lang.Option;
 
 import static org.pragmatica.lang.Option.option;
 
+
 /// Captured details of a slow invocation for debugging.
 ///
 /// Slow invocations are captured when their duration exceeds the configured threshold.
@@ -18,14 +19,13 @@ import static org.pragmatica.lang.Option.option;
 /// @param responseBytes Size of the serialized response (0 if fire-and-forget)
 /// @param success       Whether the invocation succeeded
 /// @param errorType     Error type if failed (class name of the Cause)
-public record SlowInvocation( MethodName methodName,
-                              long timestampNs,
-                              long durationNs,
-                              int requestBytes,
-                              int responseBytes,
-                              boolean success,
-                              Option<String> errorType) {
-    /// Create a successful slow invocation record.
+public record SlowInvocation(MethodName methodName,
+                             long timestampNs,
+                             long durationNs,
+                             int requestBytes,
+                             int responseBytes,
+                             boolean success,
+                             Option<String> errorType) {
     public static SlowInvocation slowInvocation(MethodName method,
                                                 long timestampNs,
                                                 long durationNs,
@@ -34,7 +34,6 @@ public record SlowInvocation( MethodName methodName,
         return new SlowInvocation(method, timestampNs, durationNs, requestBytes, responseBytes, true, Option.empty());
     }
 
-    /// Create a failed slow invocation record.
     public static SlowInvocation slowInvocation(MethodName method,
                                                 long timestampNs,
                                                 long durationNs,
@@ -43,7 +42,6 @@ public record SlowInvocation( MethodName methodName,
         return new SlowInvocation(method, timestampNs, durationNs, requestBytes, 0, false, option(errorType));
     }
 
-    /// Duration in milliseconds for display.
     public double durationMs() {
         return durationNs / 1_000_000.0;
     }

@@ -2,8 +2,9 @@ package org.pragmatica.aether.pg.schema.validator;
 
 import java.util.List;
 
+
 /// Result of query validation — contains all found errors.
-public record ValidationResult( List<ValidationError> errors) {
+public record ValidationResult(List<ValidationError> errors) {
     public static ValidationResult empty() {
         return new ValidationResult(List.of());
     }

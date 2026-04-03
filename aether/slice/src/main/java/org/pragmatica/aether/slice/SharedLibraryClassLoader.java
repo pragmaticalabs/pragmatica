@@ -19,6 +19,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.option;
 
+
 /// ClassLoader for shared dependencies across all slices.
 ///
 /// This classloader sits between the Node ClassLoader and individual Slice ClassLoaders,
@@ -36,52 +37,27 @@ import static org.pragmatica.lang.Option.option;
 ///
 /// @see SliceClassLoader
 /// @see CompatibilityResult
-@SuppressWarnings("JBCT-SEQ-01")
-public class SharedLibraryClassLoader extends URLClassLoader {
+@SuppressWarnings("JBCT-SEQ-01") public class SharedLibraryClassLoader extends URLClassLoader {
     private static final Logger log = LoggerFactory.getLogger(SharedLibraryClassLoader.class);
 
-    /// Tracks loaded artifacts: artifactKey (groupId:artifactId) -> loaded Version
     private final Map<String, Version> loadedArtifacts = new ConcurrentHashMap<>();
 
-    /// Create a new SharedLibraryClassLoader.
-    ///
-    /// @param parent The parent classloader (typically the Node/Application ClassLoader)
     public SharedLibraryClassLoader(ClassLoader parent) {
         super(new URL[0], parent);
     }
 
-    /// Check if an artifact is already loaded and whether it's compatible.
-    ///
-    /// @param dependency The requested dependency
-    /// @return Empty if not loaded, or CompatibilityResult indicating compatibility
     public Option<CompatibilityResult> checkCompatibility(ArtifactDependency dependency) {
         return checkCompatibility(dependency.groupId(), dependency.artifactId(), dependency.versionPattern());
     }
 
-    /// Check if an artifact is already loaded and whether it's compatible.
-    ///
-    /// @param groupId    Maven group ID
-    /// @param artifactId Maven artifact ID
-    /// @param required   Required version pattern
-    /// @return Empty if not loaded, or CompatibilityResult indicating compatibility
     public Option<CompatibilityResult> checkCompatibility(String groupId, String artifactId, VersionPattern required) {
         var key = artifactKey(groupId, artifactId);
-        return option(loadedArtifacts.get(key))
-        .map(loadedVersion -> CompatibilityResult.check(loadedVersion, required));
+        return option(loadedArtifacts.get(key)).map(loadedVersion -> CompatibilityResult.check(loadedVersion, required));
     }
 
-    /// Add an artifact JAR to this classloader.
-    ///
-    /// Called when the first slice loads a shared dependency.
-    /// Subsequent slices that request compatible versions will reuse this artifact.
-    ///
-    /// @param groupId    Maven group ID
-    /// @param artifactId Maven artifact ID
-    /// @param version    The version being loaded
-    /// @param jarUrl     URL to the JAR file
     public synchronized Result<Unit> addArtifact(String groupId, String artifactId, Version version, URL jarUrl) {
         var key = artifactKey(groupId, artifactId);
-        if ( loadedArtifacts.containsKey(key)) {
+        if (loadedArtifacts.containsKey(key)) {
             log.warn("Artifact {} already loaded with version {}, ignoring request to load version {}",
                      key,
                      loadedArtifacts.get(key).withQualifier(),
@@ -94,52 +70,28 @@ public class SharedLibraryClassLoader extends URLClassLoader {
         return Result.unitResult();
     }
 
-    /// Register an artifact as provided by the runtime (e.g., embedded in a shaded JAR).
-    ///
-    /// This is used when a shared dependency cannot be found in any repository
-    /// but its classes are already available through the parent classloader.
-    /// The artifact is tracked for version compatibility without adding a JAR URL.
-    ///
-    /// @param groupId    Maven group ID
-    /// @param artifactId Maven artifact ID
-    /// @param version    The version being provided
     public synchronized Result<Unit> registerRuntimeProvided(String groupId, String artifactId, Version version) {
         var key = artifactKey(groupId, artifactId);
-        if ( !loadedArtifacts.containsKey(key)) {
+        if (!loadedArtifacts.containsKey(key)) {
             loadedArtifacts.put(key, version);
             log.debug("Registered runtime-provided artifact {}:{}", key, version.withQualifier());
         }
         return Result.unitResult();
     }
 
-    /// Check if an artifact is already loaded.
-    ///
-    /// @param groupId    Maven group ID
-    /// @param artifactId Maven artifact ID
-    /// @return true if already loaded
     public boolean isLoaded(String groupId, String artifactId) {
         return loadedArtifacts.containsKey(artifactKey(groupId, artifactId));
     }
 
-    /// Get the version of a loaded artifact.
-    ///
-    /// @param groupId    Maven group ID
-    /// @param artifactId Maven artifact ID
-    /// @return The loaded version, or empty if not loaded
     public Option<Version> getLoadedVersion(String groupId, String artifactId) {
         return option(loadedArtifacts.get(artifactKey(groupId, artifactId)));
     }
 
-    /// Get all loaded artifacts.
-    ///
-    /// @return Unmodifiable map of artifactKey -> Version
     public Map<String, Version> getLoadedArtifacts() {
         return Map.copyOf(loadedArtifacts);
     }
 
-    /// JDK override — kept as void/throws per URLClassLoader contract.
-    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
-    @Override public void close() throws IOException {
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) @Override public void close() throws IOException {
         loadedArtifacts.clear();
         super.close();
     }

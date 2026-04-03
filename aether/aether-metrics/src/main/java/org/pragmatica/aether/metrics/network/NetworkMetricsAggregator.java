@@ -7,6 +7,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.pragmatica.lang.Result.unitResult;
 
+
 /// Aggregates network metrics from multiple handlers.
 ///
 /// Use when you have multiple Netty pipelines (e.g., management server + cluster network)
@@ -20,29 +21,23 @@ public final class NetworkMetricsAggregator {
         return new NetworkMetricsAggregator();
     }
 
-    /// Register a handler for aggregation.
     public Result<Unit> register(NetworkMetricsHandler handler) {
         handlers.addIfAbsent(handler);
         return unitResult();
     }
 
-    /// Unregister a handler.
     public Result<Unit> unregister(NetworkMetricsHandler handler) {
         handlers.remove(handler);
         return unitResult();
     }
 
-    /// Get aggregated snapshot from all registered handlers.
     public NetworkMetrics snapshot() {
-        if ( handlers.isEmpty()) {
-        return NetworkMetrics.EMPTY;}
+        if (handlers.isEmpty()) {return NetworkMetrics.EMPTY;}
         return aggregateHandlers(false);
     }
 
-    /// Get aggregated snapshot and reset all handlers.
     public NetworkMetrics snapshotAndReset() {
-        if ( handlers.isEmpty()) {
-        return NetworkMetrics.EMPTY;}
+        if (handlers.isEmpty()) {return NetworkMetrics.EMPTY;}
         return aggregateHandlers(true);
     }
 
@@ -54,10 +49,10 @@ public final class NetworkMetricsAggregator {
         int activeConnections = 0;
         int backpressureEvents = 0;
         long lastBackpressure = 0;
-        for ( NetworkMetricsHandler handler : handlers) {
+        for (NetworkMetricsHandler handler : handlers) {
             var metrics = reset
-                          ? handler.snapshotAndReset()
-                          : handler.snapshot();
+                         ? handler.snapshotAndReset()
+                         : handler.snapshot();
             bytesRead += metrics.bytesRead();
             bytesWritten += metrics.bytesWritten();
             messagesRead += metrics.messagesRead();

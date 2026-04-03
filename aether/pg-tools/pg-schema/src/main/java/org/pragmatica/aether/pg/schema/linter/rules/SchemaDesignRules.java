@@ -12,6 +12,7 @@ import java.util.List;
 
 import static org.pragmatica.aether.pg.schema.linter.LintDiagnostic.Severity.WARNING;
 
+
 /// Rules detecting schema design issues.
 public final class SchemaDesignRules {
     private SchemaDesignRules() {}
@@ -27,7 +28,6 @@ public final class SchemaDesignRules {
                        new ReservedWordAsName());
     }
 
-    /// PG201: Table without primary key
     record TableWithoutPrimaryKey() implements LintRule {
         public String id() {
             return "PG201";
@@ -42,20 +42,18 @@ public final class SchemaDesignRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if ( event instanceof SchemaEvent.TableCreated e) {
+            if (event instanceof SchemaEvent.TableCreated e) {
                 var hasPk = e.constraints().stream()
                                          .anyMatch(c -> c instanceof Constraint.PrimaryKey);
-                if ( !hasPk) {
-                return List.of(LintDiagnostic.warning(id(),
-                                                      "Table '" + e.name() + "' has no primary key",
-                                                      e.span(),
-                                                      "Add a PRIMARY KEY — needed for replication, row identification, and FK references"));}
+                if (!hasPk) {return List.of(LintDiagnostic.warning(id(),
+                                                                   "Table '" + e.name() + "' has no primary key",
+                                                                   e.span(),
+                                                                   "Add a PRIMARY KEY — needed for replication, row identification, and FK references"));}
             }
             return List.of();
         }
     }
 
-    /// PG202: Foreign key without index on referencing columns
     record ForeignKeyWithoutIndex() implements LintRule {
         public String id() {
             return "PG202";
@@ -70,25 +68,24 @@ public final class SchemaDesignRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if ( event instanceof SchemaEvent.ConstraintAdded e && e.constraint() instanceof Constraint.ForeignKey fk) {
+            if (event instanceof SchemaEvent.ConstraintAdded e && e.constraint() instanceof Constraint.ForeignKey fk) {
                 var table = schema.table(e.table());
-                if ( table.isPresent()) {
+                if (table.isPresent()) {
                     var fkCols = fk.columns();
                     var hasMatchingIndex = table.unwrap().indexes()
                                                        .stream()
                                                        .anyMatch(idx -> indexCoversColumns(idx, fkCols));
-                    if ( !hasMatchingIndex) {
-                    return List.of(LintDiagnostic.warning(id(),
-                                                          "FK on (" + String.join(", ", fk.columns()) + ") has no index — causes seq scan on parent DELETE/UPDATE",
-                                                          e.span(),
-                                                          "Create an index on the referencing columns"));}
+                    if (!hasMatchingIndex) {return List.of(LintDiagnostic.warning(id(),
+                                                                                  "FK on (" + String.join(", ",
+                                                                                                          fk.columns()) + ") has no index — causes seq scan on parent DELETE/UPDATE",
+                                                                                  e.span(),
+                                                                                  "Create an index on the referencing columns"));}
                 }
             }
             return List.of();
         }
     }
 
-    /// PG203: Unnamed constraints
     record UnnamedConstraint() implements LintRule {
         public String id() {
             return "PG203";
@@ -104,26 +101,22 @@ public final class SchemaDesignRules {
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
             var results = new ArrayList<LintDiagnostic>();
-            if ( event instanceof SchemaEvent.TableCreated e) {
-            for ( var c : e.constraints()) {
-            if ( c.name().isEmpty()) {
+            if (event instanceof SchemaEvent.TableCreated e) {for (var c : e.constraints()) {if (c.name().isEmpty()) {
                 var kind = constraintKind(c);
                 results.add(LintDiagnostic.warning(id(),
                                                    "Unnamed " + kind + " constraint in table '" + e.name() + "'",
                                                    e.span(),
                                                    "Name constraints explicitly with CONSTRAINT name_here"));
             }}}
-            if ( event instanceof SchemaEvent.ConstraintAdded e && e.constraint().name()
-                                                                               .isEmpty()) {
-            results.add(LintDiagnostic.warning(id(),
-                                               "Unnamed constraint added to table '" + e.table() + "'",
-                                               e.span(),
-                                               "Name constraints explicitly with CONSTRAINT name_here"));}
+            if (event instanceof SchemaEvent.ConstraintAdded e && e.constraint().name()
+                                                                              .isEmpty()) {results.add(LintDiagnostic.warning(id(),
+                                                                                                                              "Unnamed constraint added to table '" + e.table() + "'",
+                                                                                                                              e.span(),
+                                                                                                                              "Name constraints explicitly with CONSTRAINT name_here"));}
             return results;
         }
     }
 
-    /// PG204: Potentially duplicate/overlapping indexes
     record DuplicateIndex() implements LintRule {
         public String id() {
             return "PG204";
@@ -138,24 +131,23 @@ public final class SchemaDesignRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if ( event instanceof SchemaEvent.IndexCreated e) {
+            if (event instanceof SchemaEvent.IndexCreated e) {
                 var table = schema.table(e.index().table());
-                if ( table.isPresent()) {
+                if (table.isPresent()) {
                     var newCols = e.index().elements()
                                          .stream()
                                          .map(ie -> ie.expression())
                                          .toList();
-                    for ( var existing : table.unwrap().indexes()) {
+                    for (var existing : table.unwrap().indexes()) {
                         var existingCols = existing.elements().stream()
                                                             .map(ie -> ie.expression())
                                                             .toList();
-                        // New index is a prefix of existing, or identical
-                        if ( existingCols.size() >= newCols.size() &&
-                        existingCols.subList(0, newCols.size()).equals(newCols)) {
-                        return List.of(LintDiagnostic.warning(id(),
-                                                              "Index '" + e.index().name() + "' overlaps with existing index '" + existing.name() + "'",
-                                                              e.span(),
-                                                              "The existing index already covers these columns"));}
+                        if (existingCols.size() >= newCols.size() && existingCols.subList(0,
+                                                                                          newCols.size())
+                        .equals(newCols)) {return List.of(LintDiagnostic.warning(id(),
+                                                                                 "Index '" + e.index().name() + "' overlaps with existing index '" + existing.name() + "'",
+                                                                                 e.span(),
+                                                                                 "The existing index already covers these columns"));}
                     }
                 }
             }
@@ -163,7 +155,6 @@ public final class SchemaDesignRules {
         }
     }
 
-    /// PG205: Composite index with 4+ columns
     record WideCompositeIndex() implements LintRule {
         public String id() {
             return "PG205";
@@ -178,18 +169,17 @@ public final class SchemaDesignRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if ( event instanceof SchemaEvent.IndexCreated e && e.index().elements()
-                                                                       .size() >= 4 && !e.index().unique()) {
-            return List.of(LintDiagnostic.warning(id(),
-                                                  "Index '" + e.index().name() + "' has " + e.index().elements()
-                                                                                                   .size() + " columns — rarely improves performance, high storage overhead",
-                                                  e.span(),
-                                                  "Consider narrower index or partial index"));}
+            if (event instanceof SchemaEvent.IndexCreated e && e.index().elements()
+                                                                      .size() >= 4 && !e.index().unique()) {return List.of(LintDiagnostic.warning(id(),
+                                                                                                                                                  "Index '" + e.index()
+                                                                                                                                                                     .name() + "' has " + e.index().elements()
+                                                                                                                                                                                                 .size() + " columns — rarely improves performance, high storage overhead",
+                                                                                                                                                  e.span(),
+                                                                                                                                                  "Consider narrower index or partial index"));}
             return List.of();
         }
     }
 
-    /// PG206: Table without updated_at column
     record MissingUpdatedAtColumn() implements LintRule {
         public String id() {
             return "PG206";
@@ -204,20 +194,19 @@ public final class SchemaDesignRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if ( event instanceof SchemaEvent.TableCreated e) {
+            if (event instanceof SchemaEvent.TableCreated e) {
                 var hasUpdatedAt = e.columns().stream()
-                                            .anyMatch(c -> c.name().contains("updated_at") || c.name().contains("modified_at"));
-                if ( !hasUpdatedAt && e.columns().size() > 2) {
-                return List.of(LintDiagnostic.warning(id(),
-                                                      "Table '" + e.name() + "' has no updated_at column",
-                                                      e.span(),
-                                                      "Add updated_at timestamptz for change tracking"));}
+                                            .anyMatch(c -> c.name().contains("updated_at") || c.name()
+                                                                                                    .contains("modified_at"));
+                if (!hasUpdatedAt && e.columns().size() > 2) {return List.of(LintDiagnostic.warning(id(),
+                                                                                                    "Table '" + e.name() + "' has no updated_at column",
+                                                                                                    e.span(),
+                                                                                                    "Add updated_at timestamptz for change tracking"));}
             }
             return List.of();
         }
     }
 
-    /// PG207: Uppercase table or column names require perpetual quoting
     record UppercaseTableOrColumnName() implements LintRule {
         public String id() {
             return "PG207";
@@ -233,24 +222,20 @@ public final class SchemaDesignRules {
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
             var results = new ArrayList<LintDiagnostic>();
-            if ( event instanceof SchemaEvent.TableCreated e) {
-                if ( !e.name().equals(e.name().toLowerCase())) {
-                results.add(LintDiagnostic.warning(id(),
-                                                   "Table name '" + e.name() + "' contains uppercase — requires perpetual quoting",
-                                                   e.span(),
-                                                   "Use lowercase snake_case for table names"));}
-                for ( var col : e.columns()) {
-                if ( !col.name().equals(col.name().toLowerCase())) {
-                results.add(LintDiagnostic.warning(id(),
-                                                   "Column name '" + col.name() + "' contains uppercase — requires perpetual quoting",
-                                                   e.span(),
-                                                   "Use lowercase snake_case for column names"));}}
+            if (event instanceof SchemaEvent.TableCreated e) {
+                if (!e.name().equals(e.name().toLowerCase())) {results.add(LintDiagnostic.warning(id(),
+                                                                                                  "Table name '" + e.name() + "' contains uppercase — requires perpetual quoting",
+                                                                                                  e.span(),
+                                                                                                  "Use lowercase snake_case for table names"));}
+                for (var col : e.columns()) {if (!col.name().equals(col.name().toLowerCase())) {results.add(LintDiagnostic.warning(id(),
+                                                                                                                                   "Column name '" + col.name() + "' contains uppercase — requires perpetual quoting",
+                                                                                                                                   e.span(),
+                                                                                                                                   "Use lowercase snake_case for column names"));}}
             }
             return results;
         }
     }
 
-    /// PG208: Using PostgreSQL reserved words as identifiers
     record ReservedWordAsName() implements LintRule {
         static final java.util.Set<String> RESERVED = java.util.Set.of("user",
                                                                        "order",
@@ -321,18 +306,15 @@ public final class SchemaDesignRules {
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
             var results = new ArrayList<LintDiagnostic>();
-            if ( event instanceof SchemaEvent.TableCreated e) {
-                if ( RESERVED.contains(e.name().toLowerCase())) {
-                results.add(LintDiagnostic.warning(id(),
-                                                   "Table name '" + e.name() + "' is a reserved word — requires quoting in queries",
-                                                   e.span(),
-                                                   "Choose a different name to avoid quoting"));}
-                for ( var col : e.columns()) {
-                if ( RESERVED.contains(col.name().toLowerCase())) {
-                results.add(LintDiagnostic.warning(id(),
-                                                   "Column name '" + col.name() + "' is a reserved word",
-                                                   e.span(),
-                                                   "Choose a different name"));}}
+            if (event instanceof SchemaEvent.TableCreated e) {
+                if (RESERVED.contains(e.name().toLowerCase())) {results.add(LintDiagnostic.warning(id(),
+                                                                                                   "Table name '" + e.name() + "' is a reserved word — requires quoting in queries",
+                                                                                                   e.span(),
+                                                                                                   "Choose a different name to avoid quoting"));}
+                for (var col : e.columns()) {if (RESERVED.contains(col.name().toLowerCase())) {results.add(LintDiagnostic.warning(id(),
+                                                                                                                                  "Column name '" + col.name() + "' is a reserved word",
+                                                                                                                                  e.span(),
+                                                                                                                                  "Choose a different name"));}}
             }
             return results;
         }
@@ -342,11 +324,16 @@ public final class SchemaDesignRules {
         var idxCols = idx.elements().stream()
                                   .map(ie -> ie.expression())
                                   .toList();
-        return idxCols.size() >= fkCols.size() &&
-        idxCols.subList(0, fkCols.size()).equals(fkCols);
+        return idxCols.size() >= fkCols.size() && idxCols.subList(0, fkCols.size()).equals(fkCols);
     }
 
     private static String constraintKind(Constraint c) {
-        return switch (c) {case Constraint.PrimaryKey _ -> "PRIMARY KEY";case Constraint.ForeignKey _ -> "FOREIGN KEY";case Constraint.Unique _ -> "UNIQUE";case Constraint.Check _ -> "CHECK";case Constraint.Exclusion _ -> "EXCLUSION";};
+        return switch (c){
+            case Constraint.PrimaryKey _ -> "PRIMARY KEY";
+            case Constraint.ForeignKey _ -> "FOREIGN KEY";
+            case Constraint.Unique _ -> "UNIQUE";
+            case Constraint.Check _ -> "CHECK";
+            case Constraint.Exclusion _ -> "EXCLUSION";
+        };
     }
 }

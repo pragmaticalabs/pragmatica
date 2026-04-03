@@ -25,12 +25,11 @@ import java.util.stream.Stream;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
+
 /// Hetzner Cloud implementation of the ComputeProvider SPI.
 /// Delegates to HetznerClient for server lifecycle management and maps
 /// Hetzner server models to the environment integration domain types.
-public record HetznerComputeProvider( HetznerClient client,
-                                      HetznerEnvironmentConfig config) implements ComputeProvider {
-    /// Factory method for creating a HetznerComputeProvider.
+public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentConfig config) implements ComputeProvider {
     public static Result<HetznerComputeProvider> hetznerComputeProvider(HetznerClient client,
                                                                         HetznerEnvironmentConfig config) {
         return success(new HetznerComputeProvider(client, config));
@@ -47,7 +46,6 @@ public record HetznerComputeProvider( HetznerClient client,
         return mapTerminateError(result, instanceId);
     }
 
-    // --- Leaf: map terminate errors with instance context ---
     private static Promise<Unit> mapTerminateError(Promise<Unit> result, InstanceId instanceId) {
         return result.mapError(cause -> toTerminateError(instanceId, cause));
     }
@@ -58,13 +56,11 @@ public record HetznerComputeProvider( HetznerClient client,
     }
 
     @Override public Promise<Unit> restart(InstanceId id) {
-        return parseServerId(id).async()
-                            .flatMap(this::rebootServer);
+        return parseServerId(id).async().flatMap(this::rebootServer);
     }
 
     @Override public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
-        return parseServerId(id).async()
-                            .flatMap(serverId -> updateLabels(serverId, tags));
+        return parseServerId(id).async().flatMap(serverId -> updateLabels(serverId, tags));
     }
 
     @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
@@ -79,27 +75,22 @@ public record HetznerComputeProvider( HetznerClient client,
                              .mapError(HetznerComputeProvider::toProvisionError);
     }
 
-    // --- Leaf: destroy a server by ID ---
     private Promise<Unit> destroyServer(long serverId) {
         return client.deleteServer(serverId);
     }
 
-    // --- Leaf: reboot a server by ID ---
     private Promise<Unit> rebootServer(long serverId) {
         return client.rebootServer(serverId);
     }
 
-    // --- Leaf: update server labels ---
     private Promise<Unit> updateLabels(long serverId, Map<String, String> tags) {
         return client.updateServerLabels(serverId, tags);
     }
 
-    // --- Leaf: look up a server by ID ---
     private Promise<Server> serverById(long serverId) {
         return client.getServer(serverId);
     }
 
-    // --- Leaf: build server creation request ---
     private CreateServerRequest buildCreateRequest() {
         var name = generateServerName();
         var serverType = config.serverType();
@@ -120,18 +111,15 @@ public record HetznerComputeProvider( HetznerClient client,
                                                        true);
     }
 
-    // --- Leaf: generate a unique server name ---
     private static String generateServerName() {
         return "aether-" + UUID.randomUUID().toString()
                                           .substring(0, 8);
     }
 
-    // --- Leaf: parse server ID from instance ID ---
     private static Result<Long> parseServerId(InstanceId instanceId) {
         return Number.parseLong(instanceId.value());
     }
 
-    // --- Leaf: map Hetzner server to InstanceInfo ---
     static InstanceInfo toInstanceInfo(Server server) {
         return new InstanceInfo(new InstanceId(String.valueOf(server.id())),
                                 mapStatus(server.status()),
@@ -140,75 +128,65 @@ public record HetznerComputeProvider( HetznerClient client,
                                 safeLabels(server));
     }
 
-    // --- Leaf: safely extract labels from server, defaulting to empty map ---
     private static Map<String, String> safeLabels(Server server) {
         return option(server.labels()).or(Map.of());
     }
 
-    // --- Leaf: convert tag filter map to Hetzner label selector string ---
     static String toLabelSelector(Map<String, String> tagFilter) {
         return tagFilter.entrySet().stream()
                                  .map(HetznerComputeProvider::toLabelEntry)
                                  .collect(Collectors.joining(","));
     }
 
-    // --- Leaf: format a single label entry for Hetzner selector ---
     private static String toLabelEntry(Map.Entry<String, String> entry) {
         return entry.getKey() + "=" + entry.getValue();
     }
 
-    // --- Leaf: map list of servers ---
     private static List<InstanceInfo> toInstanceInfoList(List<Server> servers) {
         return servers.stream().map(HetznerComputeProvider::toInstanceInfo)
                              .toList();
     }
 
-    // --- Leaf: map Hetzner status string to InstanceStatus ---
     static InstanceStatus mapStatus(String hetznerStatus) {
-        return switch (hetznerStatus) {case "initializing", "starting", "rebuilding", "migrating" -> InstanceStatus.PROVISIONING;case "running" -> InstanceStatus.RUNNING;case "stopping", "off", "deleting" -> InstanceStatus.STOPPING;default -> InstanceStatus.TERMINATED;};
+        return switch (hetznerStatus){
+            case "initializing", "starting", "rebuilding", "migrating" -> InstanceStatus.PROVISIONING;
+            case "running" -> InstanceStatus.RUNNING;
+            case "stopping", "off", "deleting" -> InstanceStatus.STOPPING;
+            default -> InstanceStatus.TERMINATED;
+        };
     }
 
-    // --- Leaf: collect all IP addresses from a server ---
     static List<String> collectAddresses(Server server) {
         var publicIp = publicIpv4(server);
         var privateIps = privateIps(server);
         return Stream.concat(publicIp.stream(), privateIps.stream()).toList();
     }
 
-    // --- Leaf: resolve public IPv4 address ---
     private static Option<String> publicIpv4(Server server) {
-        return option(server.publicNet()).flatMap(HetznerComputeProvider::ipv4FromPublicNet)
-                     .map(Server.Ipv4::ip);
+        return option(server.publicNet()).flatMap(HetznerComputeProvider::ipv4FromPublicNet).map(Server.Ipv4::ip);
     }
 
-    // --- Leaf: resolve ipv4 from public net ---
     private static Option<Server.Ipv4> ipv4FromPublicNet(Server.PublicNet net) {
         return option(net.ipv4());
     }
 
-    // --- Leaf: resolve private network IPs ---
     private static List<String> privateIps(Server server) {
-        return option(server.privateNet()).map(HetznerComputeProvider::toPrivateIpList)
-                     .or(List.of());
+        return option(server.privateNet()).map(HetznerComputeProvider::toPrivateIpList).or(List.of());
     }
 
-    // --- Leaf: map private net list to IPs ---
     private static List<String> toPrivateIpList(List<Server.PrivateNet> nets) {
         return nets.stream().map(Server.PrivateNet::ip)
                           .toList();
     }
 
-    // --- Leaf: map cause to provision error ---
     private static EnvironmentError toProvisionError(Cause cause) {
         return EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
     }
 
-    // --- Leaf: map cause to terminate error ---
     private static EnvironmentError toTerminateError(InstanceId instanceId, Cause cause) {
         return EnvironmentError.terminateFailed(instanceId, new RuntimeException(cause.message()));
     }
 
-    // --- Leaf: map cause to list instances error ---
     private static EnvironmentError toListInstancesError(Cause cause) {
         return EnvironmentError.listInstancesFailed(new RuntimeException(cause.message()));
     }

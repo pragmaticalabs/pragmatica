@@ -7,6 +7,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
+
 /// Resource qualifier for injecting JooqConnector instances.
 ///
 /// Use this annotation on factory method parameters to inject a JooqConnector
@@ -18,7 +19,4 @@ import java.lang.annotation.Target;
 ///
 /// @see JooqConnector
 /// @see ResourceQualifier
-@ResourceQualifier(type = JooqConnector.class, config = "database")
-@Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.PARAMETER)
-public @interface Jooq {}
+@ResourceQualifier(type = JooqConnector.class, config = "database") @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.PARAMETER) public@interface Jooq {}

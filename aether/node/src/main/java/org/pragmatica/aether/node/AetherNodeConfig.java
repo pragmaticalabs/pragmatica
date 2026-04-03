@@ -36,6 +36,7 @@ import java.util.Map;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
+
 /// Configuration for an Aether cluster node.
 ///
 /// @param topology            Cluster topology configuration
@@ -63,53 +64,45 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param managementHttpProtocol    HTTP protocol for management server (H1, H3, BOTH) — default H1
 /// @param storageConfig            Named hierarchical storage instance configurations (empty map for defaults)
 /// @param backupConfig             Consensus state backup configuration (empty for in-memory only)
-public record AetherNodeConfig( TopologyConfig topology,
-                                ProtocolConfig protocol,
-                                SliceActionConfig sliceAction,
-                                SliceConfig sliceConfig,
-                                int managementPort,
-                                DHTConfig artifactRepo,
-                                DHTConfig cache,
-                                Option<TlsConfig> tls,
-                                TtmConfig ttm,
-                                RollbackConfig rollback,
-                                AppHttpConfig appHttp,
-                                ControllerConfig controllerConfig,
-                                Option<ConfigurationProvider> configProvider,
-                                Option<EnvironmentIntegration> environment,
-                                AutoHealConfig autoHeal,
-                                ObservabilityConfig observability,
-                                DeploymentAtomicity atomicity,
-                                boolean activationGated,
-                                TimeoutsConfig timeouts,
-                                Option<CertificateProvider> certificateProvider,
-                                Option<WorkerConfig> workerConfig,
-                                DeploymentDefaults deploymentDefaults,
-                                HttpProtocol managementHttpProtocol,
-                                Map<String, StorageConfig> storageConfig,
-                                Option<BackupConfig> backupConfig) {
-    /// Node-level deployment defaults applied when a blueprint does not specify its own configuration.
-    ///
-    /// @param canaryEvaluationIntervalMs interval between canary health evaluations in milliseconds
-    /// @param defaultCanaryStages default canary stages used when blueprint omits stages
-    public record DeploymentDefaults(long canaryEvaluationIntervalMs,
-                                     List<CanaryStageConfig> defaultCanaryStages) {
-        /// Default deployment defaults: 30s evaluation interval, standard canary stages.
-        @SuppressWarnings("JBCT-VO-02")
-        public static final DeploymentDefaults DEFAULT = new DeploymentDefaults(30_000,
-                                                                                DeploymentConfig.defaultCanaryStages());
+public record AetherNodeConfig(TopologyConfig topology,
+                               ProtocolConfig protocol,
+                               SliceActionConfig sliceAction,
+                               SliceConfig sliceConfig,
+                               int managementPort,
+                               DHTConfig artifactRepo,
+                               DHTConfig cache,
+                               Option<TlsConfig> tls,
+                               TtmConfig ttm,
+                               RollbackConfig rollback,
+                               AppHttpConfig appHttp,
+                               ControllerConfig controllerConfig,
+                               Option<ConfigurationProvider> configProvider,
+                               Option<EnvironmentIntegration> environment,
+                               AutoHealConfig autoHeal,
+                               ObservabilityConfig observability,
+                               DeploymentAtomicity atomicity,
+                               boolean activationGated,
+                               TimeoutsConfig timeouts,
+                               Option<CertificateProvider> certificateProvider,
+                               Option<WorkerConfig> workerConfig,
+                               DeploymentDefaults deploymentDefaults,
+                               HttpProtocol managementHttpProtocol,
+                               Map<String, StorageConfig> storageConfig,
+                               Option<BackupConfig> backupConfig) {
+    public record DeploymentDefaults(long canaryEvaluationIntervalMs, List<CanaryStageConfig> defaultCanaryStages) {
+        @SuppressWarnings("JBCT-VO-02") public static final DeploymentDefaults DEFAULT = new DeploymentDefaults(30_000,
+                                                                                                                DeploymentConfig.defaultCanaryStages());
     }
 
     public static final int DEFAULT_MANAGEMENT_PORT = 8080;
+
     public static final int MANAGEMENT_DISABLED = 0;
 
     public static SliceActionConfig defaultSliceActionConfig() {
         return SliceActionConfig.sliceActionConfig();
     }
 
-    public static AetherNodeConfig aetherNodeConfig(NodeId self,
-                                                    int port,
-                                                    List<NodeInfo> coreNodes) {
+    public static AetherNodeConfig aetherNodeConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
         return aetherNodeConfig(self,
                                 port,
                                 coreNodes,
@@ -174,10 +167,9 @@ public record AetherNodeConfig( TopologyConfig topology,
                                                     int managementPort,
                                                     DHTConfig artifactRepoConfig,
                                                     int coreMax) {
-        // When coreMax > 0, quorum is calculated against core nodes only (not total nodes)
         var effectiveClusterSize = coreMax > 0
-                                   ? coreMax
-                                   : coreNodes.size();
+                                  ? coreMax
+                                  : coreNodes.size();
         var topology = new TopologyConfig(self,
                                           effectiveClusterSize,
                                           timeSpan(5).seconds(),
@@ -221,7 +213,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                           timeSpan(500).millis(),
                                           timeSpan(100).millis(),
                                           coreNodes);
-        // Use full replication for tests - simpler, and tests typically have few nodes
         return new AetherNodeConfig(topology,
                                     ProtocolConfig.testConfig(),
                                     defaultSliceActionConfig(),
@@ -249,9 +240,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     Option.empty());
     }
 
-    /// Create a test configuration for Forge simulation environment.
-    /// Uses ForgeDefaults scaling config which disables CPU-based scaling.
-    /// Uses production DHT config (3 replicas, quorum=2) to match real cluster behavior.
     public static AetherNodeConfig forgeConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
         var topology = new TopologyConfig(self,
                                           coreNodes.size(),
@@ -285,10 +273,8 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     Option.empty());
     }
 
-    /// Create a new configuration with TLS enabled for all components (HTTP and cluster).
     public AetherNodeConfig withTls(TlsConfig tlsConfig) {
         var tlsOption = Option.some(tlsConfig);
-        // Update TopologyConfig with TLS for cluster communication
         var newTopology = new TopologyConfig(topology.self(),
                                              topology.clusterSize(),
                                              topology.reconciliationInterval(),
@@ -326,7 +312,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     backupConfig);
     }
 
-    /// Create a new configuration with TTM enabled.
     public AetherNodeConfig withTtm(TtmConfig ttmConfig) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -355,7 +340,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     backupConfig);
     }
 
-    /// Create a new configuration with rollback settings.
     public AetherNodeConfig withRollback(RollbackConfig rollbackConfig) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -384,7 +368,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     backupConfig);
     }
 
-    /// Create a new configuration with different slice configuration.
     public AetherNodeConfig withSliceConfig(SliceConfig newSliceConfig) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -413,7 +396,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     backupConfig);
     }
 
-    /// Create a new configuration with application HTTP server enabled.
     public AetherNodeConfig withAppHttp(AppHttpConfig appHttpConfig) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -442,7 +424,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     backupConfig);
     }
 
-    /// Create a new configuration with different controller configuration.
     public AetherNodeConfig withControllerConfig(ControllerConfig newControllerConfig) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -471,7 +452,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     backupConfig);
     }
 
-    /// Create a new configuration with a ConfigurationProvider for resource provisioning.
     public AetherNodeConfig withConfigProvider(ConfigurationProvider provider) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -500,7 +480,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     backupConfig);
     }
 
-    /// Create a new configuration with an EnvironmentIntegration for compute/secrets.
     public AetherNodeConfig withEnvironment(EnvironmentIntegration env) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -529,7 +508,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     backupConfig);
     }
 
-    /// Create a new configuration with custom auto-heal settings.
     public AetherNodeConfig withAutoHeal(AutoHealConfig autoHealConfig) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -558,7 +536,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     backupConfig);
     }
 
-    /// Create a new configuration with deployment atomicity mode.
     public AetherNodeConfig withAtomicity(DeploymentAtomicity deploymentAtomicity) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -587,7 +564,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     backupConfig);
     }
 
-    /// Create a new configuration with activation gating enabled or disabled.
     public AetherNodeConfig withActivationGated(boolean gated) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -616,7 +592,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     backupConfig);
     }
 
-    /// Create a new configuration with custom timeouts.
     public AetherNodeConfig withTimeouts(TimeoutsConfig newTimeouts) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -645,7 +620,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     backupConfig);
     }
 
-    /// Create a new configuration with a certificate provider for mTLS and gossip encryption.
     public AetherNodeConfig withCertificateProvider(CertificateProvider provider) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -674,7 +648,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     backupConfig);
     }
 
-    /// Create a new configuration with worker configuration for worker-role nodes.
     public AetherNodeConfig withWorkerConfig(WorkerConfig config) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -703,7 +676,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     backupConfig);
     }
 
-    /// Create a new configuration with custom deployment defaults.
     public AetherNodeConfig withDeploymentDefaults(DeploymentDefaults defaults) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -732,7 +704,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     backupConfig);
     }
 
-    /// Create a new configuration with management HTTP protocol.
     public AetherNodeConfig withManagementHttpProtocol(HttpProtocol protocol) {
         return new AetherNodeConfig(topology,
                                     this.protocol,
@@ -761,7 +732,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     backupConfig);
     }
 
-    /// Create a new configuration with named hierarchical storage instances.
     public AetherNodeConfig withStorage(Map<String, StorageConfig> newStorageConfig) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -790,7 +760,6 @@ public record AetherNodeConfig( TopologyConfig topology,
                                     backupConfig);
     }
 
-    /// Create a new configuration with backup configuration for consensus state persistence.
     public AetherNodeConfig withBackupConfig(BackupConfig backup) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -823,14 +792,11 @@ public record AetherNodeConfig( TopologyConfig topology,
         return topology.self();
     }
 
-    /// Validates the configuration.
-    ///
-    /// @return success if valid, failure with cause otherwise
     public Result<Unit> validate() {
-        if ( managementPort < 0 || managementPort > 65535) {
-        return Causes.cause("Invalid management port: " + managementPort).result();}
-        if ( managementPort != MANAGEMENT_DISABLED && topology.coreNodes().isEmpty()) {
-        return Causes.cause("At least one core node required when management is enabled").result();}
+        if (managementPort <0 || managementPort > 65535) {return Causes.cause("Invalid management port: " + managementPort)
+                                                                             .result();}
+        if (managementPort != MANAGEMENT_DISABLED && topology.coreNodes().isEmpty()) {return Causes.cause("At least one core node required when management is enabled")
+                                                                                                         .result();}
         return Result.unitResult();
     }
 }

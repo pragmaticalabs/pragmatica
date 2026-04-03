@@ -8,11 +8,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+
 /// Cluster-wide topology graph aggregated from per-slice topologies.
 ///
 /// Nodes represent endpoints, slices, topics, and resources.
 /// Edges represent data flow between them.
-public record TopologyGraph( List<TopologyNode> nodes, List<TopologyEdge> edges) {
+public record TopologyGraph(List<TopologyNode> nodes, List<TopologyEdge> edges) {
     public TopologyGraph {
         nodes = List.copyOf(nodes);
         edges = List.copyOf(edges);
@@ -36,13 +37,10 @@ public record TopologyGraph( List<TopologyNode> nodes, List<TopologyEdge> edges)
         DOTTED
     }
 
-    /// Build a cluster-wide topology graph from per-slice topologies.
-    @SuppressWarnings("JBCT-PAT-01")
-    public static TopologyGraph build(List<SliceTopology> slices) {
+    @SuppressWarnings("JBCT-PAT-01") public static TopologyGraph build(List<SliceTopology> slices) {
         var nodeMap = new LinkedHashMap<String, TopologyNode>();
         var edgeList = new ArrayList<TopologyEdge>();
-        // First pass: all slice nodes, routes, resources, topics
-        for ( var slice : slices) {
+        for (var slice : slices) {
             var sliceId = "slice:" + slice.artifact();
             nodeMap.putIfAbsent(sliceId,
                                 new TopologyNode(sliceId, NodeType.SLICE, slice.sliceName(), slice.artifact()));
@@ -51,8 +49,7 @@ public record TopologyGraph( List<TopologyNode> nodes, List<TopologyEdge> edges)
             addPublishNodes(slice, sliceId, nodeMap, edgeList);
             addSubscribeNodes(slice, sliceId, nodeMap, edgeList);
         }
-        // Second pass: dependency edges (all slice nodes exist, can match by name)
-        for ( var slice : slices) {
+        for (var slice : slices) {
             var sliceId = "slice:" + slice.artifact();
             addDependencyEdges(slice, sliceId, nodeMap, edgeList);
         }
@@ -64,7 +61,7 @@ public record TopologyGraph( List<TopologyNode> nodes, List<TopologyEdge> edges)
                                                 String sliceId,
                                                 Map<String, TopologyNode> nodeMap,
                                                 List<TopologyEdge> edgeList) {
-        for ( var route : slice.routes()) {
+        for (var route : slice.routes()) {
             var endpointId = "endpoint:" + route.method() + ":" + route.path();
             var label = route.method() + " " + route.path();
             nodeMap.putIfAbsent(endpointId, new TopologyNode(endpointId, NodeType.ENDPOINT, label, slice.artifact()));
@@ -76,12 +73,10 @@ public record TopologyGraph( List<TopologyNode> nodes, List<TopologyEdge> edges)
                                                      String sliceId,
                                                      Map<String, TopologyNode> nodeMap,
                                                      List<TopologyEdge> edgeList) {
-        for ( var dep : slice.dependencies()) {
-            if ( dep.artifact().isEmpty()) {
-            continue;}
+        for (var dep : slice.dependencies()) {
+            if (dep.artifact().isEmpty()) {continue;}
             var depSliceId = "slice:" + dep.artifact();
-            if ( !nodeMap.containsKey(depSliceId)) {
-                // Dependency artifact may differ from runtime artifact — match by simple class name
+            if (!nodeMap.containsKey(depSliceId)) {
                 var simpleName = simpleClassName(dep.interfaceName());
                 depSliceId = findSliceIdByName(nodeMap, simpleName).or(depSliceId);
                 nodeMap.putIfAbsent(depSliceId,
@@ -92,24 +87,22 @@ public record TopologyGraph( List<TopologyNode> nodes, List<TopologyEdge> edges)
     }
 
     private static Option<String> findSliceIdByName(Map<String, TopologyNode> nodeMap, String simpleName) {
-        for ( var node : nodeMap.values()) {
-        if ( node.type() == NodeType.SLICE && node.label().equals(simpleName)) {
-        return Option.some(node.id());}}
+        for (var node : nodeMap.values()) {if (node.type() == NodeType.SLICE && node.label().equals(simpleName)) {return Option.some(node.id());}}
         return Option.none();
     }
 
     private static String simpleClassName(String qualifiedName) {
         var lastDot = qualifiedName.lastIndexOf('.');
         return lastDot >= 0
-               ? qualifiedName.substring(lastDot + 1)
-               : qualifiedName;
+              ? qualifiedName.substring(lastDot + 1)
+              : qualifiedName;
     }
 
     @Contract private static void addResourceNodes(SliceTopology slice,
                                                    String sliceId,
                                                    Map<String, TopologyNode> nodeMap,
                                                    List<TopologyEdge> edgeList) {
-        for ( var resource : slice.resources()) {
+        for (var resource : slice.resources()) {
             var resourceId = "resource:" + slice.artifact() + ":" + resource.type() + ":" + resource.config();
             var label = resource.type() + " (" + resource.config() + ")";
             nodeMap.putIfAbsent(resourceId, new TopologyNode(resourceId, NodeType.RESOURCE, label, slice.artifact()));
@@ -121,7 +114,7 @@ public record TopologyGraph( List<TopologyNode> nodes, List<TopologyEdge> edges)
                                                   String sliceId,
                                                   Map<String, TopologyNode> nodeMap,
                                                   List<TopologyEdge> edgeList) {
-        for ( var pub : slice.publishes()) {
+        for (var pub : slice.publishes()) {
             var topicId = "topic-pub:" + slice.artifact() + ":" + pub.config();
             nodeMap.putIfAbsent(topicId,
                                 new TopologyNode(topicId, NodeType.TOPIC_PUB, pub.config(), slice.artifact()));
@@ -133,7 +126,7 @@ public record TopologyGraph( List<TopologyNode> nodes, List<TopologyEdge> edges)
                                                     String sliceId,
                                                     Map<String, TopologyNode> nodeMap,
                                                     List<TopologyEdge> edgeList) {
-        for ( var sub : slice.subscribes()) {
+        for (var sub : slice.subscribes()) {
             var topicId = "topic-sub:" + slice.artifact() + ":" + sub.config();
             nodeMap.putIfAbsent(topicId,
                                 new TopologyNode(topicId, NodeType.TOPIC_SUB, sub.config(), slice.artifact()));
@@ -141,22 +134,21 @@ public record TopologyGraph( List<TopologyNode> nodes, List<TopologyEdge> edges)
         }
     }
 
-    @Contract private static void addPubSubEdges(Map<String, TopologyNode> nodeMap,
-                                                 List<TopologyEdge> edgeList) {
+    @Contract private static void addPubSubEdges(Map<String, TopologyNode> nodeMap, List<TopologyEdge> edgeList) {
         var pubsByConfig = new LinkedHashMap<String, List<String>>();
         var subsByConfig = new LinkedHashMap<String, List<String>>();
-        for ( var node : nodeMap.values()) {
-        if ( node.type() == NodeType.TOPIC_PUB) {
-        pubsByConfig.computeIfAbsent(node.label(), _ -> new ArrayList<>()).add(node.id());} else
-        if ( node.type() == NodeType.TOPIC_SUB) {
-        subsByConfig.computeIfAbsent(node.label(), _ -> new ArrayList<>()).add(node.id());}}
-        for ( var entry : pubsByConfig.entrySet()) {
+        for (var node : nodeMap.values()) {if (node.type() == NodeType.TOPIC_PUB) {pubsByConfig.computeIfAbsent(node.label(),
+                                                                                                                _ -> new ArrayList<>())
+        .add(node.id());} else if (node.type() == NodeType.TOPIC_SUB) {subsByConfig.computeIfAbsent(node.label(),
+                                                                                                    _ -> new ArrayList<>())
+        .add(node.id());}}
+        for (var entry : pubsByConfig.entrySet()) {
             var config = entry.getKey();
             var subs = subsByConfig.get(config);
-            if ( subs != null) {
-            for ( var pubId : entry.getValue()) {
-            for ( var subId : subs) {
-            edgeList.add(new TopologyEdge(pubId, subId, EdgeStyle.DOTTED, config));}}}
+            if (subs != null) {for (var pubId : entry.getValue()) {for (var subId : subs) {edgeList.add(new TopologyEdge(pubId,
+                                                                                                                         subId,
+                                                                                                                         EdgeStyle.DOTTED,
+                                                                                                                         config));}}}
         }
     }
 }

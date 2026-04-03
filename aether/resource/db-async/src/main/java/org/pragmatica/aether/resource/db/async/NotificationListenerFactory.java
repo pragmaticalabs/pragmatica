@@ -18,6 +18,7 @@ import org.pragmatica.postgres.net.netty.NettyConnectibleBuilder;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+
 /// SPI factory for creating PostgreSQL LISTEN/NOTIFY subscription resources.
 ///
 /// Creates a dedicated (non-pooled) connection for each notification config section,
@@ -37,14 +38,12 @@ public final class NotificationListenerFactory implements ResourceFactory<PgNoti
     }
 
     @Override public Promise<PgNotificationSubscriber> provision(PgNotificationConfig config) {
-        return resolveDatasourceConfig(config.datasource())
-        .flatMap(dbConfig -> createDedicatedConnection(dbConfig)
-        .flatMap(connection -> subscribeToChannels(connection, config.channels())));
+        return resolveDatasourceConfig(config.datasource()).flatMap(dbConfig -> createDedicatedConnection(dbConfig).flatMap(connection -> subscribeToChannels(connection,
+                                                                                                                                                              config.channels())));
     }
 
     @Override public Promise<Unit> close(PgNotificationSubscriber resource) {
-        if ( resource instanceof NotificationListenerHandle handle) {
-        return handle.close();}
+        if (resource instanceof NotificationListenerHandle handle) {return handle.close();}
         return Promise.unitPromise();
     }
 
@@ -55,7 +54,8 @@ public final class NotificationListenerFactory implements ResourceFactory<PgNoti
     }
 
     private static Promise<Connection> createDedicatedConnection(DatabaseConnectorConfig config) {
-        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> buildPlainConnectible(config))
+        return Promise.lift(DatabaseConnectorError::databaseFailure,
+                            () -> buildPlainConnectible(config))
         .flatMap(Connectible::getConnection);
     }
 
@@ -73,7 +73,7 @@ public final class NotificationListenerFactory implements ResourceFactory<PgNoti
     private static Promise<PgNotificationSubscriber> subscribeToChannels(Connection connection, List<String> channels) {
         var handle = new NotificationListenerHandle(connection);
         var subscriptions = channels.stream().map(channel -> connection.subscribe(channel, handle::onNotification)
-        .map(handle::addListening))
+                                                                                 .map(handle::addListening))
                                            .toList();
         return Promise.allOf(subscriptions).map(_ -> handle);
     }
@@ -81,10 +81,11 @@ public final class NotificationListenerFactory implements ResourceFactory<PgNoti
 
 /// Internal handle tracking the dedicated connection and its LISTEN subscriptions.
 /// Implements PgNotificationSubscriber as the provisioned resource instance.
-@SuppressWarnings("JBCT-RET-01")
-final class NotificationListenerHandle implements PgNotificationSubscriber {
+@SuppressWarnings("JBCT-RET-01") final class NotificationListenerHandle implements PgNotificationSubscriber {
     private final Connection connection;
+
     private final List<Listening> listenings = new CopyOnWriteArrayList<>();
+
     private volatile java.util.function.Consumer<org.pragmatica.aether.slice.PgNotification> callback;
 
     NotificationListenerHandle(Connection connection) {
@@ -97,8 +98,7 @@ final class NotificationListenerHandle implements PgNotificationSubscriber {
 
     void onNotification(String channel, String payload, int pid) {
         var cb = this.callback;
-        if ( cb != null) {
-        cb.accept(org.pragmatica.aether.slice.PgNotification.pgNotification(channel, payload, pid));}
+        if (cb != null) {cb.accept(org.pragmatica.aether.slice.PgNotification.pgNotification(channel, payload, pid));}
     }
 
     Listening addListening(Listening listening) {

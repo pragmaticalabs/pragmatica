@@ -3,13 +3,13 @@ package org.pragmatica.aether.pg.schema.linter;
 import org.pragmatica.lang.Option;
 import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
 
+
 /// A single lint finding.
-public record LintDiagnostic(
- String ruleId,
- Severity severity,
- String message,
- SourceSpan span,
- Option<String> suggestion) {
+public record LintDiagnostic(String ruleId,
+                             Severity severity,
+                             String message,
+                             SourceSpan span,
+                             Option<String> suggestion) {
     public enum Severity {
         ERROR,
         WARNING,

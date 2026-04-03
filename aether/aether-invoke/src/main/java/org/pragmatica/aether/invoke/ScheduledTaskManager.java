@@ -27,47 +27,40 @@ import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Timer lifecycle and execution manager for scheduled tasks.
 ///
 /// Watches the ScheduledTaskRegistry for changes, manages timer creation
 /// and cancellation, and invokes slice methods at configured intervals.
 /// Respects leader-only semantics and quorum requirements.
-@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) // MessageReceiver callbacks + lifecycle methods
+@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
+// MessageReceiver callbacks + lifecycle methods
 public interface ScheduledTaskManager {
     @MessageReceiver void onLeaderChange(LeaderChange leaderChange);
-
     @MessageReceiver void onQuorumStateChange(QuorumStateNotification notification);
-
-    /// Number of currently active timers (for management API).
     int activeTimerCount();
-
-    /// Stop all timers and clean up.
     void stop();
 
-    /// Create a new scheduled task manager.
     static ScheduledTaskManager scheduledTaskManager(ScheduledTaskRegistry registry,
                                                      SliceInvoker invoker,
                                                      NodeId self,
                                                      Consumer<KVCommand<org.pragmatica.aether.slice.kvstore.AetherKey>> stateWriter) {
-        record scheduledTaskManager( ScheduledTaskRegistry registry,
-                                     SliceInvoker invoker,
-                                     NodeId self,
-                                     AtomicBoolean isLeader,
-                                     AtomicBoolean hasQuorum,
-                                     Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers,
-                                     AtomicLong quorumSequence,
-                                     Consumer<KVCommand<org.pragmatica.aether.slice.kvstore.AetherKey>> stateWriter) implements ScheduledTaskManager {
+        record scheduledTaskManager(ScheduledTaskRegistry registry,
+                                    SliceInvoker invoker,
+                                    NodeId self,
+                                    AtomicBoolean isLeader,
+                                    AtomicBoolean hasQuorum,
+                                    Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers,
+                                    AtomicLong quorumSequence,
+                                    Consumer<KVCommand<org.pragmatica.aether.slice.kvstore.AetherKey>> stateWriter) implements ScheduledTaskManager {
             private static final Logger log = LoggerFactory.getLogger(ScheduledTaskManager.class);
 
             @Override public void onLeaderChange(LeaderChange leaderChange) {
-                if ( leaderChange.localNodeIsLeader()) {
+                if (leaderChange.localNodeIsLeader()) {
                     log.info("Node {} became leader, starting single-mode scheduled tasks", self);
                     isLeader.set(true);
                     startSingleModeTasks();
-                } else
-
-
-                {
+                } else {
                     log.info("Node {} lost leadership, cancelling single-mode scheduled tasks", self);
                     isLeader.set(false);
                     cancelSingleModeTimers();
@@ -75,18 +68,15 @@ public interface ScheduledTaskManager {
             }
 
             @Override public void onQuorumStateChange(QuorumStateNotification notification) {
-                if ( !notification.advanceSequence(quorumSequence)) {
+                if (!notification.advanceSequence(quorumSequence)) {
                     log.debug("Ignoring stale QuorumStateNotification: {}", notification);
                     return;
                 }
-                if ( notification.state() == QuorumStateNotification.State.ESTABLISHED) {
+                if (notification.state() == QuorumStateNotification.State.ESTABLISHED) {
                     log.info("Quorum established, enabling scheduled task execution");
                     hasQuorum.set(true);
                     startAllEligibleTasks();
-                } else
-
-
-                {
+                } else {
                     log.info("Quorum disappeared, cancelling all scheduled tasks");
                     hasQuorum.set(false);
                     cancelAllTimers();
@@ -107,8 +97,7 @@ public interface ScheduledTaskManager {
 
             private void handleTaskAdded(ScheduledTaskKey key, ScheduledTask task) {
                 cancelTimer(key);
-                if ( shouldStartTask(task)) {
-                startTimer(key, task);}
+                if (shouldStartTask(task)) {startTimer(key, task);}
             }
 
             private void handleTaskRemoved(ScheduledTaskKey key) {
@@ -116,18 +105,17 @@ public interface ScheduledTaskManager {
             }
 
             private boolean shouldStartTask(ScheduledTask task) {
-                if ( !hasQuorum.get()) {
-                return false;}
-                if ( task.paused()) {
-                return false;}
-                return switch (task.executionMode()) {case ALL -> true;case SINGLE -> isLeader.get();};
+                if (!hasQuorum.get()) {return false;}
+                if (task.paused()) {return false;}
+                return switch (task.executionMode()){
+                    case ALL -> true;
+                    case SINGLE -> isLeader.get();
+                };
             }
 
             private void startTimer(ScheduledTaskKey key, ScheduledTask task) {
-                if ( task.isInterval()) {
-                startIntervalTimer(key, task);} else
-                if ( task.isCron()) {
-                startCronTimer(key, task);}
+                if (task.isInterval()) {startIntervalTimer(key, task);} else if (task.isCron()) {startCronTimer(key,
+                                                                                                                task);}
             }
 
             private void startIntervalTimer(ScheduledTaskKey key, ScheduledTask task) {
@@ -170,23 +158,17 @@ public interface ScheduledTaskManager {
 
             private void executeCronTask(ScheduledTaskKey key, ScheduledTask task, CronExpression cron) {
                 executeTask(task);
-                if ( activeTimers.containsKey(key)) {
-                scheduleNextCronFire(key, task, cron);}
+                if (activeTimers.containsKey(key)) {scheduleNextCronFire(key, task, cron);}
             }
 
             private void executeTask(ScheduledTask task) {
-                // Scheduler boundary — generic catch prevents scheduler thread death
                 try {
                     invoker.invoke(task.artifact(),
                                    task.methodName(),
                                    Unit.unit()).onFailure(cause -> handleTaskFailure(task,
                                                                                      cause.message()))
                                   .onSuccess(_ -> writeSuccessState(task));
-                }
-
-
-                catch (Exception e) {
-                    // Scheduler boundary — generic catch prevents scheduler thread death
+                } catch (Exception e) {
                     log.error("Error executing scheduled task {}.{}: {}",
                               task.configSection(),
                               task.methodName().name(),
@@ -229,8 +211,7 @@ public interface ScheduledTaskManager {
             }
 
             private void startSingleModeTasks() {
-                if ( !hasQuorum.get()) {
-                return;}
+                if (!hasQuorum.get()) {return;}
                 registry.singleModeTasks().forEach(this::startTaskIfNotRunning);
             }
 
@@ -242,23 +223,21 @@ public interface ScheduledTaskManager {
 
             private void startTaskIfNotRunning(ScheduledTask task) {
                 var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(), task.artifact(), task.methodName());
-                if ( !activeTimers.containsKey(key)) {
-                startTimer(key, task);}
+                if (!activeTimers.containsKey(key)) {startTimer(key, task);}
             }
 
             private void cancelSingleModeTimers() {
                 registry.singleModeTasks()
-                .forEach(task -> cancelTimer(ScheduledTaskKey.scheduledTaskKey(task.configSection(),
-                                                                               task.artifact(),
-                                                                               task.methodName())));
+                                        .forEach(task -> cancelTimer(ScheduledTaskKey.scheduledTaskKey(task.configSection(),
+                                                                                                       task.artifact(),
+                                                                                                       task.methodName())));
             }
 
             private void cancelAllTimers() {
                 activeTimers.forEach((key, future) -> future.cancel(false));
                 var count = activeTimers.size();
                 activeTimers.clear();
-                if ( count > 0) {
-                log.info("Cancelled {} scheduled task timers", count);}
+                if (count > 0) {log.info("Cancelled {} scheduled task timers", count);}
             }
 
             private static org.pragmatica.lang.Result<TimeSpan> parseInterval(String interval) {
@@ -277,14 +256,11 @@ public interface ScheduledTaskManager {
         return manager;
     }
 
-    /// Parses human-readable interval strings like "30s", "5m", "1h" into TimeSpan.
     sealed interface IntervalParser {
         static org.pragmatica.lang.Result<TimeSpan> parse(String interval) {
-            if ( interval == null || interval.isEmpty()) {
-            return EMPTY_INTERVAL.result();}
+            if (interval == null || interval.isEmpty()) {return EMPTY_INTERVAL.result();}
             var trimmed = interval.trim();
-            if ( trimmed.length() < 2) {
-            return INVALID_INTERVAL.apply(interval).result();}
+            if (trimmed.length() <2) {return INVALID_INTERVAL.apply(interval).result();}
             var suffix = trimmed.charAt(trimmed.length() - 1);
             var numberPart = trimmed.substring(0, trimmed.length() - 1);
             return parseNumber(numberPart, interval).flatMap(value -> applyUnit(value, suffix, interval));
@@ -293,19 +269,20 @@ public interface ScheduledTaskManager {
         private static org.pragmatica.lang.Result<Long> parseNumber(String numberPart, String original) {
             try {
                 return org.pragmatica.lang.Result.success(Long.parseLong(numberPart));
-            }
-
-
-            catch (NumberFormatException _) {
+            } catch (NumberFormatException _) {
                 return INVALID_INTERVAL.apply(original).result();
             }
         }
 
         private static org.pragmatica.lang.Result<TimeSpan> applyUnit(long value, char suffix, String original) {
-            return switch (suffix) {case 's' -> org.pragmatica.lang.Result.success(TimeSpan.timeSpan(value).seconds());case 'm' -> org.pragmatica.lang.Result.success(TimeSpan.timeSpan(value)
-            .minutes());case 'h' -> org.pragmatica.lang.Result.success(TimeSpan.timeSpan(value).hours());case 'd' -> org.pragmatica.lang.Result.success(TimeSpan.timeSpan(value)
-            .days());case 'w' -> org.pragmatica.lang.Result.success(TimeSpan.timeSpan(value * 7).days());default -> INVALID_INTERVAL.apply(original)
-            .result();};
+            return switch (suffix){
+                case 's' -> org.pragmatica.lang.Result.success(TimeSpan.timeSpan(value).seconds());
+                case 'm' -> org.pragmatica.lang.Result.success(TimeSpan.timeSpan(value).minutes());
+                case 'h' -> org.pragmatica.lang.Result.success(TimeSpan.timeSpan(value).hours());
+                case 'd' -> org.pragmatica.lang.Result.success(TimeSpan.timeSpan(value).days());
+                case 'w' -> org.pragmatica.lang.Result.success(TimeSpan.timeSpan(value * 7).days());
+                default -> INVALID_INTERVAL.apply(original).result();
+            };
         }
 
         org.pragmatica.lang.Cause EMPTY_INTERVAL = () -> "Interval string is empty";

@@ -7,6 +7,7 @@ import java.util.List;
 
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateEvents.replicateEvents;
 
+
 /// Default implementation of governor-push replication.
 /// Sends events to all registered replicas after each successful publish.
 final class DefaultReplicationManager implements ReplicationManager {
@@ -20,18 +21,17 @@ final class DefaultReplicationManager implements ReplicationManager {
         this.transport = transport;
     }
 
-    @Contract @Override public void replicateEvent(String streamName,
-                                                   int partition,
-                                                   long offset,
-                                                   byte[] payload,
-                                                   long timestamp) {
+    @Contract@Override public void replicateEvent(String streamName,
+                                                  int partition,
+                                                  long offset,
+                                                  byte[] payload,
+                                                  long timestamp) {
         var replicas = registry.replicasFor(streamName, partition);
-        if ( replicas.isEmpty()) {
-        return;}
+        if (replicas.isEmpty()) {return;}
         sendToAllReplicas(replicas, streamName, partition, offset, payload, timestamp);
     }
 
-    @Contract @Override public void handleAck(ReplicationMessage.ReplicateAck ack) {
+    @Contract@Override public void handleAck(ReplicationMessage.ReplicateAck ack) {
         registry.updateWatermark(ack.streamName(), ack.partition(), ack.replicaId(), ack.confirmedOffset());
     }
 

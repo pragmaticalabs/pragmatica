@@ -5,15 +5,15 @@ import org.pragmatica.lang.Option;
 import java.util.ArrayList;
 import java.util.List;
 
+
 /// A table definition with columns, constraints, and metadata.
-public record Table(
- String name,
- String schema,
- List<Column> columns,
- List<Constraint> constraints,
- List<Index> indexes,
- Option<PartitionBy> partitioning,
- Option<String> comment) {
+public record Table(String name,
+                    String schema,
+                    List<Column> columns,
+                    List<Constraint> constraints,
+                    List<Index> indexes,
+                    Option<PartitionBy> partitioning,
+                    Option<String> comment) {
     public record PartitionBy(PartitionStrategy strategy, List<String> columns){}
 
     public enum PartitionStrategy {

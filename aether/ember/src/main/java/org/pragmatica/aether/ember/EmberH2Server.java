@@ -13,10 +13,10 @@ import org.h2.tools.Server;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Embedded H2 database server for Ember.
 /// Provides an in-memory or persistent H2 database that slices can connect to.
-@SuppressWarnings({"JBCT-RET-03", "JBCT-EX-01"})
-public final class EmberH2Server {
+@SuppressWarnings({"JBCT-RET-03", "JBCT-EX-01"}) public final class EmberH2Server {
     private static final Logger log = LoggerFactory.getLogger(EmberH2Server.class);
 
     private final EmberH2Config config;
@@ -26,14 +26,12 @@ public final class EmberH2Server {
         this.config = config;
     }
 
-    /// Create a new H2 server instance.
     public static EmberH2Server emberH2Server(EmberH2Config config) {
         return new EmberH2Server(config);
     }
 
-    /// Start the H2 TCP server.
     public Promise<Unit> start() {
-        if ( !config.enabled()) {
+        if (!config.enabled()) {
             log.debug("H2 server disabled, skipping start");
             return Promise.success(Unit.unit());
         }
@@ -75,10 +73,8 @@ public final class EmberH2Server {
                                                          cause.message()));
     }
 
-    /// Stop the H2 TCP server.
     public Promise<Unit> stop() {
-        if ( tcpServer == null) {
-        return Promise.success(Unit.unit());}
+        if (tcpServer == null) {return Promise.success(Unit.unit());}
         return Promise.lift(H2Error.StopFailed::new,
                             () -> {
                                 tcpServer.stop();
@@ -88,25 +84,21 @@ public final class EmberH2Server {
         .mapToUnit();
     }
 
-    /// Get the JDBC URL for connecting to this H2 server.
     public String jdbcUrl() {
         var dbPath = config.persistent()
-                     ? "tcp://localhost:" + config.port() + "/./" + config.name()
-                     : "tcp://localhost:" + config.port() + "/mem:" + config.name() + ";DB_CLOSE_DELAY=-1";
+                    ? "tcp://localhost:" + config.port() + "/./" + config.name()
+                    : "tcp://localhost:" + config.port() + "/mem:" + config.name() + ";DB_CLOSE_DELAY=-1";
         return "jdbc:h2:" + dbPath;
     }
 
-    /// Check if the server is running.
     public boolean isRunning() {
         return tcpServer != null && tcpServer.isRunning(false);
     }
 
-    /// Get the server port.
     public int port() {
         return config.port();
     }
 
-    /// H2 server errors.
     public sealed interface H2Error extends Cause {
         record StartFailed(Throwable cause) implements H2Error {
             @Override public String message() {

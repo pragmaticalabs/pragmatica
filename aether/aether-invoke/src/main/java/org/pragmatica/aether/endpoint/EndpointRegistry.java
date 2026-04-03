@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Passive KV-Store watcher that maintains a local cache of all cluster endpoints.
 ///
 ///
@@ -40,85 +41,25 @@ import org.slf4j.LoggerFactory;
 /// This is a pure event-driven component - no active synchronization needed.
 /// Slices automatically publish/unpublish endpoints via consensus.
 public interface EndpointRegistry {
-    /// Direct endpoint registration (used internally by onNodeArtifactPut).
     @SuppressWarnings("JBCT-RET-01") void registerEndpoint(EndpointKey key, EndpointValue value);
-
-    /// Direct endpoint unregistration (used internally by onNodeArtifactRemove).
     @SuppressWarnings("JBCT-RET-01") void unregisterEndpoint(EndpointKey key);
-
-    /// Handle NodeArtifactKey put — extracts methods + instanceNumber from compound value
-    /// and registers individual endpoints per method.
     @SuppressWarnings("JBCT-RET-01") void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
-
-    /// Handle NodeArtifactKey remove — unregisters all endpoints for the node+artifact.
     @SuppressWarnings("JBCT-RET-01") void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
-
-    /// Find all endpoints for a given artifact and method.
     List<Endpoint> findEndpoints(Artifact artifact, MethodName methodName);
-
-    /// Select a single endpoint using round-robin load balancing.
-    /// Returns empty if no endpoints available.
     Option<Endpoint> selectEndpoint(Artifact artifact, MethodName methodName);
-
-    /// Select an endpoint excluding specified nodes.
-    /// Used for failover when previous endpoints have failed.
-    ///
-    /// @param artifact the slice artifact
-    /// @param methodName the method to invoke
-    /// @param excludeNodes nodes to exclude from selection
-    /// @return selected endpoint, or empty if none available after exclusions
     Option<Endpoint> selectEndpointExcluding(Artifact artifact,
                                              MethodName methodName,
                                              java.util.Set<NodeId> excludeNodes);
-
-    /// Select endpoint by cache affinity — route to the node owning the DHT partition for the key.
-    /// Prefers the endpoint on the given affinity node. Falls back to round-robin if the
-    /// affinity node has no endpoint for this artifact/method.
-    ///
-    /// @param artifact the slice artifact
-    /// @param methodName the method to invoke
-    /// @param affinityNode the preferred node for cache locality
-    /// @return selected endpoint, or empty if none available
     Option<Endpoint> selectEndpointByAffinity(Artifact artifact, MethodName methodName, NodeId affinityNode);
-
-    /// Select an endpoint with version-aware weighted routing.
-    ///
-    ///
-    /// Used during rolling updates to route traffic according to the
-    /// configured ratio between old and new versions.
-    ///
-    ///
-    /// Algorithm:
-    /// <ol>
-    ///   - Find all endpoints for the artifact base (any version)
-    ///   - Group by version (old vs new)
-    ///   - Scale routing ratio to available instance counts
-    ///   - Use weighted round-robin to select endpoint
-    /// </ol>
-    ///
-    /// @param artifactBase the artifact (version-agnostic)
-    /// @param methodName the method to invoke
-    /// @param routing the version routing configuration
-    /// @param oldVersion the old version
-    /// @param newVersion the new version
-    /// @return selected endpoint, or empty if none available
     Option<Endpoint> selectEndpointWithRouting(ArtifactBase artifactBase,
                                                MethodName methodName,
                                                VersionRouting routing,
                                                Version oldVersion,
                                                Version newVersion);
-
-    /// Find all endpoints for a given artifact base (any version).
     List<Endpoint> findEndpointsForBase(ArtifactBase artifactBase, MethodName methodName);
-
-    /// Get all registered endpoints (for monitoring/debugging).
     List<Endpoint> allEndpoints();
 
-    /// Endpoint representation with location information.
-    record Endpoint(Artifact artifact,
-                    MethodName methodName,
-                    int instanceNumber,
-                    NodeId nodeId) {
+    record Endpoint(Artifact artifact, MethodName methodName, int instanceNumber, NodeId nodeId) {
         public static Endpoint endpoint(Artifact artifact, MethodName methodName, int instanceNumber, NodeId nodeId) {
             return new Endpoint(artifact, methodName, instanceNumber, nodeId);
         }
@@ -128,36 +69,28 @@ public interface EndpointRegistry {
         }
     }
 
-    /// Create a new endpoint registry.
     static EndpointRegistry endpointRegistry() {
-        record endpointRegistry( Map<EndpointKey, Endpoint> endpoints,
-                                 Map<String, AtomicInteger> roundRobinCounters) implements EndpointRegistry {
+        record endpointRegistry(Map<EndpointKey, Endpoint> endpoints, Map<String, AtomicInteger> roundRobinCounters) implements EndpointRegistry {
             private static final Logger log = LoggerFactory.getLogger(endpointRegistry.class);
 
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+            @Override@SuppressWarnings("JBCT-RET-01") public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
                 var key = valuePut.cause().key();
                 var value = valuePut.cause().value();
                 registerEndpointsFromNodeArtifact(key, value);
             }
 
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+            @Override@SuppressWarnings("JBCT-RET-01") public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
                 var key = valueRemove.cause().key();
                 unregisterEndpointsForNodeArtifact(key);
             }
 
             private void registerEndpointsFromNodeArtifact(NodeArtifactKey key, NodeArtifactValue value) {
-                if ( value.methods().isEmpty()) {
-                return;}
-                for ( var methodStr : value.methods()) {
-                MethodName.methodName(methodStr)
-                .onSuccess(methodName -> registerEndpoint(new EndpointKey(key.artifact(),
-                                                                          methodName,
-                                                                          value.instanceNumber()),
-                                                          new EndpointValue(key.nodeId())));}
+                if (value.methods().isEmpty()) {return;}
+                for (var methodStr : value.methods()) {MethodName.methodName(methodStr)
+                                                                            .onSuccess(methodName -> registerEndpoint(new EndpointKey(key.artifact(),
+                                                                                                                                      methodName,
+                                                                                                                                      value.instanceNumber()),
+                                                                                                                      new EndpointValue(key.nodeId())));}
             }
 
             private void unregisterEndpointsForNodeArtifact(NodeArtifactKey key) {
@@ -169,9 +102,8 @@ public interface EndpointRegistry {
                 keysToRemove.forEach(this::unregisterEndpoint);
             }
 
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void registerEndpoint(EndpointKey endpointKey, EndpointValue endpointValue) {
+            @Override@SuppressWarnings("JBCT-RET-01") public void registerEndpoint(EndpointKey endpointKey,
+                                                                                   EndpointValue endpointValue) {
                 var endpoint = Endpoint.endpoint(endpointKey.artifact(),
                                                  endpointKey.methodName(),
                                                  endpointKey.instanceNumber(),
@@ -180,11 +112,9 @@ public interface EndpointRegistry {
                 log.debug("Registered endpoint: {}", endpoint);
             }
 
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void unregisterEndpoint(EndpointKey endpointKey) {
+            @Override@SuppressWarnings("JBCT-RET-01") public void unregisterEndpoint(EndpointKey endpointKey) {
                 Option.option(endpoints.remove(endpointKey))
-                .onPresent(removed -> log.debug("Unregistered endpoint: {}", removed));
+                             .onPresent(removed -> log.debug("Unregistered endpoint: {}", removed));
             }
 
             @Override public List<Endpoint> findEndpoints(Artifact artifact, MethodName methodName) {
@@ -194,15 +124,12 @@ public interface EndpointRegistry {
             }
 
             @Override public Option<Endpoint> selectEndpoint(Artifact artifact, MethodName methodName) {
-                // Sort endpoints to ensure consistent round-robin order across calls
                 var available = findEndpoints(artifact, methodName).stream()
                                              .sorted(Comparator.comparing(e -> e.nodeId().id()))
                                              .toList();
-                if ( available.isEmpty()) {
-                return Option.none();}
+                if (available.isEmpty()) {return Option.none();}
                 var lookupKey = artifact.asString() + "/" + methodName.name();
                 var counter = roundRobinCounters.computeIfAbsent(lookupKey, _ -> new AtomicInteger(0));
-                // Use bitmask to ensure positive value (handles Integer.MIN_VALUE edge case)
                 var index = (counter.getAndIncrement() & 0x7FFFFFFF) % available.size();
                 return Option.option(available.get(index));
             }
@@ -214,8 +141,7 @@ public interface EndpointRegistry {
                                              .filter(e -> !excludeNodes.contains(e.nodeId()))
                                              .sorted(Comparator.comparing(e -> e.nodeId().id()))
                                              .toList();
-                if ( available.isEmpty()) {
-                return Option.none();}
+                if (available.isEmpty()) {return Option.none();}
                 var lookupKey = artifact.asString() + "/" + methodName.name() + "/excluding";
                 var counter = roundRobinCounters.computeIfAbsent(lookupKey, _ -> new AtomicInteger(0));
                 var index = (counter.getAndIncrement() & 0x7FFFFFFF) % available.size();
@@ -228,8 +154,7 @@ public interface EndpointRegistry {
                 var available = findEndpoints(artifact, methodName);
                 var affinity = available.stream().filter(e -> e.nodeId().equals(affinityNode))
                                                .findFirst();
-                if ( affinity.isPresent()) {
-                return Option.some(affinity.get());}
+                if (affinity.isPresent()) {return Option.some(affinity.get());}
                 return selectEndpoint(artifact, methodName);
             }
 
@@ -238,11 +163,8 @@ public interface EndpointRegistry {
                                                                         VersionRouting routing,
                                                                         Version oldVersion,
                                                                         Version newVersion) {
-                // Find all endpoints for this artifact base
                 var allEndpoints = findEndpointsForBase(artifactBase, methodName);
-                if ( allEndpoints.isEmpty()) {
-                return Option.none();}
-                // Group by version
+                if (allEndpoints.isEmpty()) {return Option.none();}
                 var oldEndpoints = allEndpoints.stream().filter(e -> e.artifact().version()
                                                                                .equals(oldVersion))
                                                       .sorted(Comparator.comparing(e -> e.nodeId().id()))
@@ -251,14 +173,10 @@ public interface EndpointRegistry {
                                                                                .equals(newVersion))
                                                       .sorted(Comparator.comparing(e -> e.nodeId().id()))
                                                       .toList();
-                // Handle edge cases
-                if ( routing.isAllOld() || newEndpoints.isEmpty()) {
-                return selectFromList(oldEndpoints,
-                                      artifactBase.asString() + "/old/" + methodName.name());}
-                if ( routing.isAllNew() || oldEndpoints.isEmpty()) {
-                return selectFromList(newEndpoints,
-                                      artifactBase.asString() + "/new/" + methodName.name());}
-                // Scale routing to available instances
+                if (routing.isAllOld() || newEndpoints.isEmpty()) {return selectFromList(oldEndpoints,
+                                                                                         artifactBase.asString() + "/old/" + methodName.name());}
+                if (routing.isAllNew() || oldEndpoints.isEmpty()) {return selectFromList(newEndpoints,
+                                                                                         artifactBase.asString() + "/new/" + methodName.name());}
                 return routing.scaleToInstances(newEndpoints.size(),
                                                 oldEndpoints.size()).flatMap(scaled -> weightedRoundRobin(scaled,
                                                                                                           newEndpoints,
@@ -275,8 +193,8 @@ public interface EndpointRegistry {
 
             @Override public List<Endpoint> findEndpointsForBase(ArtifactBase artifactBase, MethodName methodName) {
                 return endpoints.values().stream()
-                                       .filter(e -> artifactBase.matches(e.artifact()) &&
-                e.methodName().equals(methodName))
+                                       .filter(e -> artifactBase.matches(e.artifact()) && e.methodName()
+                                                                                                      .equals(methodName))
                                        .toList();
             }
 
@@ -285,8 +203,7 @@ public interface EndpointRegistry {
             }
 
             private Option<Endpoint> selectFromList(List<Endpoint> available, String lookupKey) {
-                if ( available.isEmpty()) {
-                return Option.none();}
+                if (available.isEmpty()) {return Option.none();}
                 var counter = roundRobinCounters.computeIfAbsent(lookupKey, _ -> new AtomicInteger(0));
                 var index = (counter.getAndIncrement() & 0x7FFFFFFF) % available.size();
                 return Option.option(available.get(index));
@@ -320,7 +237,7 @@ public interface EndpointRegistry {
                 var lookupKey = artifactBase.asString() + "/weighted/" + methodName.name();
                 var counter = roundRobinCounters.computeIfAbsent(lookupKey, _ -> new AtomicInteger(0));
                 var position = (counter.getAndIncrement() & 0x7FFFFFFF) % totalWeight;
-                if ( position < scaled[0]) {
+                if (position <scaled[0]) {
                     var index = position % newEndpoints.size();
                     return Option.option(newEndpoints.get(index));
                 }

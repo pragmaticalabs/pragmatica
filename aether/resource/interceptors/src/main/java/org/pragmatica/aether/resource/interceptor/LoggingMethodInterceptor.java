@@ -9,8 +9,9 @@ import org.pragmatica.lang.Result;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Method interceptor that logs entry, exit, and duration of method invocations.
-public record LoggingMethodInterceptor( LogConfig config) implements MethodInterceptor {
+public record LoggingMethodInterceptor(LogConfig config) implements MethodInterceptor {
     private static final Logger log = LoggerFactory.getLogger(LoggingMethodInterceptor.class);
 
     @Override public <R, T> Fn1<Promise<R>, T> intercept(Fn1<Promise<R>, T> method) {
@@ -24,13 +25,10 @@ public record LoggingMethodInterceptor( LogConfig config) implements MethodInter
     }
 
     @Contract private <T> void logEntry(T request) {
-        if ( config.logArgs()) {
-        log("-> {} args={}",
-            config.name(),
-            request);} else
-        {
-        log("-> {}",
-            config.name());}
+        if (config.logArgs()) {log("-> {} args={}",
+                                   config.name(),
+                                   request);} else {log("-> {}",
+                                                        config.name());}
     }
 
     @Contract private <R> void logExit(Result<R> result, long startNanos) {
@@ -40,18 +38,19 @@ public record LoggingMethodInterceptor( LogConfig config) implements MethodInter
     }
 
     @Contract private <R> void logExitDetails(Result<R> result, String formattedDuration) {
-        if ( config.logResult() && config.logDuration()) {
-        log("<- {} result={} ({}ms)", config.name(), summarize(result), formattedDuration);} else
-        if ( config.logDuration()) {
-        log("<- {} ({}ms)", config.name(), formattedDuration);} else if ( config.logResult()) {
-        log("<- {} result={}", config.name(), summarize(result));} else {
-        log("<- {}", config.name());}
+        if (config.logResult() && config.logDuration()) {log("<- {} result={} ({}ms)",
+                                                             config.name(),
+                                                             summarize(result),
+                                                             formattedDuration);} else if (config.logDuration()) {log("<- {} ({}ms)",
+                                                                                                                      config.name(),
+                                                                                                                      formattedDuration);} else if (config.logResult()) {log("<- {} result={}",
+                                                                                                                                                                             config.name(),
+                                                                                                                                                                             summarize(result));} else {log("<- {}",
+                                                                                                                                                                                                            config.name());}
     }
 
-    @Contract
-    @SuppressWarnings("JBCT-SEQ-01")
-    private void log(String format, Object... args) {
-        switch ( config.level()) {
+    @Contract@SuppressWarnings("JBCT-SEQ-01") private void log(String format, Object... args) {
+        switch (config.level()){
             case TRACE -> log.trace(format, args);
             case DEBUG -> log.debug(format, args);
             case INFO -> log.info(format, args);
@@ -63,7 +62,7 @@ public record LoggingMethodInterceptor( LogConfig config) implements MethodInter
     private <R> String summarize(Result<R> result) {
         var str = result.toString();
         return str.length() > 100
-               ? str.substring(0, 100) + "..."
-               : str;
+              ? str.substring(0, 100) + "..."
+              : str;
     }
 }

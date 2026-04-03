@@ -18,9 +18,9 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.lang.Result.success;
 
+
 /// Default DependencyLoader implementation using Repository.
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-NEST-01", "JBCT-ZONE-02", "JBCT-ZONE-03"})
-public interface RepositoryDependencyLoader {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-NEST-01", "JBCT-ZONE-02", "JBCT-ZONE-03"}) public interface RepositoryDependencyLoader {
     static DependencyLoader repositoryDependencyLoader(Repository repository) {
         return artifact -> repository.locate(artifact).flatMap(location -> loadDependenciesFromJar(artifact, location));
     }
@@ -34,14 +34,16 @@ public interface RepositoryDependencyLoader {
 
     private static Result<SliceManifest.SliceManifestInfo> validateManifest(Artifact expected,
                                                                             SliceManifest.SliceManifestInfo manifest) {
-        if ( !manifest.artifact().equals(expected)) {
-        return ExpanderError.ArtifactMismatch.artifactMismatch(expected, manifest.artifact()).result();}
+        if (!manifest.artifact().equals(expected)) {return ExpanderError.ArtifactMismatch.artifactMismatch(expected,
+                                                                                                           manifest.artifact())
+        .result();}
         return success(manifest);
     }
 
     private static Result<Set<Artifact>> loadDependencies(SliceManifest.SliceManifestInfo manifest, URL jarUrl) {
         var classLoader = new SliceClassLoader(new URL[]{jarUrl}, RepositoryDependencyLoader.class.getClassLoader());
-        return DependencyFile.load(manifest.sliceClassName(), classLoader)
+        return DependencyFile.load(manifest.sliceClassName(),
+                                   classLoader)
         .flatMap(RepositoryDependencyLoader::convertToArtifacts);
     }
 

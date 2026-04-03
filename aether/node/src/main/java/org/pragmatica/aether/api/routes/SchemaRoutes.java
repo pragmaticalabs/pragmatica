@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.http.security.AuditLog;
@@ -38,9 +37,11 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 
+
 /// Routes for datasource schema management: status, history, migrate, undo, baseline.
 public final class SchemaRoutes implements RouteSource {
     private static final Cause SCHEMA_NOT_FOUND = Causes.cause("Schema status not found for datasource");
+
     private static final Cause SCHEMA_NOT_FAILED = Causes.cause("Schema is not in FAILED state — retry only applies to failed migrations");
 
     private final Supplier<AetherNode> nodeSupplier;
@@ -71,8 +72,7 @@ public final class SchemaRoutes implements RouteSource {
     }
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<SchemaStatusListResponse>get("/api/schema/status")
-                              .toJson(this::allSchemaStatuses),
+        return Stream.of(Route.<SchemaStatusListResponse>get("/api/schema/status").toJson(this::allSchemaStatuses),
                          Route.<SchemaStatusResponse>get("/api/schema/status")
                               .withPath(aString())
                               .to(this::singleSchemaStatus)
@@ -114,7 +114,6 @@ public final class SchemaRoutes implements RouteSource {
         return lookupSchemaVersion(datasource).map(SchemaStatusResponse::schemaStatusResponse);
     }
 
-    /// Placeholder: returns current status as history (full migration history pending).
     private Promise<SchemaStatusResponse> schemaHistory(String datasource) {
         return lookupSchemaVersion(datasource).map(SchemaStatusResponse::schemaStatusResponse);
     }
@@ -148,8 +147,8 @@ public final class SchemaRoutes implements RouteSource {
                                                             current.lastMigration(),
                                                             SchemaStatus.MIGRATING,
                                                             current.artifactCoords());
-        return applySchemaUpdate(datasource, updated)
-        .map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true, "Migration triggered for " + datasource));
+        return applySchemaUpdate(datasource, updated).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
+                                                                                                           "Migration triggered for " + datasource));
     }
 
     private Promise<SchemaMigrateResponse> writeUndoStatus(SchemaVersionValue current,
@@ -160,9 +159,8 @@ public final class SchemaRoutes implements RouteSource {
                                                             current.lastMigration(),
                                                             SchemaStatus.PENDING,
                                                             current.artifactCoords());
-        return applySchemaUpdate(datasource, updated)
-        .map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
-                                                              "Undo to version " + targetVersion + " initiated for " + datasource));
+        return applySchemaUpdate(datasource, updated).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
+                                                                                                           "Undo to version " + targetVersion + " initiated for " + datasource));
     }
 
     private Promise<SchemaMigrateResponse> writeBaselineStatus(String datasource, int version) {
@@ -170,8 +168,8 @@ public final class SchemaRoutes implements RouteSource {
                                                               version,
                                                               "V" + String.format("%03d", version) + "__baseline",
                                                               SchemaStatus.COMPLETED);
-        return applySchemaUpdate(datasource, baselined)
-        .map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true, "Baselined " + datasource + " at version " + version));
+        return applySchemaUpdate(datasource, baselined).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
+                                                                                                             "Baselined " + datasource + " at version " + version));
     }
 
     private Promise<List<Long>> applySchemaUpdate(String datasource, SchemaVersionValue value) {
@@ -186,16 +184,15 @@ public final class SchemaRoutes implements RouteSource {
     }
 
     private Promise<SchemaMigrateResponse> writeRetryStatus(SchemaVersionValue current, String datasource) {
-        if ( current.status() != SchemaStatus.FAILED) {
-        return SCHEMA_NOT_FAILED.promise();}
+        if (current.status() != SchemaStatus.FAILED) {return SCHEMA_NOT_FAILED.promise();}
         var updated = SchemaVersionValue.schemaVersionValue(datasource,
                                                             current.currentVersion(),
                                                             current.lastMigration(),
                                                             SchemaStatus.PENDING,
                                                             current.artifactCoords(),
                                                             0);
-        return applySchemaUpdate(datasource, updated)
-        .map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true, "Retry initiated for " + datasource));
+        return applySchemaUpdate(datasource, updated).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
+                                                                                                           "Retry initiated for " + datasource));
     }
 
     private static int parseIntSafe(String value) {

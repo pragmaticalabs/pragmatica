@@ -8,40 +8,26 @@ import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// Interface for TTM model inference.
 ///
 /// Implementations wrap ONNX Runtime or other ML inference engines.
 public interface TTMPredictor {
-    /// Run inference on input data.
-    ///
-    /// @param input float[windowMinutes][features] input matrix from MinuteAggregator.toTTMInput()
-    ///
-    /// @return Predicted values for next time step (float[features])
     Promise<float[]> predict(float[][] input);
-
-    /// Get confidence score for last prediction.
     double lastConfidence();
-
-    /// Check if the predictor is ready for inference.
     boolean isReady();
-
-    /// Close and release resources.
     Unit close();
 
-    /// Create predictor from config.
     static Result<TTMPredictor> ttmPredictor(TtmConfig config) {
-        if ( !config.enabled()) {
-        return Result.success(noOp());}
+        if (!config.enabled()) {return Result.success(noOp());}
         return TTMPredictorFactory.INSTANCE.fold(() -> TTMError.NoProvider.noProvider().<TTMPredictor>result(),
                                                  factory -> factory.ttmPredictor(config));
     }
 
-    /// Create a no-op predictor for testing or when TTM is disabled.
     static TTMPredictor noOp() {
         return NoOpTTMPredictor.INSTANCE;
     }
 
-    /// No-op predictor for testing or when TTM is disabled.
     record NoOpTTMPredictor() implements TTMPredictor {
         static final NoOpTTMPredictor INSTANCE = new NoOpTTMPredictor();
 

@@ -22,11 +22,15 @@ import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+
 /// Routes for stream management: list streams, stream info, partition details, publish, read events.
 public final class StreamRoutes implements RouteSource {
     private static final Cause STREAM_NOT_FOUND = Causes.cause("Stream not found");
+
     private static final Cause MISSING_STREAM_NAME = Causes.cause("Missing stream name");
+
     private static final int DEFAULT_MAX_EVENTS = 100;
+
     private static final int DEFAULT_PARTITIONS = 4;
 
     private final Supplier<AetherNode> nodeSupplier;
@@ -39,7 +43,6 @@ public final class StreamRoutes implements RouteSource {
         return new StreamRoutes(nodeSupplier);
     }
 
-    // --- Response records ---
     record StreamListResponse(List<StreamSummary> streams){}
 
     record StreamSummary(String name, int partitions, long totalEvents, long totalBytes) {
@@ -78,14 +81,12 @@ public final class StreamRoutes implements RouteSource {
 
     record ReadEventsResponse(List<EventRecord> events){}
 
-    // --- Route definitions ---
     @Override public Stream<Route<?>> routes() {
         return Stream.of(Route.<StreamCreateResponse>post("/api/streams")
                               .withBody(StreamCreateRequest.class)
                               .toResult(this::createStream)
                               .asJson(),
-                         Route.<StreamListResponse>get("/api/streams")
-                              .toJson(this::listStreams),
+                         Route.<StreamListResponse>get("/api/streams").toJson(this::listStreams),
                          Route.<StreamInfoResponse>get("/api/streams")
                               .withPath(PathParameter.aString())
                               .toResult(this::streamInfo)
@@ -111,7 +112,6 @@ public final class StreamRoutes implements RouteSource {
                               .asJson());
     }
 
-    // --- Handlers ---
     private StreamListResponse listStreams() {
         var streams = streamManager().listStreams()
                                    .stream()
@@ -138,18 +138,13 @@ public final class StreamRoutes implements RouteSource {
     }
 
     private Result<PartitionDetail> partitionDetails(String name, Integer partition) {
-        return streamManager().partitionInfo(name, partition)
-                            .map(PartitionDetail::fromPartitionInfo);
+        return streamManager().partitionInfo(name, partition).map(PartitionDetail::fromPartitionInfo);
     }
 
     private Result<PublishResponse> publishEvent(String name, String spacer, PublishRequest request) {
         var payload = request.data().getBytes(StandardCharsets.UTF_8);
         ensureStreamExists(name);
-        return streamManager().publishLocal(name,
-                                            0,
-                                            payload,
-                                            System.currentTimeMillis())
-                            .map(PublishResponse::new);
+        return streamManager().publishLocal(name, 0, payload, System.currentTimeMillis()).map(PublishResponse::new);
     }
 
     private Result<StreamCreateResponse> createStream(StreamCreateRequest request) {
@@ -160,12 +155,12 @@ public final class StreamRoutes implements RouteSource {
     private Result<StreamCreateResponse> createStreamWithConfig(String name, StreamCreateRequest request) {
         var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
         var config = StreamConfig.streamConfig(name, partitions, MANAGEMENT_API_RETENTION, "latest");
-        return streamManager().createStream(config)
-                            .map(_ -> new StreamCreateResponse(name, partitions, "created"));
+        return streamManager().createStream(config).map(_ -> new StreamCreateResponse(name, partitions, "created"));
     }
 
-    private static final RetentionPolicy MANAGEMENT_API_RETENTION =
-    RetentionPolicy.retentionPolicy(10_000, 4 * 1024 * 1024L, 60 * 60 * 1000L);
+    private static final RetentionPolicy MANAGEMENT_API_RETENTION = RetentionPolicy.retentionPolicy(10_000,
+                                                                                                    4 * 1024 * 1024L,
+                                                                                                    60 * 60 * 1000L);
 
     private void ensureStreamExists(String name) {
         streamManager().createStream(StreamConfig.streamConfig(name,

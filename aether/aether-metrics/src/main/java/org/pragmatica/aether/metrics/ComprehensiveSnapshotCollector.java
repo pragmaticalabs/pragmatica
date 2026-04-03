@@ -27,6 +27,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Result.unitResult;
 
+
 /// Collects comprehensive metrics from all subsystems and feeds MinuteAggregator.
 ///
 /// This is the missing link that connects all subsystem collectors to the TTM pipeline:
@@ -41,6 +42,7 @@ import static org.pragmatica.lang.Result.unitResult;
 /// Runs on a 1-second interval to collect snapshots.
 public final class ComprehensiveSnapshotCollector {
     private static final Logger log = LoggerFactory.getLogger(ComprehensiveSnapshotCollector.class);
+
     private static final long COLLECTION_INTERVAL_MS = 1000;
 
     private final GCMetricsCollector gcCollector;
@@ -50,11 +52,11 @@ public final class ComprehensiveSnapshotCollector {
     private final InvocationMetricsCollector invocationCollector;
     private final MinuteAggregator minuteAggregator;
     private final DerivedMetricsCalculator derivedCalculator;
-
     private final OperatingSystemMXBean osMxBean;
     private final MemoryMXBean memoryMxBean;
 
     private final AtomicReference<Option<ScheduledFuture<?>>> collectionTask = new AtomicReference<>(Option.none());
+
     private volatile boolean started = false;
 
     private ComprehensiveSnapshotCollector(GCMetricsCollector gcCollector,
@@ -75,7 +77,6 @@ public final class ComprehensiveSnapshotCollector {
         this.memoryMxBean = ManagementFactory.getMemoryMXBean();
     }
 
-    /// Factory method following JBCT naming convention.
     public static ComprehensiveSnapshotCollector comprehensiveSnapshotCollector(GCMetricsCollector gcCollector,
                                                                                 EventLoopMetricsCollector eventLoopCollector,
                                                                                 NetworkMetricsHandler networkHandler,
@@ -92,7 +93,6 @@ public final class ComprehensiveSnapshotCollector {
                                                   derivedCalculator);
     }
 
-    /// Factory method with defaults for derived metrics calculator.
     public static ComprehensiveSnapshotCollector comprehensiveSnapshotCollector(GCMetricsCollector gcCollector,
                                                                                 EventLoopMetricsCollector eventLoopCollector,
                                                                                 NetworkMetricsHandler networkHandler,
@@ -108,25 +108,20 @@ public final class ComprehensiveSnapshotCollector {
                                                   DerivedMetricsCalculator.derivedMetricsCalculator());
     }
 
-    /// Start collecting snapshots on 1-second interval.
     public Result<Unit> start() {
-        if ( started) {
-        return unitResult();}
+        if (started) {return unitResult();}
         started = true;
         gcCollector.start();
         eventLoopCollector.start();
         collectionTask.set(Option.some(SharedScheduler.scheduleAtFixedRate(this::collectSnapshot,
                                                                            TimeSpan.timeSpan(COLLECTION_INTERVAL_MS)
-        .millis())));
+                                                                                            .millis())));
         log.info("Comprehensive snapshot collection started (interval: {}ms)", COLLECTION_INTERVAL_MS);
         return unitResult();
     }
 
-    /// Stop collecting snapshots.
-    @SuppressWarnings("JBCT-EX-01")
-    public Result<Unit> stop() {
-        if ( !started) {
-        return unitResult();}
+    @SuppressWarnings("JBCT-EX-01") public Result<Unit> stop() {
+        if (!started) {return unitResult();}
         started = false;
         collectionTask.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
         gcCollector.stop();
@@ -135,19 +130,15 @@ public final class ComprehensiveSnapshotCollector {
         return unitResult();
     }
 
-    /// Get the MinuteAggregator (for TTM access).
     public MinuteAggregator minuteAggregator() {
         return minuteAggregator;
     }
 
-    /// Get current derived metrics.
     public DerivedMetrics derivedMetrics() {
         return derivedCalculator.current();
     }
 
-    /// Collect a single comprehensive snapshot from all subsystems.
-    @SuppressWarnings("JBCT-EX-01")
-    private void collectSnapshot() {
+    @SuppressWarnings("JBCT-EX-01") private void collectSnapshot() {
         try {
             var snapshot = buildSnapshot();
             minuteAggregator.addSample(snapshot);
@@ -156,30 +147,24 @@ public final class ComprehensiveSnapshotCollector {
                       snapshot.cpuUsage(),
                       snapshot.heapUsage(),
                       snapshot.totalInvocations());
-        }
-
-
-        catch (Exception e) {
+        } catch (Exception e) {
             log.warn("Failed to collect comprehensive snapshot: {}", e.getMessage());
         }
     }
 
     private ComprehensiveSnapshot buildSnapshot() {
-        // JVM metrics
         double cpuUsage = collectCpuUsage();
         var heapUsage = memoryMxBean.getHeapMemoryUsage();
-        // Subsystem metrics
         GCMetrics gc = gcCollector.snapshot();
         EventLoopMetrics eventLoop = eventLoopCollector.snapshot();
         NetworkMetrics network = networkHandler.snapshot();
         RabiaMetrics consensus = rabiaCollector.snapshot();
-        // Invocation metrics aggregation
         var invocationSnapshots = invocationCollector.snapshot();
         long totalInvocations = 0;
         long successfulInvocations = 0;
         long failedInvocations = 0;
         double totalLatencyMs = 0;
-        for ( var methodSnapshot : invocationSnapshots) {
+        for (var methodSnapshot : invocationSnapshots) {
             var metrics = methodSnapshot.metrics();
             totalInvocations += metrics.count();
             successfulInvocations += metrics.successCount();
@@ -187,8 +172,8 @@ public final class ComprehensiveSnapshotCollector {
             totalLatencyMs += metrics.totalDurationNs() / 1_000_000.0;
         }
         double avgLatencyMs = totalInvocations > 0
-                              ? totalLatencyMs / totalInvocations
-                              : 0.0;
+                             ? totalLatencyMs / totalInvocations
+                             : 0.0;
         return new ComprehensiveSnapshot(System.currentTimeMillis(),
                                          cpuUsage,
                                          heapUsage.getUsed(),
@@ -206,7 +191,7 @@ public final class ComprehensiveSnapshotCollector {
 
     private double collectCpuUsage() {
         double systemLoad = osMxBean.getSystemLoadAverage();
-        if ( systemLoad >= 0) {
+        if (systemLoad >= 0) {
             int processors = osMxBean.getAvailableProcessors();
             return Math.min(1.0, systemLoad / processors);
         }

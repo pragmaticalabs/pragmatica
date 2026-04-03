@@ -10,6 +10,7 @@ import org.pragmatica.storage.TierLevel;
 
 import java.nio.charset.StandardCharsets;
 
+
 /// DHT-backed storage tier for distributed block storage.
 /// Uses DHTClient for cluster-wide replication of content-addressed blocks.
 /// Intended as the durable (last) tier in a StorageInstance, with MemoryTier as the fast cache tier.
@@ -22,8 +23,6 @@ public final class DhtStorageTier implements StorageTier {
         this.keyPrefixBytes = (keyPrefix + "/").getBytes(StandardCharsets.UTF_8);
     }
 
-    /// Create a DHT-backed storage tier with the given key prefix.
-    /// The prefix avoids collision with other DHT data (e.g., metadata keys).
     public static DhtStorageTier dhtStorageTier(DHTClient dhtClient, String keyPrefix) {
         return new DhtStorageTier(dhtClient, keyPrefix);
     }

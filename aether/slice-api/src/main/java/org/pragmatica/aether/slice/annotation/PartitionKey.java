@@ -5,6 +5,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
+
 /// Marks a record component as the partition key for stream routing.
 ///
 /// When a record with `@PartitionKey` is published to a stream, the runtime
@@ -28,6 +29,4 @@ import java.lang.annotation.Target;
 ///
 /// If no `@PartitionKey` is present on the event type, the stream publisher
 /// uses round-robin partition assignment.
-@Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.RECORD_COMPONENT)
-public @interface PartitionKey {}
+@Retention(RetentionPolicy.RUNTIME) @Target(ElementType.RECORD_COMPONENT) public@interface PartitionKey {}

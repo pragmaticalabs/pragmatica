@@ -21,6 +21,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.DoubleAdder;
 import java.util.concurrent.atomic.LongAdder;
 
+
 /// Collects and manages metrics for a single node.
 ///
 ///
@@ -36,62 +37,35 @@ import java.util.concurrent.atomic.LongAdder;
 ///
 /// Metrics are stored in-memory with a sliding window for historical data.
 public interface MetricsCollector {
-    // Standard metric names
     String CPU_USAGE = "cpu.usage";
+
     String HEAP_USED = "heap.used";
+
     String HEAP_MAX = "heap.max";
+
     String HEAP_USAGE = "heap.usage";
 
-    /// Collect current local JVM metrics.
     Map<String, Double> collectLocal();
-
-    /// Record a method call with its duration.
     @Contract void recordCall(MethodName method, long durationMs);
-
-    /// Record a custom metric value from a slice.
     @Contract void recordCustom(String name, double value);
-
-    /// Set the invocation metrics provider for cluster-wide aggregation.
-    /// Invocation snapshots are encoded as flat map entries and exchanged via gossip.
     @Contract void setInvocationMetricsProvider(InvocationMetricsCollector provider);
-
-    /// Get all known metrics (local + remote nodes).
     Map<NodeId, Map<String, Double>> allMetrics();
-
-    /// Get metrics for a specific node.
     Map<String, Double> metricsFor(NodeId nodeId);
-
-    /// Get historical metrics within the sliding window (2 hours).
-    ///
-    /// @return Map of NodeId to list of timestamped snapshots, oldest first
     Map<NodeId, List<MetricsSnapshot>> historicalMetrics();
 
-    /// Immutable metrics snapshot with timestamp.
     record MetricsSnapshot(long timestamp, Map<String, Double> metrics){}
 
-    /// Remove a node from remote metrics and history.
-    /// Called when a node leaves the cluster or is detected as down.
     @Contract void removeNode(NodeId nodeId);
+    @MessageReceiver@Contract void onTopologyChange(TopologyChangeNotification topologyChange);
+    @MessageReceiver@Contract void onMetricsPing(MetricsPing ping);
+    @MessageReceiver@Contract void onMetricsPong(MetricsPong pong);
 
-    /// Handle topology changes to clean up metrics for departed nodes.
-    @MessageReceiver
-    @Contract void onTopologyChange(TopologyChangeNotification topologyChange);
-
-    @MessageReceiver
-    @Contract void onMetricsPing(MetricsPing ping);
-
-    @MessageReceiver
-    @Contract void onMetricsPong(MetricsPong pong);
-
-    /// Default sliding window duration: 2 hours in milliseconds.
     long DEFAULT_slidingWindowMs = 2 * 60 * 60 * 1000L;
 
-    /// Create a new MetricsCollector instance with default sliding window.
     static MetricsCollector metricsCollector(NodeId self, ClusterNetwork network) {
         return new MetricsCollectorImpl(self, network, DEFAULT_slidingWindowMs);
     }
 
-    /// Create a new MetricsCollector instance with custom sliding window.
     static MetricsCollector metricsCollector(NodeId self, ClusterNetwork network, long slidingWindowMs) {
         return new MetricsCollectorImpl(self, network, slidingWindowMs);
     }
@@ -100,30 +74,20 @@ public interface MetricsCollector {
 /// Implementation of MetricsCollector.
 class MetricsCollectorImpl implements MetricsCollector {
     private final long slidingWindowMs;
-
-    // Ring buffer capacity: sliding window at 1 sample/second
     private final int ringBufferCapacity;
-
     private final NodeId self;
     private final ClusterNetwork network;
-
-    // JVM metrics beans
     private final OperatingSystemMXBean osMxBean;
     private final MemoryMXBean memoryMxBean;
 
-    // Per-method call statistics
     private final ConcurrentHashMap<MethodName, CallStats> callStats = new ConcurrentHashMap<>();
 
-    // Custom metrics from slices
     private final ConcurrentHashMap<String, Double> customMetrics = new ConcurrentHashMap<>();
 
-    // Invocation metrics provider for cluster-wide aggregation
     private volatile InvocationMetricsCollector invocationMetricsProvider;
 
-    // Metrics received from other nodes
     private final ConcurrentHashMap<NodeId, Map<String, Double>> remoteMetrics = new ConcurrentHashMap<>();
 
-    // Ring buffer for historical metrics - fixed capacity, O(1) add, oldest elements auto-evicted
     private final ConcurrentHashMap<NodeId, RingBuffer<MetricsSnapshot>> historicalMetricsMap = new ConcurrentHashMap<>();
 
     MetricsCollectorImpl(NodeId self, ClusterNetwork network, long slidingWindowMs) {
@@ -145,18 +109,15 @@ class MetricsCollectorImpl implements MetricsCollector {
         return metrics;
     }
 
-    @Override
-    @Contract public void recordCall(MethodName method, long durationMs) {
+    @Override@Contract public void recordCall(MethodName method, long durationMs) {
         callStats.computeIfAbsent(method, _ -> CallStats.callStats()).record(durationMs);
     }
 
-    @Override
-    @Contract public void recordCustom(String name, double value) {
+    @Override@Contract public void recordCustom(String name, double value) {
         customMetrics.put(name, value);
     }
 
-    @Override
-    @Contract public void setInvocationMetricsProvider(InvocationMetricsCollector provider) {
+    @Override@Contract public void setInvocationMetricsProvider(InvocationMetricsCollector provider) {
         this.invocationMetricsProvider = provider;
     }
 
@@ -169,8 +130,7 @@ class MetricsCollectorImpl implements MetricsCollector {
     }
 
     @Override public Map<String, Double> metricsFor(NodeId nodeId) {
-        if ( nodeId.equals(self)) {
-        return collectLocal();}
+        if (nodeId.equals(self)) {return collectLocal();}
         return remoteMetrics.getOrDefault(nodeId, Map.of());
     }
 
@@ -181,30 +141,26 @@ class MetricsCollectorImpl implements MetricsCollector {
         return result;
     }
 
-    @Override
-    @Contract public void removeNode(NodeId nodeId) {
+    @Override@Contract public void removeNode(NodeId nodeId) {
         remoteMetrics.remove(nodeId);
         historicalMetricsMap.remove(nodeId);
     }
 
-    @Override
-    @Contract public void onTopologyChange(TopologyChangeNotification topologyChange) {
-        switch ( topologyChange) {
+    @Override@Contract public void onTopologyChange(TopologyChangeNotification topologyChange) {
+        switch (topologyChange){
             case TopologyChangeNotification.NodeRemoved(var removedNode, _) -> removeNode(removedNode);
             case TopologyChangeNotification.NodeDown(var downNode, _) -> removeNode(downNode);
             default -> {}
         }
     }
 
-    @Override
-    @Contract public void onMetricsPing(MetricsPing ping) {
+    @Override@Contract public void onMetricsPing(MetricsPing ping) {
         ping.allMetrics().forEach(this::storeRemoteMetrics);
         network.send(ping.sender(), new MetricsPong(self, collectLocal()));
     }
 
-    @Override
-    @Contract public void onMetricsPong(MetricsPong pong) {
-        if ( !pong.sender().equals(self)) {
+    @Override@Contract public void onMetricsPong(MetricsPong pong) {
+        if (!pong.sender().equals(self)) {
             remoteMetrics.put(pong.sender(), pong.metrics());
             addToHistory(pong.sender(), pong.metrics());
         }
@@ -212,7 +168,7 @@ class MetricsCollectorImpl implements MetricsCollector {
 
     private void collectCpuMetrics(Map<String, Double> metrics) {
         double systemLoad = osMxBean.getSystemLoadAverage();
-        if ( systemLoad >= 0) {
+        if (systemLoad >= 0) {
             int processors = osMxBean.getAvailableProcessors();
             metrics.put(CPU_USAGE, Math.min(1.0, systemLoad / processors));
         }
@@ -222,9 +178,8 @@ class MetricsCollectorImpl implements MetricsCollector {
         var heapUsage = memoryMxBean.getHeapMemoryUsage();
         metrics.put(HEAP_USED, (double) heapUsage.getUsed());
         metrics.put(HEAP_MAX, (double) heapUsage.getMax());
-        if ( heapUsage.getMax() > 0) {
-        metrics.put(HEAP_USAGE,
-                    (double) heapUsage.getUsed() / heapUsage.getMax());}
+        if (heapUsage.getMax() > 0) {metrics.put(HEAP_USAGE,
+                                                 (double) heapUsage.getUsed() / heapUsage.getMax());}
     }
 
     private void collectCallStatsMetrics(Map<String, Double> metrics) {
@@ -235,15 +190,13 @@ class MetricsCollectorImpl implements MetricsCollector {
         var prefix = "method." + method.name() + ".";
         metrics.put(prefix + "calls", (double) stats.count.sum());
         metrics.put(prefix + "duration.total", stats.totalDuration.sum());
-        if ( stats.count.sum() > 0) {
-        metrics.put(prefix + "duration.avg",
-                    stats.totalDuration.sum() / stats.count.sum());}
+        if (stats.count.sum() > 0) {metrics.put(prefix + "duration.avg",
+                                                stats.totalDuration.sum() / stats.count.sum());}
     }
 
     private void collectInvocationMetrics(Map<String, Double> metrics) {
         var invMetrics = invocationMetricsProvider;
-        if ( invMetrics == null) {
-        return;}
+        if (invMetrics == null) {return;}
         invMetrics.snapshot().forEach(snapshot -> addInvocationSnapshot(metrics, snapshot));
     }
 
@@ -260,7 +213,7 @@ class MetricsCollectorImpl implements MetricsCollector {
     }
 
     private void storeRemoteMetrics(NodeId nodeId, Map<String, Double> metrics) {
-        if ( !nodeId.equals(self)) {
+        if (!nodeId.equals(self)) {
             remoteMetrics.put(nodeId, metrics);
             addToHistory(nodeId, metrics);
         }
@@ -271,18 +224,14 @@ class MetricsCollectorImpl implements MetricsCollector {
                                     RingBuffer<MetricsSnapshot> ringBuffer,
                                     long cutoff) {
         var filtered = ringBuffer.filter(s -> s.timestamp() >= cutoff);
-        if ( !filtered.isEmpty()) {
-        result.put(nodeId, filtered);}
+        if (!filtered.isEmpty()) {result.put(nodeId, filtered);}
     }
 
-    /// Add metrics snapshot to historical ring buffer.
-    /// Old entries are automatically evicted when buffer is full.
     private void addToHistory(NodeId nodeId, Map<String, Double> metrics) {
         var ringBuffer = historicalMetricsMap.computeIfAbsent(nodeId, _ -> RingBuffer.ringBuffer(ringBufferCapacity));
         ringBuffer.add(new MetricsSnapshot(System.currentTimeMillis(), metrics));
     }
 
-    /// Mutable call statistics for a method.
     private record CallStats(LongAdder count, DoubleAdder totalDuration) {
         static CallStats callStats() {
             return new CallStats(new LongAdder(), new DoubleAdder());

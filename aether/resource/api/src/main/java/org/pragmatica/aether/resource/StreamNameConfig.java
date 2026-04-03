@@ -1,2 +1,3 @@
 package org.pragmatica.aether.resource;
-public record StreamNameConfig( String streamName){}
+
+public record StreamNameConfig(String streamName){}

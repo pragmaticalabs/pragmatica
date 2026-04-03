@@ -11,6 +11,7 @@ import io.r2dbc.pool.ConnectionPoolConfiguration;
 import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactoryOptions;
 
+
 /// SPI factory for creating R2DBC JooqConnector instances.
 ///
 /// Priority 10 -- preferred over JDBC when r2dbc_url is configured.
@@ -42,7 +43,7 @@ public final class R2dbcJooqConnectorFactory implements ResourceFactory<JooqConn
         config.effectivePassword().onPresent(p -> optionsBuilder.option(ConnectionFactoryOptions.PASSWORD, p));
         var connectionFactory = ConnectionFactories.get(optionsBuilder.build());
         var poolConfig = ConnectionPoolConfiguration.builder(connectionFactory).maxSize(config.poolConfig()
-        .maxConnections())
+                                                                                                         .maxConnections())
                                                             .initialSize(config.poolConfig().minConnections())
                                                             .maxIdleTime(config.poolConfig().idleTimeout()
                                                                                           .duration())

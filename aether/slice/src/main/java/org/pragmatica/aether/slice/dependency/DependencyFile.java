@@ -20,6 +20,7 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
+
 /// Parsed dependency file with shared, infra, and slice sections.
 ///
 /// File format:
@@ -50,98 +51,67 @@ import static org.pragmatica.lang.Result.success;
 /// @param shared List of shared library dependencies
 /// @param infra  List of infrastructure service dependencies
 /// @param slices List of slice dependencies
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-UTIL-02", "JBCT-PAT-01", "JBCT-RET-05", "JBCT-NAM-01"})
-public record DependencyFile( List<ArtifactDependency> shared,
-                              List<ArtifactDependency> infra,
-                              List<ArtifactDependency> slices) {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-UTIL-02", "JBCT-PAT-01", "JBCT-RET-05", "JBCT-NAM-01"}) public record DependencyFile(List<ArtifactDependency> shared,
+                                                                                                                                                           List<ArtifactDependency> infra,
+                                                                                                                                                           List<ArtifactDependency> slices) {
     private enum Section {
         NONE,
-        // No section yet (for backward compatibility)
         SHARED,
-        // [shared] section
         INFRA,
-        // [infra] section
         SLICES
     }
 
-    /// Parse dependency file content.
-    ///
-    /// @param content The file content as string
-    /// @return Parsed dependency file or error
     public static Result<DependencyFile> dependencyFile(String content) {
         var shared = new ArrayList<ArtifactDependency>();
         var infra = new ArrayList<ArtifactDependency>();
         var slices = new ArrayList<ArtifactDependency>();
         var currentSection = Section.NONE;
         var lines = content.split("\n");
-        for ( var line : lines) {
+        for (var line : lines) {
             var trimmed = line.trim();
-            // Skip empty lines and comments
-            if ( trimmed.isEmpty() || trimmed.startsWith("#")) {
-            continue;}
-            // Check for section headers
-            if ( trimmed.equals("[shared]")) {
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) {continue;}
+            if (trimmed.equals("[shared]")) {
                 currentSection = Section.SHARED;
                 continue;
             }
-            if ( trimmed.equals("[infra]")) {
+            if (trimmed.equals("[infra]")) {
                 currentSection = Section.INFRA;
                 continue;
             }
-            if ( trimmed.equals("[slices]")) {
+            if (trimmed.equals("[slices]")) {
                 currentSection = Section.SLICES;
                 continue;
             }
-            // Unknown section header
-            if ( trimmed.startsWith("[") && trimmed.endsWith("]")) {
-            return UNKNOWN_SECTION.apply(trimmed).result();}
-            // Parse dependency line - skip empty/comment lines, fail on real errors
+            if (trimmed.startsWith("[") && trimmed.endsWith("]")) {return UNKNOWN_SECTION.apply(trimmed).result();}
             var parseResult = ArtifactDependency.artifactDependency(trimmed);
-            // Capture the section for the lambda
             final var sectionRef = currentSection;
-            // Use AtomicReference as a holder to capture error from lambda
             var errorHolder = new AtomicReference<Cause>();
             var skipFlag = new AtomicBoolean(false);
             parseResult.onSuccess(dependency -> {
-                                      switch ( sectionRef) {
+                                      switch (sectionRef){
                 case SHARED -> shared.add(dependency);
                 case INFRA -> infra.add(dependency);
                 case SLICES, NONE -> slices.add(dependency);
             }
                                   })
             .onFailure(cause -> {
-                           // Skip known non-error cases
-            if ( cause == ArtifactDependency.EMPTY_LINE ||
-            cause == ArtifactDependency.COMMENT_LINE ||
-            cause == ArtifactDependency.SECTION_HEADER) {
-            skipFlag.set(true);} else
-            {
-            errorHolder.set(cause);}
+                           if (cause == ArtifactDependency.EMPTY_LINE || cause == ArtifactDependency.COMMENT_LINE || cause == ArtifactDependency.SECTION_HEADER) {skipFlag.set(true);} else {errorHolder.set(cause);}
                        });
-            if ( skipFlag.get()) {
-            continue;}
-            if ( errorHolder.get() != null) {
-            return errorHolder.get().result();}
+            if (skipFlag.get()) {continue;}
+            if (errorHolder.get() != null) {return errorHolder.get().result();}
         }
         var result = new DependencyFile(List.copyOf(shared), List.copyOf(infra), List.copyOf(slices));
         return result.validateNoFrameworkDependencies();
     }
 
-    /// Validate that framework dependencies (slice-api, infra-api) are not declared.
-    /// These are provided by the runtime and should never be in slice dependency files.
     private Result<DependencyFile> validateNoFrameworkDependencies() {
-        return findFrameworkDependency()
-        .fold(() -> success(this),
-              dep -> FRAMEWORK_DEPENDENCY_ERROR.apply(dep).result());
+        return findFrameworkDependency().fold(() -> success(this),
+                                              dep -> FRAMEWORK_DEPENDENCY_ERROR.apply(dep).result());
     }
 
     private Option<String> findFrameworkDependency() {
-        for ( var dep : shared) {
-        if ( isFrameworkArtifact(dep)) {
-        return some("[shared] " + dep.asString());}}
-        for ( var dep : infra) {
-        if ( isFrameworkArtifact(dep)) {
-        return some("[infra] " + dep.asString());}}
+        for (var dep : shared) {if (isFrameworkArtifact(dep)) {return some("[shared] " + dep.asString());}}
+        for (var dep : infra) {if (isFrameworkArtifact(dep)) {return some("[infra] " + dep.asString());}}
         return none();
     }
 
@@ -150,66 +120,49 @@ public record DependencyFile( List<ArtifactDependency> shared,
     }
 
     private static final String AETHER_GROUP = "org.pragmatica-lite.aether";
+
     private static final Set<String> FRAMEWORK_ARTIFACTS = Set.of("slice-api", "infra-api", "slice-annotations");
+
     private static final Fn1<Cause, String> FRAMEWORK_DEPENDENCY_ERROR = Causes.forOneValue("Slice incorrectly packaged: framework dependency declared in %s. " + "slice-api, infra-api, and slice-annotations are provided by the runtime and must not be declared as dependencies");
 
-    /// Parse dependency file from input stream.
-    ///
-    /// @param inputStream The input stream to read from
-    /// @return Parsed dependency file or error
-    /// Adapter boundary — InputStream/BufferedReader APIs use null for EOF.
-    @SuppressWarnings("JBCT-RET-03")
-    public static Result<DependencyFile> dependencyFile(InputStream inputStream) {
-        return Result.lift(Causes::fromThrowable, () -> readStreamContent(inputStream))
+    @SuppressWarnings("JBCT-RET-03") public static Result<DependencyFile> dependencyFile(InputStream inputStream) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> readStreamContent(inputStream))
         .flatMap(DependencyFile::dependencyFile);
     }
 
-    @SuppressWarnings("JBCT-EX-01")
-    private static String readStreamContent(InputStream inputStream) throws IOException {
+    @SuppressWarnings("JBCT-EX-01") private static String readStreamContent(InputStream inputStream) throws IOException {
         try (var reader = new BufferedReader(new InputStreamReader(inputStream))) {
             var content = new StringBuilder();
             String line;
-            while ( (line = reader.readLine()) != null) {
-            content.append(line).append("\n");}
+            while ((line = reader.readLine()) != null) {content.append(line).append("\n");}
             return content.toString();
         }
     }
 
-    /// Load dependency file from classloader resource.
-    ///
-    /// @param sliceClassName Fully qualified class name of the slice
-    /// @param classLoader    ClassLoader to load resource from
-    /// @return Parsed dependency file, empty if no file exists
-    @SuppressWarnings("JBCT-RET-03")
-    public static Result<DependencyFile> load(String sliceClassName, ClassLoader classLoader) {
+    @SuppressWarnings("JBCT-RET-03") public static Result<DependencyFile> load(String sliceClassName,
+                                                                               ClassLoader classLoader) {
         var resourcePath = "META-INF/dependencies/" + sliceClassName;
         var resource = classLoader.getResourceAsStream(resourcePath);
-        if ( resource == null) {
-        // No dependencies file means no dependencies - this is valid
-        return success(new DependencyFile(List.of(), List.of(), List.of()));}
+        if (resource == null) {return success(new DependencyFile(List.of(), List.of(), List.of()));}
         return dependencyFile(resource);
     }
 
-    /// Check if this file has any shared dependencies.
     public boolean hasSharedDependencies() {
         return ! shared.isEmpty();
     }
 
-    /// Check if this file has any infra dependencies.
     public boolean hasInfraDependencies() {
         return ! infra.isEmpty();
     }
 
-    /// Check if this file has any slice dependencies.
     public boolean hasSliceDependencies() {
         return ! slices.isEmpty();
     }
 
-    /// Check if this is an empty dependency file.
     public boolean isEmpty() {
         return shared.isEmpty() && infra.isEmpty() && slices.isEmpty();
     }
 
-    // Error constants
     private static final Fn1<Cause, String> UNKNOWN_SECTION = Causes.forOneValue("Unknown section in dependency file: %s. Valid sections: [shared], [infra], [slices]");
 }

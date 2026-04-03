@@ -1,17 +1,20 @@
 #!/bin/bash
-# test-deploy-rolling.sh — Rolling deployment via unified deploy command
+# test-deploy-rolling.sh — Rolling deployment via unified deploy command (v1 → v2 upgrade)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
-BLUEPRINT="org.pragmatica.aether.example:url-shortener:1.0.0-alpha"
+BLUEPRINT_V2="org.pragmatica.aether.example:url-shortener:1.0.1"
 
 test_rolling_start() {
     deploy_cleanup
+    push_blueprint "$BLUEPRINT_V2"
+    deploy_blueprint "$BLUEPRINT_V2"
+    sleep 3
     local result
-    result=$(deploy_start "$BLUEPRINT" rolling --instances 2)
+    result=$(deploy_start "$BLUEPRINT_V2" rolling --instances 2)
     assert_contains "$result" "deploymentId" "Rolling deployment started with deployment ID"
 }
 

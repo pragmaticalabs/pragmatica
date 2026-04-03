@@ -5,6 +5,7 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// Configuration for the cluster controller.
 ///
 ///
@@ -25,21 +26,23 @@ import org.pragmatica.lang.utils.Causes;
 /// @param warmUpPeriodMs time after ControlLoop activation during which scaling is blocked (must be non-negative)
 /// @param sliceCooldownMs time after slice reaches ACTIVE during which scaling is blocked (must be non-negative)
 /// @param scalingConfig configuration for the Lizard Brain relative change scaling algorithm
-@SuppressWarnings("JBCT-VO-02") // Record copy methods (with*) and DEFAULT constant use new internally — validated by factory
-public record ControllerConfig( double cpuScaleUpThreshold,
-                                double cpuScaleDownThreshold,
-                                double callRateScaleUpThreshold,
-                                long evaluationIntervalMs,
-                                long warmUpPeriodMs,
-                                long sliceCooldownMs,
-                                ScalingConfig scalingConfig) {
+@SuppressWarnings("JBCT-VO-02")
+// Record copy methods (with*) and DEFAULT constant use new internally — validated by factory
+public record ControllerConfig(double cpuScaleUpThreshold,
+                               double cpuScaleDownThreshold,
+                               double callRateScaleUpThreshold,
+                               long evaluationIntervalMs,
+                               long warmUpPeriodMs,
+                               long sliceCooldownMs,
+                               ScalingConfig scalingConfig) {
     private static final Fn1<Cause, String> INVALID_THRESHOLD = Causes.forOneValue("Invalid threshold: %s (must be between 0.0 and 1.0)");
+
     private static final Fn1<Cause, String> INVALID_POSITIVE = Causes.forOneValue("Invalid value: %s (must be positive)");
+
     private static final Fn1<Cause, String> INVALID_NON_NEGATIVE = Causes.forOneValue("Invalid value: %s (must be non-negative)");
+
     private static final Cause INVALID_THRESHOLD_ORDER = Causes.cause("cpuScaleUpThreshold must be greater than cpuScaleDownThreshold");
 
-    /// Default configuration with known-valid values.
-    /// These values are validated at compile time and guaranteed to pass factory validation.
     public static final ControllerConfig DEFAULT = new ControllerConfig(0.8,
                                                                         0.2,
                                                                         2000,
@@ -48,9 +51,6 @@ public record ControllerConfig( double cpuScaleUpThreshold,
                                                                         10000,
                                                                         ScalingConfig.productionDefaults());
 
-    /// Factory method with validation following JBCT naming convention.
-    ///
-    /// @return Result containing valid config or validation error
     public static Result<ControllerConfig> controllerConfig(double cpuScaleUpThreshold,
                                                             double cpuScaleDownThreshold,
                                                             double callRateScaleUpThreshold,
@@ -63,9 +63,6 @@ public record ControllerConfig( double cpuScaleUpThreshold,
                                 DEFAULT.sliceCooldownMs());
     }
 
-    /// Factory method with validation including warm-up and cooldown periods.
-    ///
-    /// @return Result containing valid config or validation error
     public static Result<ControllerConfig> controllerConfig(double cpuScaleUpThreshold,
                                                             double cpuScaleDownThreshold,
                                                             double callRateScaleUpThreshold,
@@ -81,9 +78,6 @@ public record ControllerConfig( double cpuScaleUpThreshold,
                                 ScalingConfig.productionDefaults());
     }
 
-    /// Factory method with validation including all parameters.
-    ///
-    /// @return Result containing valid config or validation error
     public static Result<ControllerConfig> controllerConfig(double cpuScaleUpThreshold,
                                                             double cpuScaleDownThreshold,
                                                             double callRateScaleUpThreshold,
@@ -109,35 +103,34 @@ public record ControllerConfig( double cpuScaleUpThreshold,
 
     private static Result<Double> validateThreshold(double value, String name) {
         return value >= 0.0 && value <= 1.0
-               ? Result.success(value)
-               : INVALID_THRESHOLD.apply(name + "=" + value).result();
+              ? Result.success(value)
+              : INVALID_THRESHOLD.apply(name + "=" + value).result();
     }
 
     private static Result<Double> validatePositive(double value, String name) {
         return value > 0
-               ? Result.success(value)
-               : INVALID_POSITIVE.apply(name + "=" + value).result();
+              ? Result.success(value)
+              : INVALID_POSITIVE.apply(name + "=" + value).result();
     }
 
     private static Result<Long> validatePositive(long value, String name) {
         return value > 0
-               ? Result.success(value)
-               : INVALID_POSITIVE.apply(name + "=" + value).result();
+              ? Result.success(value)
+              : INVALID_POSITIVE.apply(name + "=" + value).result();
     }
 
     private static Result<Long> validateNonNegative(long value, String name) {
         return value >= 0
-               ? Result.success(value)
-               : INVALID_NON_NEGATIVE.apply(name + "=" + value).result();
+              ? Result.success(value)
+              : INVALID_NON_NEGATIVE.apply(name + "=" + value).result();
     }
 
     private static Result<Double> validateThresholdOrder(double up, double down) {
         return up > down
-               ? Result.success(up)
-               : INVALID_THRESHOLD_ORDER.result();
+              ? Result.success(up)
+              : INVALID_THRESHOLD_ORDER.result();
     }
 
-    /// Returns a copy with updated CPU scale-up threshold.
     public ControllerConfig withCpuScaleUpThreshold(double threshold) {
         return new ControllerConfig(threshold,
                                     cpuScaleDownThreshold,
@@ -148,7 +141,6 @@ public record ControllerConfig( double cpuScaleUpThreshold,
                                     scalingConfig);
     }
 
-    /// Returns a copy with updated CPU scale-down threshold.
     public ControllerConfig withCpuScaleDownThreshold(double threshold) {
         return new ControllerConfig(cpuScaleUpThreshold,
                                     threshold,
@@ -159,7 +151,6 @@ public record ControllerConfig( double cpuScaleUpThreshold,
                                     scalingConfig);
     }
 
-    /// Returns a copy with updated call rate threshold.
     public ControllerConfig withCallRateScaleUpThreshold(double threshold) {
         return new ControllerConfig(cpuScaleUpThreshold,
                                     cpuScaleDownThreshold,
@@ -170,7 +161,6 @@ public record ControllerConfig( double cpuScaleUpThreshold,
                                     scalingConfig);
     }
 
-    /// Returns a copy with updated evaluation interval.
     public ControllerConfig withEvaluationIntervalMs(long intervalMs) {
         return new ControllerConfig(cpuScaleUpThreshold,
                                     cpuScaleDownThreshold,
@@ -181,7 +171,6 @@ public record ControllerConfig( double cpuScaleUpThreshold,
                                     scalingConfig);
     }
 
-    /// Returns a copy with updated warm-up period.
     public ControllerConfig withWarmUpPeriodMs(long warmUpMs) {
         return new ControllerConfig(cpuScaleUpThreshold,
                                     cpuScaleDownThreshold,
@@ -192,7 +181,6 @@ public record ControllerConfig( double cpuScaleUpThreshold,
                                     scalingConfig);
     }
 
-    /// Returns a copy with updated slice cooldown period.
     public ControllerConfig withSliceCooldownMs(long cooldownMs) {
         return new ControllerConfig(cpuScaleUpThreshold,
                                     cpuScaleDownThreshold,
@@ -203,7 +191,6 @@ public record ControllerConfig( double cpuScaleUpThreshold,
                                     scalingConfig);
     }
 
-    /// Returns a copy with updated scaling config.
     public ControllerConfig withScalingConfig(ScalingConfig newScalingConfig) {
         return new ControllerConfig(cpuScaleUpThreshold,
                                     cpuScaleDownThreshold,
@@ -214,18 +201,10 @@ public record ControllerConfig( double cpuScaleUpThreshold,
                                     newScalingConfig);
     }
 
-    /// Creates configuration for Forge simulation environment.
-    /// Uses ForgeDefaults scaling config which disables CPU-based scaling.
-    ///
-    ///
-    /// This is a semantic factory variant (not following `typeName()` pattern)
-    /// because it represents a named configuration profile rather than generic construction.
-    /// See also: {@link #defaults()}, {@link #controllerConfig(double, double, double, long)}.
     public static ControllerConfig forgeDefaults() {
         return DEFAULT.withScalingConfig(ScalingConfig.forgeDefaults());
     }
 
-    /// Converts to JSON.
     public String toJson() {
         return "{\"cpuScaleUpThreshold\":" + cpuScaleUpThreshold + ",\"cpuScaleDownThreshold\":" + cpuScaleDownThreshold + ",\"callRateScaleUpThreshold\":" + callRateScaleUpThreshold + ",\"evaluationIntervalMs\":" + evaluationIntervalMs + ",\"warmUpPeriodMs\":" + warmUpPeriodMs + ",\"sliceCooldownMs\":" + sliceCooldownMs + ",\"scalingConfig\":" + scalingConfigToJson() + "}";
     }
@@ -233,9 +212,8 @@ public record ControllerConfig( double cpuScaleUpThreshold,
     private String scalingConfigToJson() {
         var weightsJson = new StringBuilder("{");
         var first = true;
-        for ( var entry : scalingConfig.weights().entrySet()) {
-            if ( !first) {
-            weightsJson.append(",");}
+        for (var entry : scalingConfig.weights().entrySet()) {
+            if (!first) {weightsJson.append(",");}
             weightsJson.append("\"").append(entry.getKey().name())
                               .append("\":")
                               .append(entry.getValue());

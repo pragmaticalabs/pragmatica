@@ -23,46 +23,32 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Cleans up KV-Store entries for departed worker nodes.
 /// Called by the governor when SWIM detects FAULTY or LEFT members.
 ///
 /// Maintains an index of node-to-key mappings for efficient cleanup.
 /// Tracks NodeArtifactKey and NodeRoutesKey for forwarding removes via consensus.
-@SuppressWarnings({"JBCT-RET-01", "JBCT-STY-05"})
-public interface GovernorCleanup {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-STY-05"}) public interface GovernorCleanup {
     Logger log = LoggerFactory.getLogger(GovernorCleanup.class);
 
     String NODE_ARTIFACT_PREFIX = "node-artifact/";
+
     String NODE_ROUTES_PREFIX = "node-routes/";
 
-    /// Track a node-artifact entry for a node.
     void trackNodeArtifact(NodeId nodeId, NodeArtifactKey key);
-
-    /// Track a node-routes entry for a node.
     void trackNodeRoutes(NodeId nodeId, NodeRoutesKey key);
-
-    /// Untrack a node-artifact entry.
     void untrackNodeArtifact(NodeId nodeId, NodeArtifactKey key);
-
-    /// Untrack a node-routes entry.
     void untrackNodeRoutes(NodeId nodeId, NodeRoutesKey key);
-
-    /// Clean up KV entries for all nodes not in the alive set.
     Promise<Unit> cleanupDeadNodes(Set<NodeId> aliveNodes);
-
-    /// Clean up all KV entries for a dead node.
-    /// Forwards NodeArtifactKey and NodeRoutesKey removes via MutationForwarder.
     Promise<Unit> cleanupDeadNode(NodeId deadNode);
-
-    /// Rebuild the cleanup index from DHT storage entries.
-    /// Called on governor election to repopulate the in-memory index.
     Promise<Unit> rebuildIndex(DHTNode dhtNode);
 
     static GovernorCleanup governorCleanup(MutationForwarder mutationForwarder) {
-        record governorCleanup( MutationForwarder mutationForwarder,
-                                Map<NodeId, Set<NodeArtifactKey>> nodeArtifactIndex,
-                                Map<NodeId, Set<NodeRoutesKey>> nodeRoutesIndex,
-                                AtomicLong correlationCounter) implements GovernorCleanup {
+        record governorCleanup(MutationForwarder mutationForwarder,
+                               Map<NodeId, Set<NodeArtifactKey>> nodeArtifactIndex,
+                               Map<NodeId, Set<NodeRoutesKey>> nodeRoutesIndex,
+                               AtomicLong correlationCounter) implements GovernorCleanup {
             @Override public void trackNodeArtifact(NodeId nodeId, NodeArtifactKey key) {
                 nodeArtifactIndex.computeIfAbsent(nodeId, _ -> ConcurrentHashMap.newKeySet()).add(key);
             }
@@ -73,14 +59,12 @@ public interface GovernorCleanup {
 
             @Override public void untrackNodeArtifact(NodeId nodeId, NodeArtifactKey key) {
                 var keys = nodeArtifactIndex.get(nodeId);
-                if ( keys != null) {
-                keys.remove(key);}
+                if (keys != null) {keys.remove(key);}
             }
 
             @Override public void untrackNodeRoutes(NodeId nodeId, NodeRoutesKey key) {
                 var keys = nodeRoutesIndex.get(nodeId);
-                if ( keys != null) {
-                keys.remove(key);}
+                if (keys != null) {keys.remove(key);}
             }
 
             @Override public Promise<Unit> cleanupDeadNodes(Set<NodeId> aliveNodes) {
@@ -88,21 +72,20 @@ public interface GovernorCleanup {
                 deadNodes.addAll(nodeArtifactIndex.keySet());
                 deadNodes.addAll(nodeRoutesIndex.keySet());
                 deadNodes.removeAll(aliveNodes);
-                if ( deadNodes.isEmpty()) {
+                if (deadNodes.isEmpty()) {
                     log.info("No dead nodes found during reconciliation");
                     return Promise.unitPromise();
                 }
                 log.info("Reconciliation found {} dead nodes: {}", deadNodes.size(), deadNodes);
                 var result = Promise.unitPromise();
-                for ( var deadNode : deadNodes) {
-                result = result.flatMap(_ -> cleanupDeadNode(deadNode));}
+                for (var deadNode : deadNodes) {result = result.flatMap(_ -> cleanupDeadNode(deadNode));}
                 return result;
             }
 
             @Override public Promise<Unit> cleanupDeadNode(NodeId deadNode) {
                 var nodeArtifactKeys = List.copyOf(nodeArtifactIndex.getOrDefault(deadNode, Set.of()));
                 var nodeRoutesKeys = List.copyOf(nodeRoutesIndex.getOrDefault(deadNode, Set.of()));
-                if ( nodeArtifactKeys.isEmpty() && nodeRoutesKeys.isEmpty()) {
+                if (nodeArtifactKeys.isEmpty() && nodeRoutesKeys.isEmpty()) {
                     log.debug("No KV entries to clean up for dead node {}", deadNode);
                     return Promise.unitPromise();
                 }
@@ -130,18 +113,16 @@ public interface GovernorCleanup {
 
             private int processEntries(List<DHTMessage.KeyValue> entries) {
                 var count = 0;
-                for ( var entry : entries) {
+                for (var entry : entries) {
                     var keyStr = new String(entry.key(), StandardCharsets.UTF_8);
-                    if ( tryProcessNodeArtifact(keyStr) || tryProcessNodeRoutes(keyStr)) {
-                    count++;}
+                    if (tryProcessNodeArtifact(keyStr) || tryProcessNodeRoutes(keyStr)) {count++;}
                 }
                 log.info("Rebuilt cleanup index from DHT: {} tracked entries", count);
                 return count;
             }
 
             private boolean tryProcessNodeArtifact(String keyStr) {
-                if ( !keyStr.startsWith(NODE_ARTIFACT_PREFIX)) {
-                return false;}
+                if (!keyStr.startsWith(NODE_ARTIFACT_PREFIX)) {return false;}
                 return NodeArtifactKey.nodeArtifactKey(keyStr).fold(_ -> false, this::trackAndReturnNodeArtifact);
             }
 
@@ -151,8 +132,7 @@ public interface GovernorCleanup {
             }
 
             private boolean tryProcessNodeRoutes(String keyStr) {
-                if ( !keyStr.startsWith(NODE_ROUTES_PREFIX)) {
-                return false;}
+                if (!keyStr.startsWith(NODE_ROUTES_PREFIX)) {return false;}
                 return NodeRoutesKey.nodeRoutesKey(keyStr).fold(_ -> false, this::trackAndReturnNodeRoutes);
             }
 
@@ -167,9 +147,10 @@ public interface GovernorCleanup {
                 log.info("Completed KV cleanup for dead node {}", deadNode);
             }
 
-            @SuppressWarnings("unchecked")
-            private<K extends AetherKey> void forwardRemoveAll(List<K> keys, NodeId deadNode, String type) {
-                for ( var key : keys) {
+            @SuppressWarnings("unchecked") private <K extends AetherKey> void forwardRemoveAll(List<K> keys,
+                                                                                               NodeId deadNode,
+                                                                                               String type) {
+                for (var key : keys) {
                     var correlationId = "cleanup-" + deadNode.id() + "-" + type + "-" + correlationCounter.incrementAndGet();
                     KVCommand<AetherKey> command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
                     mutationForwarder.forward(WorkerMutation.workerMutation(deadNode, correlationId, command));

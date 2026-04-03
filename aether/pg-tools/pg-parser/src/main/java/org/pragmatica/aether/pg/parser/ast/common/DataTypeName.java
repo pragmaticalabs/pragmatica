@@ -5,37 +5,32 @@ import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
 
 import java.util.List;
 
+
 /// A parsed PostgreSQL data type reference.
-public record DataTypeName(
- SourceSpan span,
- String baseName,
- List<Integer> modifiers,
- int arrayDimensions,
- Option<QualifiedName> customTypeName) {
+public record DataTypeName(SourceSpan span,
+                           String baseName,
+                           List<Integer> modifiers,
+                           int arrayDimensions,
+                           Option<QualifiedName> customTypeName) {
     public boolean isArray() {
         return arrayDimensions > 0;
     }
 
-    /// Returns the normalized type name (lowercase, no modifiers).
     public String normalized() {
         return baseName.toLowerCase();
     }
 
     @Override public String toString() {
         var sb = new StringBuilder();
-        if ( customTypeName.isPresent()) {
-        sb.append(customTypeName.unwrap());} else
-        {
-        sb.append(baseName);}
-        if ( !modifiers.isEmpty()) {
+        if (customTypeName.isPresent()) {sb.append(customTypeName.unwrap());} else {sb.append(baseName);}
+        if (!modifiers.isEmpty()) {
             sb.append("(");
             sb.append(String.join(",",
                                   modifiers.stream().map(String::valueOf)
                                                   .toList()));
             sb.append(")");
         }
-        for ( int i = 0; i < arrayDimensions; i++) {
-        sb.append("[]");}
+        for (int i = 0;i <arrayDimensions;i++) {sb.append("[]");}
         return sb.toString();
     }
 

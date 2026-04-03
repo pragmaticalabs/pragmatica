@@ -7,6 +7,7 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
+
 /// Unified context for slice factory methods during slice creation.
 ///
 /// Provides access to all services needed when creating a slice:
@@ -34,44 +35,17 @@ import static org.pragmatica.lang.Result.success;
 /// The unified context enables parallel resolution of resources and dependencies
 /// via Promise.all(), improving startup latency.
 public interface SliceCreationContext {
-    /// Get the slice invoker facade for cross-slice method invocation.
-    ///
-    /// Use this to obtain MethodHandle instances for calling methods on other slices.
-    ///
-    /// @return SliceInvokerFacade instance
     SliceInvokerFacade invoker();
-
-    /// Get the resource provider for infrastructure resource provisioning.
-    ///
-    /// Use this to obtain infrastructure resources like SqlConnector,
-    /// HttpClient, etc. based on configuration sections.
-    ///
-    /// @return ResourceProviderFacade instance
     ResourceProviderFacade resources();
 
-    /// Get the slice artifact ID for resource lifecycle tracking.
-    ///
-    /// @return Optional slice artifact coordinate string
     default Option<String> sliceId() {
         return none();
     }
 
-    /// Create a SliceCreationContext with the given components.
-    ///
-    /// @param invoker   SliceInvokerFacade for cross-slice invocation
-    /// @param resources ResourceProviderFacade for resource provisioning
-    /// @return New SliceCreationContext
-    static SliceCreationContext sliceCreationContext(SliceInvokerFacade invoker,
-                                                     ResourceProviderFacade resources) {
+    static SliceCreationContext sliceCreationContext(SliceInvokerFacade invoker, ResourceProviderFacade resources) {
         return DefaultSliceCreationContext.defaultSliceCreationContext(invoker, resources, none()).unwrap();
     }
 
-    /// Create a SliceCreationContext with the given components and slice ID.
-    ///
-    /// @param invoker   SliceInvokerFacade for cross-slice invocation
-    /// @param resources ResourceProviderFacade for resource provisioning
-    /// @param sliceId   Artifact coordinate string identifying the slice
-    /// @return New SliceCreationContext
     static SliceCreationContext sliceCreationContext(SliceInvokerFacade invoker,
                                                      ResourceProviderFacade resources,
                                                      String sliceId) {
@@ -80,9 +54,9 @@ public interface SliceCreationContext {
 }
 
 /// Default implementation of SliceCreationContext.
-record DefaultSliceCreationContext( SliceInvokerFacade invoker,
-                                    ResourceProviderFacade resources,
-                                    Option<String> sliceId) implements SliceCreationContext {
+record DefaultSliceCreationContext(SliceInvokerFacade invoker,
+                                   ResourceProviderFacade resources,
+                                   Option<String> sliceId) implements SliceCreationContext {
     static Result<DefaultSliceCreationContext> defaultSliceCreationContext(SliceInvokerFacade invoker,
                                                                            ResourceProviderFacade resources,
                                                                            Option<String> sliceId) {
