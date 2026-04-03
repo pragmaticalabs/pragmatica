@@ -100,16 +100,16 @@ window.WsManager = {
         }
     },
 
-    // Issue 18: Read API key from localStorage, cookie, or URL param
+    // Issue 18: Read API key from sessionStorage, cookie, or URL param
     getApiKey: function() {
-        // 1. localStorage
-        var key = localStorage.getItem('aether-api-key');
+        // 1. sessionStorage
+        var key = sessionStorage.getItem('aether-api-key');
         if (key) return key;
         // 2. URL param
         var params = new URLSearchParams(window.location.search);
         key = params.get('apiKey');
         if (key) {
-            localStorage.setItem('aether-api-key', key);
+            sessionStorage.setItem('aether-api-key', key);
             return key;
         }
         // 3. Cookie
@@ -119,7 +119,8 @@ window.WsManager = {
     },
 
     showAuthRequired: function() {
-        Notifications.show('API key required. Set via URL param ?apiKey=... or localStorage.', 'warning');
+        sessionStorage.removeItem('aether-api-key');
+        if (window.AetherAuth) window.AetherAuth.show();
     },
 
     // Issue 20: Per-channel status
