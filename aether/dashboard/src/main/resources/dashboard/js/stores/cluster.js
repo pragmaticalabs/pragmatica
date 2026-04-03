@@ -13,7 +13,7 @@ document.addEventListener('alpine:init', function() {
             if (data.cluster) {
                 this.leaderId = data.cluster.leaderId || '';
                 this.targetClusterSize = data.cluster.nodeCount || data.targetClusterSize || 0;
-                // Populate nodes from cluster.nodes (REST /api/status) if nodeMetrics not available
+                // Populate nodes from cluster.nodes (REST /api/status) when nodeMetrics not available
                 if (data.cluster.nodes && Array.isArray(data.cluster.nodes) && !data.nodeMetrics) {
                     var self = this;
                     data.cluster.nodes.forEach(function(n) {
