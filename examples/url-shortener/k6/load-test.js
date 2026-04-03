@@ -61,7 +61,10 @@ function buildShortenRequest() {
     });
 }
 
-const headers = {'Content-Type': 'application/json'};
+const apiKey = __ENV.FORGE_API_KEY || '';
+const headers = apiKey
+    ? {'Content-Type': 'application/json', 'X-API-Key': apiKey}
+    : {'Content-Type': 'application/json'};
 
 // --- Scenarios ---
 
@@ -157,7 +160,7 @@ export function mixedWorkload() {
 function resolveUrl() {
     const code = randomItem(shortCodePool);
     const url = vuNodeUrl(`/api/v1/urls/${code}`);
-    const res = http.get(url, {tags: {name: 'resolve'}});
+    const res = http.get(url, {headers: headers, tags: {name: 'resolve'}});
 
     resolveLatency.add(res.timings.duration);
 
@@ -183,7 +186,7 @@ export function analyticsQuery() {
 
     const code = randomItem(shortCodePool);
     const url = vuNodeUrl(`/api/v1/urls/${code}`);
-    const res = http.get(url, {tags: {name: 'analytics'}});
+    const res = http.get(url, {headers: headers, tags: {name: 'analytics'}});
 
     analyticsLatency.add(res.timings.duration);
 
