@@ -34,7 +34,7 @@ document.addEventListener('alpine:init', function() {
         updateFromStatus(data) {
             if (data.metrics) {
                 this.rps = data.metrics.requestsPerSecond || 0;
-                this.successRate = data.metrics.successRate != null ? data.metrics.successRate : 1;
+                this.successRate = data.metrics.successRate != null ? Formatters.normalizeRate(data.metrics.successRate) : 1;
                 this.avgLatencyMs = data.metrics.avgLatencyMs || 0;
                 if (data.metrics.totalSuccess != null) this.successCount = data.metrics.totalSuccess;
                 if (data.metrics.totalFailures != null) this.failureCount = data.metrics.totalFailures;
@@ -42,7 +42,7 @@ document.addEventListener('alpine:init', function() {
             }
             if (data.aetherMetrics) {
                 this.rps = data.aetherMetrics.rps || this.rps;
-                this.successRate = data.aetherMetrics.successRate != null ? data.aetherMetrics.successRate : this.successRate;
+                this.successRate = data.aetherMetrics.successRate != null ? Formatters.normalizeRate(data.aetherMetrics.successRate) : this.successRate;
                 this.avgLatencyMs = data.aetherMetrics.avgLatencyMs || this.avgLatencyMs;
                 if (data.aetherMetrics.totalInvocations != null) this.totalRequests = data.aetherMetrics.totalInvocations;
                 if (data.aetherMetrics.totalSuccess != null) this.successCount = data.aetherMetrics.totalSuccess;
@@ -57,7 +57,7 @@ document.addEventListener('alpine:init', function() {
                         count: t.requests || 0,
                         successCount: t.success || 0,
                         failureCount: t.failures || 0,
-                        successRate: t.successRate != null ? t.successRate : 1,
+                        successRate: t.successRate != null ? Formatters.normalizeRate(t.successRate) : 1,
                         avgDurationMs: t.avgLatencyMs || 0,
                         errorRate: 0,
                         slowCalls: 0
@@ -86,7 +86,7 @@ document.addEventListener('alpine:init', function() {
         updateFromWsDashboard(data) {
             if (data.aggregates) {
                 this.rps = data.aggregates.rps || 0;
-                this.successRate = data.aggregates.successRate != null ? data.aggregates.successRate : 1;
+                this.successRate = data.aggregates.successRate != null ? Formatters.normalizeRate(data.aggregates.successRate) : 1;
                 this.errorRate = data.aggregates.errorRate || 0;
                 this.avgLatencyMs = data.aggregates.avgLatencyMs || 0;
                 this.p50 = data.aggregates.p50 != null ? data.aggregates.p50 : this.avgLatencyMs * 0.8;
@@ -160,7 +160,7 @@ document.addEventListener('alpine:init', function() {
                 if (!h.nodeSuccessRate[node.nodeId]) h.nodeSuccessRate[node.nodeId] = [];
                 var rps = (node.rps != null) ? node.rps : 0;
                 var latency = (node.avgLatencyMs != null) ? node.avgLatencyMs : 0;
-                var sr = (node.successRate != null) ? node.successRate : 1;
+                var sr = (node.successRate != null) ? Formatters.normalizeRate(node.successRate) : 1;
                 h.nodeRps[node.nodeId].push(rps);
                 h.nodeLatency[node.nodeId].push(latency);
                 h.nodeSuccessRate[node.nodeId].push(sr);
@@ -208,7 +208,7 @@ document.addEventListener('alpine:init', function() {
             var now = Date.now() / 1000;
             if (data.aggregates) {
                 this.rps = data.aggregates.rps || 0;
-                this.successRate = data.aggregates.successRate != null ? data.aggregates.successRate : 1;
+                this.successRate = data.aggregates.successRate != null ? Formatters.normalizeRate(data.aggregates.successRate) : 1;
                 this.avgLatencyMs = data.aggregates.avgLatencyMs || 0;
                 this.p50 = data.aggregates.p50 != null ? data.aggregates.p50 : this.avgLatencyMs * 0.8;
                 this.p95 = data.aggregates.p95 != null ? data.aggregates.p95 : this.avgLatencyMs * 2.5;

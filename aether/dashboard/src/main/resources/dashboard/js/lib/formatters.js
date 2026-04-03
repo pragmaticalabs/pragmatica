@@ -15,9 +15,13 @@ window.Formatters = {
 
     percent: function(rate) {
         if (rate == null || isNaN(rate)) return '\u2014';
-        // Server may send 0.0-1.0 (fraction) or 0-100 (percentage) — normalize
-        var pct = rate > 1 ? rate : rate * 100;
-        return pct.toFixed(1) + '%';
+        return (rate * 100).toFixed(1) + '%';
+    },
+
+    // Normalize server success rate: values > 1 are already percentage (0-100), convert to fraction (0-1)
+    normalizeRate: function(rate) {
+        if (rate == null || isNaN(rate)) return 1;
+        return rate > 1 ? rate / 100 : rate;
     },
 
     uptime: function(seconds) {
