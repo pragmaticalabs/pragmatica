@@ -20,7 +20,8 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
-import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
+import org.pragmatica.aether.slice.delegation.DelegatedComponent;
+import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
@@ -28,6 +29,8 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
@@ -60,8 +63,7 @@ import org.slf4j.LoggerFactory;
 ///
 @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
 // MessageReceiver callbacks + framework lifecycle methods
-public interface ControlLoop {
-    @MessageReceiver void onLeaderChange(LeaderChange leaderChange);
+public interface ControlLoop extends DelegatedComponent {
     @MessageReceiver void onTopologyChange(TopologyChangeNotification topologyChange);
     @MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
     @MessageReceiver void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
@@ -109,16 +111,26 @@ public interface ControlLoop {
 
             private static final String COOLDOWN_KEY_PREFIX = "scaling-cooldown/";
 
-            @Override public void onLeaderChange(LeaderChange leaderChange) {
-                if (leaderChange.localNodeIsLeader()) {
-                    log.info("Node {} became leader, starting control loop", self);
-                    resetProtectionState();
-                    startEvaluation();
-                } else {
-                    log.info("Node {} is no longer leader, stopping control loop", self);
-                    stopEvaluation();
-                    clearProtectionState();
-                }
+            @Override public Promise<Unit> activate() {
+                log.info("Node {} activating control loop", self);
+                resetProtectionState();
+                startEvaluation();
+                return Promise.unitPromise();
+            }
+
+            @Override public Promise<Unit> deactivate() {
+                log.info("Node {} deactivating control loop", self);
+                stopEvaluation();
+                clearProtectionState();
+                return Promise.unitPromise();
+            }
+
+            @Override public TaskGroup taskGroup() {
+                return TaskGroup.SCALING;
+            }
+
+            @Override public boolean isActive() {
+                return evaluationTask.isScheduled();
             }
 
             @Override public void onTopologyChange(TopologyChangeNotification topologyChange) {

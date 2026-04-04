@@ -11,15 +11,18 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.delegation.DelegatedComponent;
+import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.List;
@@ -46,8 +49,7 @@ import org.slf4j.LoggerFactory;
 /// Only the leader node performs rollbacks to avoid conflicts.
 @SuppressWarnings("JBCT-RET-01")
 // MessageReceiver callbacks — void required by messaging framework
-public interface RollbackManager {
-    @MessageReceiver void onLeaderChange(LeaderChange leaderChange);
+public interface RollbackManager extends DelegatedComponent {
     @MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
     @MessageReceiver void onPreviousVersionPut(ValuePut<PreviousVersionKey, PreviousVersionValue> valuePut);
     @MessageReceiver void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event);
@@ -176,13 +178,26 @@ public interface RollbackManager {
                                AtomicBoolean isLeader,
                                ConcurrentHashMap<ArtifactBase, RollbackState> rollbackStates,
                                Logger log) implements RollbackManager {
-            @Override public void onLeaderChange(LeaderChange leaderChange) {
-                var wasLeader = isLeader.getAndSet(leaderChange.localNodeIsLeader());
-                if (leaderChange.localNodeIsLeader() && !wasLeader) {
-                    log.info("Node {} became leader, RollbackManager activated", self);
-                    loadPreviousVersionsFromKvStore();
-                } else if (!leaderChange.localNodeIsLeader() && wasLeader) {log.info("Node {} is no longer leader, RollbackManager deactivated",
-                                                                                     self);}
+            @Override public Promise<Unit> activate() {
+                log.info("Node {} activating RollbackManager", self);
+                isLeader.set(true);
+                loadPreviousVersionsFromKvStore();
+                return Promise.unitPromise();
+            }
+
+            @Override public Promise<Unit> deactivate() {
+                log.info("Node {} deactivating RollbackManager", self);
+                isLeader.set(false);
+                rollbackStates.clear();
+                return Promise.unitPromise();
+            }
+
+            @Override public TaskGroup taskGroup() {
+                return TaskGroup.SCALING;
+            }
+
+            @Override public boolean isActive() {
+                return isLeader.get();
             }
 
             @Override public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
@@ -402,7 +417,18 @@ public interface RollbackManager {
     enum Disabled implements RollbackManager {
         INSTANCE;
         private static final Logger log = LoggerFactory.getLogger(RollbackManager.class);
-        @Override public void onLeaderChange(LeaderChange leaderChange) {}
+        @Override public Promise<Unit> activate() {
+            return Promise.unitPromise();
+        }
+        @Override public Promise<Unit> deactivate() {
+            return Promise.unitPromise();
+        }
+        @Override public TaskGroup taskGroup() {
+            return TaskGroup.SCALING;
+        }
+        @Override public boolean isActive() {
+            return false;
+        }
         @Override public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {}
         @Override public void onPreviousVersionPut(ValuePut<PreviousVersionKey, PreviousVersionValue> valuePut) {}
         @Override public void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event) {
