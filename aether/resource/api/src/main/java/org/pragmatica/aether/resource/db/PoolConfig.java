@@ -8,6 +8,7 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
+
 /// Connection pool configuration for database connectors.
 ///
 /// @param minConnections       Minimum number of connections to maintain
@@ -18,27 +19,17 @@ import static org.pragmatica.lang.Result.success;
 /// @param validationQuery      SQL query to validate connections (optional)
 /// @param leakDetectionTimeout Time after which connection leak warnings are logged
 /// @param ioThreads            Number of Netty IO threads for async transport (0 = auto)
-public record PoolConfig( int minConnections,
-                          int maxConnections,
-                          TimeSpan connectionTimeout,
-                          TimeSpan idleTimeout,
-                          TimeSpan maxLifetime,
-                          Option<String> validationQuery,
-                          TimeSpan leakDetectionTimeout,
-                          int ioThreads) {
+public record PoolConfig(int minConnections,
+                         int maxConnections,
+                         TimeSpan connectionTimeout,
+                         TimeSpan idleTimeout,
+                         TimeSpan maxLifetime,
+                         Option<String> validationQuery,
+                         TimeSpan leakDetectionTimeout,
+                         int ioThreads) {
     private static final int DEFAULT_IO_THREADS = Math.max(Runtime.getRuntime().availableProcessors(),
                                                            8);
 
-    /// Creates a validated pool config with all parameters.
-    ///
-    /// @param minConnections       Minimum connections
-    /// @param maxConnections       Maximum connections
-    /// @param connectionTimeout    Connection timeout
-    /// @param idleTimeout          Idle timeout
-    /// @param maxLifetime          Max lifetime
-    /// @param validationQuery      Validation query
-    /// @param leakDetectionTimeout Leak detection timeout
-    /// @return Result with pool configuration
     public static Result<PoolConfig> poolConfig(int minConnections,
                                                 int maxConnections,
                                                 TimeSpan connectionTimeout,
@@ -57,14 +48,12 @@ public record PoolConfig( int minConnections,
                                       ioThreads));
     }
 
-    /// Returns the effective IO thread count, using auto-detection when set to 0.
     public int effectiveIoThreads() {
         return ioThreads > 0
-               ? ioThreads
-               : DEFAULT_IO_THREADS;
+              ? ioThreads
+              : DEFAULT_IO_THREADS;
     }
 
-    /// Default pool configuration suitable for most applications.
     public static final PoolConfig DEFAULT = poolConfig(4,
                                                         20,
                                                         TimeSpan.timeSpan("30s").unwrap(),
@@ -74,22 +63,25 @@ public record PoolConfig( int minConnections,
                                                         TimeSpan.timeSpan("0s").unwrap(),
                                                         0).unwrap();
 
-    /// Creates a builder for fluent configuration.
-    ///
-    /// @return New builder with default values
     public static Builder poolConfigBuilder() {
         return new Builder();
     }
 
-    /// Builder for PoolConfig.
     public static final class Builder {
         private int minConnections = DEFAULT.minConnections;
+
         private int maxConnections = DEFAULT.maxConnections;
+
         private TimeSpan connectionTimeout = DEFAULT.connectionTimeout;
+
         private TimeSpan idleTimeout = DEFAULT.idleTimeout;
+
         private TimeSpan maxLifetime = DEFAULT.maxLifetime;
+
         private Option<String> validationQuery = DEFAULT.validationQuery;
+
         private TimeSpan leakDetectionTimeout = DEFAULT.leakDetectionTimeout;
+
         private int ioThreads = DEFAULT.ioThreads;
 
         private Builder() {}

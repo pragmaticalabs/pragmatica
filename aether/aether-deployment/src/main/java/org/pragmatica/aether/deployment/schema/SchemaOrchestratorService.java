@@ -45,30 +45,21 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
+
 /// Distributed coordination layer for schema migrations.
 /// Sits between KV-Store notifications and the AetherSchemaManager engine,
 /// handling lock acquisition, artifact resolution, and status updates via consensus.
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
-public interface SchemaOrchestratorService {
-    /// Trigger migration for a datasource if its status is PENDING.
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public interface SchemaOrchestratorService {
     Promise<Unit> migrateIfNeeded(String datasourceName);
-
-    /// Undo migrations back to a target version.
     Promise<Unit> undoTo(String datasourceName, int targetVersion);
-
-    /// Set a baseline version for a datasource.
     Promise<Unit> baseline(String datasourceName, int version);
 
-    /// Lock TTL for schema migrations (5 minutes).
     long LOCK_TTL_MS = 5 * 60 * 1000L;
 
-    /// Maximum number of automatic retries for transient failures.
     int MAX_RETRIES = 3;
 
-    /// Base backoff delay in milliseconds (5s, 15s, 45s with 3x multiplier).
     long BACKOFF_BASE_MS = 5000;
 
-    /// Creates a new SchemaOrchestratorService.
     static SchemaOrchestratorService schemaOrchestratorService(ClusterNode<KVCommand<AetherKey>> cluster,
                                                                KVStore<AetherKey, AetherValue> kvStore,
                                                                ArtifactStore artifactStore,
@@ -87,7 +78,6 @@ public interface SchemaOrchestratorService {
                                                      router);
     }
 
-    /// Backward-compatible factory without MessageRouter (events not emitted).
     static SchemaOrchestratorService schemaOrchestratorService(ClusterNode<KVCommand<AetherKey>> cluster,
                                                                KVStore<AetherKey, AetherValue> kvStore,
                                                                ArtifactStore artifactStore,
@@ -211,10 +201,17 @@ public interface SchemaOrchestratorService {
         var classification = classifyFailure(cause);
         var attemptNumber = value.attemptCount() + 1;
         var artifactCoords = Option.option(value.artifactCoords()).or("");
-        if ( classification == FailureClassification.TRANSIENT && attemptNumber < MAX_RETRIES) {
-        scheduleRetry(datasourceName, value, cause, classification, attemptNumber, artifactCoords);} else
-        {
-        emitPermanentFailure(datasourceName, value, cause, classification, attemptNumber, artifactCoords);}
+        if (classification == FailureClassification.TRANSIENT && attemptNumber <MAX_RETRIES) {scheduleRetry(datasourceName,
+                                                                                                            value,
+                                                                                                            cause,
+                                                                                                            classification,
+                                                                                                            attemptNumber,
+                                                                                                            artifactCoords);} else {emitPermanentFailure(datasourceName,
+                                                                                                                                                         value,
+                                                                                                                                                         cause,
+                                                                                                                                                         classification,
+                                                                                                                                                         attemptNumber,
+                                                                                                                                                         artifactCoords);}
     }
 
     private void scheduleRetry(String datasourceName,
@@ -248,8 +245,9 @@ public interface SchemaOrchestratorService {
                                                                           attemptNumber,
                                                                           nextRetryMs,
                                                                           retryExplanation)));
-        updateStatusWithAttempt(datasourceName, value, SchemaStatus.PENDING, attemptNumber)
-        .onFailure(c -> log.error("Failed to update retry status for '{}': {}", datasourceName, c.message()));
+        updateStatusWithAttempt(datasourceName, value, SchemaStatus.PENDING, attemptNumber).onFailure(c -> log.error("Failed to update retry status for '{}': {}",
+                                                                                                                     datasourceName,
+                                                                                                                     c.message()));
         SharedScheduler.schedule(() -> migrateIfNeeded(datasourceName), timeSpan(nextRetryMs).millis());
     }
 
@@ -277,44 +275,39 @@ public interface SchemaOrchestratorService {
                                                                       attemptNumber,
                                                                       MAX_RETRIES,
                                                                       explanation)));
-        updateStatus(datasourceName, value, SchemaStatus.FAILED)
-        .onFailure(c -> log.error("Failed to update status to FAILED for '{}': {}", datasourceName, c.message()));
+        updateStatus(datasourceName, value, SchemaStatus.FAILED).onFailure(c -> log.error("Failed to update status to FAILED for '{}': {}",
+                                                                                          datasourceName,
+                                                                                          c.message()));
     }
 
     static FailureClassification classifyFailure(Cause cause) {
-        if ( cause instanceof SchemaError.DatasourceUnreachable) {
-        return FailureClassification.TRANSIENT;}
-        if ( cause instanceof SchemaError.LockAcquisitionFailed) {
-        return FailureClassification.TRANSIENT;}
-        if ( cause instanceof SchemaError.MigrationFailed) {
-        return FailureClassification.PERMANENT;}
-        if ( cause instanceof SchemaError.ChecksumMismatch) {
-        return FailureClassification.PERMANENT;}
+        if (cause instanceof SchemaError.DatasourceUnreachable) {return FailureClassification.TRANSIENT;}
+        if (cause instanceof SchemaError.LockAcquisitionFailed) {return FailureClassification.TRANSIENT;}
+        if (cause instanceof SchemaError.MigrationFailed) {return FailureClassification.PERMANENT;}
+        if (cause instanceof SchemaError.ChecksumMismatch) {return FailureClassification.PERMANENT;}
         return FailureClassification.UNKNOWN;
     }
 
     static long calculateBackoff(int attemptNumber) {
         var multiplier = 1L;
-        for ( var i = 0; i < attemptNumber; i++) {
-        multiplier *= 3;}
+        for (var i = 0;i <attemptNumber;i++) {multiplier *= 3;}
         return BACKOFF_BASE_MS * multiplier;
     }
 
     private void releaseLockSilently(String datasourceName) {
-        releaseLock(datasourceName)
-        .onFailure(c -> log.error("Failed to release lock for '{}': {}", datasourceName, c.message()));
+        releaseLock(datasourceName).onFailure(c -> log.error("Failed to release lock for '{}': {}",
+                                                             datasourceName,
+                                                             c.message()));
     }
 
     private static final Cause LOCK_HELD = Causes.cause("Schema migration lock held — skipping duplicate");
+
     private final java.util.Set<String> inFlightMigrations = ConcurrentHashMap.newKeySet();
 
     private Promise<Unit> acquireLock(String datasourceName) {
-        // Local deduplication — prevent concurrent migration for the same datasource on this node
-        if ( !inFlightMigrations.add(datasourceName)) {
-        return LOCK_HELD.promise();}
-        // Distributed lock — prevent concurrent migration across nodes
+        if (!inFlightMigrations.add(datasourceName)) {return LOCK_HELD.promise();}
         var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(datasourceName);
-        if ( isLockHeld(lockKey)) {
+        if (isLockHeld(lockKey)) {
             inFlightMigrations.remove(datasourceName);
             return LOCK_HELD.promise();
         }
@@ -377,20 +370,17 @@ public interface SchemaOrchestratorService {
     }
 
     private Promise<byte[]> resolveArtifactBytes(Artifact artifact) {
-        // Try blueprint classifier first (migration scripts are packaged in the blueprint JAR)
         return repository.locate(artifact, "blueprint").flatMap(SchemaOrchestratorServiceInstance::readLocationBytes)
                                 .orElse(() -> repository.locate(artifact)
-        .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes))
+                                                               .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes))
                                 .orElse(() -> artifactStore.resolve(artifact));
     }
 
-    @SuppressWarnings("JBCT-EX-01") // Infrastructure I/O: URL stream reading
-    private static Promise<byte[]> readLocationBytes(Location location) {
+    @SuppressWarnings("JBCT-EX-01") private static Promise<byte[]> readLocationBytes(Location location) {
         return Promise.lift(Causes::fromThrowable, () -> readStreamBytes(location));
     }
 
-    @SuppressWarnings("JBCT-EX-01") // Adapter boundary: called within Promise.lift
-    private static byte[] readStreamBytes(Location location) throws Exception {
+    @SuppressWarnings("JBCT-EX-01") private static byte[] readStreamBytes(Location location) throws Exception {
         try (var stream = location.url().openStream()) {
             return stream.readAllBytes();
         }
@@ -409,24 +399,20 @@ public interface SchemaOrchestratorService {
 
     private Promise<Unit> provisionAndMigrate(String datasourceName, List<MigrationEntry> scripts) {
         log.info("Executing {} migration scripts for datasource '{}'", scripts.size(), datasourceName);
-        return provisionConnector(datasourceName)
-        .flatMap(connector -> schemaManager.migrate(datasourceName,
-                                                    scripts,
-                                                    connector,
-                                                    self.id()).onSuccess(result -> logMigrationSuccess(datasourceName,
-                                                                                                       result))
-                                                   .mapToUnit()
-                                                   .onResultRun(() -> releaseConnectorSilently(datasourceName)));
+        return provisionConnector(datasourceName).flatMap(connector -> schemaManager.migrate(datasourceName,
+                                                                                             scripts,
+                                                                                             connector,
+                                                                                             self.id()).onSuccess(result -> logMigrationSuccess(datasourceName,
+                                                                                                                                                result))
+                                                                                            .mapToUnit()
+                                                                                            .onResultRun(() -> releaseConnectorSilently(datasourceName)));
     }
 
-    /// Provision connector, or skip gracefully if no config exists.
-    /// Config absence = no database configured = skip (preserves pre-migration-engine behavior).
-    /// Config present but connection fails = real error, propagate.
     private Promise<SqlConnector> provisionConnector(String datasourceName) {
         return connectionProvider.connector(datasourceName)
-        .onFailure(cause -> log.info("No database config for '{}': {} — skipping migration",
-                                     datasourceName,
-                                     cause.message()));
+                                           .onFailure(cause -> log.info("No database config for '{}': {} — skipping migration",
+                                                                        datasourceName,
+                                                                        cause.message()));
     }
 
     private static void logMigrationSuccess(String datasourceName, AetherSchemaManager.SchemaResult result) {
@@ -438,7 +424,9 @@ public interface SchemaOrchestratorService {
 
     private void releaseConnectorSilently(String datasourceName) {
         connectionProvider.release(datasourceName)
-        .onFailure(c -> log.warn("Failed to release connector for '{}': {}", datasourceName, c.message()));
+                                  .onFailure(c -> log.warn("Failed to release connector for '{}': {}",
+                                                           datasourceName,
+                                                           c.message()));
     }
 
     private static Promise<Unit> logNoMigrationsInArtifact(String datasourceName) {

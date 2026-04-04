@@ -24,10 +24,12 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// JDBC implementation of SqlConnector.
 ///
 /// Uses a DataSource for connection pooling (typically HikariCP).
-@SuppressWarnings("JBCT-EX-01") // Private helpers throw checked exceptions consumed by Promise.lift()
+@SuppressWarnings("JBCT-EX-01")
+// Private helpers throw checked exceptions consumed by Promise.lift()
 public final class JdbcSqlConnector implements SqlConnector {
     private static final System.Logger LOG = System.getLogger(JdbcSqlConnector.class.getName());
 
@@ -39,11 +41,6 @@ public final class JdbcSqlConnector implements SqlConnector {
         this.dataSource = dataSource;
     }
 
-    /// Creates a JDBC connector with the given configuration and data source.
-    ///
-    /// @param config     Connector configuration
-    /// @param dataSource JDBC DataSource (typically from HikariCP)
-    /// @return New JdbcSqlConnector instance
     public static JdbcSqlConnector jdbcSqlConnector(DatabaseConnectorConfig config, DataSource dataSource) {
         return new JdbcSqlConnector(config, dataSource);
     }
@@ -96,8 +93,7 @@ public final class JdbcSqlConnector implements SqlConnector {
         try (var conn = dataSource.getConnection();
              var stmt = buildStatement(conn, sql, params);
              var rs = stmt.executeQuery()) {
-            if ( !rs.next()) {
-            return none();}
+            if (!rs.next()) {return none();}
             var accessor = new JdbcRowAccessor(rs);
             return mapper.map(accessor).map(Option::some)
                              .or(Option::none);
@@ -110,23 +106,20 @@ public final class JdbcSqlConnector implements SqlConnector {
              var rs = stmt.executeQuery()) {
             var results = new ArrayList<T>();
             var accessor = new JdbcRowAccessor(rs);
-            while ( rs.next()) {
-            results.add(mapper.map(accessor).unwrap());}
+            while (rs.next()) {results.add(mapper.map(accessor).unwrap());}
             return results;
         }
     }
 
     private int runUpdate(String sql, Object[] params) throws Exception {
-        try (var conn = dataSource.getConnection();
-             var stmt = buildStatement(conn, sql, params)) {
+        try (var conn = dataSource.getConnection();var stmt = buildStatement(conn, sql, params)) {
             return stmt.executeUpdate();
         }
     }
 
     private int[] runBatch(String sql, List<Object[]> paramsList) throws Exception {
-        try (var conn = dataSource.getConnection();
-             var stmt = conn.prepareStatement(sql)) {
-            for ( var params : paramsList) {
+        try (var conn = dataSource.getConnection();var stmt = conn.prepareStatement(sql)) {
+            for (var params : paramsList) {
                 applyParameters(stmt, params);
                 stmt.addBatch();
             }
@@ -141,13 +134,7 @@ public final class JdbcSqlConnector implements SqlConnector {
                 var transactionalConnector = new TransactionalJdbcConnector(config, conn);
                 var result = callback.execute(transactionalConnector).await();
                 return resolveTransaction(conn, result);
-            }
-
-
-
-
-
-            catch (Exception e) {
+            } catch (Exception e) {
                 rollbackSilently(conn);
                 throw e;
             }
@@ -178,39 +165,28 @@ public final class JdbcSqlConnector implements SqlConnector {
     }
 
     private void applyParameters(PreparedStatement stmt, Object[] params) throws SQLException {
-        for ( int i = 0; i < params.length; i++) {
-        stmt.setObject(i + 1, params[i]);}
+        for (int i = 0;i <params.length;i++) {stmt.setObject(i + 1, params[i]);}
     }
 
     private static <T> T mapSingleRow(ResultSet rs, RowMapper<T> mapper) throws Exception {
-        if ( !rs.next()) {
-        return DatabaseConnectorError.ResultNotFound.INSTANCE.<T>result()
-                                                             .unwrap();}
+        if (!rs.next()) {return DatabaseConnectorError.ResultNotFound.INSTANCE.<T>result().unwrap();}
         var accessor = new JdbcRowAccessor(rs);
         var result = mapper.map(accessor);
-        if ( rs.next()) {
-        return DatabaseConnectorError.multipleResults(countRemaining(rs) + 2).<T>result()
-                                                     .unwrap();}
+        if (rs.next()) {return DatabaseConnectorError.multipleResults(countRemaining(rs) + 2).<T>result()
+                                                                     .unwrap();}
         return result.unwrap();
     }
 
     private static int countRemaining(ResultSet rs) throws SQLException {
         int count = 0;
-        while ( rs.next()) {
-        count++;}
+        while (rs.next()) {count++;}
         return count;
     }
 
     private Unit rollbackSilently(Connection conn) {
         try {
             conn.rollback();
-        }
-
-
-
-
-
-        catch (SQLException e) {
+        } catch (SQLException e) {
             LOG.log(System.Logger.Level.DEBUG, "Rollback failed", e);
         }
         return unit();
@@ -223,8 +199,7 @@ public final class JdbcSqlConnector implements SqlConnector {
     }
 
     private Unit closeDataSource() throws Exception {
-        if ( dataSource instanceof AutoCloseable closeable) {
-        closeable.close();}
+        if (dataSource instanceof AutoCloseable closeable) {closeable.close();}
         return unit();
     }
 
@@ -234,14 +209,18 @@ public final class JdbcSqlConnector implements SqlConnector {
     }
 
     private static DatabaseConnectorError mapException(Throwable throwable, String sql) {
-        return switch (throwable) {case SQLTimeoutException _ -> DatabaseConnectorError.timeout(sql);case SQLIntegrityConstraintViolationException e -> DatabaseConnectorError.constraintViolation(e.getMessage());case SQLTransactionRollbackException e -> DatabaseConnectorError.transactionRollback(e.getMessage());case SQLException e -> option(e.getSQLState()).filter(s -> s.startsWith("08"))
-                                                                                                                                                                                                                                                                                                                                                     .map(_ -> (DatabaseConnectorError) DatabaseConnectorError.connectionFailed(e.getMessage(),
-                                                                                                                                                                                                                                                                                                                                                                                                                                e))
-                                                                                                                                                                                                                                                                                                                                                     .or(() -> DatabaseConnectorError.queryFailed(sql,
-                                                                                                                                                                                                                                                                                                                                                                                                  e));default -> DatabaseConnectorError.databaseFailure(throwable);};
+        return switch (throwable){
+            case SQLTimeoutException _ -> DatabaseConnectorError.timeout(sql);
+            case SQLIntegrityConstraintViolationException e -> DatabaseConnectorError.constraintViolation(e.getMessage());
+            case SQLTransactionRollbackException e -> DatabaseConnectorError.transactionRollback(e.getMessage());
+            case SQLException e -> option(e.getSQLState()).filter(s -> s.startsWith("08"))
+                                         .map(_ -> (DatabaseConnectorError) DatabaseConnectorError.connectionFailed(e.getMessage(),
+                                                                                                                    e))
+                                         .or(() -> DatabaseConnectorError.queryFailed(sql, e));
+            default -> DatabaseConnectorError.databaseFailure(throwable);
+        };
     }
 
-    /// Transaction-bound connector that uses a single connection.
     private record TransactionalJdbcConnector(DatabaseConnectorConfig config, Connection conn) implements SqlConnector {
         @Override public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
             return Promise.lift(e -> mapException(e, sql), () -> txQueryOne(sql, params, mapper));
@@ -264,7 +243,6 @@ public final class JdbcSqlConnector implements SqlConnector {
         }
 
         @Override public <T> Promise<T> transactional(SqlConnector.TransactionCallback<T> callback) {
-            // Already in a transaction, just execute directly
             return callback.execute(this);
         }
 
@@ -273,17 +251,14 @@ public final class JdbcSqlConnector implements SqlConnector {
         }
 
         private <T> T txQueryOne(String sql, Object[] params, RowMapper<T> mapper) throws Exception {
-            try (var stmt = txBuildStatement(sql, params);
-                 var rs = stmt.executeQuery()) {
+            try (var stmt = txBuildStatement(sql, params);var rs = stmt.executeQuery()) {
                 return mapSingleRow(rs, mapper);
             }
         }
 
         private <T> Option<T> txQueryOptional(String sql, Object[] params, RowMapper<T> mapper) throws Exception {
-            try (var stmt = txBuildStatement(sql, params);
-                 var rs = stmt.executeQuery()) {
-                if ( !rs.next()) {
-                return none();}
+            try (var stmt = txBuildStatement(sql, params);var rs = stmt.executeQuery()) {
+                if (!rs.next()) {return none();}
                 var accessor = new JdbcRowAccessor(rs);
                 return mapper.map(accessor).map(Option::some)
                                  .or(Option::none);
@@ -291,12 +266,10 @@ public final class JdbcSqlConnector implements SqlConnector {
         }
 
         private <T> List<T> txQueryList(String sql, Object[] params, RowMapper<T> mapper) throws Exception {
-            try (var stmt = txBuildStatement(sql, params);
-                 var rs = stmt.executeQuery()) {
+            try (var stmt = txBuildStatement(sql, params);var rs = stmt.executeQuery()) {
                 var results = new ArrayList<T>();
                 var accessor = new JdbcRowAccessor(rs);
-                while ( rs.next()) {
-                results.add(mapper.map(accessor).unwrap());}
+                while (rs.next()) {results.add(mapper.map(accessor).unwrap());}
                 return results;
             }
         }
@@ -309,7 +282,7 @@ public final class JdbcSqlConnector implements SqlConnector {
 
         private int[] txBatch(String sql, List<Object[]> paramsList) throws Exception {
             try (var stmt = conn.prepareStatement(sql)) {
-                for ( var params : paramsList) {
+                for (var params : paramsList) {
                     txApplyParameters(stmt, params);
                     stmt.addBatch();
                 }
@@ -326,8 +299,7 @@ public final class JdbcSqlConnector implements SqlConnector {
         }
 
         private void txApplyParameters(PreparedStatement stmt, Object[] params) throws SQLException {
-            for ( int i = 0; i < params.length; i++) {
-            stmt.setObject(i + 1, params[i]);}
+            for (int i = 0;i <params.length;i++) {stmt.setObject(i + 1, params[i]);}
         }
     }
 }

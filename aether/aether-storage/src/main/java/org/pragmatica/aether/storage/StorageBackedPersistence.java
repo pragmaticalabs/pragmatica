@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.aether.storage;
 
 import org.pragmatica.consensus.Command;
@@ -32,6 +31,7 @@ import java.util.List;
 
 import static org.pragmatica.consensus.rabia.RabiaPersistence.SavedState.savedState;
 
+
 /// RabiaPersistence implementation backed by ContentStore.
 /// Stores consensus state snapshots as content-addressed blocks.
 /// Each snapshot is stored as: [8 bytes phase (long BE)] + [snapshot bytes].
@@ -47,13 +47,11 @@ public final class StorageBackedPersistence<C extends Command> implements RabiaP
         this.snapshotName = snapshotName;
     }
 
-    /// Create a storage-backed persistence with a custom snapshot name.
-    public static <C extends Command> StorageBackedPersistence<C> storageBackedPersistence(
-    ContentStore contentStore, String snapshotName) {
+    public static <C extends Command> StorageBackedPersistence<C> storageBackedPersistence(ContentStore contentStore,
+                                                                                           String snapshotName) {
         return new StorageBackedPersistence<>(contentStore, snapshotName);
     }
 
-    /// Create a storage-backed persistence with default snapshot name.
     public static <C extends Command> StorageBackedPersistence<C> storageBackedPersistence(ContentStore contentStore) {
         return storageBackedPersistence(contentStore, "rabia/snapshot/latest");
     }
@@ -88,8 +86,7 @@ public final class StorageBackedPersistence<C extends Command> implements RabiaP
     }
 
     static <C extends Command> Option<SavedState<C>> decodeSnapshot(byte[] encoded) {
-        if ( encoded.length < PHASE_HEADER_SIZE) {
-        return Option.none();}
+        if (encoded.length <PHASE_HEADER_SIZE) {return Option.none();}
         var buffer = ByteBuffer.wrap(encoded);
         var phaseValue = buffer.getLong();
         var snapshot = new byte[encoded.length - PHASE_HEADER_SIZE];

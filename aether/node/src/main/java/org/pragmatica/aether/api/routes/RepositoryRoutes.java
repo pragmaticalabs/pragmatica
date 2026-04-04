@@ -19,6 +19,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.aether.api.ManagementApiResponses.ArtifactInfoResponse;
 
+
 /// Routes for artifact repository: artifact info endpoint.
 ///
 ///
@@ -38,20 +39,15 @@ public final class RepositoryRoutes implements RouteSource {
     }
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(// Artifact info endpoint - captures everything after /repository/info/
-        Route.<ArtifactInfoResponse>get("/repository/info")
-             .withoutParameters()
-             .to(ctx -> handleRepositoryInfo(ctx.pathParams()))
-             .asJson());
+        return Stream.of(Route.<ArtifactInfoResponse>get("/repository/info")
+                              .withoutParameters()
+                              .to(ctx -> handleRepositoryInfo(ctx.pathParams()))
+                              .asJson());
     }
 
     private Promise<ArtifactInfoResponse> handleRepositoryInfo(List<String> pathSegments) {
-        // Path segments: [groupPart1, groupPart2, ..., artifactId, version]
-        // Need at least 3 parts: one group segment + artifactId + version
-        if ( pathSegments.size() < 3) {
-        return INVALID_PATH.promise();}
-        return parseArtifact(pathSegments).async()
-                            .flatMap(this::fetchArtifactInfo);
+        if (pathSegments.size() <3) {return INVALID_PATH.promise();}
+        return parseArtifact(pathSegments).async().flatMap(this::fetchArtifactInfo);
     }
 
     private Result<Artifact> parseArtifact(List<String> parts) {
@@ -59,7 +55,9 @@ public final class RepositoryRoutes implements RouteSource {
         var artifactIdStr = parts.get(parts.size() - 2);
         var groupPath = String.join(".",
                                     parts.subList(0, parts.size() - 2));
-        return Result.all(GroupId.groupId(groupPath), ArtifactId.artifactId(artifactIdStr), Version.version(versionStr))
+        return Result.all(GroupId.groupId(groupPath),
+                          ArtifactId.artifactId(artifactIdStr),
+                          Version.version(versionStr))
         .map(Artifact::new);
     }
 

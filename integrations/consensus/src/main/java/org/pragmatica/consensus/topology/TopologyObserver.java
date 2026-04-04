@@ -137,6 +137,9 @@ public interface TopologyObserver extends TopologyManager {
             @Override
             public void reconcile(NetworkServiceMessage.ConnectedNodesList connectedNodesList) {
                 var snapshot = new HashSet<>(nodeStatesById.keySet());
+                // Self node is never in peerLinks (no self-connection), so always exclude it
+                // to avoid routing a ConnectNode(self) message every reconciliation interval.
+                snapshot.remove(config.self());
                 connectedNodesList.connected()
                                   .forEach(snapshot::remove);
                 snapshot.forEach(this::requestConnectionIfEligible);

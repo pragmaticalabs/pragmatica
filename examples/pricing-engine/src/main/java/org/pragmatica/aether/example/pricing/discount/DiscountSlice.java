@@ -7,6 +7,7 @@ import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
+
 @Slice public interface DiscountSlice {
     record DiscountRequest(String couponCode, int subtotalCents) {
         static DiscountRequest discountRequest(String couponCode, int subtotalCents) {
@@ -23,13 +24,13 @@ import org.pragmatica.lang.Promise;
     Promise<DiscountResponse> calculateDiscount(DiscountRequest request);
 
     static DiscountSlice discountSlice(@Sql SqlConnector db) {
-        record discountSlice( SqlConnector db) implements DiscountSlice {
+        record discountSlice(SqlConnector db) implements DiscountSlice {
             private static final String SELECT_DISCOUNT = "SELECT percent_off FROM discount_codes WHERE code = ?";
 
             @Override public Promise<DiscountResponse> calculateDiscount(DiscountRequest request) {
                 var couponCode = request.couponCode();
-                return db.queryOptional(SELECT_DISCOUNT, PERCENT_OFF_MAPPER, couponCode).map(maybePercent -> resolveDiscount(request,
-                                                                                                                             maybePercent));
+                return db.queryOptional(SELECT_DISCOUNT, PERCENT_OFF_MAPPER, couponCode)
+                                       .map(maybePercent -> resolveDiscount(request, maybePercent));
             }
 
             private static final RowMapper<Integer> PERCENT_OFF_MAPPER = row -> row.getInt("percent_off");

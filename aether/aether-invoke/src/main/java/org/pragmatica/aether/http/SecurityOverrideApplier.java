@@ -10,21 +10,18 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Applies blueprint security overrides to route definitions at publication time.
 ///
 /// Override application is subject to the blueprint's override policy:
 /// - STRENGTHEN_ONLY: override applied only if new strength >= original strength
 /// - FULL: any override is applied
 /// - NONE: all overrides are rejected (logged as warnings)
-@SuppressWarnings({"JBCT-UTIL-02", "JBCT-ZONE-02"})
-public interface SecurityOverrideApplier {
+@SuppressWarnings({"JBCT-UTIL-02", "JBCT-ZONE-02"}) public interface SecurityOverrideApplier {
     Logger LOG = LoggerFactory.getLogger(SecurityOverrideApplier.class);
 
-    /// Apply security overrides to a list of route definitions.
-    /// Returns new list with overrides applied subject to the policy.
     static List<HttpRouteDefinition> applyOverrides(List<HttpRouteDefinition> routes, SecurityOverrides overrides) {
-        if ( overrides.isEmpty()) {
-        return routes;}
+        if (overrides.isEmpty()) {return routes;}
         return routes.stream().map(route -> applyOverrideToRoute(route, overrides))
                             .toList();
     }
@@ -41,14 +38,15 @@ public interface SecurityOverrideApplier {
     private static HttpRouteDefinition applyWithPolicy(HttpRouteDefinition route,
                                                        SecurityPolicy newPolicy,
                                                        SecurityOverridePolicy policy) {
-        return switch (policy) {case FULL -> applyAndLog(route, newPolicy);case STRENGTHEN_ONLY -> applyIfStronger(route,
-                                                                                                                   newPolicy);case NONE -> rejectOverride(route,
-                                                                                                                                                          newPolicy);};
+        return switch (policy){
+            case FULL -> applyAndLog(route, newPolicy);
+            case STRENGTHEN_ONLY -> applyIfStronger(route, newPolicy);
+            case NONE -> rejectOverride(route, newPolicy);
+        };
     }
 
     private static HttpRouteDefinition applyIfStronger(HttpRouteDefinition route, SecurityPolicy newPolicy) {
-        if ( newPolicy.strength() >= route.security().strength()) {
-        return applyAndLog(route, newPolicy);}
+        if (newPolicy.strength() >= route.security().strength()) {return applyAndLog(route, newPolicy);}
         LOG.warn("Security override rejected (STRENGTHEN_ONLY): {} {} would weaken from {} to {}",
                  route.httpMethod(),
                  route.pathPrefix(),

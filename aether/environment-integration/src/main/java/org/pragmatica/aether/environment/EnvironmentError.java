@@ -5,6 +5,7 @@ import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Result.success;
 
+
 /// Error types for environment integration failures.
 public sealed interface EnvironmentError extends Cause {
     record ProvisionFailed(Throwable cause) implements EnvironmentError {
@@ -78,7 +79,7 @@ public sealed interface EnvironmentError extends Cause {
     }
 
     record unused() implements EnvironmentError {
-        public static Result<unused> unused() {
+        public static Result<unused > unused() {
             return success(new unused());
         }
 

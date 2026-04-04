@@ -16,13 +16,14 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Default implementation of the governor mesh registry.
 /// Optionally registers peer addresses in cluster network for QUIC connectivity.
-@SuppressWarnings("JBCT-RET-01")
-final class GovernorMeshInstance implements GovernorMesh {
+@SuppressWarnings("JBCT-RET-01") final class GovernorMeshInstance implements GovernorMesh {
     private static final Logger LOG = LoggerFactory.getLogger(GovernorMeshInstance.class);
 
     private final Map<String, NodeId> governors = new ConcurrentHashMap<>();
+
     private final Option<DelegateRouter> delegateRouter;
 
     GovernorMeshInstance() {
@@ -65,10 +66,10 @@ final class GovernorMeshInstance implements GovernorMesh {
     }
 
     private void registerPeerAddress(NodeId governorId, String tcpAddress) {
-        if ( tcpAddress == null || tcpAddress.isEmpty()) {
-        return;}
-        delegateRouter.onPresent(router -> parseTcpAddress(tcpAddress)
-        .onPresent(addr -> registerInTopology(router, governorId, addr)));
+        if (tcpAddress == null || tcpAddress.isEmpty()) {return;}
+        delegateRouter.onPresent(router -> parseTcpAddress(tcpAddress).onPresent(addr -> registerInTopology(router,
+                                                                                                            governorId,
+                                                                                                            addr)));
     }
 
     private static void registerInTopology(DelegateRouter router, NodeId governorId, NodeAddress addr) {
@@ -78,8 +79,7 @@ final class GovernorMeshInstance implements GovernorMesh {
 
     private static Option<NodeAddress> parseTcpAddress(String tcpAddress) {
         var parts = tcpAddress.split(":");
-        if ( parts.length != 2) {
-        return Option.empty();}
+        if (parts.length != 2) {return Option.empty();}
         return Number.parseInt(parts[1]).option()
                               .flatMap(port -> NodeAddress.nodeAddress(parts[0], port).option());
     }

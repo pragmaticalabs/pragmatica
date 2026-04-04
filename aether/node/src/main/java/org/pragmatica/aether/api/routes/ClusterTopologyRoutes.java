@@ -16,6 +16,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.aether.api.ManagementApiResponses.ClusterTopologyStatusResponse;
 
+
 /// Routes for cluster topology growth status: core count, limits, worker count.
 public final class ClusterTopologyRoutes implements RouteSource {
     private final Supplier<AetherNode> nodeSupplier;
@@ -31,17 +32,16 @@ public final class ClusterTopologyRoutes implements RouteSource {
     @Override public Stream<Route<?>> routes() {
         return Stream.of(Route.<ClusterTopologyStatusResponse>get("/api/cluster/topology")
                               .toJson(this::buildTopologyStatus),
-                         Route.<GovernorsResponse>get("/api/cluster/governors")
-                              .toJson(this::buildGovernorsResponse));
+                         Route.<GovernorsResponse>get("/api/cluster/governors").toJson(this::buildGovernorsResponse));
     }
 
     private GovernorsResponse buildGovernorsResponse() {
         var node = nodeSupplier.get();
         var governors = new ArrayList<GovernorInfo>();
         node.kvStore()
-        .forEach(GovernorAnnouncementKey.class,
-                 GovernorAnnouncementValue.class,
-                 (key, value) -> governors.add(toGovernorInfo(key, value)));
+                    .forEach(GovernorAnnouncementKey.class,
+                             GovernorAnnouncementValue.class,
+                             (key, value) -> governors.add(toGovernorInfo(key, value)));
         return new GovernorsResponse(List.copyOf(governors));
     }
 

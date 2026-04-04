@@ -1,4 +1,4 @@
-# PostgreSQL Persistence Adapter Specification
+# Aether Store — PostgreSQL Persistence Adapter Specification
 
 ## Overview
 

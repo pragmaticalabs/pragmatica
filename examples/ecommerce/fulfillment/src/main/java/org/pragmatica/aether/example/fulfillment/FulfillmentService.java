@@ -22,6 +22,7 @@ import java.util.Set;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
+
 @Slice public interface FulfillmentService {
     record CalculateShippingRequest(List<LineItem> items, Address destination) {
         public static CalculateShippingRequest calculateShippingRequest(List<LineItem> items, Address destination) {
@@ -166,11 +167,13 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
     Promise<ShippingQuote> calculateShipping(CalculateShippingRequest request);
     Promise<Shipment> createShipment(CreateShipmentRequest request);
     Promise<TrackingInfo> trackShipment(TrackShipmentRequest request);
+
     String INSERT_SHIPMENT = """
         INSERT INTO shipments (shipment_id, order_id, tracking_number, shipping_option,
             destination_street, destination_city, destination_state, destination_postal,
             destination_country, status, estimated_delivery)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""";
+
     String SELECT_SHIPMENT_BY_TRACKING = """
         SELECT shipment_id, order_id, tracking_number, shipping_option,
             destination_street, destination_city, destination_state, destination_postal,
@@ -178,8 +181,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
         FROM shipments WHERE tracking_number = ?""";
 
     static FulfillmentService fulfillmentService(@Sql SqlConnector db) {
-        record fulfillmentService( SqlConnector db) implements FulfillmentService {
+        record fulfillmentService(SqlConnector db) implements FulfillmentService {
             private static final Set<String> NO_SAME_DAY_STATES = Set.of("AK", "HI", "PR", "VI");
+
             private static final BigDecimal FREE_SHIPPING_THRESHOLD = BigDecimal.valueOf(100);
 
             @Override public Promise<ShippingQuote> calculateShipping(CalculateShippingRequest request) {
@@ -188,7 +192,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
             }
 
             @Override public Promise<Shipment> createShipment(CreateShipmentRequest request) {
-                if ( isSameDayRestricted(request)) {return new FulfillmentError.SameDayNotAvailable(request.shippingAddress().state()).promise();}
+                if (isSameDayRestricted(request)) {return new FulfillmentError.SameDayNotAvailable(request.shippingAddress()
+                                                                                                                          .state()).promise();}
                 var shipment = Shipment.shipment(request.orderId(), request.shippingAddress(), request.shippingOption());
                 return persistShipment(shipment);
             }
@@ -196,7 +201,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
             @Override public Promise<TrackingInfo> trackShipment(TrackShipmentRequest request) {
                 return db.queryOptional(SELECT_SHIPMENT_BY_TRACKING,
                                         fulfillmentService::mapShipment,
-                                        request.trackingNumber()).flatMap(opt -> opt.toResult(new FulfillmentError.ShipmentNotFound(request.trackingNumber())).async())
+                                        request.trackingNumber()).flatMap(opt -> opt.toResult(new FulfillmentError.ShipmentNotFound(request.trackingNumber()))
+                                                                                             .async())
                                        .map(TrackingInfo::trackingInfo);
             }
 
@@ -217,7 +223,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                  shipment.destination().postalCode(),
                                  shipment.destination().country(),
                                  shipment.status().name(),
-                                 shipment.estimatedDelivery()).map(_ -> shipment);
+                                 shipment.estimatedDelivery())
+                .map(_ -> shipment);
             }
 
             private static Result<Shipment> mapShipment(RowMapper.RowAccessor row) {
@@ -229,7 +236,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                   row.getString("destination_city"),
                                   row.getString("destination_state"),
                                   row.getString("destination_postal"),
-                                  row.getString("destination_country")).flatMap(fulfillmentService::buildShipmentFromRow);
+                                  row.getString("destination_country"))
+                .flatMap(fulfillmentService::buildShipmentFromRow);
             }
 
             private static Result<Shipment> buildShipmentFromRow(String shipmentId,
@@ -241,14 +249,16 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                                                  String state,
                                                                  String postal,
                                                                  String country) {
-                return Result.all(Address.address(street, city, state, postal, country), OrderId.orderId(orderId)).map((addr, oid) -> new Shipment(shipmentId,
-                                                                                                                                                   oid,
-                                                                                                                                                   trackingNumber,
-                                                                                                                                                   ShippingOption.valueOf(shippingOption),
-                                                                                                                                                   addr,
-                                                                                                                                                   Shipment.ShipmentStatus.LABEL_CREATED,
-                                                                                                                                                   Instant.now(),
-                                                                                                                                                   Instant.now()));
+                return Result.all(Address.address(street, city, state, postal, country),
+                                  OrderId.orderId(orderId))
+                .map((addr, oid) -> new Shipment(shipmentId,
+                                                 oid,
+                                                 trackingNumber,
+                                                 ShippingOption.valueOf(shippingOption),
+                                                 addr,
+                                                 Shipment.ShipmentStatus.LABEL_CREATED,
+                                                 Instant.now(),
+                                                 Instant.now()));
             }
 
             private List<ShippingQuote.ShippingOptionQuote> calculateAvailableOptions(List<LineItem> items,
@@ -261,7 +271,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
             }
 
             private boolean isOptionAvailable(ShippingOption option, Address destination) {
-                return option != ShippingOption.SAME_DAY || !NO_SAME_DAY_STATES.contains(destination.state().toUpperCase());
+                return option != ShippingOption.SAME_DAY || !NO_SAME_DAY_STATES.contains(destination.state()
+                                                                                                          .toUpperCase());
             }
 
             private ShippingQuote.ShippingOptionQuote createQuote(ShippingOption option,
@@ -280,11 +291,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
             private Money calculateShippingCost(ShippingOption option,
                                                 List<LineItem> items,
                                                 boolean freeShippingEligible) {
-                if ( option == ShippingOption.STANDARD && freeShippingEligible) {return Money.ZERO_USD;}
+                if (option == ShippingOption.STANDARD && freeShippingEligible) {return Money.ZERO_USD;}
                 var baseCost = option.cost();
                 var totalItems = items.stream().mapToInt(i -> i.quantity().value())
                                              .sum();
-                if ( totalItems >10) {
+                if (totalItems > 10) {
                     var surchargeAmount = BigDecimal.valueOf(totalItems - 10).multiply(BigDecimal.valueOf(0.5));
                     return baseCost.add(new Money(surchargeAmount, Money.USD)).or(baseCost);
                 }

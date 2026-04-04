@@ -12,6 +12,86 @@
     <link rel="stylesheet" href="css/forge.css">
 </head>
 <body>
+    <!-- Auth overlay — shown when no API key in sessionStorage -->
+    <div id="auth-overlay" style="display:none; position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.85); align-items:center; justify-content:center;">
+        <div style="background:var(--surface-1, #1a1a2e); border:1px solid var(--border, #333); border-radius:8px; padding:2rem; min-width:320px; text-align:center;">
+            <h2 style="color:var(--text-1, #e0e0e0); margin:0 0 0.5rem; font-size:1.2rem;">AETHER</h2>
+            <p style="color:var(--text-2, #999); margin:0 0 1.5rem; font-size:0.85rem;">Enter API key to access the dashboard</p>
+            <form id="auth-form" style="display:flex; gap:0.5rem;">
+                <input id="auth-key-input" type="password" placeholder="API key" autocomplete="off"
+                       style="flex:1; padding:0.5rem 0.75rem; border:1px solid var(--border, #444); border-radius:4px; background:var(--surface-2, #111); color:var(--text-1, #e0e0e0); font-size:0.9rem;">
+                <button type="submit" style="padding:0.5rem 1rem; border:none; border-radius:4px; background:var(--accent, #4a9eff); color:#fff; cursor:pointer; font-size:0.9rem;">Connect</button>
+            </form>
+            <p id="auth-error" style="color:#e55; margin:0.75rem 0 0; font-size:0.8rem; display:none;">Invalid API key</p>
+        </div>
+    </div>
+    <script>
+    window.AetherAuth = {
+        overlay: null,
+
+        init: function() {
+            this.overlay = document.getElementById('auth-overlay');
+            // Check URL param first
+            var params = new URLSearchParams(window.location.search);
+            var paramKey = params.get('apiKey');
+            if (paramKey) sessionStorage.setItem('aether-api-key', paramKey);
+            // Show overlay if no key
+            if (!this.hasValidKey()) this.show();
+        },
+
+        hasValidKey: function() {
+            return !!sessionStorage.getItem('aether-api-key');
+        },
+
+        show: function() {
+            this.overlay.style.display = 'flex';
+            document.getElementById('auth-error').style.display = 'none';
+            document.getElementById('auth-key-input').value = '';
+            setTimeout(function() { document.getElementById('auth-key-input').focus(); }, 100);
+        },
+
+        hide: function() {
+            this.overlay.style.display = 'none';
+        },
+
+        isVisible: function() {
+            return this.overlay && this.overlay.style.display === 'flex';
+        },
+
+        submit: function(key) {
+            var self = this;
+            // Validate key against server before accepting
+            fetch('/api/status', { headers: { 'x-api-key': key } }).then(function(r) {
+                if (r.ok) {
+                    sessionStorage.setItem('aether-api-key', key);
+                    self.hide();
+                    // Signal the app to start data fetching
+                    window.dispatchEvent(new Event('aether-auth-success'));
+                } else {
+                    document.getElementById('auth-error').style.display = 'block';
+                }
+            }).catch(function() {
+                document.getElementById('auth-error').style.display = 'block';
+            });
+        },
+
+        // Called by RestClient on 401 — only acts if we thought we had a valid key
+        onUnauthorized: function() {
+            sessionStorage.removeItem('aether-api-key');
+            this.show();
+        }
+    };
+
+    document.addEventListener('DOMContentLoaded', function() {
+        AetherAuth.init();
+        document.getElementById('auth-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            var key = document.getElementById('auth-key-input').value.trim();
+            if (key) AetherAuth.submit(key);
+        });
+    });
+    </script>
+
     <div x-data="app" x-init="init()">
         <!-- Header Bar -->
         <header class="header">

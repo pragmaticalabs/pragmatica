@@ -10,6 +10,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
 
+
 /// Generates sequential values starting from a specified number.
 ///
 /// Pattern: `${seq:START`} where START is the initial value.
@@ -32,10 +33,8 @@ public final class SequenceGenerator implements PatternGenerator {
         this.counter = new AtomicLong(start);
     }
 
-    /// Parses a sequence specification like "1000".
     public static Result<PatternGenerator> sequenceGenerator(String seqSpec) {
-        var trimmed = option(seqSpec).map(String::trim)
-                            .filter(s -> !s.isBlank());
+        var trimmed = option(seqSpec).map(String::trim).filter(s -> !s.isBlank());
         return trimmed.map(SequenceGenerator::toLongAndCreate).or(success(sequenceGenerator(1)));
     }
 
@@ -51,13 +50,11 @@ public final class SequenceGenerator implements PatternGenerator {
         return "${seq:" + start + "}";
     }
 
-    /// Resets the counter to the initial start value.
     public Result<Unit> reset() {
         counter.set(start);
         return unitResult();
     }
 
-    /// Returns the current counter value without incrementing.
     public long current() {
         return counter.get();
     }

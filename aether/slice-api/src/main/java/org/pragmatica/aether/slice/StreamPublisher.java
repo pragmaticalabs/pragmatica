@@ -3,6 +3,7 @@ package org.pragmatica.aether.slice;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+
 /// Functional interface for publishing events to a stream partition.
 ///
 /// Provisioned via `@ResourceQualifier(type = StreamPublisher.class, config = "streams.xxx")`

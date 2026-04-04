@@ -22,6 +22,7 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Request router that processes HTTP requests using http-routing routes.
 ///
 /// Bridges http-handler-api types (HttpRequestContext, HttpResponseData) with
@@ -46,26 +47,13 @@ import org.slf4j.LoggerFactory;
 public interface SliceRouter {
     Logger log = LoggerFactory.getLogger(SliceRouter.class);
 
-    /// Process an HTTP request and produce a response.
-    ///
-    /// @param request the HTTP request context
-    /// @return promise of HTTP response data
     Promise<HttpResponseData> handle(HttpRequestContext request);
 
-    /// Create a SliceRouter with the given routes, error mapper, and JSON mapper.
-    ///
-    /// @param routes      route definitions using http-routing DSL
-    /// @param errorMapper mapper for converting errors to HTTP errors
-    /// @param jsonMapper  JSON mapper for serialization/deserialization
-    /// @return configured SliceRouter instance
-    static SliceRouter sliceRouter(RouteSource routes,
-                                   ErrorMapper errorMapper,
-                                   JsonMapper jsonMapper) {
-        record sliceRouter( RequestRouter requestRouter,
-                            ErrorMapper errorMapper,
-                            JsonMapper jsonMapper) implements SliceRouter {
+    static SliceRouter sliceRouter(RouteSource routes, ErrorMapper errorMapper, JsonMapper jsonMapper) {
+        record sliceRouter(RequestRouter requestRouter, ErrorMapper errorMapper, JsonMapper jsonMapper) implements SliceRouter {
             private static final Map<String, String> JSON_HEADERS = Map.of("Content-Type",
                                                                            "application/json; charset=UTF-8");
+
             private static final Map<String, String> TEXT_HEADERS = Map.of("Content-Type", "text/plain; charset=UTF-8");
 
             @Override public Promise<HttpResponseData> handle(HttpRequestContext request) {
@@ -90,9 +78,11 @@ public interface SliceRouter {
             private HttpResponseData resultToResponse(Object result,
                                                       ContentType contentType,
                                                       HttpRequestContext request) {
-                return switch (result) {case Result.Success<?> success -> successToResponse(success.value(), contentType);case Result.Failure<?> failure -> errorToResponse(failure.cause(),
-                                                                                                                                                                            request);default -> successToResponse(result,
-                                                                                                                                                                                                                  contentType);};
+                return switch (result){
+                    case Result.Success<?> success -> successToResponse(success.value(), contentType);
+                    case Result.Failure<?> failure -> errorToResponse(failure.cause(), request);
+                    default -> successToResponse(result, contentType);
+                };
             }
 
             private <T> Promise<T> invokeHandler(Route<T> route, SliceRequestContext context) {
@@ -100,16 +90,15 @@ public interface SliceRouter {
             }
 
             private HttpResponseData successToResponse(Object value, ContentType contentType) {
-                if ( value == null) {
-                return HttpResponseData.httpResponseData(204);}
+                if (value == null) {return HttpResponseData.httpResponseData(204);}
                 var headers = headersForContentType(contentType);
-                if ( isTextContent(contentType)) {
+                if (isTextContent(contentType)) {
                     var body = value.toString().getBytes(StandardCharsets.UTF_8);
                     return HttpResponseData.httpResponseData(200, headers, body);
                 }
                 return jsonMapper.writeAsBytes(value)
-                .fold(_ -> HttpResponseData.httpResponseData(500, "Serialization failed"),
-                      body -> HttpResponseData.httpResponseData(200, headers, body));
+                                              .fold(_ -> HttpResponseData.httpResponseData(500, "Serialization failed"),
+                                                    body -> HttpResponseData.httpResponseData(200, headers, body));
             }
 
             private HttpResponseData errorToResponse(Cause cause, HttpRequestContext request) {
@@ -122,10 +111,11 @@ public interface SliceRouter {
                          cause.message());
                 var problemDetail = ProblemDetail.fromHttpError(httpError, request.path(), request.requestId());
                 return jsonMapper.writeAsBytes(problemDetail)
-                .fold(_ -> plainErrorResponse(httpError.status(), httpError.message()),
-                      body -> HttpResponseData.httpResponseData(httpError.status().code(),
-                                                                JSON_HEADERS,
-                                                                body));
+                                              .fold(_ -> plainErrorResponse(httpError.status(),
+                                                                            httpError.message()),
+                                                    body -> HttpResponseData.httpResponseData(httpError.status().code(),
+                                                                                              JSON_HEADERS,
+                                                                                              body));
             }
 
             private HttpResponseData notFound(HttpRequestContext request) {
@@ -134,8 +124,8 @@ public interface SliceRouter {
                                                                 request.path(),
                                                                 request.requestId());
                 return jsonMapper.writeAsBytes(problemDetail)
-                .fold(_ -> plainErrorResponse(HttpStatus.NOT_FOUND, "Not Found"),
-                      body -> HttpResponseData.httpResponseData(404, JSON_HEADERS, body));
+                                              .fold(_ -> plainErrorResponse(HttpStatus.NOT_FOUND, "Not Found"),
+                                                    body -> HttpResponseData.httpResponseData(404, JSON_HEADERS, body));
             }
 
             private HttpResponseData methodNotAllowed(HttpRequestContext request) {
@@ -144,8 +134,9 @@ public interface SliceRouter {
                                                                 request.path(),
                                                                 request.requestId());
                 return jsonMapper.writeAsBytes(problemDetail)
-                .fold(_ -> plainErrorResponse(HttpStatus.METHOD_NOT_ALLOWED, "Method Not Allowed"),
-                      body -> HttpResponseData.httpResponseData(405, JSON_HEADERS, body));
+                                              .fold(_ -> plainErrorResponse(HttpStatus.METHOD_NOT_ALLOWED,
+                                                                            "Method Not Allowed"),
+                                                    body -> HttpResponseData.httpResponseData(405, JSON_HEADERS, body));
             }
 
             private HttpResponseData plainErrorResponse(HttpStatus status, String message) {

@@ -40,10 +40,10 @@ import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Routes for declarative cluster configuration: read config, aggregated status,
 /// apply config changes, and scale operations.
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-PAT-01"})
-public final class ClusterConfigRoutes implements RouteSource {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-PAT-01"}) public final class ClusterConfigRoutes implements RouteSource {
     private static final Logger log = LoggerFactory.getLogger(ClusterConfigRoutes.class);
 
     private final Supplier<AetherNode> nodeSupplier;
@@ -59,7 +59,6 @@ public final class ClusterConfigRoutes implements RouteSource {
         return new ClusterConfigRoutes(nodeSupplier, applier);
     }
 
-    /// Backward-compatible factory for existing wiring that does not yet provide an applier.
     public static ClusterConfigRoutes clusterConfigRoutes(Supplier<AetherNode> nodeSupplier) {
         return new ClusterConfigRoutes(nodeSupplier, new ClusterConfigApplier.unused());
     }
@@ -82,7 +81,6 @@ public final class ClusterConfigRoutes implements RouteSource {
                               .toJson(this::handleUpgrade));
     }
 
-    // ===== GET /api/cluster/config =====
     private Promise<ClusterConfigResponse> buildConfigResponse() {
         return lookupClusterConfig().map(ClusterConfigRoutes::toConfigResponse);
     }
@@ -99,7 +97,6 @@ public final class ClusterConfigRoutes implements RouteSource {
                                          config.updatedAt());
     }
 
-    // ===== GET /api/cluster/status =====
     private Promise<ClusterStatusResponse> buildStatusResponse() {
         var node = nodeSupplier.get();
         return lookupClusterConfig().map(config -> assembleStatus(node, config));
@@ -154,8 +151,8 @@ public final class ClusterConfigRoutes implements RouteSource {
     private static String reconcilerStateName(AetherNode node) {
         var actualCount = node.connectedNodeCount() + 1;
         return actualCount >= node.topologyConfig().clusterSize()
-               ? "CONVERGED"
-               : "RECONCILING";
+              ? "CONVERGED"
+              : "RECONCILING";
     }
 
     private static Option<CertificateStatusResponse> buildCertificateExpiry(AetherNode node) {
@@ -169,7 +166,6 @@ public final class ClusterConfigRoutes implements RouteSource {
                                              scheduler.renewalStatus().name());
     }
 
-    // ===== POST /api/cluster/config =====
     private Promise<Object> handleApplyConfig(ApplyConfigRequest request) {
         return parseAndValidateConfig(request.tomlContent()).async()
                                      .flatMap(desired -> lookupClusterConfig().flatMap(stored -> processApply(stored,
@@ -193,14 +189,14 @@ public final class ClusterConfigRoutes implements RouteSource {
                                         ClusterManagementConfig desired,
                                         String tomlContent) {
         var diff = ClusterConfigDiff.diff(storedConfig, desired);
-        if ( diff.hasImmutableChanges()) {
-        return diff.validateAndExtractActions().async()
-                                             .map(actions -> (Object) actions);}
+        if (diff.hasImmutableChanges()) {return diff.validateAndExtractActions().async()
+                                                                              .map(actions -> (Object) actions);}
         var actions = diff.actionableChanges();
-        if ( actions.isEmpty()) {
-        return buildDryRunResponse(stored, diff);}
+        if (actions.isEmpty()) {return buildDryRunResponse(stored, diff);}
         return applier.apply(actions)
-        .flatMap(_ -> storeUpdatedConfig(desired, tomlContent, stored.configVersion() + 1));
+                            .flatMap(_ -> storeUpdatedConfig(desired,
+                                                             tomlContent,
+                                                             stored.configVersion() + 1));
     }
 
     private static Result<ClusterManagementConfig> parseAndValidateConfig(String tomlContent) {
@@ -212,16 +208,14 @@ public final class ClusterConfigRoutes implements RouteSource {
     }
 
     private static Promise<Object> checkVersionAsync(long storedVersion, long expectedVersion) {
-        if ( expectedVersion != 0 && storedVersion != expectedVersion) {
-        return new org.pragmatica.aether.config.cluster.ClusterConfigError.VersionConflict(expectedVersion,
-                                                                                           storedVersion).promise();}
+        if (expectedVersion != 0 && storedVersion != expectedVersion) {return new org.pragmatica.aether.config.cluster.ClusterConfigError.VersionConflict(expectedVersion,
+                                                                                                                                                          storedVersion).promise();}
         return Promise.unitPromise().map(u -> (Object) u);
     }
 
-    @SuppressWarnings("unchecked")
-    private Promise<Object> storeUpdatedConfig(ClusterManagementConfig desired,
-                                               String tomlContent,
-                                               long newVersion) {
+    @SuppressWarnings("unchecked") private Promise<Object> storeUpdatedConfig(ClusterManagementConfig desired,
+                                                                              String tomlContent,
+                                                                              long newVersion) {
         var node = nodeSupplier.get();
         var cluster = desired.cluster();
         var configValue = new ClusterConfigValue(tomlContent,
@@ -256,14 +250,13 @@ public final class ClusterConfigRoutes implements RouteSource {
 
     private static String formatChange(ConfigChange change) {
         var tag = change.isImmutable()
-                  ? "[REJECTED] "
-                  : change.requiresAction()
-                  ? "[ACTION]   "
-                  : "[NOOP]     ";
+                 ? "[REJECTED] "
+                 : change.requiresAction()
+                 ? "[ACTION]   "
+                 : "[NOOP]     ";
         return tag + change.description();
     }
 
-    // ===== POST /api/cluster/scale =====
     private Promise<ScaleClusterResponse> handleScale(ScaleRequest request) {
         return lookupClusterConfig().flatMap(stored -> applyScale(stored, request));
     }
@@ -290,19 +283,16 @@ public final class ClusterConfigRoutes implements RouteSource {
     }
 
     private static Promise<Object> validateScaleAsync(int coreCount, int coreMin, int coreMax) {
-        if ( coreCount < 3) {
-        return new ClusterConfigError.QuorumSafetyViolation(coreCount, 3).promise();}
-        if ( coreCount % 2 == 0) {
-        return new ClusterConfigError.InvalidCoreCount(coreCount).promise();}
-        if ( coreCount < coreMin) {
-        return new ClusterConfigError.QuorumSafetyViolation(coreCount, coreMin).promise();}
-        if ( coreCount > coreMax) {
-        return new ClusterConfigError.InvalidCoreMax(coreMax, coreCount).promise();}
+        if (coreCount <3) {return new ClusterConfigError.QuorumSafetyViolation(coreCount, 3).promise();}
+        if (coreCount % 2 == 0) {return new ClusterConfigError.InvalidCoreCount(coreCount).promise();}
+        if (coreCount <coreMin) {return new ClusterConfigError.QuorumSafetyViolation(coreCount, coreMin).promise();}
+        if (coreCount > coreMax) {return new ClusterConfigError.InvalidCoreMax(coreMax, coreCount).promise();}
         return Promise.unitPromise().map(u -> (Object) u);
     }
 
-    @SuppressWarnings("unchecked")
-    private Promise<Object> storeScaledConfig(ClusterConfigValue stored, int newCoreCount, long newVersion) {
+    @SuppressWarnings("unchecked") private Promise<Object> storeScaledConfig(ClusterConfigValue stored,
+                                                                             int newCoreCount,
+                                                                             long newVersion) {
         var configValue = new ClusterConfigValue(stored.tomlContent(),
                                                  stored.clusterName(),
                                                  stored.version(),
@@ -317,7 +307,6 @@ public final class ClusterConfigRoutes implements RouteSource {
                                .map(_ -> (Object) configValue);
     }
 
-    // ===== POST /api/cluster/upgrade =====
     private Promise<UpgradeResponse> handleUpgrade(UpgradeRequest request) {
         return lookupClusterConfig().flatMap(stored -> initiateUpgrade(stored, request));
     }
@@ -325,17 +314,17 @@ public final class ClusterConfigRoutes implements RouteSource {
     private Promise<UpgradeResponse> initiateUpgrade(ClusterConfigValue stored, UpgradeRequest request) {
         var currentVersion = stored.version();
         var targetVersion = request.targetVersion();
-        if ( currentVersion.equals(targetVersion)) {
-        return new UpgradeError.AlreadyAtVersion(targetVersion).promise();}
+        if (currentVersion.equals(targetVersion)) {return new UpgradeError.AlreadyAtVersion(targetVersion).promise();}
         log.info("Cluster upgrade initiated: {} -> {}",
                  currentVersion,
                  targetVersion);
-        return storeUpgradedVersion(stored, targetVersion)
-        .map(_ -> new UpgradeResponse("INITIATED", currentVersion, targetVersion));
+        return storeUpgradedVersion(stored, targetVersion).map(_ -> new UpgradeResponse("INITIATED",
+                                                                                        currentVersion,
+                                                                                        targetVersion));
     }
 
-    @SuppressWarnings("unchecked")
-    private Promise<Object> storeUpgradedVersion(ClusterConfigValue stored, String targetVersion) {
+    @SuppressWarnings("unchecked") private Promise<Object> storeUpgradedVersion(ClusterConfigValue stored,
+                                                                                String targetVersion) {
         var configValue = new ClusterConfigValue(stored.tomlContent(),
                                                  stored.clusterName(),
                                                  targetVersion,
@@ -358,7 +347,6 @@ public final class ClusterConfigRoutes implements RouteSource {
         }
     }
 
-    // ===== Shared helpers =====
     private Promise<ClusterConfigValue> lookupClusterConfig() {
         return nodeSupplier.get().kvStore()
                                .get(ClusterConfigKey.CURRENT)
@@ -368,8 +356,8 @@ public final class ClusterConfigRoutes implements RouteSource {
 
     private static Option<ClusterConfigValue> narrowToConfig(AetherValue value) {
         return value instanceof ClusterConfigValue config
-               ? Option.some(config)
-               : Option.empty();
+              ? Option.some(config)
+              : Option.empty();
     }
 
     private enum ConfigNotFoundError implements Cause {

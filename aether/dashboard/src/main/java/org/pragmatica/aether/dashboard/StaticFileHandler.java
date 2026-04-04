@@ -17,13 +17,14 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Serves static files from classpath resources.
 /// Supports configurable classpath prefix for resource lookup.
-@SuppressWarnings("JBCT-RET-01")
-public final class StaticFileHandler {
+@SuppressWarnings("JBCT-RET-01") public final class StaticFileHandler {
     private static final Logger log = LoggerFactory.getLogger(StaticFileHandler.class);
 
     private static final String DEFAULT_PREFIX = "dashboard/";
+
     private static final Map<String, ContentType> CONTENT_TYPES = Map.ofEntries(Map.entry(".html",
                                                                                           CommonContentType.TEXT_HTML),
                                                                                 Map.entry(".css",
@@ -58,6 +59,7 @@ public final class StaticFileHandler {
                                                                                           CommonContentType.APPLICATION_OCTET_STREAM));
 
     private final String classpathPrefix;
+
     private final Map<String, Option<byte[]>> resourceCache = new ConcurrentHashMap<>();
 
     private StaticFileHandler(String classpathPrefix) {
@@ -74,19 +76,13 @@ public final class StaticFileHandler {
 
     public void handle(RequestContext request, ResponseWriter response) {
         var path = request.path();
-        // Handle root path
-        if ( path.equals("/") || path.equals("/index.html")) {
-        path = "/index.html";}
-        // Decode URL before security check to prevent bypass via percent-encoding
+        if (path.equals("/") || path.equals("/index.html")) {path = "/index.html";}
         path = URLDecoder.decode(path, StandardCharsets.UTF_8);
-        // Security: prevent directory traversal
-        if ( path.contains("..")) {
+        if (path.contains("..")) {
             sendError(response, HttpStatus.FORBIDDEN, "Invalid path");
             return;
         }
-        // Load from classpath
         var finalPath = path;
-        // capture for lambda
         var resourcePath = classpathPrefix + (finalPath.startsWith("/")
                                               ? finalPath.substring(1)
                                               : finalPath);
@@ -107,27 +103,17 @@ public final class StaticFileHandler {
     }
 
     private Option<byte[]> doLoadResource(String path) {
-        try (InputStream is = getClass().getClassLoader()
-                                      .getResourceAsStream(path)) {
-            if ( is == null) {
-            return Option.empty();}
+        try (InputStream is = getClass().getClassLoader().getResourceAsStream(path)) {
+            if (is == null) {return Option.empty();}
             return Option.option(is.readAllBytes());
-        }
-
-
-
-
-
-        catch (IOException e) {
+        } catch (IOException e) {
             log.error("Error loading resource: {}", path, e);
             return Option.empty();
         }
     }
 
     private ContentType getContentType(String path) {
-        for ( var entry : CONTENT_TYPES.entrySet()) {
-        if ( path.endsWith(entry.getKey())) {
-        return entry.getValue();}}
+        for (var entry : CONTENT_TYPES.entrySet()) {if (path.endsWith(entry.getKey())) {return entry.getValue();}}
         return CommonContentType.APPLICATION_OCTET_STREAM;
     }
 

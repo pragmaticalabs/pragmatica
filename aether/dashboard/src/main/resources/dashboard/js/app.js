@@ -14,6 +14,18 @@ document.addEventListener('alpine:init', function() {
             init() {
                 var self = this;
 
+                // Gate all data fetching behind auth — no polls or WS until key is validated
+                if (!window.AetherAuth || !window.AetherAuth.hasValidKey()) {
+                    // Wait for auth to complete, then initialize
+                    window.addEventListener('aether-auth-success', function() { self.startApp(); });
+                    return;
+                }
+                this.startApp();
+            },
+
+            startApp() {
+                var self = this;
+
                 // Detect Forge mode
                 Alpine.store('forge').detectForge();
 
@@ -143,6 +155,11 @@ document.addEventListener('alpine:init', function() {
                     Alpine.store('forge').updateFromStatus(data);
                     Alpine.store('metrics').updateNodeHistory(Alpine.store('cluster').nodes);
                     this.updateCharts();
+                }
+                // Fetch slice details for node→slice mapping (REST /api/status only has sliceCount)
+                var slices = await RestClient.get('/api/slices');
+                if (slices) {
+                    Alpine.store('cluster').updateSlices(slices);
                 }
             },
 

@@ -13,6 +13,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
+
 /// Parses pattern specifications like `${type:args`} into PatternGenerator instances.
 public sealed interface PatternParser {
     Pattern PATTERN_REGEX = Pattern.compile("\\$\\{([a-z]+)(?::(.*))?}");
@@ -21,24 +22,23 @@ public sealed interface PatternParser {
 
     Fn1<Cause, String> INVALID_PATTERN = Causes.forOneValue("Invalid pattern syntax: %s");
 
-    /// Parses a pattern string like "${uuid}" or "${random:SKU-#####}" into a generator.
-    ///
-    /// @param pattern the pattern string
-    /// @return Result containing the generator or an error
     static Result<PatternGenerator> parse(String pattern) {
         var matcher = PATTERN_REGEX.matcher(pattern.trim());
-        if ( !matcher.matches()) {
-        return INVALID_PATTERN.apply(pattern).result();}
+        if (!matcher.matches()) {return INVALID_PATTERN.apply(pattern).result();}
         var type = matcher.group(1);
         var args = matcher.group(2);
         return dispatchByType(type, args, pattern);
     }
 
     private static Result<PatternGenerator> dispatchByType(String type, String args, String pattern) {
-        return switch (type) {case UuidGenerator.TYPE -> toUuidGenerator();case RandomGenerator.TYPE -> toRandomGenerator(args,
-                                                                                                                          pattern);case RangeGenerator.TYPE -> toRangeGenerator(args,
-                                                                                                                                                                                pattern);case ChoiceGenerator.TYPE -> toChoiceGenerator(args,
-                                                                                                                                                                                                                                        pattern);case SequenceGenerator.TYPE -> toSequenceGenerator(args);default -> unknownType(type);};
+        return switch (type){
+            case UuidGenerator.TYPE -> toUuidGenerator();
+            case RandomGenerator.TYPE -> toRandomGenerator(args, pattern);
+            case RangeGenerator.TYPE -> toRangeGenerator(args, pattern);
+            case ChoiceGenerator.TYPE -> toChoiceGenerator(args, pattern);
+            case SequenceGenerator.TYPE -> toSequenceGenerator(args);
+            default -> unknownType(type);
+        };
     }
 
     private static Result<PatternGenerator> toUuidGenerator() {
@@ -75,18 +75,15 @@ public sealed interface PatternParser {
                      .flatMap(ChoiceGenerator::choiceGenerator);
     }
 
-    /// Checks if a string contains any pattern placeholders.
     static boolean containsPatterns(String text) {
-        return option(text).filter(t -> t.contains("${"))
-                     .isPresent();
+        return option(text).filter(t -> t.contains("${")).isPresent();
     }
 
-    /// Extracts the pattern type from a pattern string.
     static Option<String> extractType(String pattern) {
         var matcher = PATTERN_REGEX.matcher(pattern.trim());
         return matcher.matches()
-               ? some(matcher.group(1))
-               : none();
+              ? some(matcher.group(1))
+              : none();
     }
 
     record unused() implements PatternParser{}

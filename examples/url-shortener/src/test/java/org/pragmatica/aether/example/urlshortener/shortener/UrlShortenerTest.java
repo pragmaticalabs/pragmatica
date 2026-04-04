@@ -6,20 +6,17 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.ResolveRequest;
 import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.ShortenRequest;
 import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.UrlError;
-
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
 class UrlShortenerTest {
-    private InMemoryDatabaseConnector db;
     private UrlShortener urlShortener;
 
     @BeforeEach
     void setup() {
-        db = InMemoryDatabaseConnector.inMemoryDatabaseConnector();
-        urlShortener = UrlShortener.urlShortener(db);
+        urlShortener = UrlShortener.urlShortener(InMemoryUrlPersistence.inMemoryUrlPersistence());
     }
 
     @Nested

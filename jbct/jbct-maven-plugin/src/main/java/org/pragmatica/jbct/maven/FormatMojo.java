@@ -25,7 +25,7 @@ public class FormatMojo extends AbstractJbctMojo {
         }
         var config = loadConfig();
         var formatter = JbctFormatter.jbctFormatter(config.formatter());
-        var filesToProcess = collectJavaFiles();
+        var filesToProcess = collectJavaFiles(config.files());
         if (filesToProcess.isEmpty()) {
             getLog().info("No Java files found.");
             return;
@@ -61,7 +61,7 @@ public class FormatMojo extends AbstractJbctMojo {
                                                                                                                       .map(written -> {
                                                                                                                                formatted.incrementAndGet();
                                                                                                                                getLog()
-        .debug("Formatted: " + file);
+        .warn("Formatted: " + file);
                                                                                                                                return written;
                                                                                                                            }));
                                                        }))

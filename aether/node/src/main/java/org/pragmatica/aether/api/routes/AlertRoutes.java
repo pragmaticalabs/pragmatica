@@ -15,6 +15,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 
+
 /// Routes for alert management: thresholds, active alerts, history.
 public final class AlertRoutes implements RouteSource {
     private final AlertManager alertManager;
@@ -27,30 +28,21 @@ public final class AlertRoutes implements RouteSource {
         return new AlertRoutes(alertManager);
     }
 
-    // Request DTO
     record ThresholdRequest(String metric, Double warning, Double critical){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(// GET endpoints
-        Route.<Object>get("/api/thresholds")
-             .toJson(alertManager::thresholdsAsJson),
-        Route.<AlertsResponse>get("/api/alerts")
-             .toJson(this::buildAlertsResponse),
-        Route.<Object>get("/api/alerts/active")
-             .toJson(alertManager::activeAlertsAsJson),
-        Route.<Object>get("/api/alerts/history")
-             .toJson(alertManager::alertHistoryAsJson),
-        // POST endpoints
-        Route.<ThresholdSetResponse>post("/api/thresholds")
-             .withBody(ThresholdRequest.class)
-             .toJson(this::handleSetThreshold),
-        Route.<AlertsClearedResponse>post("/api/alerts/clear")
-             .toJson(this::handleClearAlerts),
-        // DELETE with path parameter
-        Route.<ThresholdRemovedResponse>delete("/api/thresholds")
-             .withPath(aString())
-             .to(this::handleDeleteThreshold)
-             .asJson());
+        return Stream.of(Route.<Object>get("/api/thresholds").toJson(alertManager::thresholdsAsJson),
+                         Route.<AlertsResponse>get("/api/alerts").toJson(this::buildAlertsResponse),
+                         Route.<Object>get("/api/alerts/active").toJson(alertManager::activeAlertsAsJson),
+                         Route.<Object>get("/api/alerts/history").toJson(alertManager::alertHistoryAsJson),
+                         Route.<ThresholdSetResponse>post("/api/thresholds")
+                              .withBody(ThresholdRequest.class)
+                              .toJson(this::handleSetThreshold),
+                         Route.<AlertsClearedResponse>post("/api/alerts/clear").toJson(this::handleClearAlerts),
+                         Route.<ThresholdRemovedResponse>delete("/api/thresholds")
+                              .withPath(aString())
+                              .to(this::handleDeleteThreshold)
+                              .asJson());
     }
 
     private Promise<ThresholdSetResponse> handleSetThreshold(ThresholdRequest req) {
@@ -65,10 +57,8 @@ public final class AlertRoutes implements RouteSource {
     }
 
     private Result<ThresholdRequest> validateThresholdRequest(ThresholdRequest req) {
-        if ( req.metric() == null || req.metric().isEmpty()) {
-        return AlertError.MISSING_FIELDS.result();}
-        if ( req.warning() == null || req.critical() == null) {
-        return AlertError.MISSING_FIELDS.result();}
+        if (req.metric() == null || req.metric().isEmpty()) {return AlertError.MISSING_FIELDS.result();}
+        if (req.warning() == null || req.critical() == null) {return AlertError.MISSING_FIELDS.result();}
         return Result.success(req);
     }
 
@@ -78,8 +68,7 @@ public final class AlertRoutes implements RouteSource {
     }
 
     private Promise<ThresholdRemovedResponse> handleDeleteThreshold(String metric) {
-        if ( metric.isEmpty()) {
-        return AlertError.METRIC_REQUIRED.promise();}
+        if (metric.isEmpty()) {return AlertError.METRIC_REQUIRED.promise();}
         return alertManager.removeThreshold(metric).map(_ -> new ThresholdRemovedResponse("threshold_removed", metric));
     }
 

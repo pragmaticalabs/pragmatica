@@ -22,8 +22,8 @@ jobs:
           distribution: 'zulu'
           cache: 'maven'
 
-      - name: Bootstrap jbct-maven-plugin and slice-processor
-        run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor -am
+      - name: Bootstrap annotation processors and Maven plugins
+        run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
 
       - name: Build and test all modules
         run: mvn install -B
@@ -58,8 +58,8 @@ jobs:
           distribution: 'zulu'
           cache: 'maven'
 
-      - name: Bootstrap jbct-maven-plugin and slice-processor
-        run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor -am
+      - name: Bootstrap annotation processors and Maven plugins
+        run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
 
       - name: Install all artifacts
         run: mvn install -B -DskipTests

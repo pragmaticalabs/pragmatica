@@ -19,6 +19,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 
+
 /// Routes for dynamic configuration management: get, set, remove config overrides.
 public final class ConfigRoutes implements RouteSource {
     private final DynamicConfigManager configManager;
@@ -33,36 +34,27 @@ public final class ConfigRoutes implements RouteSource {
         return new ConfigRoutes(configManager, nodeSupplier);
     }
 
-    // Request DTO
     record SetConfigRequest(String key, String value, Option<String> nodeId){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(// GET /api/config - merged config (base + overrides)
-        Route.<Object>get("/api/config")
-             .toJson(configManager::allConfigAsJson),
-        // GET /api/config/overrides - only overrides
-        Route.<Object>get("/api/config/overrides")
-             .toJson(configManager::overridesAsJson),
-        // POST /api/config - set config value
-        Route.<ConfigSetResponse>post("/api/config")
-             .withBody(SetConfigRequest.class)
-             .toJson(this::handleSetConfig),
-        // DELETE /api/config/{key} - remove cluster-wide config
-        Route.<ConfigRemovedResponse>delete("/api/config")
-             .withPath(aString())
-             .to(this::handleDeleteConfig)
-             .asJson(),
-        // DELETE /api/config/node/{nodeId}/{key} - remove node-scoped config
-        Route.<ConfigRemovedResponse>delete("/api/config/node")
-             .withPath(aString(),
-                       aString())
-             .to(this::handleDeleteNodeConfig)
-             .asJson());
+        return Stream.of(Route.<Object>get("/api/config").toJson(configManager::allConfigAsJson),
+                         Route.<Object>get("/api/config/overrides").toJson(configManager::overridesAsJson),
+                         Route.<ConfigSetResponse>post("/api/config")
+                              .withBody(SetConfigRequest.class)
+                              .toJson(this::handleSetConfig),
+                         Route.<ConfigRemovedResponse>delete("/api/config")
+                              .withPath(aString())
+                              .to(this::handleDeleteConfig)
+                              .asJson(),
+                         Route.<ConfigRemovedResponse>delete("/api/config/node")
+                              .withPath(aString(),
+                                        aString())
+                              .to(this::handleDeleteNodeConfig)
+                              .asJson());
     }
 
     private Promise<ConfigSetResponse> handleSetConfig(SetConfigRequest req) {
-        return validateSetRequest(req).async()
-                                 .flatMap(this::applySetConfig);
+        return validateSetRequest(req).async().flatMap(this::applySetConfig);
     }
 
     private Promise<ConfigSetResponse> applySetConfig(SetConfigRequest req) {
@@ -84,23 +76,19 @@ public final class ConfigRoutes implements RouteSource {
     }
 
     private Result<SetConfigRequest> validateSetRequest(SetConfigRequest req) {
-        if ( req.key() == null || req.key().isEmpty()) {
-        return ConfigError.MISSING_FIELDS.result();}
-        if ( req.value() == null || req.value().isEmpty()) {
-        return ConfigError.MISSING_FIELDS.result();}
+        if (req.key() == null || req.key().isEmpty()) {return ConfigError.MISSING_FIELDS.result();}
+        if (req.value() == null || req.value().isEmpty()) {return ConfigError.MISSING_FIELDS.result();}
         return Result.success(req);
     }
 
     private Promise<ConfigRemovedResponse> handleDeleteConfig(String key) {
-        if ( key.isEmpty()) {
-        return ConfigError.KEY_REQUIRED.promise();}
+        if (key.isEmpty()) {return ConfigError.KEY_REQUIRED.promise();}
         return configManager.removeConfig(key).onSuccess(_ -> auditAndEmitConfigRemove(key, "cluster"))
                                          .map(_ -> new ConfigRemovedResponse("config_removed", key));
     }
 
     private Promise<ConfigRemovedResponse> handleDeleteNodeConfig(String nodeIdStr, String key) {
-        if ( nodeIdStr.isEmpty() || key.isEmpty()) {
-        return ConfigError.KEY_REQUIRED.promise();}
+        if (nodeIdStr.isEmpty() || key.isEmpty()) {return ConfigError.KEY_REQUIRED.promise();}
         return NodeId.nodeId(nodeIdStr).async()
                             .flatMap(nodeId -> configManager.removeNodeConfig(key, nodeId).onSuccess(_ -> auditAndEmitConfigRemove(key,
                                                                                                                                    "node:" + nodeIdStr))

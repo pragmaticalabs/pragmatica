@@ -14,11 +14,13 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.empty;
 import static org.pragmatica.lang.Option.some;
 
+
 /// Active implementation of CommunityScalingEvaluator.
-@SuppressWarnings({"JBCT-STY-05", "JBCT-RET-01", "JBCT-ZONE-02"})
-final class ActiveCommunityScalingEvaluator implements CommunityScalingEvaluator {
+@SuppressWarnings({"JBCT-STY-05", "JBCT-RET-01", "JBCT-ZONE-02"}) final class ActiveCommunityScalingEvaluator implements CommunityScalingEvaluator {
     private static final Logger log = LoggerFactory.getLogger(CommunityScalingEvaluator.class);
+
     private static final String SCALE_UP = "UP";
+
     private static final String SCALE_DOWN = "DOWN";
 
     private final double scaleUpCpuThreshold;
@@ -56,12 +58,13 @@ final class ActiveCommunityScalingEvaluator implements CommunityScalingEvaluator
                                                               int memberCount,
                                                               WindowSample currentSample) {
         addSample(currentSample);
-        if ( window.size() < sustainedCount) {
+        if (window.size() <sustainedCount) {
             log.trace("Window not full enough ({}/{}), skipping evaluation", window.size(), sustainedCount);
             return empty();
         }
-        return detectScaleUp(communityId, governorId, memberCount)
-        .orElse(() -> detectScaleDown(communityId, governorId, memberCount));
+        return detectScaleUp(communityId, governorId, memberCount).orElse(() -> detectScaleDown(communityId,
+                                                                                                governorId,
+                                                                                                memberCount));
     }
 
     @Override public List<WindowSample> slidingWindow() {
@@ -75,26 +78,27 @@ final class ActiveCommunityScalingEvaluator implements CommunityScalingEvaluator
 
     private void addSample(WindowSample sample) {
         window.addLast(sample);
-        while ( window.size() > windowSize) {
-        window.removeFirst();}
+        while (window.size() > windowSize) {window.removeFirst();}
     }
 
-    private Option<CommunityScalingRequest> detectScaleUp(String communityId,
-                                                          NodeId governorId,
-                                                          int memberCount) {
+    private Option<CommunityScalingRequest> detectScaleUp(String communityId, NodeId governorId, int memberCount) {
         var cpuBreaches = countCpuBreachesUp();
         var p95Breaches = countP95Breaches();
         var errorBreaches = countErrorBreaches();
-        if ( cpuBreaches >= sustainedCount || p95Breaches >= sustainedCount || errorBreaches >= sustainedCount) {
-        return emitIfNotCoolingDown(communityId, governorId, SCALE_UP, memberCount, memberCount + 1);}
+        if (cpuBreaches >= sustainedCount || p95Breaches >= sustainedCount || errorBreaches >= sustainedCount) {return emitIfNotCoolingDown(communityId,
+                                                                                                                                            governorId,
+                                                                                                                                            SCALE_UP,
+                                                                                                                                            memberCount,
+                                                                                                                                            memberCount + 1);}
         return empty();
     }
 
-    private Option<CommunityScalingRequest> detectScaleDown(String communityId,
-                                                            NodeId governorId,
-                                                            int memberCount) {
-        if ( countCpuBreachesDown() >= sustainedCount) {
-        return emitIfNotCoolingDown(communityId, governorId, SCALE_DOWN, memberCount, Math.max(1, memberCount - 1));}
+    private Option<CommunityScalingRequest> detectScaleDown(String communityId, NodeId governorId, int memberCount) {
+        if (countCpuBreachesDown() >= sustainedCount) {return emitIfNotCoolingDown(communityId,
+                                                                                   governorId,
+                                                                                   SCALE_DOWN,
+                                                                                   memberCount,
+                                                                                   Math.max(1, memberCount - 1));}
         return empty();
     }
 
@@ -104,7 +108,7 @@ final class ActiveCommunityScalingEvaluator implements CommunityScalingEvaluator
     }
 
     private long countCpuBreachesDown() {
-        return window.stream().filter(s -> s.avgCpuUsage() < scaleDownCpuThreshold)
+        return window.stream().filter(s -> s.avgCpuUsage() <scaleDownCpuThreshold)
                             .count();
     }
 
@@ -126,7 +130,7 @@ final class ActiveCommunityScalingEvaluator implements CommunityScalingEvaluator
         var now = System.currentTimeMillis();
         var cooldownKey = communityId + ":" + direction;
         var lastTime = lastScalingRequestTime.get(cooldownKey);
-        if ( lastTime != null && (now - lastTime) < cooldownMs) {
+        if (lastTime != null && (now - lastTime) <cooldownMs) {
             log.debug("Scaling {} for {} in cooldown ({} ms remaining)",
                       direction,
                       communityId,

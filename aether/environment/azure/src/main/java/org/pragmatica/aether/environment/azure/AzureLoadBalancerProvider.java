@@ -28,15 +28,15 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
+
 /// Azure Cloud load balancer provider.
 /// Manages backend address pool entries on a pre-existing Azure Load Balancer.
-public record AzureLoadBalancerProvider( AzureClient client,
-                                         String loadBalancerName,
-                                         String backendPoolName,
-                                         String vnetId) implements LoadBalancerProvider {
+public record AzureLoadBalancerProvider(AzureClient client,
+                                        String loadBalancerName,
+                                        String backendPoolName,
+                                        String vnetId) implements LoadBalancerProvider {
     private static final Logger log = LoggerFactory.getLogger(AzureLoadBalancerProvider.class);
 
-    /// Factory method for creating an AzureLoadBalancerProvider.
     public static Result<AzureLoadBalancerProvider> azureLoadBalancerProvider(AzureClient client,
                                                                               String loadBalancerName,
                                                                               String backendPoolName,
@@ -62,7 +62,6 @@ public record AzureLoadBalancerProvider( AzureClient client,
         return client.getLb(loadBalancerName).map(this::toLoadBalancerInfo);
     }
 
-    // --- Leaf: map Azure LB to LoadBalancerInfo ---
     private LoadBalancerInfo toLoadBalancerInfo(AzureLoadBalancer lb) {
         var targets = extractLbTargetIps(lb).stream()
                                         .map(ip -> new LoadBalancerInfo.TargetInfo(ip, "active", 1))
@@ -70,7 +69,6 @@ public record AzureLoadBalancerProvider( AzureClient client,
         return new LoadBalancerInfo(lb.id(), lb.name(), "", "active", targets);
     }
 
-    // --- Leaf: extract backend IPs from Azure LB for loadBalancerInfo ---
     private Set<String> extractLbTargetIps(AzureLoadBalancer lb) {
         return option(lb.properties()).flatMap(p -> option(p.backendAddressPools()))
                      .map(pools -> extractIpsFromPools(pools, backendPoolName))
@@ -85,7 +83,6 @@ public record AzureLoadBalancerProvider( AzureClient client,
         return buildPoolFromIps(state.activeNodeIps()).flatMap(this::updatePool);
     }
 
-    // --- Leaf: build a backend pool from a set of IPs ---
     private Promise<BackendPool> buildPoolFromIps(Set<String> ips) {
         var addresses = ips.stream().map(this::toBackendAddress)
                                   .toList();
@@ -93,24 +90,20 @@ public record AzureLoadBalancerProvider( AzureClient client,
         return Promise.success(pool);
     }
 
-    // --- Leaf: create a BackendAddress from an IP ---
     private BackendAddress toBackendAddress(String ip) {
         return new BackendAddress("addr-" + ip.replace('.', '-'), new BackendAddressProperties(ip));
     }
 
-    // --- Leaf: update the backend pool on the load balancer ---
     private Promise<Unit> updatePool(BackendPool pool) {
         return client.updateLbBackendPool(loadBalancerName, backendPoolName, pool).mapToUnit();
     }
 
-    // --- Leaf: resolve current IPs from a load balancer ---
     private Set<String> currentIpsFromLb(AzureLoadBalancer lb) {
         return option(lb.properties()).flatMap(props -> option(props.backendAddressPools()))
                      .map(pools -> extractIpsFromPools(pools, backendPoolName))
                      .or(Set.of());
     }
 
-    // --- Leaf: extract IPs from the matching backend pool ---
     private static Set<String> extractIpsFromPools(List<BackendPool> pools, String poolName) {
         return pools.stream().filter(pool -> poolName.equals(pool.name()))
                            .findFirst()
@@ -118,26 +111,21 @@ public record AzureLoadBalancerProvider( AzureClient client,
                            .orElse(Set.of());
     }
 
-    // --- Leaf: extract IP addresses from a single pool ---
     private static Set<String> extractIpsFromPool(BackendPool pool) {
         return option(pool.properties()).flatMap(props -> option(props.loadBalancerBackendAddresses()))
                      .map(AzureLoadBalancerProvider::toIpSet)
                      .or(Set.of());
     }
 
-    // --- Leaf: convert backend addresses to IP set ---
     private static Set<String> toIpSet(List<BackendAddress> addresses) {
         return addresses.stream().map(AzureLoadBalancerProvider::ipOf)
                                .collect(Collectors.toSet());
     }
 
-    // --- Leaf: extract IP from backend address ---
     private static String ipOf(BackendAddress addr) {
-        return option(addr.properties()).map(BackendAddressProperties::ipAddress)
-                     .or("0.0.0.0");
+        return option(addr.properties()).map(BackendAddressProperties::ipAddress).or("0.0.0.0");
     }
 
-    // --- Sequencer: remove an IP from current set and update pool ---
     private Promise<Unit> removeIpAndUpdate(Set<String> currentIps, String nodeIp) {
         var remaining = currentIps.stream().filter(Predicate.not(nodeIp::equals))
                                          .collect(Collectors.toSet());

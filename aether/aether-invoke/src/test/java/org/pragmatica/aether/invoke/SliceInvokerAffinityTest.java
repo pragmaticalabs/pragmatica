@@ -9,7 +9,7 @@ import org.pragmatica.aether.endpoint.EndpointRegistry.Endpoint;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
-import org.pragmatica.aether.update.DeploymentStrategyCoordinator;
+import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.lang.Option;
@@ -44,7 +44,7 @@ class SliceInvokerAffinityTest {
         InvocationHandler stubHandler = InvocationHandler.invocationHandler(self, stubNetwork);
         Serializer stubSerializer = new StubSerializer();
         Deserializer stubDeserializer = new StubDeserializer();
-        var stubStrategyCoordinator = DeploymentStrategyCoordinator.deploymentStrategyCoordinator(new StubRollingUpdateManager());
+        DeploymentManager stubDeploymentManager = new StubDeploymentManager();
 
         invoker = SliceInvoker.sliceInvoker(self,
                                              stubNetwork,
@@ -52,7 +52,7 @@ class SliceInvokerAffinityTest {
                                              stubHandler,
                                              stubSerializer,
                                              stubDeserializer,
-                                             stubStrategyCoordinator,
+                                             stubDeploymentManager,
                                              ObservabilityInterceptor.noOp());
     }
 

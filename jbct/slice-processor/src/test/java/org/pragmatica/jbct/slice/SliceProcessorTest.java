@@ -1587,8 +1587,8 @@ class SliceProcessorTest {
         var factoryContent = compilation.generatedSourceFile("test.LoanServiceFactory")
                                         .get().getCharContent(false).toString();
 
-        // Resource is provisioned for the plain interface's factory param (fully qualified)
-        assertThat(factoryContent).contains("ctx.resources().provide(test.infra.HttpClient.class, \"http.kyc\")");
+        // Resource is provisioned for the plain interface's factory param (simple name via import)
+        assertThat(factoryContent).contains("ctx.resources().provide(HttpClient.class, \"http.kyc\")");
         // Factory called WITH the provisioned arg
         assertThat(factoryContent).contains("KycStep.kycStep(kycStep_httpClient)");
         // Zero-arg call must NOT appear
@@ -1674,9 +1674,9 @@ class SliceProcessorTest {
         var factoryContent = compilation.generatedSourceFile("test.LoanServiceFactory")
                                         .get().getCharContent(false).toString();
 
-        // Both resources provisioned (fully qualified)
-        assertThat(factoryContent).contains("ctx.resources().provide(test.infra.HttpClient.class, \"http.kyc\")");
-        assertThat(factoryContent).contains("ctx.resources().provide(test.infra.HttpClient.class, \"http.fraud\")");
+        // Both resources provisioned (simple name via import)
+        assertThat(factoryContent).contains("ctx.resources().provide(HttpClient.class, \"http.kyc\")");
+        assertThat(factoryContent).contains("ctx.resources().provide(HttpClient.class, \"http.fraud\")");
         // Both factory calls have args
         assertThat(factoryContent).contains("KycStep.kycStep(kycStep_httpClient)");
         assertThat(factoryContent).contains("FraudCheck.fraudCheck(fraudCheck_httpClient)");

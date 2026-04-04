@@ -19,6 +19,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 
+
 /// Routes for observability: distributed traces and per-method depth configuration.
 public final class ObservabilityRoutes implements RouteSource {
     private static final int DEFAULT_LIMIT = 100;
@@ -36,7 +37,6 @@ public final class ObservabilityRoutes implements RouteSource {
         return new ObservabilityRoutes(depthRegistry, traceStore);
     }
 
-    // Request DTO for depth configuration
     record SetDepthRequest(String artifact, String method, int depthThreshold){}
 
     @Override public Stream<Route<?>> routes() {
@@ -48,14 +48,12 @@ public final class ObservabilityRoutes implements RouteSource {
                                          QueryParameter.aString("maxDepth"))
                               .toValue(this::handleQueryTraces)
                               .asJson(),
-                         Route.<TraceStats>get("/api/traces/stats")
-                              .toJson(this::handleTraceStats),
+                         Route.<TraceStats>get("/api/traces/stats").toJson(this::handleTraceStats),
                          Route.<Object>get("/api/traces")
                               .withPath(aString())
                               .to(this::handleTraceByRequestId)
                               .asJson(),
-                         Route.<Object>get("/api/observability/depth")
-                              .toJson(this::handleGetDepthConfigs),
+                         Route.<Object>get("/api/observability/depth").toJson(this::handleGetDepthConfigs),
                          Route.<Object>post("/api/observability/depth")
                               .withBody(SetDepthRequest.class)
                               .toJson(this::handleSetDepth),
@@ -78,8 +76,7 @@ public final class ObservabilityRoutes implements RouteSource {
     }
 
     private Promise<Object> handleTraceByRequestId(String requestId) {
-        if ( requestId.isEmpty()) {
-        return ObservabilityError.REQUEST_ID_REQUIRED.promise();}
+        if (requestId.isEmpty()) {return ObservabilityError.REQUEST_ID_REQUIRED.promise();}
         var traces = traceStore.forRequest(requestId);
         return Promise.success(tracesAsJson(traces));
     }
@@ -101,23 +98,17 @@ public final class ObservabilityRoutes implements RouteSource {
     }
 
     private Promise<Object> handleDeleteDepth(String artifact, String method) {
-        if ( artifact.isEmpty() || method.isEmpty()) {
-        return ObservabilityError.KEY_REQUIRED.promise();}
+        if (artifact.isEmpty() || method.isEmpty()) {return ObservabilityError.KEY_REQUIRED.promise();}
         return depthRegistry.removeConfig(artifact, method).map(_ -> depthRemovedResponseAsJson(artifact, method));
     }
 
-    // --- Validation ---
     private static Result<SetDepthRequest> validateSetDepthRequest(SetDepthRequest req) {
-        if ( req.artifact() == null || req.artifact().isEmpty()) {
-        return ObservabilityError.MISSING_FIELDS.result();}
-        if ( req.method() == null || req.method().isEmpty()) {
-        return ObservabilityError.MISSING_FIELDS.result();}
-        if ( req.depthThreshold() < 0) {
-        return ObservabilityError.INVALID_DEPTH.result();}
+        if (req.artifact() == null || req.artifact().isEmpty()) {return ObservabilityError.MISSING_FIELDS.result();}
+        if (req.method() == null || req.method().isEmpty()) {return ObservabilityError.MISSING_FIELDS.result();}
+        if (req.depthThreshold() <0) {return ObservabilityError.INVALID_DEPTH.result();}
         return Result.success(req);
     }
 
-    // --- Filter matching ---
     private static boolean matchesTraceFilters(InvocationNode node,
                                                Option<String> methodOpt,
                                                Option<String> statusOpt,
@@ -134,24 +125,17 @@ public final class ObservabilityRoutes implements RouteSource {
     private static int parseIntOrDefault(String value) {
         try {
             return Integer.parseInt(value);
-        }
-
-
-
-
-        catch (NumberFormatException _) {
+        } catch (NumberFormatException _) {
             return DEFAULT_LIMIT;
         }
     }
 
-    // --- Manual JSON serialization ---
-    @SuppressWarnings("JBCT-PAT-01")
-    private static String tracesAsJson(List<InvocationNode> traces) {
+    @SuppressWarnings("JBCT-PAT-01") private static String tracesAsJson(List<InvocationNode> traces) {
         var sb = new StringBuilder(traces.size() * 256);
         sb.append("[");
         var first = true;
-        for ( var node : traces) {
-            if ( !first) sb.append(",");
+        for (var node : traces) {
+            if (!first) sb.append(",");
             appendTraceNodeJson(sb, node);
             first = false;
         }
@@ -159,8 +143,7 @@ public final class ObservabilityRoutes implements RouteSource {
         return sb.toString();
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    private static void appendTraceNodeJson(StringBuilder sb, InvocationNode node) {
+    @SuppressWarnings("JBCT-PAT-01") private static void appendTraceNodeJson(StringBuilder sb, InvocationNode node) {
         sb.append("{\"requestId\":\"").append(escapeJson(node.requestId()))
                  .append("\"");
         sb.append(",\"depth\":").append(node.depth());
@@ -183,13 +166,12 @@ public final class ObservabilityRoutes implements RouteSource {
         sb.append("}");
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    private static String depthConfigsAsJson(Map<String, ObservabilityConfig> configs) {
+    @SuppressWarnings("JBCT-PAT-01") private static String depthConfigsAsJson(Map<String, ObservabilityConfig> configs) {
         var sb = new StringBuilder(configs.size() * 128);
         sb.append("[");
         var first = true;
-        for ( var entry : configs.entrySet()) {
-            if ( !first) sb.append(",");
+        for (var entry : configs.entrySet()) {
+            if (!first) sb.append(",");
             sb.append("{\"key\":\"").append(escapeJson(entry.getKey()))
                      .append("\"");
             sb.append(",\"depthThreshold\":").append(entry.getValue().depthThreshold());
@@ -213,7 +195,6 @@ public final class ObservabilityRoutes implements RouteSource {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
-    // --- Error causes ---
     private enum ObservabilityError implements Cause {
         MISSING_FIELDS("Missing artifact, method, or depthThreshold field"),
         INVALID_DEPTH("Depth threshold must be non-negative"),

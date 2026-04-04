@@ -25,9 +25,11 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 
+
 /// Routes for scheduled task management: listing, pause/resume, and manual trigger.
 public final class ScheduledTaskRoutes implements RouteSource {
     private static final Cause TASK_NOT_FOUND = Causes.cause("Scheduled task not found");
+
     private static final Cause UNKNOWN_ACTION = Causes.cause("Unknown action (expected: pause, resume, trigger)");
 
     private final ScheduledTaskRegistry registry;
@@ -86,8 +88,7 @@ public final class ScheduledTaskRoutes implements RouteSource {
                              long updatedAt){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<ScheduledTasksResponse>get("/api/scheduled-tasks")
-                              .toJson(this::buildTasksResponse),
+        return Stream.of(Route.<ScheduledTasksResponse>get("/api/scheduled-tasks").toJson(this::buildTasksResponse),
                          Route.<FilteredTasksResponse>get("/api/scheduled-tasks")
                               .withPath(aString())
                               .to(this::buildFilteredResponse)
@@ -123,25 +124,27 @@ public final class ScheduledTaskRoutes implements RouteSource {
         return Promise.success(new FilteredTasksResponse(tasks, configSection));
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Condition: routes action to appropriate handler
-    private Promise<TaskActionResult> handleTaskAction(String configSection,
-                                                       String artifactStr,
-                                                       String methodStr,
-                                                       String action) {
-        return switch (action) {case "pause" -> setPaused(configSection, artifactStr, methodStr, true);case "resume" -> setPaused(configSection,
-                                                                                                                                  artifactStr,
-                                                                                                                                  methodStr,
-                                                                                                                                  false);case "trigger" -> triggerTask(configSection,
-                                                                                                                                                                       artifactStr,
-                                                                                                                                                                       methodStr);default -> UNKNOWN_ACTION.promise();};
+    @SuppressWarnings("JBCT-PAT-01") private Promise<TaskActionResult> handleTaskAction(String configSection,
+                                                                                        String artifactStr,
+                                                                                        String methodStr,
+                                                                                        String action) {
+        return switch (action){
+            case "pause" -> setPaused(configSection, artifactStr, methodStr, true);
+            case "resume" -> setPaused(configSection, artifactStr, methodStr, false);
+            case "trigger" -> triggerTask(configSection, artifactStr, methodStr);
+            default -> UNKNOWN_ACTION.promise();
+        };
     }
 
     private Promise<TaskActionResult> setPaused(String configSection,
                                                 String artifactStr,
                                                 String methodStr,
                                                 boolean paused) {
-        return findTask(configSection, artifactStr, methodStr)
-        .flatMap(task -> submitPausedUpdate(task, configSection, artifactStr, methodStr, paused));
+        return findTask(configSection, artifactStr, methodStr).flatMap(task -> submitPausedUpdate(task,
+                                                                                                  configSection,
+                                                                                                  artifactStr,
+                                                                                                  methodStr,
+                                                                                                  paused));
     }
 
     private Promise<TaskActionResult> submitPausedUpdate(ScheduledTask task,
@@ -157,30 +160,30 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                            paused);
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
         var action = paused
-                     ? "paused"
-                     : "resumed";
+                    ? "paused"
+                    : "resumed";
         return nodeSupplier.get().apply(List.of(command))
                                .map(_ -> new TaskActionResult(true, configSection, artifactStr, methodStr, action));
     }
 
-    private Promise<TaskActionResult> triggerTask(String configSection,
-                                                  String artifactStr,
-                                                  String methodStr) {
-        return findTask(configSection, artifactStr, methodStr)
-        .flatMap(task -> invokeAndBuildResult(task, configSection, artifactStr, methodStr));
+    private Promise<TaskActionResult> triggerTask(String configSection, String artifactStr, String methodStr) {
+        return findTask(configSection, artifactStr, methodStr).flatMap(task -> invokeAndBuildResult(task,
+                                                                                                    configSection,
+                                                                                                    artifactStr,
+                                                                                                    methodStr));
     }
 
     private Promise<TaskActionResult> invokeAndBuildResult(ScheduledTask task,
                                                            String configSection,
                                                            String artifactStr,
                                                            String methodStr) {
-        return invoker.invoke(task.artifact(), task.methodName(), Unit.unit())
+        return invoker.invoke(task.artifact(),
+                              task.methodName(),
+                              Unit.unit())
         .map(_ -> new TaskActionResult(true, configSection, artifactStr, methodStr, "triggered"));
     }
 
-    private Promise<ScheduledTask> findTask(String configSection,
-                                            String artifactStr,
-                                            String methodStr) {
+    private Promise<ScheduledTask> findTask(String configSection, String artifactStr, String methodStr) {
         return registry.allTasks().stream()
                                 .filter(t -> matchesTask(t, configSection, artifactStr, methodStr))
                                 .findFirst()
@@ -199,12 +202,12 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                    task.artifact(),
                                                                    task.methodName());
         return stateRegistry.stateFor(stateKey)
-        .fold(() -> buildSummary(task, 0, 0, 0, 0),
-              state -> buildSummary(task,
-                                    state.lastExecutionAt(),
-                                    state.nextFireAt(),
-                                    state.consecutiveFailures(),
-                                    state.totalExecutions()));
+                                     .fold(() -> buildSummary(task, 0, 0, 0, 0),
+                                           state -> buildSummary(task,
+                                                                 state.lastExecutionAt(),
+                                                                 state.nextFireAt(),
+                                                                 state.consecutiveFailures(),
+                                                                 state.totalExecutions()));
     }
 
     private static TaskSummary buildSummary(ScheduledTask task,
@@ -226,15 +229,15 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                totalExecutions);
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Condition: routes action to state handler
-    private Promise<TaskStateResponse> getTaskState(String configSection,
-                                                    String artifactStr,
-                                                    String methodStr,
-                                                    String stateAction) {
-        if ( !"state".equals(stateAction)) {
-        return Causes.cause("Unknown GET action: " + stateAction).promise();}
-        return findTask(configSection, artifactStr, methodStr)
-        .flatMap(task -> buildStateResponse(task, configSection, artifactStr, methodStr));
+    @SuppressWarnings("JBCT-PAT-01") private Promise<TaskStateResponse> getTaskState(String configSection,
+                                                                                     String artifactStr,
+                                                                                     String methodStr,
+                                                                                     String stateAction) {
+        if (!"state".equals(stateAction)) {return Causes.cause("Unknown GET action: " + stateAction).promise();}
+        return findTask(configSection, artifactStr, methodStr).flatMap(task -> buildStateResponse(task,
+                                                                                                  configSection,
+                                                                                                  artifactStr,
+                                                                                                  methodStr));
     }
 
     private Promise<TaskStateResponse> buildStateResponse(ScheduledTask task,
@@ -245,16 +248,18 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                    task.artifact(),
                                                                    task.methodName());
         return stateRegistry.stateFor(stateKey)
-        .fold(() -> Promise.success(emptyStateResponse(configSection, artifactStr, methodStr)),
-              state -> Promise.success(new TaskStateResponse(configSection,
-                                                             artifactStr,
-                                                             methodStr,
-                                                             state.lastExecutionAt(),
-                                                             state.nextFireAt(),
-                                                             state.consecutiveFailures(),
-                                                             state.totalExecutions(),
-                                                             state.lastFailureMessage(),
-                                                             state.updatedAt())));
+                                     .fold(() -> Promise.success(emptyStateResponse(configSection,
+                                                                                    artifactStr,
+                                                                                    methodStr)),
+                                           state -> Promise.success(new TaskStateResponse(configSection,
+                                                                                          artifactStr,
+                                                                                          methodStr,
+                                                                                          state.lastExecutionAt(),
+                                                                                          state.nextFireAt(),
+                                                                                          state.consecutiveFailures(),
+                                                                                          state.totalExecutions(),
+                                                                                          state.lastFailureMessage(),
+                                                                                          state.updatedAt())));
     }
 
     private static TaskStateResponse emptyStateResponse(String configSection, String artifactStr, String methodStr) {

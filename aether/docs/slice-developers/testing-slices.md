@@ -7,7 +7,7 @@ Test Aether clusters with Testcontainers for realistic integration testing.
 The E2E testing framework provides:
 - **AetherNodeContainer**: Testcontainer wrapper for single nodes
 - **AetherCluster**: Multi-node cluster management
-- **Built-in test categories**: Formation, deployment, chaos, rolling updates
+- **Built-in test categories**: Formation, deployment, chaos, rolling deployments
 
 ## Prerequisites
 
@@ -105,13 +105,13 @@ node.setControllerConfig(config);   // POST /controller/config
 node.getControllerStatus();         // GET /controller/status
 node.triggerControllerEvaluation(); // POST /controller/evaluate
 
-// Rolling Updates
-node.startRollingUpdate(oldVersion, newVersion);       // POST /rolling-update/start
-node.getRollingUpdates();                              // GET /rolling-updates
-node.getRollingUpdateStatus(updateId);                 // GET /rolling-update/{id}
-node.setRollingUpdateRouting(updateId, oldWeight, newWeight); // POST /rolling-update/{id}/routing
-node.completeRollingUpdate(updateId);                  // POST /rolling-update/{id}/complete
-node.rollbackRollingUpdate(updateId);                  // POST /rolling-update/{id}/rollback
+// Deployments
+node.startDeployment(version, strategy);               // POST /api/deploy
+node.getDeployments();                                 // GET /api/deploy
+node.getDeploymentStatus(deploymentId);                // GET /api/deploy/{id}
+node.promoteDeployment(deploymentId);                  // POST /api/deploy/{id}/promote
+node.completeDeployment(deploymentId);                 // POST /api/deploy/{id}/complete
+node.rollbackDeployment(deploymentId);                 // POST /api/deploy/{id}/rollback
 
 // Slice Invocation
 node.invokeSlice(httpMethod, path, body);  // Invoke via HTTP router
@@ -333,37 +333,37 @@ void cluster_reelectsLeader_afterLeaderKilled() {
 }
 ```
 
-### Rolling Update Tests
+### Deployment Tests
 
-Test rolling update functionality:
+Test deployment functionality:
 
 ```java
 @Test
-void rollingUpdate_shiftsTraffic_gradually() {
+void deployment_shiftsTraffic_gradually() {
     cluster.start();
     cluster.awaitQuorum();
 
     // Deploy initial version
     cluster.anyNode().deploy("org.example:my-slice:1.0.0", 3);
 
-    // Start rolling update
-    var result = cluster.anyNode().post("/rolling-update/start", """
+    // Start rolling deployment
+    var result = cluster.anyNode().post("/api/deploy", """
         {
           "artifactBase": "org.example:my-slice",
           "version": "2.0.0",
+          "strategy": "ROLLING",
           "instances": 3
         }
         """);
 
     assertThat(result).contains("\"state\":\"DEPLOYING\"");
 
-    // Adjust routing
-    var updateId = extractUpdateId(result);
-    cluster.anyNode().post("/rolling-update/" + updateId + "/routing",
-        "{\"routing\": \"1:1\"}");
+    // Promote to next traffic stage
+    var deploymentId = extractDeploymentId(result);
+    cluster.anyNode().post("/api/deploy/" + deploymentId + "/promote", "{}");
 
     // Complete
-    cluster.anyNode().post("/rolling-update/" + updateId + "/complete", "{}");
+    cluster.anyNode().post("/api/deploy/" + deploymentId + "/complete", "{}");
 }
 ```
 

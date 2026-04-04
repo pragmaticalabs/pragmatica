@@ -3,6 +3,7 @@ package org.pragmatica.aether.cli.cluster;
 import org.pragmatica.aether.config.cluster.ClusterManagementConfig;
 import org.pragmatica.aether.config.cluster.PortMapping;
 
+
 /// Generates a Docker Compose YAML file from cluster configuration.
 ///
 /// Designed for single-host testing scenarios where all nodes run on the same machine.
@@ -11,7 +12,6 @@ import org.pragmatica.aether.config.cluster.PortMapping;
 sealed interface DockerComposeGenerator {
     record unused() implements DockerComposeGenerator{}
 
-    /// Generate a complete docker-compose.yml from the cluster config.
     static String generate(ClusterManagementConfig config, String apiKey) {
         var sb = new StringBuilder();
         appendHeader(sb);
@@ -19,8 +19,7 @@ sealed interface DockerComposeGenerator {
         appendServicesHeader(sb);
         var coreCount = config.cluster().core()
                                       .count();
-        for ( int i = 0; i < coreCount; i++) {
-        appendNodeService(sb, config, i, coreCount, apiKey);}
+        for (int i = 0;i <coreCount;i++) {appendNodeService(sb, config, i, coreCount, apiKey);}
         return sb.toString();
     }
 
@@ -121,12 +120,10 @@ sealed interface DockerComposeGenerator {
         sb.append("      start_period: 30s\n");
     }
 
-    /// Build peers list using Docker DNS hostnames: "node-1:aether-node-1:port,node-2:aether-node-2:port,..."
     private static String buildComposePeers(String clusterName, int totalNodes, int clusterPort) {
         var sb = new StringBuilder();
-        for ( int i = 0; i < totalNodes; i++) {
-            if ( i > 0) {
-            sb.append(',');}
+        for (int i = 0;i <totalNodes;i++) {
+            if (i > 0) {sb.append(',');}
             var nodeNum = i + 1;
             sb.append("node-").append(nodeNum)
                      .append(":aether-node-")

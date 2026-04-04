@@ -20,8 +20,8 @@ test_mgmt_status_json() {
     status=$(cluster_status)
     assert_ne "$status" "" "Management /api/status returns JSON"
     local node_id
-    node_id=$(json_field "$status" "['nodeId']")
-    assert_ne "$node_id" "" "Status contains nodeId"
+    node_id=$(json_field "$status" "['cluster']['nodes'][0]['id']")
+    assert_ne "$node_id" "" "Status contains node id in cluster.nodes"
 }
 
 test_mgmt_nodes_json() {

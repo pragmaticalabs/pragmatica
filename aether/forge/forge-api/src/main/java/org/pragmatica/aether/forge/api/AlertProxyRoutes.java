@@ -14,6 +14,7 @@ import java.time.Duration;
 import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.http.routing.Route.in;
 
+
 /// Proxy routes for alert endpoints.
 /// Forwards alert requests from the dashboard port to the leader's management port.
 public sealed interface AlertProxyRoutes {
@@ -31,59 +32,49 @@ public sealed interface AlertProxyRoutes {
 
     static RouteSource alertProxyRoutes(EmberCluster cluster) {
         var http = JdkHttpOperations.jdkHttpOperations();
-        return in("/api/alerts")
-        .serve(activeAlertsRoute(cluster, http),
-               alertHistoryRoute(cluster, http),
-               clearAlertsRoute(cluster, http),
-               thresholdsGetRoute(cluster, http),
-               thresholdsSetRoute(cluster, http),
-               thresholdsDeleteRoute(cluster, http));
+        return in("/api/alerts").serve(activeAlertsRoute(cluster, http),
+                                       alertHistoryRoute(cluster, http),
+                                       clearAlertsRoute(cluster, http),
+                                       thresholdsGetRoute(cluster, http),
+                                       thresholdsSetRoute(cluster, http),
+                                       thresholdsDeleteRoute(cluster, http));
     }
 
-    private static Route<AlertListResponse> activeAlertsRoute(EmberCluster cluster,
-                                                              JdkHttpOperations http) {
+    private static Route<AlertListResponse> activeAlertsRoute(EmberCluster cluster, JdkHttpOperations http) {
         return Route.<AlertListResponse>get("/active")
                     .to(_ -> proxyGet(cluster, http, "/api/alerts/active"))
                     .asJson();
     }
 
-    private static Route<AlertListResponse> alertHistoryRoute(EmberCluster cluster,
-                                                              JdkHttpOperations http) {
+    private static Route<AlertListResponse> alertHistoryRoute(EmberCluster cluster, JdkHttpOperations http) {
         return Route.<AlertListResponse>get("/history")
                     .to(_ -> proxyGet(cluster, http, "/api/alerts/history"))
                     .asJson();
     }
 
-    private static Route<AlertClearResponse> clearAlertsRoute(EmberCluster cluster,
-                                                              JdkHttpOperations http) {
-        return Route.<AlertClearResponse>post("/clear")
-                    .toJson(_ -> proxyClear(cluster, http));
+    private static Route<AlertClearResponse> clearAlertsRoute(EmberCluster cluster, JdkHttpOperations http) {
+        return Route.<AlertClearResponse>post("/clear").toJson(_ -> proxyClear(cluster, http));
     }
 
-    private static Promise<AlertListResponse> proxyGet(EmberCluster cluster,
-                                                       JdkHttpOperations http,
-                                                       String path) {
+    private static Promise<AlertListResponse> proxyGet(EmberCluster cluster, JdkHttpOperations http, String path) {
         return cluster.getLeaderManagementPort().async(LeaderNotAvailable.INSTANCE)
                                               .flatMap(port -> sendGet(http, port, path))
                                               .map(AlertListResponse::new);
     }
 
-    private static Promise<AlertClearResponse> proxyClear(EmberCluster cluster,
-                                                          JdkHttpOperations http) {
+    private static Promise<AlertClearResponse> proxyClear(EmberCluster cluster, JdkHttpOperations http) {
         return cluster.getLeaderManagementPort().async(LeaderNotAvailable.INSTANCE)
                                               .flatMap(port -> sendPost(http, port, "/api/alerts/clear"))
                                               .map(body -> new AlertClearResponse(true, body));
     }
 
-    private static Route<ThresholdListResponse> thresholdsGetRoute(EmberCluster cluster,
-                                                                   JdkHttpOperations http) {
+    private static Route<ThresholdListResponse> thresholdsGetRoute(EmberCluster cluster, JdkHttpOperations http) {
         return Route.<ThresholdListResponse>get("/thresholds")
                     .to(_ -> proxyGetThresholds(cluster, http))
                     .asJson();
     }
 
-    private static Route<ThresholdSetResponse> thresholdsSetRoute(EmberCluster cluster,
-                                                                  JdkHttpOperations http) {
+    private static Route<ThresholdSetResponse> thresholdsSetRoute(EmberCluster cluster, JdkHttpOperations http) {
         return Route.<ThresholdSetResponse>post("/thresholds")
                     .to(request -> proxySetThreshold(cluster,
                                                      http,
@@ -91,16 +82,14 @@ public sealed interface AlertProxyRoutes {
                     .asJson();
     }
 
-    private static Route<ThresholdDeleteResponse> thresholdsDeleteRoute(EmberCluster cluster,
-                                                                        JdkHttpOperations http) {
+    private static Route<ThresholdDeleteResponse> thresholdsDeleteRoute(EmberCluster cluster, JdkHttpOperations http) {
         return Route.<ThresholdDeleteResponse>delete("/thresholds")
                     .withPath(aString())
                     .to(metric -> proxyDeleteThreshold(cluster, http, metric))
                     .asJson();
     }
 
-    private static Promise<ThresholdListResponse> proxyGetThresholds(EmberCluster cluster,
-                                                                     JdkHttpOperations http) {
+    private static Promise<ThresholdListResponse> proxyGetThresholds(EmberCluster cluster, JdkHttpOperations http) {
         return cluster.getLeaderManagementPort().async(LeaderNotAvailable.INSTANCE)
                                               .flatMap(port -> sendGet(http, port, "/api/thresholds"))
                                               .map(ThresholdListResponse::new);

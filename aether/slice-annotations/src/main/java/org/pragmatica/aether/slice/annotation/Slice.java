@@ -5,6 +5,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
+
 /// Marks an interface as an Aether slice implementation.
 ///
 /// When applied to an interface, the annotation processor generates:
@@ -52,6 +53,4 @@ import java.lang.annotation.Target;
 /// }```
 ///
 /// @see <a href="https://github.com/siy/aether/blob/main/docs/typed-slice-api-design.md">Typed Slice API Design</a>
-@Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.TYPE)
-public @interface Slice {}
+@Retention(RetentionPolicy.RUNTIME) @Target(ElementType.TYPE) public@interface Slice {}

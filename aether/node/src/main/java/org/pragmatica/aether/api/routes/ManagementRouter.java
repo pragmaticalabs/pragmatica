@@ -25,6 +25,7 @@ import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.http.DefaultHttpHeadersFactory;
 import io.netty.handler.codec.http.HttpHeaders;
 
+
 /// Router that bridges http-server RequestContext/ResponseWriter with http-routing Route DSL.
 ///
 /// Adapts the pragmatica-lite http-server infrastructure to work with RouteSource-based routes.
@@ -41,11 +42,6 @@ public final class ManagementRouter {
         return new ManagementRouter(RequestRouter.with(sources), JsonCodecAdapter.defaultCodec());
     }
 
-    /// Try to handle the request using route-based routing.
-    ///
-    /// @param ctx      the request context
-    /// @param response the response writer
-    /// @return true if a matching route was found and handled, false otherwise
     public boolean handle(RequestContext ctx, ResponseWriter response) {
         return parseMethod(ctx.method().name()).flatMap(method -> requestRouter.findRoute(method,
                                                                                           ctx.path()))
@@ -70,15 +66,15 @@ public final class ManagementRouter {
     }
 
     private void writeSuccess(Object value, ContentType contentType, ResponseWriter response) {
-        if ( value instanceof Option<?> opt && opt.isEmpty()) {
+        if (value instanceof Option<?> opt && opt.isEmpty()) {
             response.noContent();
             return;
         }
-        if ( isTextContent(contentType)) {
+        if (isTextContent(contentType)) {
             response.okText(value.toString());
             return;
         }
-        if ( value instanceof String json) {
+        if (value instanceof String json) {
             response.ok(json);
             return;
         }
@@ -116,14 +112,12 @@ public final class ManagementRouter {
         return headerText.startsWith("text/") || headerText.contains("plain");
     }
 
-    /// Adapter that wraps http-server RequestContext as http-routing RequestContext.
     private record ServerRequestContextAdapter(RequestContext serverCtx,
                                                Route<?> route,
                                                JsonCodec jsonCodec,
                                                ByteBuf bodyBuf,
                                                HttpHeaders responseHeaders,
-                                               AtomicReference<List<String>> pathParamsRef)
-    implements org.pragmatica.http.routing.RequestContext {
+                                               AtomicReference<List<String>> pathParamsRef) implements org.pragmatica.http.routing.RequestContext {
         static ServerRequestContextAdapter serverRequestContextAdapter(RequestContext serverCtx,
                                                                        Route<?> route,
                                                                        JsonCodec jsonCodec) {
@@ -158,7 +152,7 @@ public final class ManagementRouter {
 
         @Override public List<String> pathParams() {
             var params = pathParamsRef.get();
-            if ( params == null) {
+            if (params == null) {
                 params = initPathParams();
                 pathParamsRef.set(params);
             }
@@ -189,18 +183,12 @@ public final class ManagementRouter {
         private List<String> initPathParams() {
             var normalizedPath = PathUtils.normalize(serverCtx.path());
             var routePath = route.path();
-            if ( normalizedPath.length() <= routePath.length()) {
-            return List.of();}
+            if (normalizedPath.length() <= routePath.length()) {return List.of();}
             var remainder = normalizedPath.substring(routePath.length());
-            // Strip leading slash before splitting
-            if ( remainder.startsWith("/")) {
-            remainder = remainder.substring(1);}
-            if ( remainder.isEmpty()) {
-            return List.of();}
+            if (remainder.startsWith("/")) {remainder = remainder.substring(1);}
+            if (remainder.isEmpty()) {return List.of();}
             var elements = remainder.split("/", 1024);
-            // Remove trailing empty element if path ends with /
-            if ( elements[elements.length - 1].isEmpty()) {
-            return List.of(elements).subList(0, elements.length - 1);}
+            if (elements[elements.length - 1].isEmpty()) {return List.of(elements).subList(0, elements.length - 1);}
             return List.of(elements);
         }
     }

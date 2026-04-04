@@ -71,7 +71,7 @@ public class FactoryClassGenerator {
             try (var writer = new PrintWriter(file.openWriter())) {
                 generateFactoryClass(writer, model, factoryName);
             }
-            return Result.success(Unit.unit());
+            return Result.unitResult();
         } catch (Exception e) {
             return Causes.cause("Failed to generate factory class: " + e.getClass()
                                                                         .getSimpleName() + ": " + e.getMessage())
@@ -319,7 +319,7 @@ public class FactoryClassGenerator {
         var entries = new ArrayList<AllEntry>();
         // Resource deps
         for (var resource : resourceDeps) {
-            entries.add(new AllEntry(resource.parameterName(), generateResourceProvideCall(resource)));
+            entries.add(new AllEntry(resource.parameterName(), generateResourceProvideCall(resource, importTracker)));
         }
         // Interceptor deps (deduplicated)
         var interceptorEntries = collectUniqueInterceptors(model);
@@ -342,7 +342,7 @@ public class FactoryClassGenerator {
                 plainInterfaceParams.put(dep.parameterName(), params);
                 for (var param : params) {
                     entries.add(new AllEntry(param.varName(),
-                        "ctx.resources().provide(" + param.qualifiedResourceTypeName() + ".class, \""
+                        "ctx.resources().provide(" + importTracker.use(param.qualifiedResourceTypeName()) + ".class, \""
                         + escapeJavaString(param.qualifier().configSection()) + "\")"));
                 }
             }
@@ -1040,16 +1040,26 @@ public class FactoryClassGenerator {
 
     /// Generate resource provisioning call: ctx.resources().provide(Type.class, "config.section")
     /// Publisher and stream resources require ProvisioningContext for runtime extensions.
-    private String generateResourceProvideCall(DependencyModel resource) {
+    /// When the resource type differs from the parameter type (e.g., @PgSql persistence interfaces),
+    /// wraps the connector in a factory call: InterfaceFactory.interface(connector).
+    private String generateResourceProvideCall(DependencyModel resource, ImportTracker importTracker) {
         return resource.resourceQualifier()
                        .map(qualifier -> {
-                           var typeName = qualifier.resourceTypeSimpleName();
+                           var qualifiedTypeName = qualifier.resourceType().toString();
+                           var typeName = importTracker.use(qualifiedTypeName);
                            var configSection = escapeJavaString(qualifier.configSection());
-                           if (resource.isPublisher() || resource.isStreamResource()) {
-                               return "ctx.resources().provide(" + typeName + ".class, \""
-                                      + configSection + "\", ProvisioningContext.provisioningContext())";
+                           var provideCall = resource.isPublisher() || resource.isStreamResource()
+                               ? "ctx.resources().provide(" + typeName + ".class, \""
+                                 + configSection + "\", ProvisioningContext.provisioningContext())"
+                               : "ctx.resources().provide(" + typeName + ".class, \"" + configSection + "\")";
+                           // If resource type differs from parameter type, wrap in factory call
+                           // e.g., @PgSql AnalyticsPersistence -> provide PgSqlConnector, wrap via factory
+                           if (!qualifiedTypeName.equals(resource.interfaceQualifiedName())) {
+                               var factoryClass = importTracker.use(resource.interfaceQualifiedName() + "Factory");
+                               var factoryMethod = lowercaseFirst(resource.interfaceSimpleName());
+                               return provideCall + ".map(" + factoryClass + "::" + factoryMethod + ")";
                            }
-                           return "ctx.resources().provide(" + typeName + ".class, \"" + configSection + "\")";
+                           return provideCall;
                        })
                        .or("ctx.resources().provide(Object.class, \"unknown\")");
     }

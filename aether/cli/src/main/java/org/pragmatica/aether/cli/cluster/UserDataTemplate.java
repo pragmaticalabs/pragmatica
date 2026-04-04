@@ -3,6 +3,7 @@ package org.pragmatica.aether.cli.cluster;
 import org.pragmatica.aether.config.cluster.ClusterManagementConfig;
 import org.pragmatica.aether.config.cluster.RuntimeType;
 
+
 /// Renders cloud-init user-data scripts for bootstrapping Aether nodes.
 ///
 /// The template generates a bash script that:
@@ -14,7 +15,6 @@ import org.pragmatica.aether.config.cluster.RuntimeType;
 sealed interface UserDataTemplate {
     record unused() implements UserDataTemplate{}
 
-    /// Render a cloud-init script for a single node.
     static String render(ClusterManagementConfig config,
                          String nodeId,
                          int nodeIndex,
@@ -40,7 +40,7 @@ sealed interface UserDataTemplate {
                         ports.swim(),
                         tlsEnabled,
                         cluster.core().count());
-        if ( isContainer) {
+        if (isContainer) {
             appendDockerInstall(sb);
             appendConfig(sb,
                          ports.management(),
@@ -50,12 +50,7 @@ sealed interface UserDataTemplate {
                          cluster.core().count(),
                          heap);
             appendContainerRun(sb, clusterName, nodeId, ports.cluster(), ports.management(), ports.swim());
-        } else
-
-
-
-
-        {
+        } else {
             appendJvmInstall(sb, cluster.version());
             appendConfig(sb,
                          ports.management(),
@@ -146,7 +141,7 @@ sealed interface UserDataTemplate {
         sb.append("heap = \"").append(heap)
                  .append("\"\n");
         sb.append("gc = \"zgc\"\n");
-        if ( tlsEnabled) {
+        if (tlsEnabled) {
             sb.append("\n[tls]\n");
             sb.append("cluster_secret = \"").append(clusterSecret)
                      .append("\"\n");
@@ -192,15 +187,11 @@ sealed interface UserDataTemplate {
     private static void appendJvmRun(StringBuilder sb, String jvmArgs) {
         sb.append("# --- Start Aether ---\n");
         sb.append("java ");
-        if ( !jvmArgs.isEmpty()) {
-        sb.append(jvmArgs).append(' ');}
+        if (!jvmArgs.isEmpty()) {sb.append(jvmArgs).append(' ');}
         sb.append("-jar /opt/aether/aether-node.jar --config /opt/aether/config/aether.toml &\n\n");
     }
 
-    private static void appendReadinessSignal(StringBuilder sb,
-                                              String nodeId,
-                                              int clusterPort,
-                                              int managementPort) {
+    private static void appendReadinessSignal(StringBuilder sb, String nodeId, int clusterPort, int managementPort) {
         sb.append("# --- Signal readiness ---\n");
         sb.append("echo \"Aether node ").append(nodeId)
                  .append(" starting on ports: cluster=")
@@ -210,8 +201,13 @@ sealed interface UserDataTemplate {
                  .append("\"\n");
     }
 
-    /// Derive JVM heap from instance type. Simple heuristic based on common cloud sizes.
     private static String deriveHeap(String instanceType) {
-        return switch (instanceType) {case "cx11", "t3.small", "e2-small", "Standard_B1s" -> "1g"; case "cx21", "t3.medium", "e2-medium", "Standard_B2s" -> "2g"; case "cx31", "t3.large", "e2-standard-4", "Standard_B4ms" -> "4g"; case "cx41", "t3.xlarge", "e2-standard-8", "Standard_B8ms" -> "8g"; default -> "2g";};
+        return switch (instanceType){
+            case "cx11", "t3.small", "e2-small", "Standard_B1s" -> "1g";
+            case "cx21", "t3.medium", "e2-medium", "Standard_B2s" -> "2g";
+            case "cx31", "t3.large", "e2-standard-4", "Standard_B4ms" -> "4g";
+            case "cx41", "t3.xlarge", "e2-standard-8", "Standard_B8ms" -> "8g";
+            default -> "2g";
+        };
     }
 }

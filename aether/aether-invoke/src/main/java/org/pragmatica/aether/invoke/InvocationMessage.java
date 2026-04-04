@@ -7,6 +7,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
 
+
 /// Messages for inter-slice remote invocation.
 ///
 ///
@@ -28,21 +29,7 @@ import org.pragmatica.serialization.CodecFor;
 ///   - hops: number of network hops traversed
 ///   - sampled: whether this request is sampled for detailed tracing
 ///
-@Codec
-@CodecFor(MethodName.class)
-public sealed interface InvocationMessage extends ProtocolMessage {
-    /// Request to invoke a method on a remote slice.
-    ///
-    /// @param sender         Node sending the request
-    /// @param correlationId  Unique ID for matching request/response
-    /// @param requestId      Distributed tracing ID (constant through chain)
-    /// @param targetSlice    The slice to invoke
-    /// @param method         Method name to call
-    /// @param payload        Serialized request parameter
-    /// @param expectResponse Whether caller expects a response
-    /// @param depth          Invocation depth in the call chain (0 = entry point)
-    /// @param hops           Number of network hops traversed
-    /// @param sampled        Whether this request is sampled for detailed tracing
+@Codec@CodecFor(MethodName.class) public sealed interface InvocationMessage extends ProtocolMessage {
     record InvokeRequest(NodeId sender,
                          String correlationId,
                          String requestId,
@@ -53,7 +40,6 @@ public sealed interface InvocationMessage extends ProtocolMessage {
                          int depth,
                          int hops,
                          boolean sampled) implements InvocationMessage {
-        /// Factory method following JBCT naming convention.
         public static InvokeRequest invokeRequest(NodeId sender,
                                                   String correlationId,
                                                   String requestId,
@@ -76,7 +62,6 @@ public sealed interface InvocationMessage extends ProtocolMessage {
                                      sampled);
         }
 
-        /// Backward-compatible factory (defaults: depth=0, hops=0, sampled=false).
         public static InvokeRequest invokeRequest(NodeId sender,
                                                   String correlationId,
                                                   String requestId,
@@ -97,19 +82,7 @@ public sealed interface InvocationMessage extends ProtocolMessage {
         }
     }
 
-    /// Response from a remote slice invocation.
-    ///
-    /// @param sender        Node sending the response
-    /// @param correlationId Matches the request
-    /// @param requestId     Distributed tracing ID (echoed from request)
-    /// @param success       Whether invocation succeeded
-    /// @param payload       Serialized response (if success) or error message (if failure)
-    record InvokeResponse(NodeId sender,
-                          String correlationId,
-                          String requestId,
-                          boolean success,
-                          byte[] payload) implements InvocationMessage {
-        /// Factory method following JBCT naming convention. */
+    record InvokeResponse(NodeId sender, String correlationId, String requestId, boolean success, byte[] payload) implements InvocationMessage {
         public static InvokeResponse invokeResponse(NodeId sender,
                                                     String correlationId,
                                                     String requestId,

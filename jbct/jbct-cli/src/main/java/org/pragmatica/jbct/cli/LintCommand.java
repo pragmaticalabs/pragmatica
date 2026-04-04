@@ -63,7 +63,7 @@ public class LintCommand implements Callable<Integer> {
         var config = ConfigLoader.load(Option.option(configPath), Option.none());
         var context = createContext(config);
         var linter = JbctLinter.jbctLinter(context);
-        var filesToProcess = collectJavaFiles();
+        var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
         if (filesToProcess.isEmpty()) {
             System.out.println("No Java files found.");
             return 0;
@@ -99,10 +99,6 @@ public class LintCommand implements Callable<Integer> {
         return LintContext.defaultContext()
                           .withConfig(lintConfig)
                           .withExcludePackages(jbctConfig.excludePackages());
-    }
-
-    private List<Path> collectJavaFiles() {
-        return FileCollector.collectJavaFiles(paths, System.err::println);
     }
 
     private void processFile(Path file, JbctLinter linter, List<Diagnostic> allDiagnostics, int[] counters) {

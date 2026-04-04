@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.OperationalEvent;
@@ -28,6 +27,7 @@ import org.pragmatica.lang.Promise;
 import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
+
 
 /// Routes for cluster backup management: trigger, list, restore.
 public final class BackupRoutes implements RouteSource {
@@ -53,10 +53,8 @@ public final class BackupRoutes implements RouteSource {
     record RestoreRequest(String commit){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<BackupResponse>post("/api/backup")
-                              .toJson(this::triggerBackup),
-                         Route.<List<BackupInfo>>get("/api/backups")
-                              .toJson(this::listBackups),
+        return Stream.of(Route.<BackupResponse>post("/api/backup").toJson(this::triggerBackup),
+                         Route.<List<BackupInfo>>get("/api/backups").toJson(this::listBackups),
                          Route.<BackupResponse>post("/api/backup/restore")
                               .withBody(RestoreRequest.class)
                               .toJson(this::restoreBackup));
@@ -73,8 +71,7 @@ public final class BackupRoutes implements RouteSource {
     }
 
     private void emitBackupCreated(BackupResponse response) {
-        if ( response.success()) {
-        nodeSupplier.get().route(OperationalEvent.BackupCreated.backupCreated("latest", "api"));}
+        if (response.success()) {nodeSupplier.get().route(OperationalEvent.BackupCreated.backupCreated("latest", "api"));}
     }
 
     private List<BackupInfo> listBackups() {
@@ -93,7 +90,7 @@ public final class BackupRoutes implements RouteSource {
     }
 
     private void emitBackupRestored(String commitId, BackupResponse response) {
-        if ( response.success()) {
-        nodeSupplier.get().route(OperationalEvent.BackupRestored.backupRestored(commitId, "api"));}
+        if (response.success()) {nodeSupplier.get()
+                                                 .route(OperationalEvent.BackupRestored.backupRestored(commitId, "api"));}
     }
 }

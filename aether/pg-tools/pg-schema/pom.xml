@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.pragmatica-lite.aether</groupId>
+        <artifactId>aether-pg-tools</artifactId>
+        <version>1.0.0-alpha</version>
+    </parent>
+
+    <artifactId>pg-schema</artifactId>
+    <name>PG Schema</name>
+    <description>PostgreSQL schema model, builder, validator, and migration linter</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>pg-parser</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>core</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>pg-test-corpus</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+        </dependency>
+    </dependencies>
+</project>

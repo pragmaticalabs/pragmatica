@@ -9,10 +9,10 @@ import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Result.success;
 
+
 /// AWS Secrets Manager implementation of the SecretsProvider SPI.
 /// Resolves secrets by fetching them from AWS Secrets Manager using the secret path as the secret ID.
-public record AwsSecretsProvider( AwsClient client) implements SecretsProvider {
-    /// Factory method for creating an AwsSecretsProvider.
+public record AwsSecretsProvider(AwsClient client) implements SecretsProvider {
     public static Result<AwsSecretsProvider> awsSecretsProvider(AwsClient client) {
         return success(new AwsSecretsProvider(client));
     }
@@ -21,7 +21,6 @@ public record AwsSecretsProvider( AwsClient client) implements SecretsProvider {
         return client.getSecretValue(secretPath).mapError(cause -> toSecretError(secretPath, cause));
     }
 
-    // --- Leaf: map cause to secret resolution error ---
     private static EnvironmentError toSecretError(String path, Cause cause) {
         return EnvironmentError.secretResolutionFailed(path, new RuntimeException(cause.message()));
     }

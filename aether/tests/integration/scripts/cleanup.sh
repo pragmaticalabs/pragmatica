@@ -1,23 +1,31 @@
 #!/bin/bash
-# cleanup.sh — Tear down cluster and clean up on target machine
+# cleanup.sh — Tear down integration test cluster
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-source "${SCRIPT_DIR}/../lib/common.sh"
+ROOT_DIR="${SCRIPT_DIR}/.."
+source "${ROOT_DIR}/lib/common.sh"
 
-log_info "Cleaning up Aether cluster on ${TARGET_HOST}"
+HOST="${TARGET_HOST:-localhost}"
+SSH_USER="${AETHER_SSH_USER:-aether}"
 
-log_step "Stopping all Aether containers"
-remote_exec "docker ps -a --filter 'name=aether-' --format '{{.Names}}' | xargs -r docker stop" 2>/dev/null || true
+if [ "$HOST" != "localhost" ]; then
+    : "${AETHER_SSH_KEY:?AETHER_SSH_KEY must be set for remote target ${HOST}}"
+fi
+SSH_KEY="${AETHER_SSH_KEY:-}"
 
-log_step "Removing all Aether containers"
-remote_exec "docker ps -a --filter 'name=aether-' --format '{{.Names}}' | xargs -r docker rm -f" 2>/dev/null || true
+remote_exec() {
+    if [ "$HOST" = "localhost" ]; then
+        bash -c "$1"
+    else
+        ssh -i "$SSH_KEY" "${SSH_USER}@${HOST}" "$1"
+    fi
+}
 
-log_step "Removing Aether data"
-remote_exec "rm -rf \$HOME/aether/data/*" 2>/dev/null || true
+log_step "Stopping integration test cluster on ${HOST}"
+remote_exec "cd ~/aether-build && docker compose -f docker-compose.yml down -v 2>/dev/null" || true
 
 log_step "Removing load test temp files"
-rm -f /tmp/load_result_*.txt
-rm -f /tmp/sustained_load*.log
+rm -f /tmp/load_result_*.txt /tmp/sustained_load*.log
 
 log_pass "Cleanup complete"

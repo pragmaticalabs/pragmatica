@@ -14,6 +14,7 @@ import org.pragmatica.net.tcp.NodeAddress;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// A running Ember cluster instance.
 ///
 /// Manages the lifecycle of an embedded Aether cluster including
@@ -23,7 +24,9 @@ public final class EmberInstance {
 
     private final EmberConfig config;
     private final EmberCluster cluster;
+
     private volatile Option<EmberH2Server> h2Server = Option.empty();
+
     private volatile Option<AetherPassiveLB> loadBalancer = Option.empty();
 
     private EmberInstance(EmberConfig config) {
@@ -38,7 +41,6 @@ public final class EmberInstance {
                                                  config.coreMax());
     }
 
-    /// Create a new Ember instance with the given configuration.
     static EmberInstance emberInstance(EmberConfig config) {
         var instance = new EmberInstance(config);
         instance.startH2();
@@ -50,8 +52,7 @@ public final class EmberInstance {
     }
 
     private void startH2() {
-        if ( !config.h2Config().enabled()) {
-        return;}
+        if (!config.h2Config().enabled()) {return;}
         var server = EmberH2Server.emberH2Server(config.h2Config());
         server.start().await(TimeSpan.timeSpan(10).seconds())
                     .onSuccess(_ -> {
@@ -64,8 +65,7 @@ public final class EmberInstance {
     }
 
     private void startLoadBalancer() {
-        if ( !config.lbEnabled()) {
-        return;}
+        if (!config.lbEnabled()) {return;}
         var selfNodeId = NodeId.nodeId("lb-passive").unwrap();
         var lbClusterPort = EmberCluster.DEFAULT_BASE_PORT + config.nodes() + 10;
         var selfInfo = NodeInfo.nodeInfo(selfNodeId,
@@ -85,30 +85,24 @@ public final class EmberInstance {
         log.info("Passive LB started on port {} (cluster port {})", config.lbPort(), lbClusterPort);
     }
 
-    /// Get the underlying cluster.
     public EmberCluster cluster() {
         return cluster;
     }
 
-    /// Get the configuration.
     public EmberConfig config() {
         return config;
     }
 
-    /// Get the H2 JDBC URL if H2 is enabled and running.
     public Option<String> h2JdbcUrl() {
         return h2Server.filter(EmberH2Server::isRunning).map(EmberH2Server::jdbcUrl);
     }
 
-    /// Get the load balancer if enabled and running.
     public Option<AetherPassiveLB> loadBalancer() {
         return loadBalancer;
     }
 
-    /// Stop the cluster and all associated services.
     public Promise<Unit> stop() {
-        return stopLoadBalancer().flatMap(_ -> cluster.stop())
-                               .flatMap(_ -> stopH2());
+        return stopLoadBalancer().flatMap(_ -> cluster.stop()).flatMap(_ -> stopH2());
     }
 
     private Promise<Unit> stopLoadBalancer() {

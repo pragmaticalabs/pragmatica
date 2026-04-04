@@ -38,8 +38,8 @@ graph TB
 | `aether status` | Cluster status: nodes, slices, health |
 | `aether metrics` | Current metrics snapshot |
 | `aether scale <artifact> --min N --max M` | Configure auto-scaling |
-| `aether update start <artifact> <version>` | Begin rolling update |
-| `aether update routing <id> -r N:M` | Adjust traffic weights |
+| `aether deploy <coords> --rolling` | Begin rolling deployment |
+| `aether deploy promote <id>` | Advance deployment |
 | `aether upload <jar>` | Upload artifact to cluster DHT |
 | `aether alerts list` | View active alerts |
 | `aether aspects set <artifact> <method> METRICS` | Toggle dynamic aspects |
@@ -194,7 +194,7 @@ Testing is split across three layers:
 | Layer | Count | Description |
 |-------|-------|-------------|
 | Unit tests | 10,686 | All modules, `mvn verify` |
-| Forge integration | 21 | In-process EmberCluster tests (cluster formation, chaos, rolling updates) |
+| Forge integration | 21 | In-process EmberCluster tests (cluster formation, chaos, deployments) |
 | Docker integration | 14 suites, ~50 scripts | 5-node Docker cluster on target host (smoke, chaos, scaling, streaming, security, deployment, resources, artifacts, database, observability, network, edge-cases) |
 
 Docker integration tests run via `aether/tests/integration/scripts/run-all.sh` against a target host. See [integration test README](../../tests/integration/README.md) for setup and environment variables.

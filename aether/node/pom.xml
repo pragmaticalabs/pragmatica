@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>0.25.0</version>
+        <version>1.0.0-alpha</version>
     </parent>
 
     <artifactId>node</artifactId>
@@ -106,6 +106,11 @@
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>environment-integration</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>environment-docker</artifactId>
+            <version>${project.version}</version>
         </dependency>
 
         <dependency>

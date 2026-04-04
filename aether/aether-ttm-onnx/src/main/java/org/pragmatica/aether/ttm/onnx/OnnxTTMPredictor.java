@@ -25,12 +25,13 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// ONNX Runtime implementation of {@link TTMPredictor}.
-@SuppressWarnings("JBCT-EX-01") record OnnxTTMPredictor( OrtEnvironment env,
-                                                         OrtSession session,
-                                                         TtmConfig config,
-                                                         AtomicReference<Double> lastConfidenceRef,
-                                                         AtomicBoolean ready) implements TTMPredictor {
+@SuppressWarnings("JBCT-EX-01") record OnnxTTMPredictor(OrtEnvironment env,
+                                                        OrtSession session,
+                                                        TtmConfig config,
+                                                        AtomicReference<Double> lastConfidenceRef,
+                                                        AtomicBoolean ready) implements TTMPredictor {
     private static final Logger log = LoggerFactory.getLogger(OnnxTTMPredictor.class);
 
     static Result<TTMPredictor> onnxTTMPredictor(TtmConfig config) {
@@ -62,8 +63,7 @@ import static org.pragmatica.lang.Unit.unit;
         int seqLen = input.length;
         int features = input[0].length;
         float[] flatInput = new float[seqLen * features];
-        for ( int i = 0; i < seqLen; i++) {
-        System.arraycopy(input[i], 0, flatInput, i * features, features);}
+        for (int i = 0;i <seqLen;i++) {System.arraycopy(input[i], 0, flatInput, i * features, features);}
         long[] shape = {1, seqLen, features};
         try (var tensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(flatInput), shape);
              var results = session.run(Map.of("input", tensor))) {
@@ -82,28 +82,22 @@ import static org.pragmatica.lang.Unit.unit;
 
     private float[] flattenOutput(OnnxTensor tensor) throws OrtException {
         var value = tensor.getValue();
-        if ( value instanceof float[] arr) {
-        return arr;} else
-        if ( value instanceof float[][] arr2d) {
+        if (value instanceof float[] arr) {return arr;} else if (value instanceof float[][] arr2d) {
             int totalLen = 0;
-            for ( float[] row : arr2d) {
-            totalLen += row.length;}
+            for (float[] row : arr2d) {totalLen += row.length;}
             float[] flat = new float[totalLen];
             int offset = 0;
-            for ( float[] row : arr2d) {
+            for (float[] row : arr2d) {
                 System.arraycopy(row, 0, flat, offset, row.length);
                 offset += row.length;
             }
             return flat;
-        } else if ( value instanceof float[][][] arr3d) {
+        } else if (value instanceof float[][][] arr3d) {
             int totalLen = 0;
-            for ( float[][] batch : arr3d) {
-            for ( float[] row : batch) {
-            totalLen += row.length;}}
+            for (float[][] batch : arr3d) {for (float[] row : batch) {totalLen += row.length;}}
             float[] flat = new float[totalLen];
             int offset = 0;
-            for ( float[][] batch : arr3d) {
-            for ( float[] row : batch) {
+            for (float[][] batch : arr3d) {for (float[] row : batch) {
                 System.arraycopy(row, 0, flat, offset, row.length);
                 offset += row.length;
             }}
@@ -113,10 +107,9 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private double calculateConfidence(float[] output) {
-        if ( output.length == 0) {
-        return 0.0;}
+        if (output.length == 0) {return 0.0;}
         double sum = 0, sumSq = 0;
-        for ( float v : output) {
+        for (float v : output) {
             sum += v;
             sumSq += v * v;
         }
@@ -135,8 +128,8 @@ import static org.pragmatica.lang.Unit.unit;
     private static Result<TtmConfig> checkModelExists(TtmConfig config) {
         var modelPath = Path.of(config.modelPath());
         return Files.exists(modelPath)
-               ? Result.success(config)
-               : new TTMError.ModelLoadFailed(config.modelPath(), "File not found").result();
+              ? Result.success(config)
+              : new TTMError.ModelLoadFailed(config.modelPath(), "File not found").result();
     }
 
     private static Result<TTMPredictor> loadModel(TtmConfig config) {
@@ -160,42 +153,29 @@ import static org.pragmatica.lang.Unit.unit;
                                                  new AtomicBoolean(true));
             runWarmupInference(predictor, config);
             return predictor;
-        }
-
-
-
-
-        catch (OrtException e) {
+        } catch (OrtException e) {
             sessionOptions.close();
             throw e;
         }
     }
 
-    @Contract
-    @SuppressWarnings("JBCT-EX-01")
-    private static void logModelMetadata(OrtSession session) throws OrtException {
+    @Contract@SuppressWarnings("JBCT-EX-01") private static void logModelMetadata(OrtSession session) throws OrtException {
         log.info("TTM model metadata:");
         log.info("  Input names: {}", session.getInputNames());
         log.info("  Output names: {}", session.getOutputNames());
-        for ( var entry : session.getInputInfo().entrySet()) {
-        log.info("  Input '{}': {}",
-                 entry.getKey(),
-                 entry.getValue().getInfo());}
-        for ( var entry : session.getOutputInfo().entrySet()) {
-        log.info("  Output '{}': {}",
-                 entry.getKey(),
-                 entry.getValue().getInfo());}
+        for (var entry : session.getInputInfo().entrySet()) {log.info("  Input '{}': {}",
+                                                                      entry.getKey(),
+                                                                      entry.getValue().getInfo());}
+        for (var entry : session.getOutputInfo().entrySet()) {log.info("  Output '{}': {}",
+                                                                       entry.getKey(),
+                                                                       entry.getValue().getInfo());}
     }
 
-    @Contract
-    @SuppressWarnings("JBCT-EX-01")
-    private static void validateInputSchema(OrtSession session) throws OrtException {
+    @Contract@SuppressWarnings("JBCT-EX-01") private static void validateInputSchema(OrtSession session) throws OrtException {
         var inputNames = session.getInputNames();
-        if ( !inputNames.contains("input")) {
-        throw new OrtException("Expected input tensor named 'input', found: " + inputNames);}
+        if (!inputNames.contains("input")) {throw new OrtException("Expected input tensor named 'input', found: " + inputNames);}
         var outputNames = session.getOutputNames();
-        if ( !outputNames.contains("output")) {
-        throw new OrtException("Expected output tensor named 'output', found: " + outputNames);}
+        if (!outputNames.contains("output")) {throw new OrtException("Expected output tensor named 'output', found: " + outputNames);}
     }
 
     @Contract private static void runWarmupInference(OnnxTTMPredictor predictor, TtmConfig config) {

@@ -3,6 +3,7 @@ package org.pragmatica.aether.invoke;
 import org.pragmatica.lang.ContextPropagation;
 import org.pragmatica.lang.Unit;
 
+
 /// Aether implementation of context propagation for Promise async operations.
 ///
 ///
@@ -20,10 +21,7 @@ public final class AetherContextPropagation implements ContextPropagation {
     }
 
     @Override public Unit runWith(Object snapshot, Runnable action) {
-        if ( snapshot instanceof InvocationContext.ContextSnapshot contextSnapshot) {
-        contextSnapshot.runWithCaptured(action);} else
-        {
-        action.run();}
+        if (snapshot instanceof InvocationContext.ContextSnapshot contextSnapshot) {contextSnapshot.runWithCaptured(action);} else {action.run();}
         return Unit.unit();
     }
 }

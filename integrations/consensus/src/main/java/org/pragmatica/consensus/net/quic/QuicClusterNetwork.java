@@ -86,6 +86,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private final Map<NodeId, QuicPeerConnection> peerLinks = new ConcurrentHashMap<>();
     private final Map<NodeId, Long> connectionEstablishedAt = new ConcurrentHashMap<>();
+    private final Set<NodeId> connectingInProgress = ConcurrentHashMap.newKeySet();
     private final Set<NodeId> passivePeers = ConcurrentHashMap.newKeySet();
     private final Map<NodeId, Map<StreamType, Queue<byte[]>>> outboundQueues = new ConcurrentHashMap<>();
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
@@ -323,8 +324,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
             log.debug("Skipping connection to {}: higher NodeId does not initiate", peerId);
             return;
         }
+        // Prevent concurrent connection attempts to the same peer (TOCTOU race between
+        // containsKey check above and the async connect call below).
+        if (!connectingInProgress.add(peerId)) {
+            return;
+        }
         var address = new InetSocketAddress(peer.address().host(), peer.address().port());
         client.connect(peerId, address)
+              .onResult(_ -> connectingInProgress.remove(peerId))
               .onSuccess(conn -> onPeerConnected(conn, peer.role(), peer.address()))
               .onFailure(cause -> onConnectFailed(peer, cause));
     }
@@ -340,6 +347,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private void onPeerConnected(QuicPeerConnection connection, NodeRole peerRole, NodeAddress peerAddress) {
         var peerId = connection.peerId();
 
+        // Never register self as a peer — self-connections cause removal cascades
+        // (processViewChange REMOVE for self → leader re-election → CDM rebuild)
+        if (peerId.equals(self.id())) {
+            log.debug("Ignoring self-connection from {}", peerId);
+            connection.close();
+            return;
+        }
+
         // Track passive role directly from Hello handshake
         if (peerRole == NodeRole.PASSIVE) {
             passivePeers.add(peerId);
@@ -353,12 +368,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var existing = peerLinks.putIfAbsent(peerId, connection);
         if (existing != null) {
             if (!existing.isActive()) {
-                // Old connection is stale — replace it with the new one
+                // Old connection is stale — replace with the new known-good one
                 peerLinks.put(peerId, connection);
                 existing.close();
-                log.info("Replaced stale connection for peer {}", peerId);
+                log.info("Replaced stale connection for peer {} (old was inactive)", peerId);
             } else {
-                log.debug("Duplicate connection from {}, closing new connection", peerId);
+                // Both connections are active — keep the existing one to avoid disrupting in-flight messages
+                log.debug("Duplicate connection from {}, closing new (existing is active)", peerId);
                 connection.close();
                 return;
             }
@@ -555,6 +571,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     @SuppressWarnings("JBCT-PAT-01") // Switch expression with side effects
     private void processViewChange(ViewChangeOperation operation, NodeId peerId) {
+        // Self should never appear in view changes — guard against cascading self-removal
+        if (peerId.equals(self.id())) {
+            log.warn("Ignoring view change {} for self node {}", operation, peerId);
+            return;
+        }
         var activePeerCount = peerLinks.size() - passivePeers.size();
         var quorumSize = topologyManager.quorumSize();
         var clusterSize = topologyManager.clusterSize();

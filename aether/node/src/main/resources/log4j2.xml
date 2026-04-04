@@ -27,5 +27,7 @@
         <Logger name="org.pragmatica.aether.http.AppHttpServer" level="info"/>
         <Logger name="org.pragmatica.aether.metrics" level="info"/>
         <Logger name="org.pragmatica.aether.deployment.node" level="info"/>
+        <!-- Audit: warn for security events, suppress debug-level auth success noise -->
+        <Logger name="org.pragmatica.aether.audit" level="warn"/>
     </Loggers>
 </Configuration>

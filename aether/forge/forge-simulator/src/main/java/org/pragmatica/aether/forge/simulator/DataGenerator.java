@@ -16,33 +16,27 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
 
+
 /// Framework for generating test data for load testing.
 /// Each generator produces data appropriate for a specific entry point type.
 public sealed interface DataGenerator {
-    /// Generate test data.
-    ///
-    /// @param random thread-local random for deterministic generation
-    /// @return generated data appropriate for the entry point
     Object generate(Random random);
 
-    /// Convenience method using thread-local random.
     default Object generate() {
         return generate(ThreadLocalRandom.current());
     }
 
-    /// Range for integer values.
     record IntRange(int min, int max) {
         private static final Cause MIN_GREATER_THAN_MAX = Causes.cause("min must be <= max");
 
         public int random(Random random) {
-            if ( min == max) {
-            return min;}
+            if (min == max) {return min;}
             return min + random.nextInt(max - min + 1);
         }
 
         public static Result<IntRange> intRange(int min, int max) {
             return Verify.ensure(min, Verify.Is::lessThanOrEqualTo, max, MIN_GREATER_THAN_MAX)
-            .map(m -> new IntRange(m, max));
+                                .map(m -> new IntRange(m, max));
         }
 
         public static IntRange intRange(int value) {
@@ -50,14 +44,13 @@ public sealed interface DataGenerator {
         }
     }
 
-    /// Generates random product IDs from a configured list.
     record ProductIdGenerator(List<String> productIds) implements DataGenerator {
         private static final Cause PRODUCT_IDS_EMPTY = Causes.cause("productIds cannot be null or empty");
 
         public ProductIdGenerator(List<String> productIds) {
             this.productIds = productIds == null
-                              ? List.of()
-                              : List.copyOf(productIds);
+                             ? List.of()
+                             : List.copyOf(productIds);
         }
 
         @Override public String generate(Random random) {
@@ -75,9 +68,9 @@ public sealed interface DataGenerator {
         }
     }
 
-    /// Generates random customer IDs.
     record CustomerIdGenerator(String prefix, int maxId) implements DataGenerator {
         private static final Cause PREFIX_NULL = Causes.cause("prefix cannot be null");
+
         private static final Cause MAX_ID_NOT_POSITIVE = Causes.cause("maxId must be positive");
 
         @Override public String generate(Random random) {
@@ -96,7 +89,6 @@ public sealed interface DataGenerator {
         }
     }
 
-    /// Generates order request data for placeOrder entry point.
     record OrderRequestGenerator(ProductIdGenerator productGenerator,
                                  CustomerIdGenerator customerGenerator,
                                  IntRange quantityRange) implements DataGenerator {
@@ -112,8 +104,9 @@ public sealed interface DataGenerator {
         public static Result<OrderRequestGenerator> orderRequestGenerator(ProductIdGenerator productGenerator,
                                                                           CustomerIdGenerator customerGenerator,
                                                                           IntRange quantityRange) {
-            return ensureGeneratorsNotNull(productGenerator, customerGenerator, quantityRange)
-            .map(_ -> new OrderRequestGenerator(productGenerator, customerGenerator, quantityRange));
+            return ensureGeneratorsNotNull(productGenerator, customerGenerator, quantityRange).map(_ -> new OrderRequestGenerator(productGenerator,
+                                                                                                                                  customerGenerator,
+                                                                                                                                  quantityRange));
         }
 
         private static Result<IntRange> ensureGeneratorsNotNull(ProductIdGenerator productGenerator,
@@ -131,7 +124,6 @@ public sealed interface DataGenerator {
                                          IntRange.intRange(1)).unwrap();
         }
 
-        /// Generated order request data.
         public record OrderRequestData(String customerId, String productId, int quantity) {
             public static Result<OrderRequestData> orderRequestData(String customerId, String productId, int quantity) {
                 return success(new OrderRequestData(customerId, productId, quantity));
@@ -146,28 +138,25 @@ public sealed interface DataGenerator {
         }
     }
 
-    /// Generates order IDs from a pool of recent order IDs.
-    /// Falls back to synthetic IDs if pool is empty.
-    /// Thread-safe for concurrent load generation.
     record OrderIdGenerator(Queue<String> orderIdPool, int maxPoolSize) implements DataGenerator {
         private static final Queue<String> SHARED_POOL = new ConcurrentLinkedQueue<>();
+
         private static final int DEFAULT_MAX_POOL_SIZE = 1000;
+
         private static final Cause POOL_NULL = Causes.cause("orderIdPool cannot be null");
+
         private static final Cause MAX_POOL_NOT_POSITIVE = Causes.cause("maxPoolSize must be positive");
 
         @Override public String generate(Random random) {
-            return option(orderIdPool.poll()).onPresent(orderIdPool::offer)
-                         .or(syntheticOrderId(random));
+            return option(orderIdPool.poll()).onPresent(orderIdPool::offer).or(syntheticOrderId(random));
         }
 
         private static String syntheticOrderId(Random random) {
             return "ORD-" + String.format("%08d", random.nextInt(100_000_000));
         }
 
-        /// Add an order ID to the pool (called when orders are created).
         public Result<Unit> addOrderId(String orderId) {
-            if ( orderIdPool.size() < maxPoolSize) {
-            orderIdPool.offer(orderId);}
+            if (orderIdPool.size() <maxPoolSize) {orderIdPool.offer(orderId);}
             return unitResult();
         }
 
@@ -186,15 +175,12 @@ public sealed interface DataGenerator {
             return orderIdGenerator(pool, DEFAULT_MAX_POOL_SIZE).unwrap();
         }
 
-        /// Add order ID to the shared pool.
         public static Result<Unit> trackOrderId(String orderId) {
-            if ( SHARED_POOL.size() < DEFAULT_MAX_POOL_SIZE) {
-            SHARED_POOL.offer(orderId);}
+            if (SHARED_POOL.size() <DEFAULT_MAX_POOL_SIZE) {SHARED_POOL.offer(orderId);}
             return unitResult();
         }
     }
 
-    /// Generates stock check request data.
     record StockCheckGenerator(ProductIdGenerator productGenerator) implements DataGenerator {
         private static final Cause GENERATOR_NULL = Causes.cause("productGenerator cannot be null");
 
@@ -217,7 +203,6 @@ public sealed interface DataGenerator {
         }
     }
 
-    /// Generates price check request data.
     record PriceCheckGenerator(ProductIdGenerator productGenerator) implements DataGenerator {
         private static final Cause GENERATOR_NULL = Causes.cause("productGenerator cannot be null");
 

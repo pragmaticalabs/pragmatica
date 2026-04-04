@@ -1,6 +1,8 @@
 # Aether Node Container Image
 # Distributed runtime node for the Aether cluster
 
+FROM docker:27-cli AS docker-cli
+
 FROM eclipse-temurin:25-noble
 
 LABEL org.opencontainers.image.title="Aether Node"
@@ -12,9 +14,14 @@ LABEL org.opencontainers.image.source="https://github.com/pragmaticalabs/pragmat
 # Install iptables for network partition testing (E2E tests)
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends iptables wget && rm -rf /var/lib/apt/lists/*
 
+# Copy Docker CLI binary for scaling operations (used with mounted Docker socket)
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+
 # Rename existing ubuntu user (uid 1000) to aether
 RUN usermod -l aether -d /home/aether -m ubuntu && \
-    groupmod -n aether ubuntu
+    groupmod -n aether ubuntu && \
+    groupadd -g 999 docker && \
+    usermod -aG docker aether
 
 # Create directories for app, data, and config
 RUN mkdir -p /app /data /config && \
@@ -47,9 +54,9 @@ ENV JAVA_OPTS="-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
 # 8080     - Management API (REST, WebSocket dashboard)
 EXPOSE 8090/udp 8190/udp 8080
 
-# Health check using /api/health endpoint
+# Health check using liveness probe (bypasses auth — no audit log spam)
 HEALTHCHECK --interval=10s --timeout=5s --start-period=45s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:${MANAGEMENT_PORT}/api/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:${MANAGEMENT_PORT}/health/live || exit 1
 
 # Switch to non-root user
 USER aether

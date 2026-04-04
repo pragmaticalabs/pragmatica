@@ -4,6 +4,7 @@ import org.pragmatica.metrics.PromiseMetrics;
 
 import io.micrometer.core.instrument.Counter;
 
+
 /// Pre-configured metrics for Aether operations.
 ///
 ///
@@ -15,44 +16,26 @@ import io.micrometer.core.instrument.Counter;
 ///   - HTTP routing
 ///
 public interface AetherMetrics {
-    // Slice invocation metrics
     PromiseMetrics sliceInvocation(String artifact, String method);
-
     PromiseMetrics localInvocation(String artifact, String method);
-
     PromiseMetrics remoteInvocation(String artifact, String method);
-
-    // Deployment metrics
     PromiseMetrics sliceLoad(String artifact);
-
     PromiseMetrics sliceActivate(String artifact);
-
     PromiseMetrics sliceDeactivate(String artifact);
-
-    // Consensus metrics
     PromiseMetrics consensusCommit();
-
     Counter consensusBatchCounter();
-
-    // HTTP routing metrics
     PromiseMetrics httpRequest(String method, String path);
-
     Counter httpRequestCounter(String method, String path, String status);
-
-    // Rolling update metrics
     Counter rollingUpdateStarted();
-
     Counter rollingUpdateCompleted();
-
     Counter rollingUpdateRolledBack();
 
-    /// Create Aether metrics from an observability registry.
     static AetherMetrics aetherMetrics(ObservabilityRegistry registry) {
         return new AetherMetricsDelegate(registry);
     }
 }
 
-record AetherMetricsDelegate( ObservabilityRegistry registry) implements AetherMetrics {
+record AetherMetricsDelegate(ObservabilityRegistry registry) implements AetherMetrics {
     @Override public PromiseMetrics sliceInvocation(String artifact, String method) {
         return registry.combined("aether.slice.invocation", "artifact", artifact, "method", method);
     }

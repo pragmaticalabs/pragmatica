@@ -13,19 +13,12 @@ import java.util.List;
 
 import static org.pragmatica.aether.forge.api.ForgeApiResponses.*;
 
+
 /// Status-related routes for the Forge API.
 /// Provides endpoints for cluster status, node metrics, events, and health checks.
 public final class StatusRoutes {
     private StatusRoutes() {}
 
-    /// Create status routes with the given dependencies.
-    ///
-    /// @param cluster   the Forge cluster instance
-    /// @param metrics   the Forge metrics instance
-    /// @param events    the event log deque
-    /// @param startTime the server start time in milliseconds
-    /// @param loadRunner the ConfigurableLoadRunner for load testing
-    /// @return RouteSource containing all status-related routes
     public static RouteSource statusRoutes(EmberCluster cluster,
                                            ForgeMetrics metrics,
                                            Deque<ForgeEvent> events,
@@ -47,26 +40,21 @@ public final class StatusRoutes {
     }
 
     private static Route<List<NodeMetricsResponse>> nodeMetricsRoute(EmberCluster cluster) {
-        return Route.<List<NodeMetricsResponse>>get("/api/node-metrics")
-                    .toJson(() -> buildNodeMetrics(cluster));
+        return Route.<List<NodeMetricsResponse>>get("/api/node-metrics").toJson(() -> buildNodeMetrics(cluster));
     }
 
     private static Route<List<ForgeEvent>> eventsRoute(Deque<ForgeEvent> events) {
-        return Route.<List<ForgeEvent>>get("/api/events")
-                    .toJson(() -> buildEventsList(events));
+        return Route.<List<ForgeEvent>>get("/api/events").toJson(() -> buildEventsList(events));
     }
 
     private static Route<HealthResponse> healthRoute() {
-        return Route.<HealthResponse>get("/health")
-                    .toJson(StatusRoutes::buildHealthResponse);
+        return Route.<HealthResponse>get("/health").toJson(StatusRoutes::buildHealthResponse);
     }
 
     private static Route<ForgeStatusResponse> forgeStatusRoute() {
-        return Route.<ForgeStatusResponse>get("/api/forge/status")
-                    .toJson(() -> new ForgeStatusResponse(true));
+        return Route.<ForgeStatusResponse>get("/api/forge/status").toJson(() -> new ForgeStatusResponse(true));
     }
 
-    // ==================== Handler Methods ====================
     public static FullStatusResponse buildFullStatus(EmberCluster cluster,
                                                      ForgeMetrics metrics,
                                                      long startTime,
@@ -176,7 +164,7 @@ public final class StatusRoutes {
                                                                              t.avgLatencyMs(),
                                                                              t.successRate(),
                                                                              t.remainingDuration()
-        .map(ForgeApiResponses::formatDuration)))
+                                                                                                .map(ForgeApiResponses::formatDuration)))
                                           .toList();
     }
 
@@ -188,8 +176,8 @@ public final class StatusRoutes {
 
     private static InvocationInfo toInvocationInfo(EmberCluster.InvocationDetail detail) {
         var errorRate = detail.count() > 0
-                        ? 1.0 - ((double) detail.successCount() / detail.count())
-                        : 0.0;
+                       ? 1.0 - ((double) detail.successCount() / detail.count())
+                       : 0.0;
         return new InvocationInfo(detail.artifact(),
                                   detail.method(),
                                   detail.count(),

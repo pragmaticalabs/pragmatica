@@ -54,7 +54,7 @@ public class CheckCommand implements Callable<Integer> {
         var formatter = JbctFormatter.jbctFormatter(config.formatter());
         var context = createContext(config);
         var linter = JbctLinter.jbctLinter(context);
-        var filesToProcess = collectJavaFiles();
+        var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
         if (filesToProcess.isEmpty()) {
             System.out.println("No Java files found.");
             return 0;
@@ -115,10 +115,6 @@ public class CheckCommand implements Callable<Integer> {
         return LintContext.defaultContext()
                           .withConfig(lintConfig)
                           .withExcludePackages(jbctConfig.excludePackages());
-    }
-
-    private List<Path> collectJavaFiles() {
-        return FileCollector.collectJavaFiles(paths, System.err::println);
     }
 
     private void checkFormat(Path file, JbctFormatter formatter, List<Path> needsFormatting, AtomicInteger errors) {

@@ -542,9 +542,65 @@ callers only see the `NotificationService` interface.
 | Resource qualifier | Infrastructure access | `@Sql`, `@Http`, or custom `@ResourceQualifier` |
 | Slice dependency | Cross-slice calls | Plain interface parameter (proxy generated) |
 
+## Aether Store — Persistence Adapter Pattern
+
+Type-safe PostgreSQL persistence with compile-time SQL validation. Define a persistence
+interface annotated with `@PgSql`, and the annotation processor validates every query
+against your schema at compile time. If it compiles, the queries work.
+
+```java
+@PgSql
+public interface OrderPersistence {
+
+    record OrderRow(long id, long userId, BigDecimal total, String status, Instant createdAt) {}
+    record CreateOrderRequest(long userId, BigDecimal total, String status) {}
+
+    // Explicit SQL with named parameters
+    @Query("SELECT o.id, u.name AS user_name, o.total FROM orders o "
+         + "JOIN users u ON o.user_id = u.id WHERE o.user_id = :userId")
+    Promise<List<OrderWithUserName>> findOrdersWithUserName(long userId);
+
+    // Auto-generated CRUD from method name
+    Promise<Option<OrderRow>> findById(long id);
+    Promise<List<OrderRow>> findByStatusOrderByCreatedAtDesc(String status);
+    Promise<OrderRow> save(OrderRow order);
+    Promise<Long> countByStatus(String status);
+}
+```
+
+Inject the persistence interface into your slice like any resource:
+
+```java
+@Slice
+public interface OrderService {
+    Promise<OrderConfirmation> placeOrder(PlaceOrderRequest request);
+
+    static OrderService orderService(OrderPersistence persistence, PaymentSlice payment) {
+        record orderService(OrderPersistence persistence,
+                            PaymentSlice payment) implements OrderService {
+            @Override
+            public Promise<OrderConfirmation> placeOrder(PlaceOrderRequest request) {
+                return persistence.insert(toOrderRow(request))
+                                  .flatMap(order -> payment.charge(order.total())
+                                                           .map(receipt -> confirm(order, receipt)));
+            }
+        }
+        return new orderService(persistence, payment);
+    }
+}
+```
+
+The slice processor sees that `OrderPersistence` carries `@PgSql` (a `@ResourceQualifier`),
+provisions `PgSqlConnector` from the `"database"` config section, generates a factory
+implementation, and wires everything automatically.
+
+For full documentation including setup, `@Query` methods, record expansion, auto-generated
+CRUD patterns, and compile-time validation — see the [Persistence Guide](persistence-guide.md).
+
 ## See Also
 
 - [Getting Started](getting-started.md) — build your first slice from scratch
 - [Resource Reference](resource-reference.md) — databases, HTTP clients, caching, pub-sub, scheduling
+- [Aether Store](persistence-guide.md) — type-safe PostgreSQL persistence with compile-time validation
 - [Testing Slices](testing-slices.md) — unit and integration testing
 - [Migration Guide](migration-guide.md) — migrating existing applications to Aether

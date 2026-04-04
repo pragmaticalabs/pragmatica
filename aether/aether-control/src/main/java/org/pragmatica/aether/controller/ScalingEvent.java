@@ -3,6 +3,7 @@ package org.pragmatica.aether.controller;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.messaging.Message;
 
+
 /// Events emitted when the control loop applies scaling decisions.
 /// Dispatched locally via MessageRouter to the ClusterEventAggregator.
 public sealed interface ScalingEvent extends Message.Local {

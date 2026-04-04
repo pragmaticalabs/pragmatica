@@ -466,6 +466,8 @@ Part of Cloud Integration (#3). Per-provider status:
     - Architecture already supports it — no changes to RabiaEngine/KVStore needed
     - Pre-GA: enforce Dormant/Active pattern for all new leader-activated components
 
+- **Promise.allOrCancel() — Short-Circuit on First Failure** — Add `allOrCancel()` variant to `Promise` that cancels remaining promises on first failure, using existing `CancellableTask` infrastructure. Current `all()` always waits for all promises even when one has already failed — wasteful when tasks are expensive. Analysis showed Structured Concurrency (JEP 505) provides this via `ShutdownOnFailure` but would be a regression for Pragmatica's reactive model (adds thread creation, blocking, context switches). Pure Promise-based cancellation propagation preserves zero-overhead fan-out/fan-in semantics.
+
 - **Multi-Region Federation** — Current architecture is single-region (Rabia all-to-all consensus requires low-latency links). Multi-region requires federation: independent Aether clusters per region, cross-region data sync (async replication, conflict resolution), global load balancing, region-aware client routing. Not a single-cluster stretch — fundamentally different architecture. Phase 2 adds zones within a region but not cross-region.
 
 - **Distributed Saga Orchestration** — Long-running transaction orchestration (saga pattern). Durable state transitions with compensation on failure. Differs from local state machine — coordinates across multiple slices. Automatic retry, timeout, and dead-letter handling. Visualization of in-flight sagas and their states.

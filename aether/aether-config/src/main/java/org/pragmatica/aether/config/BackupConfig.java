@@ -13,25 +13,23 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.aether.config;
-public record BackupConfig( boolean enabled,
-                            String interval,
-                            String path,
-                            String remote) {
-    /// Create a disabled backup configuration with defaults.
+
+public record BackupConfig(boolean enabled, String interval, String path, String remote) {
     public static BackupConfig backupConfig() {
         return new BackupConfig(false, "5m", "", "");
     }
 
-    /// Create a backup configuration with all parameters.
     public static BackupConfig backupConfig(boolean enabled, String interval, String path, String remote) {
         return new BackupConfig(enabled, interval, path, remote);
     }
 
-    /// Create a backup configuration with environment-aware default path.
     public static BackupConfig backupConfig(Environment env) {
-        var defaultPath = switch (env) {case LOCAL -> "./aether-backups";case DOCKER -> "/data/backups";case KUBERNETES -> "/var/aether/backups";};
+        var defaultPath = switch (env){
+            case LOCAL -> "./aether-backups";
+            case DOCKER -> "/data/backups";
+            case KUBERNETES -> "/var/aether/backups";
+        };
         return new BackupConfig(false, "5m", defaultPath, "");
     }
 }

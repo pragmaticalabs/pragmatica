@@ -13,6 +13,7 @@ import org.pragmatica.serialization.Serializer;
 
 import java.util.function.Function;
 
+
 /// ResourceFactory SPI implementation for provisioning StreamAccess instances.
 ///
 /// Discovered via ServiceLoader. Creates StreamAccessImpl instances using
@@ -34,17 +35,20 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
 
     @Override public Promise<StreamAccess> provision(StreamConfig config, ProvisioningContext context) {
         return context.extension(StreamPartitionManager.class).flatMap(manager -> context.extension(Serializer.class)
-        .flatMap(serializer -> context.extension(Deserializer.class)
-        .map(deserializer -> buildAccess(manager, serializer, deserializer, config, context))))
+                                                                                                   .flatMap(serializer -> context.extension(Deserializer.class)
+                                                                                                                                           .map(deserializer -> buildAccess(manager,
+                                                                                                                                                                            serializer,
+                                                                                                                                                                            deserializer,
+                                                                                                                                                                            config,
+                                                                                                                                                                            context))))
                                 .async();
     }
 
-    @SuppressWarnings("unchecked")
-    private static StreamAccess buildAccess(StreamPartitionManager manager,
-                                            Serializer serializer,
-                                            Deserializer deserializer,
-                                            StreamConfig config,
-                                            ProvisioningContext context) {
+    @SuppressWarnings("unchecked") private static StreamAccess buildAccess(StreamPartitionManager manager,
+                                                                           Serializer serializer,
+                                                                           Deserializer deserializer,
+                                                                           StreamConfig config,
+                                                                           ProvisioningContext context) {
         ensureStreamExists(manager, config);
         var keyExtractor = extractPartitionKeyFunction(context);
         return StreamAccessImpl.streamAccess(manager,
@@ -55,14 +59,12 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
                                              keyExtractor);
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes"})
-    private static <T> Option<Function<T, Object>> extractPartitionKeyFunction(ProvisioningContext context) {
+    @SuppressWarnings({"unchecked", "rawtypes"}) private static <T> Option<Function<T, Object>> extractPartitionKeyFunction(ProvisioningContext context) {
         return context.keyExtractor()
-        .map(fn -> (Function<T, Object>) input -> ((org.pragmatica.lang.Functions.Fn1) fn).apply(input));
+                                   .map(fn -> (Function<T, Object>) input -> ((org.pragmatica.lang.Functions.Fn1) fn).apply(input));
     }
 
     private static void ensureStreamExists(StreamPartitionManager manager, StreamConfig config) {
-        // Idempotent: ignore STREAM_ALREADY_EXISTS error
         manager.createStream(config);
     }
 }

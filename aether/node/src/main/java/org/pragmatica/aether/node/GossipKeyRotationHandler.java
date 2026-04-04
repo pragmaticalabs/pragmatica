@@ -11,6 +11,7 @@ import java.util.Base64;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Handles gossip key rotation events from the KV-Store.
 ///
 /// When a [GossipKeyRotationKey] put is committed through consensus, this handler
@@ -26,14 +27,11 @@ public final class GossipKeyRotationHandler {
         this.encryptor = encryptor;
     }
 
-    /// Factory method.
     public static GossipKeyRotationHandler gossipKeyRotationHandler(RotatingGossipEncryptor encryptor) {
         return new GossipKeyRotationHandler(encryptor);
     }
 
-    /// Handle a gossip key rotation KV-Store put notification.
-    @SuppressWarnings("JBCT-RET-01") // Event callback - void inherent
-    public void onGossipKeyRotationPut(ValuePut<GossipKeyRotationKey, GossipKeyRotationValue> put) {
+    @SuppressWarnings("JBCT-RET-01") public void onGossipKeyRotationPut(ValuePut<GossipKeyRotationKey, GossipKeyRotationValue> put) {
         var value = put.cause().value();
         log.info("Gossip key rotation received: currentKeyId={}, previousKeyId={}",
                  value.currentKeyId(),
@@ -41,15 +39,16 @@ public final class GossipKeyRotationHandler {
         applyRotation(value);
     }
 
-    @SuppressWarnings("JBCT-RET-01") // Side-effect: swap encryptor + log outcome
-    private void applyRotation(GossipKeyRotationValue value) {
+    @SuppressWarnings("JBCT-RET-01") private void applyRotation(GossipKeyRotationValue value) {
         var currentKey = Base64.getDecoder().decode(value.currentKey());
         var hasPrevious = value.previousKeyId() != 0 && !value.previousKey().isEmpty();
         var result = hasPrevious
-                     ? buildDualKeyEncryptor(currentKey, value.currentKeyId(), value)
-                     : AesGcmGossipEncryptor.aesGcmGossipEncryptor(currentKey, value.currentKeyId());
-        result.onSuccess(newEncryptor -> rotateAndLog(newEncryptor, value.currentKeyId()))
-        .onFailure(cause -> log.error("Failed to apply gossip key rotation: {}", cause.message()));
+                    ? buildDualKeyEncryptor(currentKey, value.currentKeyId(), value)
+                    : AesGcmGossipEncryptor.aesGcmGossipEncryptor(currentKey, value.currentKeyId());
+        result.onSuccess(newEncryptor -> rotateAndLog(newEncryptor,
+                                                      value.currentKeyId()))
+        .onFailure(cause -> log.error("Failed to apply gossip key rotation: {}",
+                                      cause.message()));
     }
 
     private void rotateAndLog(org.pragmatica.swim.GossipEncryptor newEncryptor, int keyId) {

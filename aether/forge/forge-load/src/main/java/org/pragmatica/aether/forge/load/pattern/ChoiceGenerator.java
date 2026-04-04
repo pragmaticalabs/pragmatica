@@ -12,12 +12,13 @@ import java.util.concurrent.ThreadLocalRandom;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
+
 /// Randomly selects from a list of choices.
 ///
 /// Pattern: `${choice:A,B,C`} where A, B, C are comma-separated options.
 ///
 /// Example: `${choice:NYC,LAX,CHI`} randomly picks one of the three values
-public record ChoiceGenerator( List<String> choices) implements PatternGenerator {
+public record ChoiceGenerator(List<String> choices) implements PatternGenerator {
     public static final String TYPE = "choice";
 
     public static Result<ChoiceGenerator> choiceGenerator(List<String> choices) {
@@ -26,7 +27,6 @@ public record ChoiceGenerator( List<String> choices) implements PatternGenerator
 
     private static final Fn1<Cause, String> INVALID_CHOICE = Causes.forOneValue("Invalid choice format: %s. Expected comma-separated values");
 
-    /// Parses a choice specification like "A,B,C".
     public static Result<PatternGenerator> choiceGenerator(String choiceSpec) {
         return option(choiceSpec).filter(s -> !s.isBlank())
                      .toResult(INVALID_CHOICE.apply("empty"))
@@ -42,8 +42,8 @@ public record ChoiceGenerator( List<String> choices) implements PatternGenerator
 
     private static Result<PatternGenerator> ensureNonEmpty(List<String> choices, String choiceSpec) {
         return choices.isEmpty()
-               ? INVALID_CHOICE.apply(choiceSpec).result()
-               : choiceGenerator(choices).map(gen -> gen);
+              ? INVALID_CHOICE.apply(choiceSpec).result()
+              : choiceGenerator(choices).map(gen -> gen);
     }
 
     @Override public String generate() {

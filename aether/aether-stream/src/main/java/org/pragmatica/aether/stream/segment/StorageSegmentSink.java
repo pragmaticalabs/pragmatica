@@ -7,6 +7,7 @@ import org.pragmatica.storage.StorageInstance;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// SegmentSink that stores sealed segments in a StorageInstance.
 /// Creates a named reference per segment: streams/{streamName}/{partition}/{startOffset}-{endOffset}
 public final class StorageSegmentSink implements SegmentSink {
@@ -20,7 +21,6 @@ public final class StorageSegmentSink implements SegmentSink {
         this.index = index;
     }
 
-    /// Factory method following JBCT naming convention.
     public static StorageSegmentSink storageSegmentSink(StorageInstance storage, SegmentIndex index) {
         return new StorageSegmentSink(storage, index);
     }

@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>pragmatica</artifactId>
-        <version>0.25.0</version>
+        <version>1.0.0-alpha</version>
     </parent>
 
     <artifactId>examples</artifactId>
@@ -17,12 +17,15 @@
 
     <modules>
         <module>pragmatica-lite</module>
-        <module>url-shortener</module>
-        <module>url-shortener-v2</module>
+        <!-- url-shortener and url-shortener-v2 are standalone projects with independent versions
+             (1.0.0 and 1.0.1 respectively). Build them separately after platform install:
+             mvn -f examples/url-shortener/pom.xml install
+             mvn -f examples/url-shortener-v2/pom.xml install -->
         <module>ecommerce</module>
         <module>banking</module>
         <module>pricing-engine</module>
         <module>notification-hub</module>
+        <module>pg-showcase</module>
     </modules>
 
     <build>

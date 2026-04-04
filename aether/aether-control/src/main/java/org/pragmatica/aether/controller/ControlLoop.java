@@ -48,6 +48,7 @@ import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Control loop that runs the ClusterController periodically on the leader node.
 ///
 ///
@@ -57,51 +58,23 @@ import org.slf4j.LoggerFactory;
 ///   - Periodically evaluate controller with current metrics
 ///   - Apply scaling decisions by updating blueprints in KVStore
 ///
-@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) // MessageReceiver callbacks + framework lifecycle methods
+@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
+// MessageReceiver callbacks + framework lifecycle methods
 public interface ControlLoop {
     @MessageReceiver void onLeaderChange(LeaderChange leaderChange);
-
     @MessageReceiver void onTopologyChange(TopologyChangeNotification topologyChange);
-
-    /// Handle slice target creation/update from KVStore.
     @MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
-
-    /// Handle slice target removal from KVStore.
     @MessageReceiver void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
-
-    /// Handle NodeArtifactKey put — tracks slice state from compound value.
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01") void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
-
-    /// Handle NodeArtifactKey remove.
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01") void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
-
-    /// Handle quorum state changes (stop evaluation when quorum disappears).
+    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
+    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
     @MessageReceiver void onQuorumStateChange(QuorumStateNotification notification);
-
-    /// Register a blueprint for controller management.
     void registerBlueprint(Artifact artifact, int instances, int minInstances);
-
-    /// Unregister a blueprint from controller management.
     void unregisterBlueprint(Artifact artifact);
-
-    /// Get current controller configuration.
     ControllerConfig configuration();
-
-    /// Update controller configuration at runtime.
     void updateConfiguration(ControllerConfig config);
-
-    /// Stop the control loop.
     void stop();
-
-    /// Handle community scaling request from a governor.
     void onCommunityScalingRequest(CommunityScalingRequest request);
-
-    /// Handle community metrics snapshot from a governor.
     void onCommunityMetricsSnapshot(CommunityMetricsSnapshot snapshot);
-
-    /// Get stored community snapshots.
     Map<String, CommunityMetricsSnapshot> communitySnapshots();
 
     static ControlLoop controlLoop(NodeId self,
@@ -113,39 +86,35 @@ public interface ControlLoop {
                                    TimeSpan interval,
                                    ControllerConfig config,
                                    Consumer<ScalingEvent> eventPublisher) {
-        record controlLoop( NodeId self,
-                            ClusterController controller,
-                            MetricsCollector metricsCollector,
-                            Option<InvocationMetricsCollector> invocationMetricsCollector,
-                            ClusterNode<KVCommand<AetherKey>> cluster,
-                            KVStore<AetherKey, AetherValue> kvStore,
-                            TimeSpan interval,
-                            AtomicReference<ControllerConfig> configRef,
-                            CompositeLoadFactor compositeLoadFactor,
-                            CancellableTask evaluationTask,
-                            AtomicReference<List<NodeId>> topology,
-                            ConcurrentHashMap<Artifact, ClusterController.Blueprint> blueprints,
-                            ConcurrentHashMap<SliceNodeKey, SliceState> sliceStates,
-                            AtomicReference<Long> activationTime,
-                            ConcurrentHashMap<Artifact, Long> sliceActivationTimes,
-                            AtomicLong quorumSequence,
-                            Consumer<ScalingEvent> eventPublisher,
-                            ConcurrentHashMap<String, CommunityMetricsSnapshot> communitySnapshotStore,
-                            ConcurrentHashMap<String, Long> communityScalingCooldowns) implements ControlLoop {
+        record controlLoop(NodeId self,
+                           ClusterController controller,
+                           MetricsCollector metricsCollector,
+                           Option<InvocationMetricsCollector> invocationMetricsCollector,
+                           ClusterNode<KVCommand<AetherKey>> cluster,
+                           KVStore<AetherKey, AetherValue> kvStore,
+                           TimeSpan interval,
+                           AtomicReference<ControllerConfig> configRef,
+                           CompositeLoadFactor compositeLoadFactor,
+                           CancellableTask evaluationTask,
+                           AtomicReference<List<NodeId>> topology,
+                           ConcurrentHashMap<Artifact, ClusterController.Blueprint> blueprints,
+                           ConcurrentHashMap<SliceNodeKey, SliceState> sliceStates,
+                           AtomicReference<Long> activationTime,
+                           ConcurrentHashMap<Artifact, Long> sliceActivationTimes,
+                           AtomicLong quorumSequence,
+                           Consumer<ScalingEvent> eventPublisher,
+                           ConcurrentHashMap<String, CommunityMetricsSnapshot> communitySnapshotStore,
+                           ConcurrentHashMap<String, Long> communityScalingCooldowns) implements ControlLoop {
             private static final Logger log = LoggerFactory.getLogger(ControlLoop.class);
+
             private static final String COOLDOWN_KEY_PREFIX = "scaling-cooldown/";
 
             @Override public void onLeaderChange(LeaderChange leaderChange) {
-                if ( leaderChange.localNodeIsLeader()) {
+                if (leaderChange.localNodeIsLeader()) {
                     log.info("Node {} became leader, starting control loop", self);
                     resetProtectionState();
                     startEvaluation();
-                } else
-
-
-
-
-                {
+                } else {
                     log.info("Node {} is no longer leader, stopping control loop", self);
                     stopEvaluation();
                     clearProtectionState();
@@ -153,7 +122,7 @@ public interface ControlLoop {
             }
 
             @Override public void onTopologyChange(TopologyChangeNotification topologyChange) {
-                switch ( topologyChange) {
+                switch (topologyChange){
                     case NodeAdded(_, List<NodeId> newTopology) -> topology.set(newTopology);
                     case NodeRemoved(_, List<NodeId> newTopology) -> topology.set(newTopology);
                     default -> {}
@@ -161,11 +130,11 @@ public interface ControlLoop {
             }
 
             @Override public void onQuorumStateChange(QuorumStateNotification notification) {
-                if ( !notification.advanceSequence(quorumSequence)) {
+                if (!notification.advanceSequence(quorumSequence)) {
                     log.debug("Ignoring stale QuorumStateNotification: {}", notification);
                     return;
                 }
-                if ( notification.state() == QuorumStateNotification.State.DISAPPEARED) {
+                if (notification.state() == QuorumStateNotification.State.DISAPPEARED) {
                     log.info("Quorum disappeared, stopping control loop evaluation");
                     stopEvaluation();
                 }
@@ -226,16 +195,14 @@ public interface ControlLoop {
             }
 
             @Override public void onCommunityScalingRequest(CommunityScalingRequest request) {
-                if ( !evaluationTask.isScheduled()) {
+                if (!evaluationTask.isScheduled()) {
                     log.debug("Ignoring community scaling request: not leader");
                     return;
                 }
-                if ( isStaleEvidence(request)) {
-                return;}
-                if ( isInCooldown(request)) {
-                return;}
+                if (isStaleEvidence(request)) {return;}
+                if (isInCooldown(request)) {return;}
                 var blueprint = blueprints.get(request.artifact());
-                if ( blueprint == null) {
+                if (blueprint == null) {
                     log.info("No blueprint found for community scaling request: {}", request.artifact());
                     return;
                 }
@@ -255,7 +222,7 @@ public interface ControlLoop {
 
             private boolean isStaleEvidence(CommunityScalingRequest request) {
                 var age = System.currentTimeMillis() - request.evidence().timestampMs();
-                if ( age > 30_000) {
+                if (age > 30_000) {
                     log.info("Rejecting stale community scaling request from {} (age: {}ms)", request.communityId(), age);
                     return true;
                 }
@@ -265,23 +232,20 @@ public interface ControlLoop {
             private boolean isInCooldown(CommunityScalingRequest request) {
                 var artifactKey = request.artifact().asString();
                 var lastScaling = communityScalingCooldowns.get(artifactKey);
-                if ( lastScaling != null && (System.currentTimeMillis() - lastScaling) < configRef.get()
-                .sliceCooldownMs()) {
+                if (lastScaling != null && (System.currentTimeMillis() - lastScaling) <configRef.get().sliceCooldownMs()) {
                     log.debug("Community scaling request for {} in cooldown", artifactKey);
                     return true;
                 }
                 return false;
             }
 
-            private void applyCommunityScaling(CommunityScalingRequest request,
-                                               ClusterController.Blueprint blueprint) {
+            private void applyCommunityScaling(CommunityScalingRequest request, ClusterController.Blueprint blueprint) {
                 var artifactKey = request.artifact().asString();
                 var clusterSize = topology.get().size() + totalWorkerCount();
-                if ( clusterSize == 0) {
-                clusterSize = 1;}
+                if (clusterSize == 0) {clusterSize = 1;}
                 var newInstances = Math.min(request.requestedInstances(), clusterSize);
                 newInstances = Math.max(newInstances, blueprint.minInstances());
-                if ( newInstances == blueprint.instances()) {
+                if (newInstances == blueprint.instances()) {
                     log.debug("Community scaling request for {} results in no change", artifactKey);
                     return;
                 }
@@ -302,7 +266,8 @@ public interface ControlLoop {
                 var value = SliceTargetValue.sliceTargetValue(request.artifact().version(),
                                                               newInstances);
                 cluster.apply(List.of(new KVCommand.Put<>(key, value)))
-                .onFailure(cause -> log.error("Failed to apply community scaling: {}", cause.message()));
+                             .onFailure(cause -> log.error("Failed to apply community scaling: {}",
+                                                           cause.message()));
                 publishCommunityScalingEvent(request, blueprint.instances(), newInstances);
             }
 
@@ -310,10 +275,10 @@ public interface ControlLoop {
                                                       int previousInstances,
                                                       int newInstances) {
                 var scalingEvent = "UP".equals(request.direction())
-                                   ? ScalingEvent.ScaledUp.scaledUp(request.artifact(), previousInstances, newInstances)
-                                   : ScalingEvent.ScaledDown.scaledDown(request.artifact(),
-                                                                        previousInstances,
-                                                                        newInstances);
+                                  ? ScalingEvent.ScaledUp.scaledUp(request.artifact(), previousInstances, newInstances)
+                                  : ScalingEvent.ScaledDown.scaledDown(request.artifact(),
+                                                                       previousInstances,
+                                                                       newInstances);
                 eventPublisher.accept(scalingEvent);
             }
 
@@ -330,22 +295,15 @@ public interface ControlLoop {
             }
 
             private void runEvaluation() {
-                // Scheduler boundary - generic catch prevents scheduler thread death
                 try {
-                    if ( blueprints.isEmpty()) {
+                    if (blueprints.isEmpty()) {
                         log.trace("No blueprints registered, skipping evaluation");
                         return;
                     }
                     var currentMetrics = sampleAllMetrics();
                     recordMetricSamples(currentMetrics);
                     evaluateScalingDecisions(currentMetrics);
-                }
-
-
-
-
-                catch (Exception e) {
-                    // Scheduler boundary - generic catch prevents scheduler thread death
+                } catch (Exception e) {
                     log.error("Control loop error: {}", e.getMessage(), e);
                 }
             }
@@ -362,7 +320,7 @@ public interface ControlLoop {
                 var loadFactorResult = computeLoadFactorWithCurrentValues(currentMetrics);
                 cleanupExpiredCooldowns();
                 var guardResult = checkGuardRails(loadFactorResult);
-                if ( guardResult.isPresent()) {
+                if (guardResult.isPresent()) {
                     guardResult.onPresent(reason -> log.debug("Auto-scaling blocked: {}", reason));
                     return;
                 }
@@ -376,11 +334,9 @@ public interface ControlLoop {
             }
 
             private Option<String> checkGuardRails(LoadFactorResult loadFactorResult) {
-                if ( !loadFactorResult.canScale()) {
-                return Option.some("not enough metric samples (windows not full)");}
+                if (!loadFactorResult.canScale()) {return Option.some("not enough metric samples (windows not full)");}
                 var sliceInProgress = checkSliceInProgress();
-                if ( sliceInProgress.isPresent()) {
-                return sliceInProgress;}
+                if (sliceInProgress.isPresent()) {return sliceInProgress;}
                 return checkLegacyScalingBlocked();
             }
 
@@ -395,7 +351,7 @@ public interface ControlLoop {
                                                   .orElse(0.0);
                 metrics.put(ScalingMetric.CPU, cpuAvg);
                 var activeInvocations = invocationMetricsCollector.map(InvocationMetricsCollector::totalActiveInvocations)
-                .or(0L);
+                                                                      .or(0L);
                 metrics.put(ScalingMetric.ACTIVE_INVOCATIONS, activeInvocations.doubleValue());
                 var p95Latency = invocationMetricsCollector.map(this::calculateP95LatencyMs).or(0.0);
                 metrics.put(ScalingMetric.P95_LATENCY, p95Latency);
@@ -421,8 +377,7 @@ public interface ControlLoop {
 
             private double calculateAverageErrorRate(InvocationMetricsCollector imc) {
                 var snapshots = imc.snapshot();
-                if ( snapshots.isEmpty()) {
-                return 0.0;}
+                if (snapshots.isEmpty()) {return 0.0;}
                 return snapshots.stream().mapToDouble(this::extractErrorRate)
                                        .average()
                                        .orElse(0.0);
@@ -433,46 +388,44 @@ public interface ControlLoop {
             }
 
             private LoadFactorResult computeLoadFactorWithCurrentValues(Map<ScalingMetric, Double> currentMetrics) {
-                if ( compositeLoadFactor instanceof CompositeLoadFactor.State state) {
-                return state.computeWithCurrentValues(currentMetrics);}
+                if (compositeLoadFactor instanceof CompositeLoadFactor.State state) {return state.computeWithCurrentValues(currentMetrics);}
                 return compositeLoadFactor.compute();
             }
 
             private void applyDecisionsWithGuards(ClusterController.ControlDecisions decisions,
                                                   LoadFactorResult loadFactorResult) {
-                if ( decisions.changes().isEmpty()) {
+                if (decisions.changes().isEmpty()) {
                     log.trace("No scaling decisions");
                     return;
                 }
                 var scalingConfig = configRef.get().scalingConfig();
                 var errorRateHigh = compositeLoadFactor.isErrorRateHigh();
                 var commands = new ArrayList<KVCommand<AetherKey>>();
-                for ( var change : decisions.changes()) {
+                for (var change : decisions.changes()) {
                     var shouldApply = shouldApplyScalingDecision(change, loadFactorResult, scalingConfig, errorRateHigh);
-                    if ( shouldApply) {
-                    prepareChange(change).onPresent(commands::add);} else
-                    {
-                    logBlockedDecision(change, loadFactorResult, scalingConfig);}
+                    if (shouldApply) {prepareChange(change).onPresent(commands::add);} else {logBlockedDecision(change,
+                                                                                                                loadFactorResult,
+                                                                                                                scalingConfig);}
                 }
-                if ( !commands.isEmpty()) {
-                cluster.apply(commands)
-                .onFailure(cause -> log.error("Failed to apply blueprint changes: {}", cause.message()));}
+                if (!commands.isEmpty()) {cluster.apply(commands)
+                                                       .onFailure(cause -> log.error("Failed to apply blueprint changes: {}",
+                                                                                     cause.message()));}
             }
 
             private boolean shouldApplyScalingDecision(BlueprintChange change,
                                                        LoadFactorResult loadFactorResult,
                                                        ScalingConfig scalingConfig,
                                                        boolean errorRateHigh) {
-                return switch (change) {case BlueprintChange.ScaleUp _ -> shouldApplyScaleUp(loadFactorResult,
-                                                                                             scalingConfig,
-                                                                                             errorRateHigh);case BlueprintChange.ScaleDown _ -> shouldApplyScaleDown(loadFactorResult,
-                                                                                                                                                                     scalingConfig);};
+                return switch (change){
+                    case BlueprintChange.ScaleUp _ -> shouldApplyScaleUp(loadFactorResult, scalingConfig, errorRateHigh);
+                    case BlueprintChange.ScaleDown _ -> shouldApplyScaleDown(loadFactorResult, scalingConfig);
+                };
             }
 
             private boolean shouldApplyScaleUp(LoadFactorResult loadFactorResult,
                                                ScalingConfig scalingConfig,
                                                boolean errorRateHigh) {
-                if ( errorRateHigh) {
+                if (errorRateHigh) {
                     log.debug("Scale-up blocked: error rate exceeds threshold");
                     return false;
                 }
@@ -517,13 +470,13 @@ public interface ControlLoop {
                 var now = System.currentTimeMillis();
                 var activation = activationTime.get();
                 var currentConfig = configRef.get();
-                if ( activation != null && (now - activation) < currentConfig.warmUpPeriodMs()) {
+                if (activation != null && (now - activation) <currentConfig.warmUpPeriodMs()) {
                     var remaining = currentConfig.warmUpPeriodMs() - (now - activation);
                     return Option.some("Warm-up period active (" + remaining + "ms remaining)");
                 }
-                for ( var entry : sliceActivationTimes.entrySet()) {
+                for (var entry : sliceActivationTimes.entrySet()) {
                     var elapsed = now - entry.getValue();
-                    if ( elapsed < currentConfig.sliceCooldownMs()) {
+                    if (elapsed <currentConfig.sliceCooldownMs()) {
                         var remaining = currentConfig.sliceCooldownMs() - elapsed;
                         return Option.some("Slice " + entry.getKey() + " in cooldown (" + remaining + "ms remaining)");
                     }
@@ -538,7 +491,7 @@ public interface ControlLoop {
             private Option<KVCommand<AetherKey>> prepareChange(BlueprintChange change) {
                 var artifact = change.artifact();
                 var blueprint = blueprints.get(artifact);
-                if ( blueprint == null) {
+                if (blueprint == null) {
                     log.warn("Blueprint not found for {}, skipping change", artifact);
                     return Option.none();
                 }
@@ -548,23 +501,25 @@ public interface ControlLoop {
             private Option<KVCommand<AetherKey>> prepareChangeToBlueprint(BlueprintChange change,
                                                                           Artifact artifact,
                                                                           ClusterController.Blueprint currentBlueprint) {
-                var requestedInstances = switch (change) {case BlueprintChange.ScaleUp(_, int additional) -> currentBlueprint.instances() + additional;case BlueprintChange.ScaleDown(_, int reduceBy) -> Math.max(currentBlueprint.minInstances(),
-                                                                                                                                                                                                                   currentBlueprint.instances() - reduceBy);};
+                var requestedInstances = switch (change){
+                    case BlueprintChange.ScaleUp(_, int additional) -> currentBlueprint.instances() + additional;
+                    case BlueprintChange.ScaleDown(_, int reduceBy) -> Math.max(currentBlueprint.minInstances(),
+                                                                                currentBlueprint.instances() - reduceBy);
+                };
                 var clusterSize = topology.get().size() + totalWorkerCount();
-                if ( clusterSize == 0) {
+                if (clusterSize == 0) {
                     log.debug("Scaling {} capped at 1 (cluster size is 0)", artifact);
                     clusterSize = 1;
                 }
                 var newInstances = requestedInstances;
-                if ( requestedInstances > clusterSize) {
+                if (requestedInstances > clusterSize) {
                     log.debug("Scaling {} capped at cluster size {} (requested {})",
                               artifact,
                               clusterSize,
                               requestedInstances);
                     newInstances = clusterSize;
                 }
-                if ( newInstances == currentBlueprint.instances()) {
-                return Option.none();}
+                if (newInstances == currentBlueprint.instances()) {return Option.none();}
                 log.info("Applying scaling decision: {} from {} to {} instances",
                          artifact,
                          currentBlueprint.instances(),
@@ -581,11 +536,14 @@ public interface ControlLoop {
                                              Artifact artifact,
                                              int previousInstances,
                                              int newInstances) {
-                var scalingEvent = switch (change) {case BlueprintChange.ScaleUp _ -> ScalingEvent.ScaledUp.scaledUp(artifact,
-                                                                                                                     previousInstances,
-                                                                                                                     newInstances);case BlueprintChange.ScaleDown _ -> ScalingEvent.ScaledDown.scaledDown(artifact,
-                                                                                                                                                                                                          previousInstances,
-                                                                                                                                                                                                          newInstances);};
+                var scalingEvent = switch (change){
+                    case BlueprintChange.ScaleUp _ -> ScalingEvent.ScaledUp.scaledUp(artifact,
+                                                                                     previousInstances,
+                                                                                     newInstances);
+                    case BlueprintChange.ScaleDown _ -> ScalingEvent.ScaledDown.scaledDown(artifact,
+                                                                                           previousInstances,
+                                                                                           newInstances);
+                };
                 eventPublisher.accept(scalingEvent);
             }
 
@@ -601,28 +559,22 @@ public interface ControlLoop {
                 var configKey = ConfigKey.forKey(COOLDOWN_KEY_PREFIX + artifactKey);
                 var configValue = ConfigValue.configValue(COOLDOWN_KEY_PREFIX + artifactKey, Long.toString(timestamp));
                 cluster.apply(List.of(new KVCommand.Put<>(configKey, configValue)))
-                .onFailure(cause -> log.warn("Failed to persist cooldown for {}: {}", artifactKey, cause.message()));
+                             .onFailure(cause -> log.warn("Failed to persist cooldown for {}: {}",
+                                                          artifactKey,
+                                                          cause.message()));
             }
 
             private void restoreCooldownsFromKVStore() {
                 kvStore.forEach(ConfigKey.class, ConfigValue.class, this::restoreCooldownEntry);
             }
 
-            @SuppressWarnings("JBCT-RET-01") // BiConsumer callback
-            private// BiConsumer callback
-            // BiConsumer callback
-            // BiConsumer callback
-            // BiConsumer callback
-            // BiConsumer callback
-            void restoreCooldownEntry(ConfigKey key, ConfigValue value) {
-                if ( !key.key().startsWith(COOLDOWN_KEY_PREFIX)) {
-                return;}
+            @SuppressWarnings("JBCT-RET-01") private void restoreCooldownEntry(ConfigKey key, ConfigValue value) {
+                if (!key.key().startsWith(COOLDOWN_KEY_PREFIX)) {return;}
                 var artifactKey = key.key().substring(COOLDOWN_KEY_PREFIX.length());
                 var timestamp = parseCooldownTimestamp(value.value());
-                if ( timestamp <= 0) {
-                return;}
+                if (timestamp <= 0) {return;}
                 var now = System.currentTimeMillis();
-                if ( (now - timestamp) < configRef.get().sliceCooldownMs()) {
+                if ((now - timestamp) <configRef.get().sliceCooldownMs()) {
                     communityScalingCooldowns.put(artifactKey, timestamp);
                     log.debug("Restored cooldown for {} ({}ms remaining)",
                               artifactKey,
@@ -633,12 +585,7 @@ public interface ControlLoop {
             private static long parseCooldownTimestamp(String value) {
                 try {
                     return Long.parseLong(value);
-                }
-
-
-
-
-                catch (NumberFormatException _) {
+                } catch (NumberFormatException _) {
                     return - 1;
                 }
             }
@@ -651,15 +598,14 @@ public interface ControlLoop {
 
             private void handleSliceStateChange(SliceNodeKey sliceNodeKey, SliceState newState) {
                 var previousState = sliceStates.put(sliceNodeKey, newState);
-                if ( newState == SliceState.ACTIVE && previousState != SliceState.ACTIVE) {
+                if (newState == SliceState.ACTIVE && previousState != SliceState.ACTIVE) {
                     var cooldownTimestamp = System.currentTimeMillis();
                     sliceActivationTimes.put(sliceNodeKey.artifact(), cooldownTimestamp);
                     persistCooldown(sliceNodeKey.artifact().asString(),
                                     cooldownTimestamp);
                     log.debug("Slice {} reached ACTIVE, cooldown started", sliceNodeKey.artifact());
                 }
-                if ( newState.isInProgress()) {
-                log.debug("Slice {} in progress state: {}", sliceNodeKey, newState);}
+                if (newState.isInProgress()) {log.debug("Slice {} in progress state: {}", sliceNodeKey, newState);}
             }
         }
         return new controlLoop(self,

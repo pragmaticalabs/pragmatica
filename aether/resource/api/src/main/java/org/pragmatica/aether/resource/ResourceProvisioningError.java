@@ -5,9 +5,9 @@ import org.pragmatica.lang.Option;
 
 import static org.pragmatica.lang.Option.some;
 
+
 /// Error types for resource provisioning operations.
 public sealed interface ResourceProvisioningError extends Cause {
-    /// No factory registered for the requested resource type.
     record FactoryNotFound(Class<?> resourceType) implements ResourceProvisioningError {
         public static FactoryNotFound factoryNotFound(Class<?> resourceType) {
             return new FactoryNotFound(resourceType);
@@ -22,7 +22,6 @@ public sealed interface ResourceProvisioningError extends Cause {
         return FactoryNotFound.factoryNotFound(resourceType);
     }
 
-    /// Failed to create the resource from configuration.
     record CreationFailed(Class<?> resourceType, String configSection, Cause underlying) implements ResourceProvisioningError {
         public static CreationFailed creationFailed(Class<?> resourceType, String configSection, Cause underlying) {
             return new CreationFailed(resourceType, configSection, underlying);
@@ -41,7 +40,6 @@ public sealed interface ResourceProvisioningError extends Cause {
         return CreationFailed.creationFailed(resourceType, configSection, underlying);
     }
 
-    /// Failed to load configuration for resource.
     record ConfigLoadFailed(String configSection, Cause configError) implements ResourceProvisioningError {
         public static ConfigLoadFailed configLoadFailed(String configSection, Cause configError) {
             return new ConfigLoadFailed(configSection, configError);
@@ -60,7 +58,6 @@ public sealed interface ResourceProvisioningError extends Cause {
         return ConfigLoadFailed.configLoadFailed(configSection, configError);
     }
 
-    /// ConfigService not available.
     enum ConfigServiceNotAvailable implements ResourceProvisioningError {
         INSTANCE;
         @Override public String message() {

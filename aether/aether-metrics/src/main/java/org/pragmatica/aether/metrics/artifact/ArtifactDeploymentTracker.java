@@ -14,6 +14,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Tracks artifact deployment status across the cluster by watching KV-Store events.
 ///
 ///
@@ -27,22 +28,12 @@ import org.slf4j.LoggerFactory;
 ///
 /// Key format watched: `slices/{nodeId`/{artifact}}
 public interface ArtifactDeploymentTracker {
-    /// Handle NodeArtifactKey put — tracks deployment count.
     @Contract void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
-
-    /// Handle NodeArtifactKey remove — decrements deployment count.
     @Contract void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
-
-    /// Check if an artifact is deployed anywhere in the cluster.
     boolean isDeployed(Artifact artifact);
-
-    /// Get all deployed artifacts.
     Set<Artifact> deployedArtifacts();
-
-    /// Get count of deployed artifacts.
     int deployedCount();
 
-    /// Create a new artifact deployment tracker.
     static ArtifactDeploymentTracker artifactDeploymentTracker() {
         return new ArtifactDeploymentTrackerImpl();
     }
@@ -51,11 +42,9 @@ public interface ArtifactDeploymentTracker {
 class ArtifactDeploymentTrackerImpl implements ArtifactDeploymentTracker {
     private static final Logger log = LoggerFactory.getLogger(ArtifactDeploymentTrackerImpl.class);
 
-    // Tracks artifact -> count of deployments across nodes
     private final ConcurrentHashMap<Artifact, Integer> deploymentCounts = new ConcurrentHashMap<>();
 
-    @Override
-    @Contract public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+    @Override@Contract public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
         var artifact = valuePut.cause().key()
                                      .artifact();
         deploymentCounts.compute(artifact, (_, count) -> incrementCount(count));
@@ -64,8 +53,7 @@ class ArtifactDeploymentTrackerImpl implements ArtifactDeploymentTracker {
                   deploymentCounts.get(artifact));
     }
 
-    @Override
-    @Contract public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+    @Override@Contract public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
         var artifact = valueRemove.cause().key()
                                         .artifact();
         deploymentCounts.compute(artifact, (_, count) -> decrementCount(count));
@@ -74,18 +62,16 @@ class ArtifactDeploymentTrackerImpl implements ArtifactDeploymentTracker {
                   deploymentCounts.getOrDefault(artifact, 0));
     }
 
-    @SuppressWarnings("JBCT-RET-03") // null return required by ConcurrentHashMap.compute API to signal absence
-    private static Integer incrementCount(Integer count) {
+    @SuppressWarnings("JBCT-RET-03") private static Integer incrementCount(Integer count) {
         return count == null
-               ? 1
-               : count + 1;
+              ? 1
+              : count + 1;
     }
 
-    @SuppressWarnings("JBCT-RET-03") // null return required by ConcurrentHashMap.compute API to signal removal
-    private static Integer decrementCount(Integer count) {
+    @SuppressWarnings("JBCT-RET-03") private static Integer decrementCount(Integer count) {
         return (count == null || count <= 1)
-               ? null
-               : count - 1;
+              ? null
+              : count - 1;
     }
 
     @Override public boolean isDeployed(Artifact artifact) {

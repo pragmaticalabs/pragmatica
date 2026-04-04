@@ -55,57 +55,65 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
+
 /// Manages a cluster of AetherNodes for Ember.
 /// Supports starting, stopping, adding, and killing nodes.
-@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
-public final class EmberCluster {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) public final class EmberCluster {
     private static final Logger log = LoggerFactory.getLogger(EmberCluster.class);
 
     public static final int DEFAULT_BASE_PORT = 6000;
+
     public static final int DEFAULT_BASE_MGMT_PORT = 6100;
+
     public static final int DEFAULT_BASE_APP_HTTP_PORT = 8070;
+
     private static final TimeSpan NODE_TIMEOUT = TimeSpan.timeSpan(10).seconds();
+
     private static final long ROLLING_RESTART_DELAY_MS = 5_000;
 
     private final Map<String, AetherNode> nodes = new ConcurrentHashMap<>();
+
     private final Map<String, NodeInfo> nodeInfos = new ConcurrentHashMap<>();
+
     private final AtomicInteger nodeCounter = new AtomicInteger(0);
+
     private final Queue<Integer> availableSlots = new ConcurrentLinkedQueue<>();
+
     private final Map<String, Integer> slotsByNodeId = new ConcurrentHashMap<>();
+
     private final int initialClusterSize;
     private final int basePort;
     private final int baseMgmtPort;
     private final int baseAppHttpPort;
     private final String nodeIdPrefix;
+
     private final AtomicBoolean rollingRestartActive = new AtomicBoolean(false);
+
     private final ScheduledExecutorService rollingRestartExecutor = Executors.newSingleThreadScheduledExecutor();
+
     private final CancellableTask rollingRestartTask = CancellableTask.cancellableTask();
+
     private final Random random = new Random();
 
-    // Aether invocation metrics EMA state
     private long lastTotalInvocations = 0;
+
     private long lastTotalSuccess = 0;
+
     private double emaRps = 0.0;
+
     private double emaSuccessRate = 1.0;
+
     private double emaAvgLatencyMs = 0.0;
+
     private static final double EMA_ALPHA = 0.2;
 
     private final int targetClusterSize;
     private final AtomicInteger effectiveSize;
-
-    // Configuration provider for nodes
     private final Option<ConfigurationProvider> configProvider;
-
-    // Observability configuration for nodes
     private final ObservabilityConfig observability;
-
-    // Maximum number of core consensus nodes (0 = unlimited)
     private final int coreMax;
-
-    // Environment integration for auto-healing (CDM provisions replacements via compute facet)
     private final EnvironmentIntegration emberEnvironment;
 
-    /// ComputeProvider implementation that provisions nodes via EmberCluster.addNode().
     private final class EmberComputeProvider implements ComputeProvider {
         @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
             return addNode().map(nodeId -> toInstanceInfo(nodeId.id()));
@@ -129,7 +137,7 @@ public final class EmberCluster {
 
         private InstanceInfo toInstanceInfo(String nodeIdStr) {
             var addresses = Option.option(nodeInfos.get(nodeIdStr)).map(info -> List.of("localhost:" + info.address()
-            .port()))
+                                                                                                                   .port()))
                                          .or(List.of());
             return new InstanceInfo(new InstanceId(nodeIdStr),
                                     InstanceStatus.RUNNING,
@@ -175,12 +183,6 @@ public final class EmberCluster {
                                 0);
     }
 
-    /// Create an EmberCluster with custom port ranges.
-    /// Use this to avoid port conflicts when running multiple tests in parallel.
-    ///
-    /// @param initialSize  Number of nodes to start with
-    /// @param basePort     Base port for cluster communication (each node uses basePort + nodeIndex)
-    /// @param baseMgmtPort Base port for management HTTP API (each node uses baseMgmtPort + nodeIndex)
     public static EmberCluster emberCluster(int initialSize, int basePort, int baseMgmtPort) {
         return new EmberCluster(initialSize,
                                 basePort,
@@ -192,13 +194,6 @@ public final class EmberCluster {
                                 0);
     }
 
-    /// Create an EmberCluster with custom port ranges and node ID prefix.
-    /// Use this to avoid port conflicts when running multiple tests in parallel.
-    ///
-    /// @param initialSize   Number of nodes to start with
-    /// @param basePort      Base port for cluster communication (each node uses basePort + nodeIndex)
-    /// @param baseMgmtPort  Base port for management HTTP API (each node uses baseMgmtPort + nodeIndex)
-    /// @param nodeIdPrefix  Prefix for node IDs (e.g., "cf" creates nodes "cf-1", "cf-2", etc.)
     public static EmberCluster emberCluster(int initialSize, int basePort, int baseMgmtPort, String nodeIdPrefix) {
         return new EmberCluster(initialSize,
                                 basePort,
@@ -210,13 +205,6 @@ public final class EmberCluster {
                                 0);
     }
 
-    /// Create an EmberCluster with custom port ranges including app HTTP.
-    ///
-    /// @param initialSize     Number of nodes to start with
-    /// @param basePort        Base port for cluster communication
-    /// @param baseMgmtPort    Base port for management HTTP API
-    /// @param baseAppHttpPort Base port for application HTTP API (slice endpoints)
-    /// @param nodeIdPrefix    Prefix for node IDs
     public static EmberCluster emberCluster(int initialSize,
                                             int basePort,
                                             int baseMgmtPort,
@@ -232,14 +220,6 @@ public final class EmberCluster {
                             0);
     }
 
-    /// Create an EmberCluster with ConfigurationProvider for node configuration.
-    ///
-    /// @param initialSize        Number of nodes to start with
-    /// @param basePort           Base port for cluster communication
-    /// @param baseMgmtPort       Base port for management HTTP API
-    /// @param baseAppHttpPort    Base port for application HTTP API (slice endpoints)
-    /// @param nodeIdPrefix       Prefix for node IDs
-    /// @param configProvider     Configuration provider for all nodes (shared)
     public static EmberCluster emberCluster(int initialSize,
                                             int basePort,
                                             int baseMgmtPort,
@@ -256,15 +236,6 @@ public final class EmberCluster {
                             0);
     }
 
-    /// Create an EmberCluster with ConfigurationProvider and ObservabilityConfig.
-    ///
-    /// @param initialSize        Number of nodes to start with
-    /// @param basePort           Base port for cluster communication
-    /// @param baseMgmtPort       Base port for management HTTP API
-    /// @param baseAppHttpPort    Base port for application HTTP API (slice endpoints)
-    /// @param nodeIdPrefix       Prefix for node IDs
-    /// @param configProvider     Configuration provider for all nodes (shared)
-    /// @param observability      Observability configuration for all nodes
     public static EmberCluster emberCluster(int initialSize,
                                             int basePort,
                                             int baseMgmtPort,
@@ -282,16 +253,6 @@ public final class EmberCluster {
                             0);
     }
 
-    /// Create an EmberCluster with all parameters including coreMax.
-    ///
-    /// @param initialSize        Number of nodes to start with
-    /// @param basePort           Base port for cluster communication
-    /// @param baseMgmtPort       Base port for management HTTP API
-    /// @param baseAppHttpPort    Base port for application HTTP API (slice endpoints)
-    /// @param nodeIdPrefix       Prefix for node IDs
-    /// @param configProvider     Configuration provider for all nodes (shared)
-    /// @param observability      Observability configuration for all nodes
-    /// @param coreMax            Maximum number of core consensus nodes (0 = unlimited)
     public static EmberCluster emberCluster(int initialSize,
                                             int basePort,
                                             int baseMgmtPort,
@@ -310,21 +271,16 @@ public final class EmberCluster {
                                 coreMax);
     }
 
-    /// Start the initial cluster with configured number of nodes.
-    /// If any node fails to start, all successfully started nodes are stopped and the failure is returned.
     public Promise<Unit> start() {
         log.info("Starting Ember cluster with {} nodes on ports {}-{}",
                  initialClusterSize,
                  basePort,
                  basePort + initialClusterSize - 1);
-        // Initialize slot pool (2x target size for headroom)
         int poolSize = 2 * targetClusterSize;
         availableSlots.clear();
-        for ( int i = 0; i < poolSize; i++) {
-        availableSlots.offer(i);}
-        // Create node infos for initial cluster
+        for (int i = 0;i <poolSize;i++) {availableSlots.offer(i);}
         var initialNodes = new ArrayList<NodeInfo>();
-        for ( int i = 1; i <= initialClusterSize; i++) {
+        for (int i = 1;i <= initialClusterSize;i++) {
             var slot = availableSlots.poll();
             var nodeId = nodeId(nodeIdPrefix + "-" + i).unwrap();
             var port = basePort + slot;
@@ -334,9 +290,8 @@ public final class EmberCluster {
             slotsByNodeId.put(nodeId.id(), slot);
         }
         nodeCounter.set(initialClusterSize);
-        // Create and start all nodes, tracking results individually
         var startPromises = new ArrayList<Promise<NodeStartResult>>();
-        for ( int i = 0; i < initialClusterSize; i++) {
+        for (int i = 0;i <initialClusterSize;i++) {
             var nodeInfo = initialNodes.get(i);
             var nodeIdStr = nodeInfo.id().id();
             var slot = slotsByNodeId.get(nodeIdStr);
@@ -345,7 +300,6 @@ public final class EmberCluster {
             var appHttpPort = baseAppHttpPort + slot;
             var node = createNode(nodeInfo.id(), port, mgmtPort, appHttpPort, initialNodes, false);
             nodes.put(nodeIdStr, node);
-            // Wrap start() to capture success/failure with node context
             startPromises.add(node.start().map(_ -> NodeStartResult.nodeStartResult(nodeIdStr,
                                                                                     port,
                                                                                     mgmtPort,
@@ -369,29 +323,25 @@ public final class EmberCluster {
     }
 
     private Promise<Unit> handleStartResults(List<Result<NodeStartResult>> results) {
-        // Extract NodeStartResult from each Result (all succeed due to recover())
         var nodeResults = results.stream().flatMap(Result::stream)
                                         .toList();
         var failed = nodeResults.stream().filter(r -> !r.succeeded())
                                        .toList();
         var succeeded = nodeResults.stream().filter(NodeStartResult::succeeded)
                                           .toList();
-        if ( failed.isEmpty()) {
+        if (failed.isEmpty()) {
             log.info("All nodes started, waiting for cluster stabilization...");
             return Promise.promise(timeSpan(2).seconds(),
                                    () -> Result.success(Unit.unit()))
             .onSuccess(_ -> log.info("Ember cluster started with {} nodes", initialClusterSize));
         }
-        // Log all failures with details
-        for ( var f : failed) {
-        f.failure()
-        .onPresent(cause -> log.error("Node {} failed to start on port {} (mgmt: {}): {}",
-                                      f.nodeId(),
-                                      f.port(),
-                                      f.mgmtPort(),
-                                      cause.message()));}
+        for (var f : failed) {f.failure()
+                                       .onPresent(cause -> log.error("Node {} failed to start on port {} (mgmt: {}): {}",
+                                                                     f.nodeId(),
+                                                                     f.port(),
+                                                                     f.mgmtPort(),
+                                                                     cause.message()));}
         log.error("Cluster startup failed: {} of {} nodes failed to start", failed.size(), initialClusterSize);
-        // Stop successfully started nodes
         var stopPromises = succeeded.stream().map(r -> Option.option(nodes.get(r.nodeId())).map(node -> node.stop().timeout(NODE_TIMEOUT)
                                                                                                                  .recover(_ -> Unit.unit()))
                                                                     .or(Promise.success(Unit.unit())))
@@ -411,10 +361,8 @@ public final class EmberCluster {
         nodeCounter.set(0);
     }
 
-    /// Stop all nodes gracefully.
     public Promise<Unit> stop() {
         log.info("Stopping Ember cluster");
-        // Cancel rolling restart if active
         rollingRestartTask.cancel();
         rollingRestartActive.set(false);
         var stopPromises = nodes.values().stream()
@@ -432,11 +380,9 @@ public final class EmberCluster {
         log.info("Ember cluster stopped");
     }
 
-    /// Add a new node to the cluster.
-    /// Returns the new node's ID.
     public Promise<NodeId> addNode() {
         var slotOpt = Option.option(availableSlots.poll());
-        if ( slotOpt.isEmpty()) {
+        if (slotOpt.isEmpty()) {
             log.warn("Slot pool exhausted — no available ports for new node");
             return EnvironmentError.operationNotSupported("No available port slots for new node").promise();
         }
@@ -449,12 +395,8 @@ public final class EmberCluster {
         var info = NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
         log.info("Adding new node {} on port {}", nodeId.id(), port);
         slotsByNodeId.put(nodeId.id(), slot);
-        // Register the new node in coreNodes BEFORE creating it — TopologyObserver requires self in coreNodes.
-        // Activation gating prevents auto-activation; the node waits for CDM authorization instead.
         nodeInfos.put(nodeId.id(), info);
         var allNodes = new ArrayList<>(nodeInfos.values());
-        // Auto-heal provisioned nodes join an established cluster — no activation gating needed.
-        // Gating is only for initial cluster formation where CDM coordinates node roles.
         var node = createNode(nodeId, port, mgmtPort, appHttpPort, allNodes, false);
         nodes.put(nodeId.id(), node);
         return node.start().map(_ -> nodeId)
@@ -462,16 +404,10 @@ public final class EmberCluster {
                                                   nodeId.id()));
     }
 
-    /// Gracefully stop and remove a node from the cluster.
-    /// The node cannot be restarted - use addNode() to create a new node.
     public Promise<Unit> killNode(String nodeIdStr) {
         return killNode(nodeIdStr, true);
     }
 
-    /// Stop and remove a node from the cluster.
-    ///
-    /// @param nodeIdStr Node ID to kill
-    /// @param graceful  If true, waits for normal timeout; if false, uses 1-second timeout
     public Promise<Unit> killNode(String nodeIdStr, boolean graceful) {
         return Option.option(nodes.get(nodeIdStr)).map(node -> killNodeInternal(nodeIdStr, node, graceful))
                             .or(() -> nodeNotFound(nodeIdStr));
@@ -484,13 +420,11 @@ public final class EmberCluster {
 
     private Promise<Unit> killNodeInternal(String nodeIdStr, AetherNode node, boolean graceful) {
         var timeout = graceful
-                      ? NODE_TIMEOUT
-                      : TimeSpan.timeSpan(1).seconds();
+                     ? NODE_TIMEOUT
+                     : TimeSpan.timeSpan(1).seconds();
         log.info("{} node {}", graceful
                               ? "Stopping"
                               : "Force-killing", nodeIdStr);
-        // Remove from tracking IMMEDIATELY so getAvailableAppHttpPorts() won't return this port
-        // This prevents load generator from sending requests to the dying node
         nodes.remove(nodeIdStr);
         nodeInfos.remove(nodeIdStr);
         var slotOpt = Option.option(slotsByNodeId.remove(nodeIdStr));
@@ -500,13 +434,10 @@ public final class EmberCluster {
                         .onSuccess(_ -> log.info("Node {} removed from cluster", nodeIdStr));
     }
 
-    /// Get the target cluster size for auto-heal.
     public int targetClusterSize() {
         return targetClusterSize;
     }
 
-    /// Route SetClusterSize to all nodes in the cluster.
-    /// Each node's topology manager validates and applies the new size.
     public void setClusterSize(int newSize) {
         effectiveSize.set(newSize);
         var message = new TopologyManagementMessage.SetClusterSize(newSize);
@@ -514,12 +445,10 @@ public final class EmberCluster {
         log.info("SetClusterSize({}) routed to {} nodes", newSize, nodes.size());
     }
 
-    /// Get the effective cluster size (last value set via setClusterSize, or the initial target).
     public int effectiveClusterSize() {
         return effectiveSize.get();
     }
 
-    /// Get the current leader node ID from consensus.
     public Option<String> currentLeader() {
         return Option.option(nodes.values().stream()
                                          .findFirst()
@@ -527,7 +456,6 @@ public final class EmberCluster {
                             .map(NodeId::id);
     }
 
-    /// Get the current cluster status for the dashboard.
     public ClusterStatus status() {
         var nodeStatuses = nodes.entrySet().stream()
                                          .map(this::toNodeStatus)
@@ -542,44 +470,34 @@ public final class EmberCluster {
                               clusterPort,
                               baseMgmtPort + (clusterPort - basePort),
                               "healthy",
-                              currentLeader().map(leaderId -> leaderId.equals(entry.getKey()))
-                                           .or(false));
+                              currentLeader().map(leaderId -> leaderId.equals(entry.getKey())).or(false));
     }
 
-    /// Get a node by ID.
     public Option<AetherNode> getNode(String nodeIdStr) {
         return Option.option(nodes.get(nodeIdStr));
     }
 
-    /// Get all nodes.
     public List<AetherNode> allNodes() {
         return new ArrayList<>(nodes.values());
     }
 
-    /// Get node count.
     public int nodeCount() {
         return nodes.size();
     }
 
-    /// Get the management port of the current leader node.
     public Option<Integer> getLeaderManagementPort() {
         return currentLeader().flatMap(leaderId -> Option.option(nodeInfos.get(leaderId)))
                             .map(info -> baseMgmtPort + (info.address().port() - basePort));
     }
 
-    /// Get the app HTTP port of the first node (for load generation).
     public int getAppHttpPort() {
         return baseAppHttpPort;
     }
 
-    /// Get all node infos for the current cluster nodes.
     public List<NodeInfo> getNodeInfos() {
         return List.copyOf(nodeInfos.values());
     }
 
-    /// Get the app HTTP ports of all currently active and route-ready nodes.
-    /// Filters out nodes that haven't completed initial route synchronization
-    /// to prevent load balancers from sending requests to nodes not yet serving routes.
     public List<Integer> getAvailableAppHttpPorts() {
         return nodes.entrySet().stream()
                              .filter(entry -> entry.getValue().appHttpServer()
@@ -607,7 +525,6 @@ public final class EmberCluster {
                                           org.pragmatica.consensus.topology.BackoffConfig.DEFAULT,
                                           coreMax,
                                           targetClusterSize);
-        // Use forgeDefaults() for controller config - disables CPU-based scaling in simulation
         var config = new AetherNodeConfig(topology,
                                           ProtocolConfig.testConfig(),
                                           defaultSliceActionConfig(),
@@ -636,17 +553,11 @@ public final class EmberCluster {
         return AetherNode.aetherNode(config).unwrap();
     }
 
-    /// Get per-node metrics for all nodes.
-    /// Uses the leader's cached allMetrics() (populated via MetricsPing/MetricsPong)
-    /// instead of calling collectLocal() per node — zero MXBean calls, zero HashMap allocations.
     public List<NodeMetrics> nodeMetrics() {
         var leaderId = currentLeader().or("");
-        // Find leader node — it has cached metrics from all nodes via MetricsPong
         var leaderNode = nodes.get(leaderId);
-        if ( leaderNode == null) {
-            // No leader yet — fall back to first available node
-            if ( nodes.isEmpty()) {
-            return List.of();}
+        if (leaderNode == null) {
+            if (nodes.isEmpty()) {return List.of();}
             leaderNode = nodes.values().iterator()
                                      .next();
         }
@@ -658,15 +569,11 @@ public final class EmberCluster {
                                   .toList();
     }
 
-    /// Compute EMA-smoothed Aether invocation aggregates from cluster-wide gossip data.
-    /// Uses inv|artifact|method|* entries from MetricsCollector.allMetrics() which
-    /// aggregates all nodes via MetricsPing/MetricsPong gossip protocol.
     public AetherAggregates aetherAggregates() {
         var leaderId = currentLeader().or("");
         var leaderNode = nodes.get(leaderId);
-        if ( leaderNode == null) {
-            if ( nodes.isEmpty()) {
-            return new AetherAggregates(0, 1.0, 0, 0, 0, 0);}
+        if (leaderNode == null) {
+            if (nodes.isEmpty()) {return new AetherAggregates(0, 1.0, 0, 0, 0, 0);}
             leaderNode = nodes.values().iterator()
                                      .next();
         }
@@ -675,28 +582,22 @@ public final class EmberCluster {
         long totalSuccess = 0;
         long totalFailure = 0;
         double totalDurationNs = 0.0;
-        for ( var nodeMetrics : allNodeMetrics.values()) {
-        for ( var entry : nodeMetrics.entrySet()) {
+        for (var nodeMetrics : allNodeMetrics.values()) {for (var entry : nodeMetrics.entrySet()) {
             var key = entry.getKey();
-            if ( !key.startsWith("inv|")) {
-            continue;}
-            if ( key.endsWith("|count")) {
-            totalInvocations += entry.getValue().longValue();} else
-            if ( key.endsWith("|success")) {
-            totalSuccess += entry.getValue().longValue();} else if ( key.endsWith("|failure")) {
-            totalFailure += entry.getValue().longValue();} else if ( key.endsWith("|totalNs")) {
-            totalDurationNs += entry.getValue();}
+            if (!key.startsWith("inv|")) {continue;}
+            if (key.endsWith("|count")) {totalInvocations += entry.getValue().longValue();} else if (key.endsWith("|success")) {totalSuccess += entry.getValue()
+                                                                                                                                                              .longValue();} else if (key.endsWith("|failure")) {totalFailure += entry.getValue()
+                                                                                                                                                                                                                                               .longValue();} else if (key.endsWith("|totalNs")) {totalDurationNs += entry.getValue();}
         }}
-        // Clamp to 0: counters can decrease when nodes restart and metrics reset
         long deltaInvocations = Math.max(0, totalInvocations - lastTotalInvocations);
         long deltaSuccess = Math.max(0, totalSuccess - lastTotalSuccess);
         double instantRps = deltaInvocations;
         double instantSuccessRate = deltaInvocations > 0
-                                    ? (double) deltaSuccess / deltaInvocations
-                                    : 1.0;
+                                   ? (double) deltaSuccess / deltaInvocations
+                                   : 1.0;
         double avgLatencyMs = totalInvocations > 0
-                              ? totalDurationNs / totalInvocations / 1_000_000.0
-                              : 0.0;
+                             ? totalDurationNs / totalInvocations / 1_000_000.0
+                             : 0.0;
         emaRps = EMA_ALPHA * instantRps + (1 - EMA_ALPHA) * emaRps;
         emaSuccessRate = EMA_ALPHA * instantSuccessRate + (1 - EMA_ALPHA) * emaSuccessRate;
         emaAvgLatencyMs = EMA_ALPHA * avgLatencyMs + (1 - EMA_ALPHA) * emaAvgLatencyMs;
@@ -710,21 +611,15 @@ public final class EmberCluster {
                                     totalFailure);
     }
 
-    /// Compute per-method invocation details from cluster-wide gossip data.
-    /// Aggregates inv|artifact|method|* entries across all nodes.
     public List<InvocationDetail> invocationDetails() {
         var allNodeMetrics = leaderOrFirstNodeMetrics();
-        if ( allNodeMetrics.isEmpty()) {
-        return List.of();}
+        if (allNodeMetrics.isEmpty()) {return List.of();}
         var aggregated = new HashMap<String, long[]>();
-        for ( var nodeMetrics : allNodeMetrics.values()) {
-        for ( var entry : nodeMetrics.entrySet()) {
+        for (var nodeMetrics : allNodeMetrics.values()) {for (var entry : nodeMetrics.entrySet()) {
             var key = entry.getKey();
-            if ( !key.startsWith("inv|")) {
-            continue;}
+            if (!key.startsWith("inv|")) {continue;}
             var parts = key.split("\\|");
-            if ( parts.length != 4) {
-            continue;}
+            if (parts.length != 4) {continue;}
             var compositeKey = parts[1] + "|" + parts[2];
             var values = aggregated.computeIfAbsent(compositeKey, _ -> new long[4]);
             accumulateInvocationMetric(values, parts[3], entry.getValue());
@@ -735,7 +630,7 @@ public final class EmberCluster {
     }
 
     private static void accumulateInvocationMetric(long[] values, String suffix, double value) {
-        switch ( suffix) {
+        switch (suffix){
             case "count" -> values[0] += (long) value;
             case "success" -> values[1] += (long) value;
             case "failure" -> values[2] += (long) value;
@@ -749,17 +644,16 @@ public final class EmberCluster {
         var values = entry.getValue();
         var count = values[0];
         var avgMs = count > 0
-                    ? (double) values[3] / count / 1_000_000.0
-                    : 0.0;
+                   ? (double) values[3] / count / 1_000_000.0
+                   : 0.0;
         return new InvocationDetail(parts[0], parts[1], count, values[1], values[2], avgMs);
     }
 
     private Map<org.pragmatica.consensus.NodeId, Map<String, Double>> leaderOrFirstNodeMetrics() {
         var leaderId = currentLeader().or("");
         var leaderNode = nodes.get(leaderId);
-        if ( leaderNode == null) {
-            if ( nodes.isEmpty()) {
-            return Map.of();}
+        if (leaderNode == null) {
+            if (nodes.isEmpty()) {return Map.of();}
             leaderNode = nodes.values().iterator()
                                      .next();
         }
@@ -777,43 +671,22 @@ public final class EmberCluster {
                                (long)(heapMax / 1024 / 1024));
     }
 
-    /// Status of a single node.
-    public record NodeStatus(String id,
-                             int port,
-                             int mgmtPort,
-                             String state,
-                             boolean isLeader){}
+    public record NodeStatus(String id, int port, int mgmtPort, String state, boolean isLeader){}
 
-    /// Status of the entire cluster.
-    public record ClusterStatus(List<NodeStatus> nodes,
-                                String leaderId){}
+    public record ClusterStatus(List<NodeStatus> nodes, String leaderId){}
 
-    /// Per-node metrics for dashboard display.
-    public record NodeMetrics(String nodeId,
-                              boolean isLeader,
-                              double cpuUsage,
-                              long heapUsedMb,
-                              long heapMaxMb){}
+    public record NodeMetrics(String nodeId, boolean isLeader, double cpuUsage, long heapUsedMb, long heapMaxMb){}
 
-    /// Slice status records for dashboard display.
-    public record SliceStatus(String artifact,
-                              String state,
-                              List<SliceInstanceStatus> instances){}
+    public record SliceStatus(String artifact, String state, List<SliceInstanceStatus> instances){}
 
-    public record SliceInstanceStatus(String nodeId,
-                                      String state,
-                                      String health){}
+    public record SliceInstanceStatus(String nodeId, String state, String health){}
 
-    /// Event log entry for dashboard events.
     public record EventLogEntry(String type, String message){}
 
-    /// Response from rolling restart operation.
     public record RollingRestartResponse(boolean success, String message){}
 
-    /// Response from rolling restart status check.
     public record RollingRestartStatusResponse(boolean active){}
 
-    /// Aggregated Aether invocation metrics with EMA smoothing.
     public record AetherAggregates(double rps,
                                    double successRate,
                                    double avgLatencyMs,
@@ -821,7 +694,6 @@ public final class EmberCluster {
                                    long totalSuccess,
                                    long totalFailures){}
 
-    /// Per-method invocation metrics from Aether gossip data.
     public record InvocationDetail(String artifact,
                                    String method,
                                    long count,
@@ -829,11 +701,8 @@ public final class EmberCluster {
                                    long failureCount,
                                    double avgLatencyMs){}
 
-    /// Get slice status from the DeploymentMap.
-    /// Uses event-driven index instead of KV store scan — zero allocations per poll.
     public List<SliceStatus> slicesStatus() {
-        if ( nodes.isEmpty()) {
-        return List.of();}
+        if (nodes.isEmpty()) {return List.of();}
         var node = nodes.values().iterator()
                                .next();
         return node.deploymentMap().allDeployments()
@@ -843,7 +712,7 @@ public final class EmberCluster {
                                                               info.instances().stream()
                                                                             .map(i -> new SliceInstanceStatus(i.nodeId(),
                                                                                                               i.state()
-        .name(),
+                                                                                                                     .name(),
                                                                                                               i.state() == SliceState.ACTIVE
                                                                                                               ? "HEALTHY"
                                                                                                               : "UNHEALTHY"))
@@ -851,10 +720,8 @@ public final class EmberCluster {
                                  .toList();
     }
 
-    /// Start rolling restart cycle.
-    /// Continuously kills random nodes and adds new ones to simulate rolling updates.
     public Promise<RollingRestartResponse> startRollingRestart(Consumer<EventLogEntry> eventLogger) {
-        if ( rollingRestartActive.compareAndSet(false, true)) {
+        if (rollingRestartActive.compareAndSet(false, true)) {
             eventLogger.accept(new EventLogEntry("ROLLING_RESTART", "Rolling restart started"));
             log.info("Starting rolling restart cycle");
             scheduleNextCycle(eventLogger);
@@ -864,22 +731,18 @@ public final class EmberCluster {
     }
 
     private void scheduleNextCycle(Consumer<EventLogEntry> eventLogger) {
-        if ( !rollingRestartActive.get()) {
-        return;}
+        if (!rollingRestartActive.get()) {return;}
         rollingRestartTask.set(rollingRestartExecutor.schedule(() -> performRollingRestartCycle(eventLogger),
                                                                ROLLING_RESTART_DELAY_MS,
                                                                TimeUnit.MILLISECONDS));
     }
 
     private void performRollingRestartCycle(Consumer<EventLogEntry> eventLogger) {
-        if ( !rollingRestartActive.get() || nodes.isEmpty()) {
-        return;}
-        // Pick random node to kill
+        if (!rollingRestartActive.get() || nodes.isEmpty()) {return;}
         var nodeIds = new ArrayList<>(nodes.keySet());
         var targetNodeId = nodeIds.get(random.nextInt(nodeIds.size()));
         log.info("Rolling restart: killing node {}", targetNodeId);
         eventLogger.accept(new EventLogEntry("ROLLING_RESTART", "Killing node " + targetNodeId));
-        // CDM auto-heal handles replacement via ComputeProvider, wait 2x delay to maintain pace
         killNode(targetNodeId).onSuccess(_ -> {
                                              eventLogger.accept(new EventLogEntry("ROLLING_RESTART",
                                                                                   "CDM auto-heal will replace node"));
@@ -889,8 +752,7 @@ public final class EmberCluster {
     }
 
     private void scheduleNextCycleWithDelay(Consumer<EventLogEntry> eventLogger, long delayMs) {
-        if ( !rollingRestartActive.get()) {
-        return;}
+        if (!rollingRestartActive.get()) {return;}
         rollingRestartTask.set(rollingRestartExecutor.schedule(() -> performRollingRestartCycle(eventLogger),
                                                                delayMs,
                                                                TimeUnit.MILLISECONDS));
@@ -902,9 +764,8 @@ public final class EmberCluster {
         scheduleNextCycle(eventLogger);
     }
 
-    /// Stop rolling restart cycle.
     public Promise<RollingRestartResponse> stopRollingRestart(Consumer<EventLogEntry> eventLogger) {
-        if ( rollingRestartActive.compareAndSet(true, false)) {
+        if (rollingRestartActive.compareAndSet(true, false)) {
             rollingRestartTask.cancel();
             eventLogger.accept(new EventLogEntry("ROLLING_RESTART", "Rolling restart stopped"));
             log.info("Rolling restart stopped");
@@ -913,7 +774,6 @@ public final class EmberCluster {
         return Promise.success(new RollingRestartResponse(false, "Rolling restart not active"));
     }
 
-    /// Get rolling restart status.
     public RollingRestartStatusResponse rollingRestartStatus() {
         return new RollingRestartStatusResponse(rollingRestartActive.get());
     }

@@ -13,41 +13,51 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
+
 /// Parses `aether-cluster.toml` files into structured [ClusterManagementConfig] records.
 ///
 /// Uses the project's zero-dependency TOML parser and maps sections to typed records.
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
-public final class ClusterConfigParser {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public final class ClusterConfigParser {
     private ClusterConfigParser() {}
 
     private static final String DEPLOYMENT = "deployment";
+
     private static final String DEPLOYMENT_INSTANCES = "deployment.instances";
+
     private static final String DEPLOYMENT_RUNTIME = "deployment.runtime";
+
     private static final String DEPLOYMENT_ZONES = "deployment.zones";
+
     private static final String DEPLOYMENT_PORTS = "deployment.ports";
+
     private static final String DEPLOYMENT_TLS = "deployment.tls";
+
     private static final String DEPLOYMENT_NODES = "deployment.nodes";
+
     private static final String DEPLOYMENT_SSH = "deployment.ssh";
+
     private static final String CLUSTER = "cluster";
+
     private static final String CLUSTER_CORE = "cluster.core";
+
     private static final String CLUSTER_WORKERS = "cluster.workers";
+
     private static final String CLUSTER_DISTRIBUTION = "cluster.distribution";
+
     private static final String CLUSTER_AUTO_HEAL = "cluster.auto_heal";
+
     private static final String CLUSTER_UPGRADE = "cluster.upgrade";
 
-    /// Parse a cluster config from a file path.
     public static Result<ClusterManagementConfig> parseFile(Path path) {
         return TomlParser.parseFile(path).mapError(ClusterConfigParser::wrapParseError)
                                    .flatMap(ClusterConfigParser::fromDocument);
     }
 
-    /// Parse a cluster config from a TOML string.
     public static Result<ClusterManagementConfig> parse(String content) {
         return TomlParser.parse(content).mapError(ClusterConfigParser::wrapParseError)
                                .flatMap(ClusterConfigParser::fromDocument);
     }
 
-    /// Extract a ClusterManagementConfig from a parsed TOML document.
     public static Result<ClusterManagementConfig> fromDocument(TomlDocument doc) {
         return Result.all(parseDeploymentSpec(doc), parseClusterSpec(doc)).map(ClusterManagementConfig::new);
     }
@@ -77,8 +87,8 @@ public final class ClusterConfigParser {
 
     private static Map<String, String> parseInstances(TomlDocument doc) {
         return doc.hasSection(DEPLOYMENT_INSTANCES)
-               ? doc.getSection(DEPLOYMENT_INSTANCES)
-               : Map.of();
+              ? doc.getSection(DEPLOYMENT_INSTANCES)
+              : Map.of();
     }
 
     private static RuntimeConfig parseRuntimeConfig(TomlDocument doc) {
@@ -92,8 +102,8 @@ public final class ClusterConfigParser {
 
     private static Map<String, String> parseZones(TomlDocument doc) {
         return doc.hasSection(DEPLOYMENT_ZONES)
-               ? doc.getSection(DEPLOYMENT_ZONES)
-               : Map.of();
+              ? doc.getSection(DEPLOYMENT_ZONES)
+              : Map.of();
     }
 
     private static PortMapping parsePorts(TomlDocument doc) {
@@ -105,8 +115,7 @@ public final class ClusterConfigParser {
     }
 
     private static Option<TlsDeploymentConfig> parseTlsConfig(TomlDocument doc) {
-        if ( !doc.hasSection(DEPLOYMENT_TLS)) {
-        return none();}
+        if (!doc.hasSection(DEPLOYMENT_TLS)) {return none();}
         var autoGenerate = doc.getBoolean(DEPLOYMENT_TLS, "auto_generate").or(true);
         var clusterSecret = doc.getString(DEPLOYMENT_TLS, "cluster_secret");
         var certTtl = doc.getString(DEPLOYMENT_TLS, "cert_ttl").or("720h");
@@ -114,14 +123,12 @@ public final class ClusterConfigParser {
     }
 
     private static Option<Map<String, String>> parseNodes(TomlDocument doc) {
-        if ( !doc.hasSection(DEPLOYMENT_NODES)) {
-        return none();}
+        if (!doc.hasSection(DEPLOYMENT_NODES)) {return none();}
         return Option.some(doc.getSection(DEPLOYMENT_NODES));
     }
 
     private static Option<SshConfig> parseSshConfig(TomlDocument doc) {
-        if ( !doc.hasSection(DEPLOYMENT_SSH)) {
-        return none();}
+        if (!doc.hasSection(DEPLOYMENT_SSH)) {return none();}
         var user = doc.getString(DEPLOYMENT_SSH, "user").or("root");
         var keyPath = doc.getString(DEPLOYMENT_SSH, "key_path").or("~/.ssh/id_ed25519");
         var port = doc.getInt(DEPLOYMENT_SSH, "port").or(22);
@@ -130,9 +137,9 @@ public final class ClusterConfigParser {
 
     private static Result<ClusterSpec> parseClusterSpec(TomlDocument doc) {
         var name = doc.getString(CLUSTER, "name")
-        .toResult(new ClusterConfigError.ParseFailed("Missing required field: cluster.name"));
+                                .toResult(new ClusterConfigError.ParseFailed("Missing required field: cluster.name"));
         var version = doc.getString(CLUSTER, "version")
-        .toResult(new ClusterConfigError.ParseFailed("Missing required field: cluster.version"));
+                                   .toResult(new ClusterConfigError.ParseFailed("Missing required field: cluster.version"));
         return Result.all(name, version).map((n, v) -> buildClusterSpec(doc, n, v));
     }
 

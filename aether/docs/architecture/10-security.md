@@ -188,7 +188,7 @@ graph TB
 | Role | Capabilities |
 |------|-------------|
 | **ADMIN** | Full access including configuration changes |
-| **OPERATOR** | Deployment, scaling, rolling updates, monitoring |
+| **OPERATOR** | Deployment, scaling, deployments (canary/blue-green/rolling), monitoring |
 | **VIEWER** | Read-only access to status and metrics |
 
 ## Security Boundaries

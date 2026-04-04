@@ -6,11 +6,17 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
-BLUEPRINT_ARTIFACT="${TEST_BLUEPRINT:-url-shortener}"
+BLUEPRINT_COORDS="${TEST_BLUEPRINT_COORDS:-org.pragmatica.aether.example:url-shortener:1.0.0}"
+BLUEPRINT_NAME="${TEST_BLUEPRINT:-url-shortener}"
+
+test_push_artifacts() {
+    push_blueprint "$BLUEPRINT_COORDS"
+    log_pass "Blueprint artifacts pushed"
+}
 
 test_deploy_blueprint() {
     local result
-    result=$(deploy_blueprint "$BLUEPRINT_ARTIFACT")
+    result=$(deploy_blueprint "$BLUEPRINT_COORDS")
     assert_ne "$result" "" "Blueprint deploy returned response"
 }
 
@@ -24,7 +30,7 @@ test_slices_provisioned() {
 test_blueprint_listed() {
     local blueprints
     blueprints=$(list_blueprints)
-    assert_contains "$blueprints" "$BLUEPRINT_ARTIFACT" "Blueprint visible in list"
+    assert_contains "$blueprints" "$BLUEPRINT_NAME" "Blueprint visible in list"
 }
 
 test_app_endpoint_reachable() {
@@ -54,6 +60,7 @@ test_app_request_succeeds() {
     return 1
 }
 
+run_test "Push artifacts" test_push_artifacts
 run_test "Deploy blueprint" test_deploy_blueprint
 run_test "Slices provisioned" test_slices_provisioned
 run_test "Blueprint listed" test_blueprint_listed

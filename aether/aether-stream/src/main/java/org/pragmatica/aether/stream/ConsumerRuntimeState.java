@@ -20,19 +20,27 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// Package-private implementation of StreamConsumerRuntime.
 /// Manages polling lifecycle and error handling for all subscribed consumers.
 final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private static final System.Logger LOG = System.getLogger(ConsumerRuntimeState.class.getName());
+
     private static final TimeSpan POLL_INTERVAL = TimeSpan.timeSpan(50).millis();
+
     private static final int MAX_POLL_BATCH = 100;
+
     private static final int DEFAULT_MAX_RETRIES = 5;
+
     private static final long BASE_BACKOFF_MS = 100;
+
     private static final long MAX_BACKOFF_MS = 10_000;
 
     private final StreamPartitionManager partitionManager;
     private final DeadLetterHandler dlHandler;
+
     private final ConcurrentHashMap<ConsumerKey, ConsumerState> consumers = new ConcurrentHashMap<>();
+
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
     ConsumerRuntimeState(StreamPartitionManager partitionManager, DeadLetterHandler dlHandler) {
@@ -44,12 +52,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                             int partition,
                                             ConsumerConfig config,
                                             ConsumerCallback callback) {
-        if ( closed.get()) {
-        return StreamError.General.CONSUMER_RUNTIME_CLOSED.result();}
+        if (closed.get()) {return StreamError.General.CONSUMER_RUNTIME_CLOSED.result();}
         var key = ConsumerKey.consumerKey(streamName, partition, config.groupId());
         var state = ConsumerState.consumerState(config, callback);
-        if ( consumers.putIfAbsent(key, state) != null) {
-        return StreamError.General.CONSUMER_ALREADY_SUBSCRIBED.result();}
+        if (consumers.putIfAbsent(key, state) != null) {return StreamError.General.CONSUMER_ALREADY_SUBSCRIBED.result();}
         var future = SharedScheduler.scheduleAtFixedRate(() -> pollPartition(key, state), POLL_INTERVAL);
         state.scheduledFuture(future);
         return success(unit());
@@ -58,8 +64,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     @Override public Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup) {
         var key = ConsumerKey.consumerKey(streamName, partition, consumerGroup);
         var state = consumers.remove(key);
-        if ( state == null) {
-        return StreamError.General.CONSUMER_NOT_FOUND.result();}
+        if (state == null) {return StreamError.General.CONSUMER_NOT_FOUND.result();}
         state.cancel();
         return success(unit());
     }
@@ -73,18 +78,15 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         return dlHandler;
     }
 
-    @Contract
-    @Override public void close() {
-        if ( closed.compareAndSet(false, true)) {
+    @Contract@Override public void close() {
+        if (closed.compareAndSet(false, true)) {
             consumers.values().forEach(ConsumerState::cancel);
             consumers.clear();
         }
     }
 
-    // --- Polling ---
     private void pollPartition(ConsumerKey key, ConsumerState state) {
-        if ( closed.get() || state.isCancelled() || state.isStalled()) {
-        return;}
+        if (closed.get() || state.isCancelled() || state.isStalled()) {return;}
         var fromOffset = state.cursor();
         partitionManager.readLocal(key.streamName(),
                                    key.partition(),
@@ -93,19 +95,14 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                   .onFailure(cause -> logPollFailure(key, cause));
     }
 
-    private void deliverEvents(ConsumerKey key,
-                               ConsumerState state,
-                               List<OffHeapRingBuffer.RawEvent> events) {
-        for ( var event : events) {
-            if ( state.isCancelled() || state.isStalled()) {
-            return;}
+    private void deliverEvents(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
+        for (var event : events) {
+            if (state.isCancelled() || state.isStalled()) {return;}
             deliverSingleEvent(key, state, event);
         }
     }
 
-    private void deliverSingleEvent(ConsumerKey key,
-                                    ConsumerState state,
-                                    OffHeapRingBuffer.RawEvent event) {
+    private void deliverSingleEvent(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
         state.callback().onEvent(event.offset(),
                                  event.data(),
                                  event.timestamp())
@@ -122,12 +119,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         state.resetRetryCount();
     }
 
-    // --- Error handling ---
     private void handleDeliveryFailure(ConsumerKey key,
                                        ConsumerState state,
                                        OffHeapRingBuffer.RawEvent event,
                                        String errorMessage) {
-        switch ( state.errorStrategy()) {
+        switch (state.errorStrategy()){
             case RETRY -> handleRetry(key, state, event, errorMessage);
             case SKIP -> handleSkip(key, state, event, errorMessage);
             case STALL -> handleStall(key, state, event, errorMessage);
@@ -139,7 +135,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                              OffHeapRingBuffer.RawEvent event,
                              String errorMessage) {
         var attempt = state.incrementRetryCount();
-        if ( attempt >= state.maxRetries()) {
+        if (attempt >= state.maxRetries()) {
             recordDeadLetter(key, event, errorMessage, attempt);
             advanceCursor(state, event.offset());
             return;
@@ -149,11 +145,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         SharedScheduler.schedule(() -> retryDeliverEvent(key, state, event), delay);
     }
 
-    private void retryDeliverEvent(ConsumerKey key,
-                                   ConsumerState state,
-                                   OffHeapRingBuffer.RawEvent event) {
-        if ( state.isCancelled() || state.isStalled()) {
-        return;}
+    private void retryDeliverEvent(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
+        if (state.isCancelled() || state.isStalled()) {return;}
         state.callback().onEvent(event.offset(),
                                  event.data(),
                                  event.timestamp())
@@ -170,7 +163,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                          OffHeapRingBuffer.RawEvent event,
                                          String errorMessage) {
         var attempt = state.incrementRetryCount();
-        if ( attempt >= state.maxRetries()) {
+        if (attempt >= state.maxRetries()) {
             recordDeadLetter(key, event, errorMessage, attempt);
             advanceCursor(state, event.offset());
             return;
@@ -215,7 +208,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     }
 
     private static long computeBackoff(int attempt) {
-        return Math.min(BASE_BACKOFF_MS * (1L<< (attempt - 1)), MAX_BACKOFF_MS);
+        return Math.min(BASE_BACKOFF_MS * (1L<<(attempt - 1)), MAX_BACKOFF_MS);
     }
 
     private static void logPollFailure(ConsumerKey key, org.pragmatica.lang.Cause cause) {
@@ -226,7 +219,6 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                 cause.message());
     }
 
-    // --- Internal types ---
     record ConsumerKey(String streamName, int partition, String groupId) {
         static ConsumerKey consumerKey(String streamName, int partition, String groupId) {
             return new ConsumerKey(streamName, partition, groupId);
@@ -237,9 +229,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         private final ConsumerConfig config;
         private final ConsumerCallback callback;
         private final AtomicLong cursor;
+
         private final AtomicInteger retryCount = new AtomicInteger(0);
+
         private final AtomicBoolean stalled = new AtomicBoolean(false);
+
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
+
         private volatile ScheduledFuture<?> future;
 
         private ConsumerState(ConsumerConfig config, ConsumerCallback callback) {
@@ -262,8 +258,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
         int maxRetries() {
             return config.maxRetries() > 0
-                   ? config.maxRetries()
-                   : DEFAULT_MAX_RETRIES;
+                  ? config.maxRetries()
+                  : DEFAULT_MAX_RETRIES;
         }
 
         long cursor() {
@@ -301,8 +297,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         void cancel() {
             cancelled.set(true);
             var f = future;
-            if ( f != null) {
-            f.cancel(false);}
+            if (f != null) {f.cancel(false);}
         }
     }
 }

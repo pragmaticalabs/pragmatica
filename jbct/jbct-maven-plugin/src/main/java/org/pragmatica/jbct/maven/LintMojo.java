@@ -25,7 +25,7 @@ public class LintMojo extends AbstractJbctMojo {
         var jbctConfig = loadConfig();
         var context = createLintContext(jbctConfig);
         var linter = JbctLinter.jbctLinter(context);
-        var filesToProcess = collectJavaFiles();
+        var filesToProcess = collectJavaFiles(jbctConfig.files());
         if (filesToProcess.isEmpty()) {
             getLog().info("No Java files found.");
             return;

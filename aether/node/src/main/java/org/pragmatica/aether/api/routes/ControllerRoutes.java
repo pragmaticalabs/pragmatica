@@ -20,6 +20,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.lang.Option.option;
 
+
 /// Routes for controller management: config, status, TTM status.
 public final class ControllerRoutes implements RouteSource {
     private final Supplier<AetherNode> nodeSupplier;
@@ -32,7 +33,6 @@ public final class ControllerRoutes implements RouteSource {
         return new ControllerRoutes(nodeSupplier);
     }
 
-    // Training data export DTO
     record TrainingDataPoint(long timestamp,
                              double cpuUsage,
                              double heapUsage,
@@ -46,7 +46,6 @@ public final class ControllerRoutes implements RouteSource {
                              double errorRate,
                              int eventCount){}
 
-    // Request DTO
     record ControllerConfigRequest(Double cpuScaleUpThreshold,
                                    Double cpuScaleDownThreshold,
                                    Double callRateScaleUpThreshold,
@@ -57,8 +56,7 @@ public final class ControllerRoutes implements RouteSource {
                               .toJson(this::buildControllerConfigResponse),
                          Route.<ControllerStatusResponse>get("/api/controller/status")
                               .toJson(this::buildControllerStatusResponse),
-                         Route.<TtmStatusResponse>get("/api/ttm/status")
-                              .toJson(this::buildTtmStatusResponse),
+                         Route.<TtmStatusResponse>get("/api/ttm/status").toJson(this::buildTtmStatusResponse),
                          Route.<ControllerConfigUpdatedResponse>post("/api/controller/config")
                               .withBody(ControllerConfigRequest.class)
                               .toJson(this::handleControllerConfig),
@@ -76,8 +74,7 @@ public final class ControllerRoutes implements RouteSource {
                           .map(newConfig -> new ControllerConfigUpdatedResponse("updated", newConfig));
     }
 
-    private static Result<ControllerConfig> mergeConfig(ControllerConfigRequest req,
-                                                        ControllerConfig current) {
+    private static Result<ControllerConfig> mergeConfig(ControllerConfigRequest req, ControllerConfig current) {
         return ControllerConfig.controllerConfig(mergeDouble(option(req.cpuScaleUpThreshold()),
                                                              current.cpuScaleUpThreshold()),
                                                  mergeDouble(option(req.cpuScaleDownThreshold()),

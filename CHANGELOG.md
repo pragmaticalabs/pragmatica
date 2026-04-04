@@ -4,7 +4,87 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.25.0] - Unreleased
+## [1.0.0-alpha] - Unreleased
+
+### Added
+- **CTM bidirectional convergence** — ClusterTopologyManager now reliably converges cluster to configured size in both directions: scale-up (provision) and scale-down (terminate). Separate `configuredSizeRef` (operator intent) from `desiredSizeRef` (working target). Node selection for termination: empty nodes first, then most recently joined, never self. CAS-based state transitions eliminate race conditions
+- **DockerComputeProvider** — `ComputeProvider` SPI implementation for Docker-based cluster scaling. Provisions/terminates containers via Docker CLI, label-based instance discovery, atomic port allocation. Enables integration test scaling without cloud providers
+- **PostgreSQL persistence adapter** — `@PgSql` type-safe persistence with compile-time SQL validation. Annotation processor validates `@Query` SQL and generates CRUD from method names (Spring Data conventions: `findBy*`, `save`, `insert`, `deleteBy*`, `countBy*`, `existsBy*`). Named parameter rewriting (`:param` → `$N`), query narrowing (`SELECT *` → explicit columns), record expansion for INSERT/UPDATE
+- **PostgreSQL tooling (aether-pg-tools)** — SQL parser (PEG-based, ~500 rules), event-sourced schema model (25 event types), 41-rule migration linter (lock hazards, type design, schema design, migration practice), Java record/enum code generation from schema
+- **pg-maven-plugin** — standalone Maven plugin for generating Java records/enums from PostgreSQL migration SQL files (`mvn pg:generate`)
+- **`PgSqlConnector`** — PostgreSQL-specific marker interface extending `SqlConnector`, async-only factory routing (no JDBC/R2DBC fallback)
+- **`@PgSql` qualifier** — resource qualifier annotation for persistence interfaces and slice factory parameters
+- **`jbct add-persistence`** — CLI command to add PostgreSQL persistence support to existing projects
+- **`--with-persistence` flag** — option on `jbct init` to scaffold persistence from the start
+- **pg-showcase example** — demonstrates all persistence patterns: `@Query` with joins, CRUD auto-generation, record expansion, multi-table, projections
+- **PostgreSQL persistence guide** — comprehensive developer documentation with setup, examples, validation rules
+
+- **Compile-time validation stages 3-4** — parameter type checking against schema columns, return record field mapping against SELECT output, CRUD column existence validation, NOT NULL column coverage for insert/save, safe type coercion support
+- **Record expansion wiring** — `VALUES(:request)` and `SET :request` patterns now expand record fields in generated SQL with accessor expressions in factory code
+- **Migration manifest** — `pg-maven-plugin` generates `migrations.list` for reliable annotation processor schema discovery
+- **JBCT file size limit** — `[files] maxFileSize` in `jbct.toml` (default 1MB) auto-skips grammar-generated parsers from format/lint
+- **JBCT glob excludes** — `[files] excludes` in `jbct.toml` for explicit file pattern exclusion from format/lint
+- **`@Contract` suppresses all JBCT rules** — marks Java API boundary methods (annotation processors, Maven Mojos) as exempt from JBCT lint
+- **pg:lint Maven goal** — migration linting via `mvn pg:lint`, reports lock hazards, type design issues, schema design problems
+- **Unified blueprint-level deployment** — single `aether deploy` command and `/api/deploy` endpoint replacing separate canary/blue-green/rolling-update commands. All deployment strategies operate on entire blueprints (all slices atomically), not individual slices
+- **Unified deployment spec** — `aether/docs/specs/unified-deploy-spec.md` with complete API design
+
+### Changed
+- **Flow-based JBCT formatter** — completely replaced trivia-entangled CstPrinter with FlowPrinter that makes layout decisions from code structure + width measurement only. Eliminates all blank-line accumulation bugs by design. 0 non-idempotent files across 1,970-file codebase
+- **DeploymentMap renamed** — `DeploymentMapImpl` → `IndexedDeploymentMap` (JBCT naming compliance)
+- **Standalone example POMs** — `url-shortener` (1.0.0) and `url-shortener-v2` (1.0.1) decoupled from parent POM version, produce same `org.pragmatica.aether.example:url-shortener` artifact at different versions for deployment strategy testing
+- **Aether Store branding** — PostgreSQL persistence adapter branded as "Aether Store" in all user-facing documentation
+- **build.sh** — replaced `-q` with grep filtering, JBCT formatting warnings visible, no more stalls on large files
+- **Format logging** — JBCT formatter now logs reformatted files at WARN level (was DEBUG)
+- **url-shortener examples** — migrated from raw `@Sql`/`SqlConnector` to typed `@PgSql` persistence interfaces
+- **Deployment CLI** — `aether deploy --canary`, `aether deploy --blue-green`, `aether deploy --rolling` replace `aether canary`, `aether blue-green`, `aether update`
+- **Deployment REST API** — `/api/deploy` replaces `/api/canary/*`, `/api/blue-green/*`, `/api/rolling-update/*`
+- **Resource reference docs** — added `PgSqlConnector` section with link to persistence guide
+
+### Fixed
+- **SchemaLoader migration discovery** — expanded from 1 suffix to 28 common descriptions, plus manifest-first approach
+- **Table name resolution** — `OrderRow` → `orders` (was `order`), correct pluralization via schema lookup
+- **INSERT with record params** — expands record fields (was using parameter name as column)
+- **FQCN in generated code** — `java.lang.Long` → `Long`, inner types simplified in factory output
+- **FactoryGenerator mapper typeArg** — `getObject()` calls now include class argument for Instant/BigDecimal
+- **`Result.failure(cause)` → `cause.result()`** — 7 sites in SchemaBuilder, CodegenPipeline, RecordGenerator
+- **Multi-statement lambdas** — 6 extracted to named methods across SchemaBuilder, DdlAnalyzer, linter rules, TypeMapper
+- **SWIM double-start race condition** — atomic `starting` flag prevents two ESTABLISHED notifications from creating duplicate SWIM protocols; transport bind failure now aborts protocol creation
+- **Slice processor @PgSql detection** — `ResourceQualifierModel.fromParameter()` now checks type-level annotations, not just parameter annotations; persistence interfaces correctly classified as resources
+- **Slice processor factory wrapping** — generated code maps `PgSqlConnector` through `{Interface}Factory` when resource type differs from parameter type
+- **PgSqlConnectorFactory SPI registration** — added to `META-INF/services/org.pragmatica.aether.resource.ResourceFactory`
+- **Blueprint deploy classifier** — CLI and server auto-append `:blueprint` classifier when only `groupId:artifactId:version` given
+- **Integration test node count** — `cluster_node_count()` uses health endpoint (QUIC peers) instead of metrics-based status endpoint
+- **Integration test deploy flow** — push artifacts before deploy, use CLI for deployment with failover
+- **Status endpoint node count** — uses live `connectedPeerIds()` instead of stale metrics-based count
+- **CLI SLF4J warnings** — added `slf4j-nop` to CLI dependencies
+- **Docker healthcheck** — uses `/health/live` (no auth required) instead of `/api/health`
+- **Audit logging** — set to WARN level, suppresses debug auth success noise
+- **QUIC reconnection storm** — root cause was 2-part PEERS format creating wrong NodeIds (`node-aether-node-X-6000`). Fixed with 3-part format (`nodeId:host:port`). Also: self-connection guards in `onPeerConnected` and `processViewChange`, self-exclusion from reconciliation loop, `connectingInProgress` dedup guard
+- **Deploy list endpoint** — CLI `deploy list` used wrong path `/api/deployments` (404), corrected to `GET /api/deploy`
+- **Deploy immediate field** — CLI `deployImmediate()` used `"blueprint"` field, corrected to `"artifact"` for `/api/blueprint/deploy`
+- **DeployCommand JSON bodies** — CLI now sends correct nested JSON matching API's `DeployRequest` schema: nested `"canary"/"blueGreen"/"rolling"` strategy configs, nested `"thresholds"` object
+- **Slice processor FQCN in provide() calls** — `generateResourceProvideCall` and plain interface factory params now use `ImportTracker` for simple names instead of fully-qualified class names
+- **Integration test scripts** — fixed JSON field paths (08-http-client), OOM prevention with RPS cap (04-under-load), temp file race condition (13-concurrent-deploys), strengthened disruption budget assertions (13-disruption-budget), relaxed error rate threshold
+- **Integration test helpers** — added missing `schema_status()`, `drain_node()`, `activate_node()` functions; drain endpoint uses path params not JSON body
+- **Integration test TLS handling** — certificate-status and cert-rotation tests handle `NOT_CONFIGURED` state when TLS is disabled
+- **Integration test load target** — cert-rotation load test uses management endpoint `/health/live` (was app endpoint)
+- **Smoke test node count** — uses `>=` assertion to accommodate passive LB node
+- **Status endpoint self-node** — `/api/status` now includes responding node in `cluster.nodes` list (was excluded, showing 4/5)
+- **Deployment lifecycle** — `start()` auto-advances through PENDING → DEPLOYING → DEPLOYED; `complete` allowed from DEPLOYED, ROUTING, or PROMOTING states
+- **Dashboard auth** — API key login overlay with sessionStorage; static files bypass auth; no data fetching until key validated; 401 handling doesn't interrupt login
+- **Dashboard success rate** — normalizes server values (0-100) to client fraction (0-1) across all data sources (REST, WebSocket, seed)
+- **Dashboard nodes/slices** — populates nodes from REST `cluster.nodes`; fetches slice details from `/api/slices`
+- **Release workflow** — added `binutils` for `objcopy` in arm64 jlink build
+- **k6 load test** — sends `X-API-Key` header for authenticated app endpoints
+- **Storage management test** — handles empty `{}` response when no storage configured
+- **JBCT formatter blank-line artifacts** — removed 13,911 blank lines across 91 aether files from previous formatter bug
+
+### Removed
+- **Separate deployment commands** — `aether canary`, `aether blue-green`, `aether update` removed (use `aether deploy --strategy`)
+- **Separate deployment REST endpoints** — `/api/canary/*`, `/api/blue-green/*`, `/api/rolling-update/*` removed (use `/api/deploy`)
+
+## [0.25.0] - 2026-04-01
 
 ### Added
 - **Hierarchical Storage Engine (AHSE)** — Content-addressed block storage with tiered Memory + Disk hierarchy. Core library at `integrations/storage` (zero Aether deps), Aether adapter at `aether/aether-storage`. BlockId (SHA-256), MemoryTier (CAS-bounded), LocalDiskTier (sharded filesystem), StorageInstance (write-through + tier-waterfall reads), SingleFlightCache (read dedup), MetadataStore (in-memory + KV-Store backed), SnapshotManager (dual-trigger: mutation count + time interval, rolling pruning), StorageReadinessGate (startup sequencing with read/write barriers), per-instance TOML config (`[storage.*]` sections), ArtifactStore migration (chunks via StorageInstance), config-driven StorageFactory with node wiring, per-node REST API (`/api/storage`, `/api/storage/{name}`, `/api/storage/{name}/snapshot`), per-cluster REST API (`/api/cluster/storage`, `/api/cluster/storage/{name}`) with KV-Store status publishing, CLI commands (`aether storage list/status/snapshot`), 107 unit + integration tests

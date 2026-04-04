@@ -53,7 +53,7 @@ public class ScoreCommand implements Callable<Integer> {
         var config = ConfigLoader.load(Option.option(configPath), Option.none());
         var context = createContext(config);
         var linter = JbctLinter.jbctLinter(context);
-        var filesToProcess = collectJavaFiles();
+        var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
         if (filesToProcess.isEmpty()) {
             System.err.println("No Java files found");
             return 1;
@@ -72,10 +72,6 @@ public class ScoreCommand implements Callable<Integer> {
         return LintContext.defaultContext()
                           .withConfig(jbctConfig.lint())
                           .withExcludePackages(jbctConfig.excludePackages());
-    }
-
-    private List<Path> collectJavaFiles() {
-        return FileCollector.collectJavaFiles(paths, System.err::println);
     }
 
     private List<Diagnostic> lintFiles(List<Path> files, JbctLinter linter) {

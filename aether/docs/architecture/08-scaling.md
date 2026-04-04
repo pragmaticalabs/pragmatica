@@ -184,7 +184,7 @@ graph TB
 | Cooldown period | Minimum time between scale events per slice |
 | Min/max bounds | Never scale below min or above max |
 | Step size | Maximum instances added/removed per event |
-| Disruption budget | Respect rolling update constraints |
+| Disruption budget | Respect deployment constraints |
 
 ## Layered Autonomy
 

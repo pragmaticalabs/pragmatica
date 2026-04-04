@@ -283,7 +283,7 @@ public record MethodModel(String name,
                                 + "'. Only one @Key is allowed per method.")
                          .result();
         }
-        return Result.success(Unit.unit());
+        return Result.unitResult();
     }
 
     private static Result<KeyResolution> resolveKeyInfo(List<MethodParameterInfo> paramInfos,
@@ -337,7 +337,7 @@ public record MethodModel(String name,
                                 + "' must return Promise<T> with type argument, found raw Promise")
                          .result();
         }
-        return Result.success(Unit.unit());
+        return Result.unitResult();
     }
 
     private record MethodAnnotations(List<ResourceQualifierModel> interceptors,
@@ -387,7 +387,7 @@ public record MethodModel(String name,
                                                        String methodName,
                                                        TypeMirror returnType) {
         if (subscriptions.isEmpty()) {
-            return Result.success(Unit.unit());
+            return Result.unitResult();
         }
         // Subscription methods must have exactly one parameter
         if (params.size() != 1) {
@@ -404,7 +404,7 @@ public record MethodModel(String name,
                              .result();
             }
         }
-        return Result.success(Unit.unit());
+        return Result.unitResult();
     }
 
     private static Result<Unit> validateScheduled(List<ResourceQualifierModel> scheduled,
@@ -412,7 +412,7 @@ public record MethodModel(String name,
                                                     String methodName,
                                                     TypeMirror returnType) {
         if (scheduled.isEmpty()) {
-            return Result.success(Unit.unit());
+            return Result.unitResult();
         }
         // Scheduled methods must have zero parameters
         if (!params.isEmpty()) {
@@ -429,7 +429,7 @@ public record MethodModel(String name,
                              .result();
             }
         }
-        return Result.success(Unit.unit());
+        return Result.unitResult();
     }
 
     private static Result<Unit> validateStreamSubscriptions(List<ResourceQualifierModel> streamSubscriptions,
@@ -437,7 +437,7 @@ public record MethodModel(String name,
                                                               String methodName,
                                                               TypeMirror returnType) {
         if (streamSubscriptions.isEmpty()) {
-            return Result.success(Unit.unit());
+            return Result.unitResult();
         }
         // Stream subscription methods must have exactly one parameter (T or List<T>)
         if (params.size() != 1) {
@@ -454,7 +454,7 @@ public record MethodModel(String name,
                              .result();
             }
         }
-        return Result.success(Unit.unit());
+        return Result.unitResult();
     }
 
     private static Result<Unit> validatePgNotificationSubscriptions(List<ResourceQualifierModel> pgNotificationSubscriptions,
@@ -462,7 +462,7 @@ public record MethodModel(String name,
                                                                        String methodName,
                                                                        TypeMirror returnType) {
         if (pgNotificationSubscriptions.isEmpty()) {
-            return Result.success(Unit.unit());
+            return Result.unitResult();
         }
         // PG notification subscription methods must have exactly one parameter (PgNotification)
         if (params.size() != 1) {
@@ -486,7 +486,7 @@ public record MethodModel(String name,
                              .result();
             }
         }
-        return Result.success(Unit.unit());
+        return Result.unitResult();
     }
 
     /// Extract @Key info from the method parameter record, but only if interceptors are present.

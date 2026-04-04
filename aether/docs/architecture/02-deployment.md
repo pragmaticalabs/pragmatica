@@ -266,16 +266,15 @@ stateDiagram-v2
 ### CLI Commands
 
 ```bash
-aether update start org.example:order-processor 2.0.0 -n 3
-aether update routing <id> -r 1:3    # 25% to v2
-aether update routing <id> -r 1:1    # 50/50
-aether update complete <id>          # 100% to v2, drain v1
-aether update rollback <id>          # Revert to v1
+aether deploy org.example:order-processor:2.0.0 --rolling -n 3
+aether deploy promote <id>           # shift to next traffic stage
+aether deploy complete <id>          # 100% to v2, drain v1
+aether deploy rollback <id>          # Revert to v1
 ```
 
 ## Disruption Budget
 
-During rolling updates and node maintenance, CDM respects disruption budgets:
+During rolling deployments and node maintenance, CDM respects disruption budgets:
 
 - Never reduce active instances below minimum
 - Account for instances in transition (LOADING, ACTIVATING)

@@ -31,11 +31,11 @@ window.RestClient = {
     // Issue 19: Read API key from same source as WS auth
     getHeaders: function(extra) {
         var headers = extra || {};
-        var apiKey = localStorage.getItem('aether-api-key');
+        var apiKey = sessionStorage.getItem('aether-api-key');
         if (!apiKey) {
             var params = new URLSearchParams(window.location.search);
             apiKey = params.get('apiKey');
-            if (apiKey) localStorage.setItem('aether-api-key', apiKey);
+            if (apiKey) sessionStorage.setItem('aether-api-key', apiKey);
         }
         if (!apiKey) {
             var match = document.cookie.match(/(?:^|;\s*)aether-api-key=([^;]*)/);
@@ -48,6 +48,7 @@ window.RestClient = {
     get: function(path) {
         var self = this;
         return fetch(path, { headers: self.getHeaders() }).then(function(response) {
+            if (response.status === 401) { self.handleUnauthorized(); return null; }
             if (!response.ok) {
                 Notifications.show('GET ' + path + ' failed: ' + response.status, 'error');
                 return null;
@@ -74,6 +75,7 @@ window.RestClient = {
         }
         opts.headers = self.getHeaders(headers);
         return fetch(path, opts).then(function(response) {
+            if (response.status === 401) { self.handleUnauthorized(); return null; }
             if (!response.ok) {
                 Notifications.show('POST ' + path + ' failed: ' + response.status, 'error');
                 return null;
@@ -103,6 +105,10 @@ window.RestClient = {
             Notifications.show('PUT ' + path + ': ' + e.message, 'error');
             return false;
         });
+    },
+
+    handleUnauthorized: function() {
+        if (window.AetherAuth) window.AetherAuth.onUnauthorized();
     },
 
     del: function(path) {

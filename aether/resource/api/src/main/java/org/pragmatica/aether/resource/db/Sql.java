@@ -7,6 +7,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
+
 /// Resource qualifier for injecting SqlConnector instances.
 ///
 /// Use this annotation on factory method parameters to inject a SqlConnector
@@ -38,7 +39,4 @@ import java.lang.annotation.Target;
 ///
 /// @see SqlConnector
 /// @see ResourceQualifier
-@ResourceQualifier(type = SqlConnector.class, config = "database")
-@Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.PARAMETER)
-public @interface Sql {}
+@ResourceQualifier(type = SqlConnector.class, config = "database") @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.PARAMETER) public@interface Sql {}

@@ -4,6 +4,7 @@ import org.pragmatica.lang.Promise;
 
 import static org.pragmatica.aether.stream.consensus.StreamConsensusCommand.streamConsensusCommand;
 
+
 /// Publish path for STRONG consistency streams.
 ///
 /// Events are proposed through Rabia consensus before being appended locally.
@@ -20,13 +21,10 @@ public final class ConsensusPublishPath {
         this.proposer = proposer;
     }
 
-    /// Create a ConsensusPublishPath with the given proposer.
     public static ConsensusPublishPath consensusPublishPath(ConsensusProposer proposer) {
         return new ConsensusPublishPath(proposer);
     }
 
-    /// Propose an event through consensus for total-order delivery.
-    /// Returns the offset assigned by the state machine after commit.
     public Promise<Long> publish(String streamName, int partition, byte[] payload, long timestamp) {
         return proposer.propose(streamConsensusCommand(streamName, partition, payload, timestamp));
     }

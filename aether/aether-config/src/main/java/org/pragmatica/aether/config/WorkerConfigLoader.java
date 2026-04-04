@@ -12,6 +12,7 @@ import static org.pragmatica.aether.config.WorkerConfig.SwimSettings;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
+
 /// Loads worker node configuration from TOML files.
 ///
 /// Expected TOML format:
@@ -37,12 +38,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 public final class WorkerConfigLoader {
     private WorkerConfigLoader() {}
 
-    /// Load worker configuration from file path.
     public static Result<WorkerConfig> load(Path path) {
         return TomlParser.parseFile(path).flatMap(WorkerConfigLoader::fromDocument);
     }
 
-    /// Load worker configuration from TOML string content.
     public static Result<WorkerConfig> loadFromString(String content) {
         return TomlParser.parse(content).flatMap(WorkerConfigLoader::fromDocument);
     }
@@ -116,10 +115,8 @@ public final class WorkerConfigLoader {
         return doc.getStringList("worker", "core_nodes").or(List.of());
     }
 
-    @SuppressWarnings("JBCT-STY-05")
-    private static Result<SwimSettings> parseSwimSettings(TomlDocument doc) {
-        if ( !doc.hasSection("worker.swim")) {
-        return success(SwimSettings.swimSettings());}
+    @SuppressWarnings("JBCT-STY-05") private static Result<SwimSettings> parseSwimSettings(TomlDocument doc) {
+        if (!doc.hasSection("worker.swim")) {return success(SwimSettings.swimSettings());}
         var period = parseTimeSpanOrMs(doc, "worker.swim", "period", "period_ms", SwimSettings.DEFAULT_PERIOD);
         var probeTimeout = parseTimeSpanOrMs(doc,
                                              "worker.swim",
@@ -136,23 +133,20 @@ public final class WorkerConfigLoader {
         return SwimSettings.swimSettings(period, probeTimeout, indirectProbes, suspectTimeout, maxPiggyback);
     }
 
-    @SuppressWarnings("JBCT-STY-05")
-    private static Result<SliceConfig> parseSliceConfig(TomlDocument doc) {
+    @SuppressWarnings("JBCT-STY-05") private static Result<SliceConfig> parseSliceConfig(TomlDocument doc) {
         return doc.getStringList("slice", "repositories").map(SliceConfig::sliceConfigFromNames)
                                 .or(success(SliceConfig.sliceConfig()));
     }
 
-    /// Parse a TimeSpan from either a new string key or a legacy _ms long key.
     private static TimeSpan parseTimeSpanOrMs(TomlDocument doc,
                                               String section,
                                               String stringKey,
                                               String msKey,
                                               TimeSpan defaultValue) {
         var fromString = doc.getString(section, stringKey).flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
-        .option())
+                                                                                                                   .option())
                                       .map(ts -> TimeSpan.fromDuration(ts.duration()));
-        if ( fromString.isPresent()) {
-        return fromString.unwrap();}
+        if (fromString.isPresent()) {return fromString.unwrap();}
         return doc.getLong(section, msKey).map(ms -> timeSpan(ms).millis())
                           .or(defaultValue);
     }

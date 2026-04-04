@@ -28,11 +28,15 @@ import static org.pragmatica.aether.api.ManagementApiResponses.AbTestVariantMetr
 import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.http.routing.PathParameter.spacer;
 
+
 /// Routes for A/B test management: create, conclude, metrics.
 public final class AbTestRoutes implements RouteSource {
     private static final Cause MISSING_ARTIFACT_BASE = Causes.cause("Missing artifactBase");
+
     private static final Cause MISSING_VARIANTS = Causes.cause("Missing or empty variants");
+
     private static final Cause NOT_LEADER = Causes.cause("This operation requires the leader node");
+
     private static final Cause TEST_NOT_FOUND = Causes.cause("A/B test not found");
 
     private final Supplier<AetherNode> nodeSupplier;
@@ -45,7 +49,6 @@ public final class AbTestRoutes implements RouteSource {
         return new AbTestRoutes(nodeSupplier);
     }
 
-    // Request DTOs
     record AbTestCreateRequest(String artifactBase,
                                Map<String, String> variants,
                                String splitType,
@@ -54,31 +57,25 @@ public final class AbTestRoutes implements RouteSource {
     record AbTestConcludeRequest(String winner){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(// GET /api/ab-tests - List all tests
-        Route.<AbTestListResponse>get("/api/ab-tests")
-             .toJson(this::buildAbTestListResponse),
-        // GET /api/ab-test/{testId}/metrics - Test metrics
-        Route.<AbTestMetricsResponse>get("/api/ab-test")
-             .withPath(aString(),
-                       spacer("metrics"))
-             .to((testId, _) -> buildAbTestMetricsResponse(testId))
-             .asJson(),
-        // GET /api/ab-test/{testId} - Single test by ID
-        Route.<AbTestInfo>get("/api/ab-test")
-             .withPath(aString())
-             .to(this::buildAbTestResponse)
-             .asJson(),
-        // POST /api/ab-test/create - Create test
-        Route.<AbTestInfo>post("/api/ab-test/create")
-             .withBody(AbTestCreateRequest.class)
-             .toJson(this::handleAbTestCreate),
-        // POST /api/ab-test/{testId}/conclude - Conclude test with winner
-        Route.<AbTestInfo>post("/api/ab-test")
-             .withPath(aString(),
-                       spacer("conclude"))
-             .withBody(AbTestConcludeRequest.class)
-             .to((testId, _, body) -> handleAbTestConclude(testId, body))
-             .asJson());
+        return Stream.of(Route.<AbTestListResponse>get("/api/ab-tests").toJson(this::buildAbTestListResponse),
+                         Route.<AbTestMetricsResponse>get("/api/ab-test")
+                              .withPath(aString(),
+                                        spacer("metrics"))
+                              .to((testId, _) -> buildAbTestMetricsResponse(testId))
+                              .asJson(),
+                         Route.<AbTestInfo>get("/api/ab-test")
+                              .withPath(aString())
+                              .to(this::buildAbTestResponse)
+                              .asJson(),
+                         Route.<AbTestInfo>post("/api/ab-test/create")
+                              .withBody(AbTestCreateRequest.class)
+                              .toJson(this::handleAbTestCreate),
+                         Route.<AbTestInfo>post("/api/ab-test")
+                              .withPath(aString(),
+                                        spacer("conclude"))
+                              .withBody(AbTestConcludeRequest.class)
+                              .to((testId, _, body) -> handleAbTestConclude(testId, body))
+                              .asJson());
     }
 
     private Promise<AbTestInfo> handleAbTestCreate(AbTestCreateRequest request) {
@@ -107,7 +104,7 @@ public final class AbTestRoutes implements RouteSource {
 
     private Promise<org.pragmatica.lang.Unit> requireLeader() {
         var node = nodeSupplier.get();
-        if ( !node.isLeader()) {
+        if (!node.isLeader()) {
             var leaderInfo = node.leader().map(id -> " Current leader: " + id.id())
                                         .or("");
             return Causes.cause(NOT_LEADER.message() + leaderInfo).promise();
@@ -120,10 +117,8 @@ public final class AbTestRoutes implements RouteSource {
                                        SplitRule splitRule){}
 
     private Promise<ParsedAbTestRequest> parseCreateRequest(AbTestCreateRequest request) {
-        if ( request.artifactBase() == null) {
-        return MISSING_ARTIFACT_BASE.promise();}
-        if ( request.variants() == null || request.variants().isEmpty()) {
-        return MISSING_VARIANTS.promise();}
+        if (request.artifactBase() == null) {return MISSING_ARTIFACT_BASE.promise();}
+        if (request.variants() == null || request.variants().isEmpty()) {return MISSING_VARIANTS.promise();}
         return ArtifactBase.artifactBase(request.artifactBase()).async()
                                         .flatMap(artifactBase -> parseVariants(request.variants()).async()
                                                                               .map(variants -> new ParsedAbTestRequest(artifactBase,
@@ -133,10 +128,10 @@ public final class AbTestRoutes implements RouteSource {
 
     private static Result<Map<String, Version>> parseVariants(Map<String, String> rawVariants) {
         var parsed = new HashMap<String, Version>();
-        for ( var entry : rawVariants.entrySet()) {
+        for (var entry : rawVariants.entrySet()) {
             var result = Version.version(entry.getValue());
-            if ( result.isFailure()) {
-            return Causes.cause("Invalid version for variant " + entry.getKey() + ": " + entry.getValue()).result();}
+            if (result.isFailure()) {return Causes.cause("Invalid version for variant " + entry.getKey() + ": " + entry.getValue())
+                                                        .result();}
             result.onSuccess(v -> parsed.put(entry.getKey(), v));
         }
         return Result.success(Map.copyOf(parsed));
@@ -144,11 +139,11 @@ public final class AbTestRoutes implements RouteSource {
 
     private static SplitRule parseSplitRule(AbTestCreateRequest request) {
         var splitType = request.splitType() != null
-                        ? request.splitType()
-                        : "header-hash";
+                       ? request.splitType()
+                       : "header-hash";
         var headerName = request.splitHeader() != null
-                         ? request.splitHeader()
-                         : "X-Request-Id";
+                        ? request.splitHeader()
+                        : "X-Request-Id";
         return SplitRule.HeaderHashSplit.headerHashSplit(headerName, 2);
     }
 

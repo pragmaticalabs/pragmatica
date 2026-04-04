@@ -16,6 +16,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Result.success;
 
+
 /// Generates shell scripts for local (single-machine) Aether cluster.
 ///
 ///
@@ -37,8 +38,7 @@ public final class LocalGenerator implements Generator {
         return Result.lift(LocalGenerator::toIoError, () -> generateScripts(config, outputDir));
     }
 
-    @SuppressWarnings("JBCT-EX-01")
-    private GeneratorOutput generateScripts(AetherConfig config, Path outputDir) throws Exception {
+    @SuppressWarnings("JBCT-EX-01") private GeneratorOutput generateScripts(AetherConfig config, Path outputDir) throws Exception {
         Files.createDirectories(outputDir);
         Files.createDirectories(outputDir.resolve("logs"));
         var generatedFiles = new ArrayList<Path>();
@@ -50,8 +50,7 @@ public final class LocalGenerator implements Generator {
         return GeneratorOutput.generatorOutput(outputDir, generatedFiles, startPath, stopPath, instructions);
     }
 
-    @SuppressWarnings("JBCT-EX-01")
-    private Path writeScript(Path dir, String name, String content, List<Path> files) throws Exception {
+    @SuppressWarnings("JBCT-EX-01") private Path writeScript(Path dir, String name, String content, List<Path> files) throws Exception {
         var path = dir.resolve(name);
         Files.writeString(path, content);
         makeExecutable(path);
@@ -185,8 +184,8 @@ public final class LocalGenerator implements Generator {
         return config.node().gc()
                           .toUpperCase()
                           .equals("ZGC")
-               ? "ZGC"
-               : "G1GC";
+              ? "ZGC"
+              : "G1GC";
     }
 
     private String generateStopScript(AetherConfig config) {
@@ -250,24 +249,12 @@ public final class LocalGenerator implements Generator {
                              mgmtPort);
     }
 
-    @SuppressWarnings("JBCT-SEQ-01")
-    private void makeExecutable(Path path) {
+    @SuppressWarnings("JBCT-SEQ-01") private void makeExecutable(Path path) {
         try {
             Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rwxr-xr-x"));
-        }
-
-
-
-
-        catch (UnsupportedOperationException e) {
-            // POSIX permissions not supported on this filesystem (e.g., Windows)
+        } catch (UnsupportedOperationException e) {
             log.debug("Cannot set POSIX permissions on {}: {}", path, e.getMessage());
-        }
-
-
-
-
-        catch (Exception e) {
+        } catch (Exception e) {
             log.debug("Failed to set permissions on {}: {}", path, e.getMessage());
         }
     }

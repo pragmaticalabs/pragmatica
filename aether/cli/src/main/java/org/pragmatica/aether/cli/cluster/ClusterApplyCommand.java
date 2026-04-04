@@ -16,28 +16,24 @@ import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 import tools.jackson.databind.JsonNode;
 
+
 /// Applies a cluster configuration file to the active cluster.
 ///
 /// Parses the config, computes a diff against the stored config, and either
 /// prints planned changes (dry-run) or executes them.
-@Command(name = "apply", description = "Apply cluster configuration changes")
-@SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterApplyCommand implements Callable<Integer> {
+@Command(name = "apply", description = "Apply cluster configuration changes") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterApplyCommand implements Callable<Integer> {
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
-    @Parameters(index = "0", description = "Path to aether-cluster.toml config file")
-    private Path configFile;
+    @Parameters(index = "0", description = "Path to aether-cluster.toml config file") private Path configFile;
 
-    @Option(names = "--dry-run", description = "Show planned changes without executing")
-    private boolean dryRun;
+    @Option(names = "--dry-run", description = "Show planned changes without executing") private boolean dryRun;
 
-    @Option(names = "--yes", description = "Skip confirmation prompt")
-    private boolean skipConfirmation;
+    @Option(names = "--yes", description = "Skip confirmation prompt") private boolean skipConfirmation;
 
     @CommandLine.ParentCommand private ClusterCommand parent;
 
     @Override public Integer call() {
-        return readConfigFile().flatMap(this::executeApply)
-                             .fold(ClusterApplyCommand::onFailure, v -> v);
+        return readConfigFile().flatMap(this::executeApply).fold(ClusterApplyCommand::onFailure, v -> v);
     }
 
     private Result<String> readConfigFile() {

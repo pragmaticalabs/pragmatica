@@ -15,7 +15,7 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// - @SuppressWarnings("JBCT-RET-01") - single rule
 /// - @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-02"}) - multiple rules
 /// - @SuppressWarnings("all") - suppresses all JBCT rules
-/// - @Contract - suppresses JBCT-RET-01 (void return type is intentional)
+/// - @Contract - suppresses all JBCT rules (method signature dictated by external API contract)
 public final class SuppressionExtractor {
     private static final Pattern JBCT_RULE_PATTERN = Pattern.compile("JBCT-[A-Z]+-\\d+");
 
@@ -46,7 +46,7 @@ public final class SuppressionExtractor {
 
     private static final Set<String> CONTRACT_NAMES = Set.of("Contract",
                                                               "org.pragmatica.lang.Contract");
-    private static final Set<String> CONTRACT_SUPPRESSED_RULES = Set.of("JBCT-RET-01");
+    private static final Set<String> CONTRACT_SUPPRESSED_RULES = Set.of("all");
 
     /// Extract all suppressions from a CST.
     public static List<Suppression> extractSuppressions(CstNode root, String source) {
@@ -56,7 +56,7 @@ public final class SuppressionExtractor {
         for (var annotation : annotations) {
             var name = findFirst(annotation, RuleId.QualifiedName.class).map(qn -> text(qn, source).trim())
                                 .or("");
-            // @Contract suppresses JBCT-RET-01
+            // @Contract suppresses all JBCT rules
             if (CONTRACT_NAMES.contains(name)) {
                 findAnnotatedDeclaration(root, annotation)
                 .onPresent(scopeNode -> suppressions.add(Suppression.suppression(CONTRACT_SUPPRESSED_RULES,

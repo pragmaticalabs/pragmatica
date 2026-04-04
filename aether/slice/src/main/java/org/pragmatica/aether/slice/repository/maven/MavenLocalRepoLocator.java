@@ -11,8 +11,8 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.option;
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"})
-public sealed interface MavenLocalRepoLocator {
+
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"}) public sealed interface MavenLocalRepoLocator {
     Logger log = LoggerFactory.getLogger(MavenLocalRepoLocator.class);
 
     static String findLocalRepository() {
@@ -34,8 +34,8 @@ public sealed interface MavenLocalRepoLocator {
     }
 
     private static Option<String> checkUserLevelSettings(String userHome) {
-        return getLocalRepoFromSettings(fromM2Home(userHome, "settings.xml"))
-        .map(userRepo -> expandPath(userRepo, userHome));
+        return getLocalRepoFromSettings(fromM2Home(userHome, "settings.xml")).map(userRepo -> expandPath(userRepo,
+                                                                                                         userHome));
     }
 
     private static Option<String> checkSystemProperty() {
@@ -44,17 +44,15 @@ public sealed interface MavenLocalRepoLocator {
 
     private static Option<String> getLocalRepoFromSettings(String settingsPath) {
         var file = new File(settingsPath);
-        if ( !file.exists()) {
-        return Option.empty();}
+        if (!file.exists()) {return Option.empty();}
         try {
             var dbf = DocumentBuilderFactory.newInstance();
             dbf.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
             var db = dbf.newDocumentBuilder();
             var doc = db.parse(file);
             var nodes = doc.getElementsByTagName("localRepository");
-            if ( nodes.getLength() > 0) {
-            return option(nodes.item(0).getTextContent()
-                                    .trim()).filter(Verify.Is::notEmpty);}
+            if (nodes.getLength() > 0) {return option(nodes.item(0).getTextContent()
+                                                                .trim()).filter(Verify.Is::notEmpty);}
         } catch (Exception e) {
             log.debug("Failed to read Maven settings from {}: {}", settingsPath, e.getMessage());
         }
@@ -73,12 +71,9 @@ public sealed interface MavenLocalRepoLocator {
         return new File(userHome, ".m2");
     }
 
-    // Expands leading ~ and ${user.home} in the path for cross-platform compatibility
     private static String expandPath(String path, String userHome) {
-        if ( path.startsWith("~" + File.separator) || path.equals("~")) {
-        path = userHome + path.substring(1);}
-        if ( path.contains("${user.home}")) {
-        path = path.replace("${user.home}", userHome);}
+        if (path.startsWith("~" + File.separator) || path.equals("~")) {path = userHome + path.substring(1);}
+        if (path.contains("${user.home}")) {path = path.replace("${user.home}", userHome);}
         return path;
     }
 

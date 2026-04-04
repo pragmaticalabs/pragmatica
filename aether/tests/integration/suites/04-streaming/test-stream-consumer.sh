@@ -28,26 +28,24 @@ test_publish_and_verify_count() {
     info=$(stream_info "$STREAM_NAME")
     assert_ne "$info" "" "Stream info available after publish"
 
-    # Verify messages are tracked
+    # Verify messages are tracked — endpoint may return flat object or {streams: [...]} array
     local msg_count
     msg_count=$(echo "$info" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-if 'streams' in data and data['streams']:
-    s = data['streams'][0]
-    for field in ['totalEvents', 'messageCount', 'count', 'size']:
-        if field in s:
-            print(s[field])
-            sys.exit(0)
-print('unknown')
+if 'totalEvents' in data:
+    print(data['totalEvents'])
+elif 'streams' in data:
+    for s in data['streams']:
+        if s.get('name') == '${STREAM_NAME}':
+            print(s.get('totalEvents', 0)); break
+    else:
+        print(0)
+else:
+    print(0)
 " 2>/dev/null)
 
-    if [ "$msg_count" = "unknown" ]; then
-        log_warn "Could not extract message count from stream info — field not found"
-        log_pass "Stream info returned (count field may differ)"
-    else
-        assert_gt "$msg_count" "0" "Stream has messages: ${msg_count}"
-    fi
+    assert_gt "$msg_count" "0" "Stream has messages: ${msg_count}"
 }
 
 test_stream_metadata() {
@@ -58,13 +56,12 @@ test_stream_metadata() {
     name=$(echo "$info" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-if 'streams' in data and data['streams']:
-    s = data['streams'][0]
-    for field in ['name', 'streamName']:
-        if field in s:
-            print(s[field])
-            sys.exit(0)
-print('')
+if 'name' in data:
+    print(data['name'])
+elif 'streams' in data and data['streams']:
+    print(data['streams'][0].get('name', ''))
+else:
+    print('')
 " 2>/dev/null)
     assert_ne "$name" "" "Stream name in metadata"
 }

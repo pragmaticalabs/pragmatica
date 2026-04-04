@@ -10,7 +10,8 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Currency;
 
-public record Money( BigDecimal amount, Currency currency) {
+
+public record Money(BigDecimal amount, Currency currency) {
     public sealed interface MoneyError extends Cause {
         record NegativeAmount(BigDecimal amount) implements MoneyError {
             @Override public String message() {
@@ -38,8 +39,11 @@ public record Money( BigDecimal amount, Currency currency) {
     }
 
     private static final Fn1<Cause, BigDecimal> NEGATIVE_AMOUNT = MoneyError.NegativeAmount::new;
+
     public static final Currency USD = Currency.getInstance("USD");
+
     public static final Currency EUR = Currency.getInstance("EUR");
+
     public static final Money ZERO_USD = money(BigDecimal.ZERO, USD).expect("Money.ZERO_USD");
 
     public static Result<Money> money(BigDecimal amount, Currency currency) {
@@ -90,8 +94,8 @@ public record Money( BigDecimal amount, Currency currency) {
 
     private Result<Money> verifySameCurrency(Money other) {
         return currency.equals(other.currency)
-               ? Result.success(this)
-               : new MoneyError.CurrencyMismatch(currency, other.currency).result();
+              ? Result.success(this)
+              : new MoneyError.CurrencyMismatch(currency, other.currency).result();
     }
 
     private static Result<BigDecimal> parseAmount(String raw) {

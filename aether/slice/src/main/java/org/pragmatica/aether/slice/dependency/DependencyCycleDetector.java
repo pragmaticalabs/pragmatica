@@ -10,28 +10,19 @@ import java.util.*;
 
 import static org.pragmatica.lang.utils.Causes.cause;
 
+
 /// Detects circular dependencies in slice dependency graphs.
 ///
 /// Uses depth-first search with visited/visiting tracking to detect cycles.
 /// A cycle exists if we encounter a node that is currently being visited (in the current DFS path).
-@SuppressWarnings("JBCT-UTIL-02")
-public interface DependencyCycleDetector {
-    /// Check for circular dependencies in the dependency graph.
-    ///
-    /// The graph is represented as a map from slice class name to its dependencies.
-    ///
-    /// @param dependencies Map from slice class name to list of dependency class names
-    ///
-    /// @return Success with Unit if no cycles, failure with cycle path if cycle detected
+@SuppressWarnings("JBCT-UTIL-02") public interface DependencyCycleDetector {
     static Result<Unit> checkForCycles(Map<String, List<String>> dependencies) {
         var visited = new HashSet<String>();
         var visiting = new HashSet<String>();
         var path = new ArrayList<String>();
-        for ( var node : dependencies.keySet()) {
-        if ( !visited.contains(node)) {
+        for (var node : dependencies.keySet()) {if (!visited.contains(node)) {
             var cycleResult = dfs(node, dependencies, visited, visiting, path);
-            if ( cycleResult.isFailure()) {
-            return cycleResult;}
+            if (cycleResult.isFailure()) {return cycleResult;}
         }}
         return Result.unitResult();
     }
@@ -44,16 +35,14 @@ public interface DependencyCycleDetector {
         visiting.add(node);
         path.add(node);
         var nodeDeps = dependencies.getOrDefault(node, List.of());
-        for ( var dep : nodeDeps) {
-            if ( visiting.contains(dep)) {
-                // Found a cycle
+        for (var dep : nodeDeps) {
+            if (visiting.contains(dep)) {
                 var cyclePath = buildCyclePath(path, dep);
                 return cause("Circular dependency detected: " + cyclePath).result();
             }
-            if ( !visited.contains(dep)) {
+            if (!visited.contains(dep)) {
                 var result = dfs(dep, dependencies, visited, visiting, path);
-                if ( result.isFailure()) {
-                return result;}
+                if (result.isFailure()) {return result;}
             }
         }
         visiting.remove(node);
@@ -66,10 +55,8 @@ public interface DependencyCycleDetector {
         var cycleIndex = path.indexOf(cycleStart);
         var cycle = new ArrayList<>(path.subList(cycleIndex, path.size()));
         cycle.add(cycleStart);
-        // Close the cycle
         return String.join(" -> ", cycle);
     }
 
-    // Error constants
     Fn1<Cause, String> CIRCULAR_DEPENDENCY = Causes.forOneValue("Circular dependency detected: %s");
 }

@@ -14,30 +14,22 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Manages replication warmup after node startup.
 /// Starts with RF=1 for fast boot, then signals readiness to upgrade to RF=3.
 public interface ReplicationCooldown {
     long DEFAULT_COOLDOWN_DELAY_MS = 10_000L;
+
     int DEFAULT_RATE_PER_SECOND = 10_000;
 
-    /// Start the cooldown timer. After delay, signals RF upgrade readiness.
     Promise<Unit> start();
-
-    /// Stop the cooldown (e.g., on node shutdown).
     @Contract void stop();
-
-    /// Whether cooldown has completed (RF upgrade ready).
     boolean isComplete();
 
-    /// Create a replication cooldown with specified parameters.
-    ///
-    /// @param cooldownDelayMs delay before signaling RF upgrade readiness
-    /// @param ratePerSecond max entries to replicate per second
     static ReplicationCooldown replicationCooldown(long cooldownDelayMs, int ratePerSecond) {
         return new DefaultReplicationCooldown(cooldownDelayMs, ratePerSecond);
     }
 
-    /// Create a replication cooldown with default parameters (10s delay, 10000 entries/s).
     static ReplicationCooldown replicationCooldown() {
         return replicationCooldown(DEFAULT_COOLDOWN_DELAY_MS, DEFAULT_RATE_PER_SECOND);
     }
@@ -49,7 +41,9 @@ final class DefaultReplicationCooldown implements ReplicationCooldown {
 
     private final long cooldownDelayMs;
     private final int ratePerSecond;
+
     private final AtomicBoolean complete = new AtomicBoolean(false);
+
     private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
 
     DefaultReplicationCooldown(long cooldownDelayMs, int ratePerSecond) {
@@ -64,7 +58,7 @@ final class DefaultReplicationCooldown implements ReplicationCooldown {
         return promise;
     }
 
-    @Contract @Override public void stop() {
+    @Contract@Override public void stop() {
         scheduledTask.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
     }
 
@@ -72,8 +66,7 @@ final class DefaultReplicationCooldown implements ReplicationCooldown {
         return complete.get();
     }
 
-    @SuppressWarnings("JBCT-RET-01") // Callback for scheduled executor — void required
-    private void completeWarmup(Promise<Unit> promise) {
+    @SuppressWarnings("JBCT-RET-01") private void completeWarmup(Promise<Unit> promise) {
         log.info("Replication cooldown complete after {}ms delay, RF upgrade ready (rate limit: {}/s)",
                  cooldownDelayMs,
                  ratePerSecond);

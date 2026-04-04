@@ -101,18 +101,17 @@ aether blueprint apply commerce.toml
 
 The runtime resolves artifacts, loads slices, distributes instances across nodes, registers routes, and starts serving traffic. To update, change the blueprint and re-apply.
 
-### Rolling Updates
+### Deployments
 
-Zero-downtime deployments with traffic control:
+Zero-downtime deployments with multiple strategies:
 
 ```bash
-aether update start org.example:order-processor 2.0.0 -n 3
-aether update routing <id> -r 1:3    # 25% to v2, 75% to v1
-aether update routing <id> -r 1:1    # 50/50
-aether update complete <id>          # 100% to v2, drain v1
+aether deploy org.example:order-processor:2.0.0 --rolling -n 3
+aether deploy promote <id>           # shift to next traffic stage
+aether deploy complete <id>          # 100% to v2, drain v1
 ```
 
-Health-based guardrails: if the new version's error rate exceeds thresholds, rollback is one command away (`aether update rollback <id>`).
+Supports canary (`--canary`), blue-green (`--blue-green`), and rolling (`--rolling`) strategies. Health-based guardrails: if the new version's error rate exceeds thresholds, rollback is one command away (`aether deploy rollback <id>`).
 
 ### Scaling
 
@@ -154,7 +153,7 @@ aether scale org.example:order-processor --min 2 --max 10 --target-cpu 60 --targ
 
 ### Management API
 
-30+ REST endpoints covering cluster status, slice management, metrics, controller configuration, alert thresholds, rolling updates, artifact repository, and dashboard. Full programmatic control of everything the CLI can do.
+30+ REST endpoints covering cluster status, slice management, metrics, controller configuration, alert thresholds, deployments, artifact repository, and dashboard. Full programmatic control of everything the CLI can do.
 
 ### Artifact Repository
 
@@ -209,7 +208,7 @@ Quorum requires `(N/2) + 1` nodes. A 5-node cluster tolerates 2 simultaneous fai
 
 Microservices solved the monolith scaling problem but created an operational one. A typical microservices deployment requires: container orchestration (Kubernetes), service mesh (Istio/Linkerd), API gateway, service discovery (Consul/etcd), distributed tracing (Jaeger), circuit breakers (Resilience4j), configuration management, and CI/CD pipelines for each service. The operational surface area grows with every new service.
 
-Aether collapses this stack. The runtime provides service discovery, load balancing, retry logic, health checking, traffic routing, rolling updates, metrics, and scaling — all built in. Your team manages one artifact (the Aether cluster) instead of dozens of infrastructure components.
+Aether collapses this stack. The runtime provides service discovery, load balancing, retry logic, health checking, traffic routing, zero-downtime deployments, metrics, and scaling — all built in. Your team manages one artifact (the Aether cluster) instead of dozens of infrastructure components.
 
 ### Competitive Position
 
@@ -346,7 +345,7 @@ No polling. No periodic reconciliation loops for core state.
 | **Invocation** | Local-first routing, remote invocation with KSUID correlation, retry with exponential backoff, node failover on departure |
 | **Consensus** | Rabia CFT protocol, KV-Store state machine, leader election (local + consensus modes), state sync/snapshot |
 | **Storage** | DHT with consistent hashing, quorum reads/writes, 3 replication modes, 64KB chunked artifact storage with integrity verification |
-| **Deployment** | Blueprint-based (TOML), rolling updates with weighted routing, health-based guardrails |
+| **Deployment** | Blueprint-based (TOML), unified deploy command (canary, blue-green, rolling) with weighted routing, health-based guardrails |
 | **Scaling** | Decision tree controller (1s reactive), TTM ONNX predictor (60s proactive), configurable per-blueprint thresholds and cooldowns |
 | **Observability** | Push-based metrics (1s), per-method invocation tracking with P50/P95/P99, Prometheus export, WebSocket real-time dashboard, dynamic aspects, EMA latency smoothing |
 | **Alerts** | Configurable thresholds per metric, persistent via consensus, warning + critical levels |
@@ -388,7 +387,7 @@ This enables a clean mix: Aether-native resources (like cluster-wide pubsub wher
 
 - Formal delivery semantics specification (at-least-once/effectively-once contracts)
 - Backpressure and admission control for overload protection
-- Canary and blue-green deployment strategies
+- Advanced deployment strategy options (custom stages, A/B testing integration)
 - LLM-based cluster management (Layer 3 controller)
 
 See [development-priorities.md](internal/progress/development-priorities.md) for the full prioritized backlog.

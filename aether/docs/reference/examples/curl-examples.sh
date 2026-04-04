@@ -72,12 +72,13 @@ curl -s -X POST "$BASE_URL/api/thresholds" \
   -d '{"metric": "cpu.usage", "warning": 0.7, "critical": 0.9}' | jq .
 echo
 
-echo "=== Start Rolling Update ==="
-curl -s -X POST "$BASE_URL/api/rolling-update/start" \
+echo "=== Start Rolling Deployment ==="
+curl -s -X POST "$BASE_URL/api/deploy" \
   -H "Content-Type: application/json" \
   -d '{
     "artifactBase": "org.example:my-slice",
     "version": "2.0.0",
+    "strategy": "ROLLING",
     "instances": 3,
     "maxErrorRate": 0.01,
     "maxLatencyMs": 500,
@@ -85,15 +86,13 @@ curl -s -X POST "$BASE_URL/api/rolling-update/start" \
   }' | jq .
 echo
 
-echo "=== List Rolling Updates ==="
-curl -s "$BASE_URL/api/rolling-updates" | jq .
+echo "=== List Active Deployments ==="
+curl -s "$BASE_URL/api/deploy" | jq .
 echo
 
-echo "=== Adjust Routing (25% new) ==="
-# Replace UPDATE_ID with actual update ID
-# curl -s -X POST "$BASE_URL/api/rolling-update/UPDATE_ID/routing" \
-#   -H "Content-Type: application/json" \
-#   -d '{"routing": "1:3"}' | jq .
+echo "=== Promote Deployment ==="
+# Replace DEPLOYMENT_ID with actual deployment ID
+# curl -s -X POST "$BASE_URL/api/deploy/DEPLOYMENT_ID/promote" | jq .
 echo
 
 echo "=== Prometheus Metrics ==="

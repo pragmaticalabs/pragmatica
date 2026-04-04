@@ -10,14 +10,13 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
 
+
 /// Removes a cluster from the registry.
 ///
 /// If the removed cluster is the current context, the current context is cleared.
 /// This command does not destroy the actual cluster -- it only removes the local registry entry.
-@Command(name = "remove", description = "Remove a cluster from the registry")
-@SuppressWarnings("JBCT-RET-01") class ClusterRemoveCommand implements Callable<Integer> {
-    @Parameters(index = "0", description = "Cluster name to remove")
-    private String name;
+@Command(name = "remove", description = "Remove a cluster from the registry") @SuppressWarnings("JBCT-RET-01") class ClusterRemoveCommand implements Callable<Integer> {
+    @Parameters(index = "0", description = "Cluster name to remove") private String name;
 
     @CommandLine.ParentCommand private ClusterCommand parent;
 

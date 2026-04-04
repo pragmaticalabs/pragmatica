@@ -22,13 +22,13 @@ import org.apache.logging.log4j.core.config.Configurator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Registry for runtime log level management across the cluster.
 ///
 /// <p>Log level overrides are persisted to consensus KV-Store for cluster-wide consistency
 /// and survival across node restarts. The local registry provides fast lock-free
 /// lookups and applies log level changes via Log4j2 Configurator.
-@SuppressWarnings("JBCT-RET-01")
-public class LogLevelRegistry {
+@SuppressWarnings("JBCT-RET-01") public class LogLevelRegistry {
     private static final Logger log = LoggerFactory.getLogger(LogLevelRegistry.class);
 
     private final RabiaNode<KVCommand<AetherKey>> clusterNode;
@@ -36,13 +36,11 @@ public class LogLevelRegistry {
 
     private final Map<String, String> registry = new ConcurrentHashMap<>();
 
-    private LogLevelRegistry(RabiaNode<KVCommand<AetherKey>> clusterNode,
-                             KVStore<AetherKey, AetherValue> kvStore) {
+    private LogLevelRegistry(RabiaNode<KVCommand<AetherKey>> clusterNode, KVStore<AetherKey, AetherValue> kvStore) {
         this.clusterNode = clusterNode;
         this.kvStore = kvStore;
     }
 
-    /// Factory method following JBCT naming convention.
     public static LogLevelRegistry logLevelRegistry(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                     KVStore<AetherKey, AetherValue> kvStore) {
         var registry = new LogLevelRegistry(clusterNode, kvStore);
@@ -50,7 +48,6 @@ public class LogLevelRegistry {
         return registry;
     }
 
-    /// Load log level configurations from KV-Store on startup.
     private void loadFromKvStore() {
         kvStore.forEach(LogLevelKey.class, LogLevelValue.class, this::loadLevel);
         log.info("Loaded {} log level overrides from KV-Store", registry.size());
@@ -64,11 +61,7 @@ public class LogLevelRegistry {
                   value.level());
     }
 
-    /// Set log level for a specific logger and persist to KV-Store.
-    ///
-    /// @return Promise that completes when log level is persisted across cluster
-    @SuppressWarnings("unchecked")
-    public Promise<Unit> setLevel(String loggerName, String level) {
+    @SuppressWarnings("unchecked") public Promise<Unit> setLevel(String loggerName, String level) {
         var key = LogLevelKey.forLogger(loggerName);
         var value = LogLevelValue.logLevelValue(loggerName, level);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
@@ -79,11 +72,7 @@ public class LogLevelRegistry {
                                                         cause.message()));
     }
 
-    /// Remove log level override for a specific logger and persist removal to KV-Store.
-    ///
-    /// @return Promise that completes when removal is persisted across cluster
-    @SuppressWarnings("unchecked")
-    public Promise<Unit> resetLevel(String loggerName) {
+    @SuppressWarnings("unchecked") public Promise<Unit> resetLevel(String loggerName) {
         var key = LogLevelKey.forLogger(loggerName);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
         return clusterNode.<Unit>apply(List.of(command))
@@ -93,15 +82,11 @@ public class LogLevelRegistry {
                                                         cause.message()));
     }
 
-    /// Returns an immutable copy of all configured log level overrides.
     public Map<String, String> allLevels() {
         return Map.copyOf(registry);
     }
 
-    /// Handle KV-Store update notification for log level changes from other nodes.
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    public void onLogLevelPut(ValuePut<LogLevelKey, LogLevelValue> valuePut) {
+    @MessageReceiver@SuppressWarnings("JBCT-RET-01") public void onLogLevelPut(ValuePut<LogLevelKey, LogLevelValue> valuePut) {
         var logLevelKey = valuePut.cause().key();
         var logLevelValue = valuePut.cause().value();
         registry.put(logLevelKey.loggerName(), logLevelValue.level());
@@ -111,10 +96,7 @@ public class LogLevelRegistry {
                   logLevelValue.level());
     }
 
-    /// Handle KV-Store remove notification for log level deletions from other nodes.
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    public void onLogLevelRemove(ValueRemove<LogLevelKey, LogLevelValue> valueRemove) {
+    @MessageReceiver@SuppressWarnings("JBCT-RET-01") public void onLogLevelRemove(ValueRemove<LogLevelKey, LogLevelValue> valueRemove) {
         var logLevelKey = valueRemove.cause().key();
         registry.remove(logLevelKey.loggerName());
         resetLogLevel(logLevelKey.loggerName());

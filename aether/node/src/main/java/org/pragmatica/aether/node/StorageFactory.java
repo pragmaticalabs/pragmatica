@@ -25,16 +25,17 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Factory for creating hierarchical storage infrastructure from configuration.
 /// Each named config entry produces a StorageSetup containing the storage instance,
 /// snapshot manager, and readiness gate.
 public final class StorageFactory {
     private static final Logger log = LoggerFactory.getLogger(StorageFactory.class);
+
     private static final long DEFAULT_MEMORY_BYTES = 256L * 1024 * 1024;
 
     private StorageFactory() {}
 
-    /// Created storage infrastructure for a named instance.
     public record StorageSetup(String name,
                                StorageInstance instance,
                                SnapshotManager snapshotManager,
@@ -47,7 +48,6 @@ public final class StorageFactory {
         }
     }
 
-    /// Create StorageSetup instances for all configured storage entries.
     static Map<String, StorageSetup> createAll(Map<String, StorageConfig> configs,
                                                String nodeId,
                                                Option<DHTClient> dhtClient) {
@@ -60,7 +60,6 @@ public final class StorageFactory {
         return Map.copyOf(result);
     }
 
-    /// Create a default artifact StorageInstance with memory cache and DHT durable tier.
     static StorageInstance defaultArtifactStorage(Option<DHTClient> dhtClient) {
         var memoryTier = MemoryTier.memoryTier(DEFAULT_MEMORY_BYTES);
         return dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "artifact-blocks")).map(dht -> StorageInstance.storageInstance("artifacts",
@@ -100,7 +99,7 @@ public final class StorageFactory {
                                                            StorageTier diskTier,
                                                            Option<DhtStorageTier> dhtTier) {
         return Result.success(dhtTier.map(dht -> List.<StorageTier>of(memoryTier, diskTier, dht))
-        .or(List.of(memoryTier, diskTier)));
+                                         .or(List.of(memoryTier, diskTier)));
     }
 
     private static StorageSetup assembleSetup(String name,
@@ -134,9 +133,7 @@ public final class StorageFactory {
         readinessGate.snapshotLoaded();
     }
 
-    private static void applySnapshot(String name,
-                                      MetadataSnapshot snapshot,
-                                      MetadataStore metadataStore) {
+    private static void applySnapshot(String name, MetadataSnapshot snapshot, MetadataStore metadataStore) {
         metadataStore.restoreLifecycles(snapshot.lifecycles());
         metadataStore.restoreRefs(snapshot.refs());
         log.info("Restored snapshot for '{}': epoch={}, lifecycles={}, refs={}",

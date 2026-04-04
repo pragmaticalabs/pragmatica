@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>0.25.0</version>
+        <version>1.0.0-alpha</version>
     </parent>
 
     <artifactId>cli</artifactId>
@@ -34,6 +34,14 @@
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>aether-config</artifactId>
             <version>${project.version}</version>
+        </dependency>
+
+        <!-- Suppress SLF4J "no provider" warnings at runtime -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-nop</artifactId>
+            <version>${slf4j.version}</version>
+            <scope>runtime</scope>
         </dependency>
 
         <!-- Testing -->

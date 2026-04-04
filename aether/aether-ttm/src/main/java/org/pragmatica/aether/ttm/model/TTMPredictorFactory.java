@@ -6,6 +6,7 @@ import org.pragmatica.lang.Result;
 
 import java.util.ServiceLoader;
 
+
 /// SPI for TTM predictor implementations.
 ///
 /// Implementations are discovered via {@link ServiceLoader}. When no implementation

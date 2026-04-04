@@ -2,24 +2,23 @@ package org.pragmatica.aether.stream.segment;
 
 import java.util.Arrays;
 
+
 /// Immutable segment of events sealed from the ring buffer for persistent storage.
 /// Contains a batch of serialized events with metadata for offset-based lookup.
 ///
 /// Serialization format per event: [offset:8][timestamp:8][len:4][data:len]
-public record SealedSegment( String streamName,
-                             int partition,
-                             long startOffset,
-                             long endOffset,
-                             int eventCount,
-                             long minTimestamp,
-                             long maxTimestamp,
-                             byte[] serializedEvents) {
-    /// Defensive copy of mutable byte array on construction.
+public record SealedSegment(String streamName,
+                            int partition,
+                            long startOffset,
+                            long endOffset,
+                            int eventCount,
+                            long minTimestamp,
+                            long maxTimestamp,
+                            byte[] serializedEvents) {
     public SealedSegment {
         serializedEvents = serializedEvents.clone();
     }
 
-    /// Factory method following JBCT naming convention.
     public static SealedSegment sealedSegment(String streamName,
                                               int partition,
                                               long startOffset,
@@ -38,15 +37,13 @@ public record SealedSegment( String streamName,
                                  serializedEvents);
     }
 
-    /// Defensive copy on accessor -- prevent external mutation of serialized data.
     @Override public byte[] serializedEvents() {
         return serializedEvents.clone();
     }
 
     @Override public boolean equals(Object o) {
-        return o instanceof SealedSegment other &&
-        partition == other.partition && startOffset == other.startOffset && endOffset == other.endOffset && eventCount == other.eventCount && minTimestamp == other.minTimestamp && maxTimestamp == other.maxTimestamp && streamName.equals(other.streamName) &&
-        Arrays.equals(serializedEvents, other.serializedEvents);
+        return o instanceof SealedSegment other && partition == other.partition && startOffset == other.startOffset && endOffset == other.endOffset && eventCount == other.eventCount && minTimestamp == other.minTimestamp && maxTimestamp == other.maxTimestamp && streamName.equals(other.streamName) && Arrays.equals(serializedEvents,
+                                                                                                                                                                                                                                                                                                                          other.serializedEvents);
     }
 
     @Override public int hashCode() {

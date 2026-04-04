@@ -7,7 +7,7 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/load.sh"
 
-BLUEPRINT="${SQL_BLUEPRINT:-url-shortener}"
+BLUEPRINT="${SQL_BLUEPRINT:-org.pragmatica.aether.example:url-shortener:1.0.0}"
 POOL_BURST="${POOL_BURST:-50}"
 
 test_cluster_ready() {
@@ -16,6 +16,7 @@ test_cluster_ready() {
 }
 
 test_deploy_sql_app() {
+    push_blueprint "$BLUEPRINT" || log_warn "Artifact push returned non-zero (may already exist)"
     deploy_blueprint "$BLUEPRINT" || log_warn "Blueprint deploy returned non-zero (may already exist)"
     wait_for_slices_active 1 120
     log_pass "SQL-backed app deployed"

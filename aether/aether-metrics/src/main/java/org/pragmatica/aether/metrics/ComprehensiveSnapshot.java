@@ -7,6 +7,7 @@ import org.pragmatica.aether.metrics.network.NetworkMetrics;
 
 import java.util.Map;
 
+
 /// Comprehensive metrics snapshot aggregating all subsystems.
 ///
 /// This is the unified view for TTM/LLM analysis, combining:
@@ -33,26 +34,19 @@ import java.util.Map;
 /// @param failedInvocations    Failed method invocations
 /// @param avgLatencyMs         Average invocation latency in milliseconds
 /// @param custom               Custom metrics from slices
-public record ComprehensiveSnapshot( long timestamp,
-                                     // JVM
-double cpuUsage,
-                                     long heapUsed,
-                                     long heapMax,
-                                     // GC
-GCMetrics gc,
-                                     // Event Loop
-EventLoopMetrics eventLoop,
-                                     // Network
-NetworkMetrics network,
-                                     // Consensus
-RabiaMetrics consensus,
-                                     // Invocation summary
-long totalInvocations,
-                                     long successfulInvocations,
-                                     long failedInvocations,
-                                     double avgLatencyMs,
-                                     // Custom
-Map<String, Double> custom) {
+public record ComprehensiveSnapshot(long timestamp,
+                                    double cpuUsage,
+                                    long heapUsed,
+                                    long heapMax,
+                                    GCMetrics gc,
+                                    EventLoopMetrics eventLoop,
+                                    NetworkMetrics network,
+                                    RabiaMetrics consensus,
+                                    long totalInvocations,
+                                    long successfulInvocations,
+                                    long failedInvocations,
+                                    double avgLatencyMs,
+                                    Map<String, Double> custom) {
     public static final ComprehensiveSnapshot EMPTY = new ComprehensiveSnapshot(0,
                                                                                 0.0,
                                                                                 0,
@@ -67,39 +61,30 @@ Map<String, Double> custom) {
                                                                                 0.0,
                                                                                 Map.of());
 
-    /// Heap usage as ratio (0.0-1.0).
     public double heapUsage() {
-        if ( heapMax <= 0) {
-        return 0.0;}
+        if (heapMax <= 0) {return 0.0;}
         return (double) heapUsed / heapMax;
     }
 
-    /// Success rate as ratio (0.0-1.0).
     public double successRate() {
-        if ( totalInvocations <= 0) {
-        return 1.0;}
+        if (totalInvocations <= 0) {return 1.0;}
         return (double) successfulInvocations / totalInvocations;
     }
 
-    /// Error rate as ratio (0.0-1.0).
     public double errorRate() {
-        if ( totalInvocations <= 0) {
-        return 0.0;}
+        if (totalInvocations <= 0) {return 0.0;}
         return (double) failedInvocations / totalInvocations;
     }
 
-    /// Event loop health indicator.
     public boolean eventLoopHealthy() {
         return eventLoop.healthy();
     }
 
-    /// Consensus health indicator (has leader and reasonable latency).
     public boolean consensusHealthy() {
-        return consensus.hasLeader() && consensus.avgDecisionLatencyMs() < 100.0;
+        return consensus.hasLeader() && consensus.avgDecisionLatencyMs() <100.0;
     }
 
-    /// Overall node health indicator.
     public boolean healthy() {
-        return eventLoopHealthy() && consensusHealthy() && heapUsage() < 0.9 && errorRate() < 0.1;
+        return eventLoopHealthy() && consensusHealthy() && heapUsage() <0.9 && errorRate() <0.1;
     }
 }

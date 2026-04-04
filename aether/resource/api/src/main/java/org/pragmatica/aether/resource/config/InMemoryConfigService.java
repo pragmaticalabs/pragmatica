@@ -18,9 +18,11 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.unitResult;
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// In-memory implementation of ConfigService for testing and single-node scenarios.
 final class InMemoryConfigService implements ConfigService {
     private final Map<ConfigScope, TomlDocument> documents = new ConcurrentHashMap<>();
+
     private final Map<String, List<WatchEntry>> watchers = new ConcurrentHashMap<>();
 
     InMemoryConfigService() {
@@ -100,11 +102,9 @@ final class InMemoryConfigService implements ConfigService {
 
     private <T> Option<T> getHierarchical(String section, String key, ValueGetter<T> getter) {
         var sliceValue = getter.get(documents.get(ConfigScope.SLICE), section, key);
-        if ( sliceValue.isPresent()) {
-        return sliceValue;}
+        if (sliceValue.isPresent()) {return sliceValue;}
         var nodeValue = getter.get(documents.get(ConfigScope.NODE), section, key);
-        if ( nodeValue.isPresent()) {
-        return nodeValue;}
+        if (nodeValue.isPresent()) {return nodeValue;}
         return getter.get(documents.get(ConfigScope.GLOBAL), section, key);
     }
 

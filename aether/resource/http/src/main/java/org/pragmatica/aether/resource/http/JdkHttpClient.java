@@ -24,6 +24,7 @@ import tools.jackson.databind.PropertyNamingStrategies;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// JDK HttpClient-based implementation of HttpClient.
 /// Delegates to pragmatica-lite's JdkHttpOperations.
 final class JdkHttpClient implements HttpClient {
@@ -144,10 +145,8 @@ final class JdkHttpClient implements HttpClient {
     }
 
     private static String joinUrl(String base, String path) {
-        if ( base.endsWith("/") && path.startsWith("/")) {
-        return base + path.substring(1);}
-        if ( base.endsWith("/") || path.startsWith("/")) {
-        return base + path;}
+        if (base.endsWith("/") && path.startsWith("/")) {return base + path.substring(1);}
+        if (base.endsWith("/") || path.startsWith("/")) {return base + path;}
         return base + "/" + path;
     }
 
@@ -156,7 +155,6 @@ final class JdkHttpClient implements HttpClient {
         requestHeaders.forEach(builder::header);
     }
 
-    // ═══ Typed JSON API ═══
     @Override public <T> Promise<T> getJson(String path, TypeToken<T> responseType, Option<TypeToken<?>> errorType) {
         return get(path).flatMap(result -> parseResponse(result, responseType, errorType));
     }
@@ -190,13 +188,11 @@ final class JdkHttpClient implements HttpClient {
         return delete(path).flatMap(this::handleVoidResponse);
     }
 
-    // ═══ JSON helpers ═══
     private JsonMapper jsonMapper() {
         var mapper = jsonMapper;
-        if ( mapper == null) {
-        synchronized ( this) {
+        if (mapper == null) {synchronized (this) {
             mapper = jsonMapper;
-            if ( mapper == null) {
+            if (mapper == null) {
                 mapper = createJsonMapper();
                 jsonMapper = mapper;
             }
@@ -214,7 +210,7 @@ final class JdkHttpClient implements HttpClient {
     }
 
     private static void configureNaming(tools.jackson.databind.json.JsonMapper.Builder builder, JsonConfig jsonConfig) {
-        switch ( jsonConfig.naming()) {
+        switch (jsonConfig.naming()){
             case SNAKE_CASE -> builder.propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
             case KEBAB_CASE -> builder.propertyNamingStrategy(PropertyNamingStrategies.KEBAB_CASE);
             case CAMEL_CASE -> {}
@@ -223,7 +219,7 @@ final class JdkHttpClient implements HttpClient {
 
     private static void configureInclusion(tools.jackson.databind.json.JsonMapper.Builder builder,
                                            JsonConfig jsonConfig) {
-        switch ( jsonConfig.nullInclusion()) {
+        switch (jsonConfig.nullInclusion()){
             case EXCLUDE -> builder.changeDefaultPropertyInclusion(incl -> incl.withValueInclusion(JsonInclude.Include.NON_NULL));
             case NON_EMPTY -> builder.changeDefaultPropertyInclusion(incl -> incl.withValueInclusion(JsonInclude.Include.NON_EMPTY));
             case INCLUDE -> builder.changeDefaultPropertyInclusion(incl -> incl.withValueInclusion(JsonInclude.Include.ALWAYS));
@@ -232,10 +228,7 @@ final class JdkHttpClient implements HttpClient {
 
     private static void configureUnknownProperties(tools.jackson.databind.json.JsonMapper.Builder builder,
                                                    JsonConfig jsonConfig) {
-        if ( jsonConfig.failOnUnknown()) {
-        builder.enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);} else
-        {
-        builder.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);}
+        if (jsonConfig.failOnUnknown()) {builder.enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);} else {builder.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);}
     }
 
     private Promise<HttpResult<String>> serializeAndSend(String path,
@@ -249,8 +242,7 @@ final class JdkHttpClient implements HttpClient {
     private <T> Promise<T> parseResponse(HttpResult<String> result,
                                          TypeToken<T> responseType,
                                          Option<TypeToken<?>> errorType) {
-        if ( result.isSuccess()) {
-        return deserializeSuccess(result, responseType);}
+        if (result.isSuccess()) {return deserializeSuccess(result, responseType);}
         return errorType.fold(() -> new HttpClientError.RequestFailed(result.statusCode(), result.body()).<T>promise(),
                               et -> tryParseError(result, et));
     }
@@ -274,8 +266,7 @@ final class JdkHttpClient implements HttpClient {
     }
 
     private Promise<Unit> handleVoidResponse(HttpResult<String> result) {
-        if ( result.isSuccess()) {
-        return Promise.success(unit());}
+        if (result.isSuccess()) {return Promise.success(unit());}
         return new HttpClientError.RequestFailed(result.statusCode(), result.body()).promise();
     }
 }

@@ -7,6 +7,7 @@ import java.util.Objects;
 
 import static org.pragmatica.lang.Result.success;
 
+
 /// Route metadata for KV-Store registration.
 ///
 /// Maps HTTP method + path prefix to artifact + slice method.
@@ -17,12 +18,11 @@ import static org.pragmatica.lang.Result.success;
 /// @param artifactCoord full artifact coordinate (e.g., "org.example:user-service:1.0.0")
 /// @param sliceMethod   slice method name to invoke
 /// @param security      security policy for this route
-public record HttpRouteDefinition( String httpMethod,
-                                   String pathPrefix,
-                                   String artifactCoord,
-                                   String sliceMethod,
-                                   SecurityPolicy security) {
-    /// Canonical constructor with validation.
+public record HttpRouteDefinition(String httpMethod,
+                                  String pathPrefix,
+                                  String artifactCoord,
+                                  String sliceMethod,
+                                  SecurityPolicy security) {
     public HttpRouteDefinition {
         Objects.requireNonNull(httpMethod, "httpMethod");
         Objects.requireNonNull(pathPrefix, "pathPrefix");
@@ -31,7 +31,6 @@ public record HttpRouteDefinition( String httpMethod,
         Objects.requireNonNull(security, "security");
     }
 
-    /// Validated factory for constructing route definition.
     public static Result<HttpRouteDefinition> httpRouteDefinition(Result<String> httpMethod,
                                                                   Result<String> pathPrefix,
                                                                   Result<String> artifactCoord,
@@ -40,7 +39,6 @@ public record HttpRouteDefinition( String httpMethod,
         return Result.all(httpMethod, pathPrefix, artifactCoord, sliceMethod, security).map(HttpRouteDefinition::new);
     }
 
-    /// Create public route definition with path normalization.
     public static HttpRouteDefinition httpRouteDefinition(String httpMethod,
                                                           String pathPrefix,
                                                           String artifactCoord,
@@ -48,7 +46,6 @@ public record HttpRouteDefinition( String httpMethod,
         return httpRouteDefinition(httpMethod, pathPrefix, artifactCoord, sliceMethod, SecurityPolicy.publicRoute());
     }
 
-    /// Create route definition with path normalization and security policy.
     public static HttpRouteDefinition httpRouteDefinition(String httpMethod,
                                                           String pathPrefix,
                                                           String artifactCoord,
@@ -65,12 +62,10 @@ public record HttpRouteDefinition( String httpMethod,
     private static String normalizePrefix(String path) {
         Objects.requireNonNull(path, "path");
         var normalized = path.isBlank()
-                         ? "/"
-                         : path.strip();
-        if ( !normalized.startsWith("/")) {
-        normalized = "/" + normalized;}
-        if ( !normalized.endsWith("/")) {
-        normalized = normalized + "/";}
+                        ? "/"
+                        : path.strip();
+        if (!normalized.startsWith("/")) {normalized = "/" + normalized;}
+        if (!normalized.endsWith("/")) {normalized = normalized + "/";}
         return normalized;
     }
 }

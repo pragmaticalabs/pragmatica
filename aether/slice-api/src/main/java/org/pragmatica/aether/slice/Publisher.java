@@ -3,6 +3,7 @@ package org.pragmatica.aether.slice;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+
 /// Functional interface for publishing messages to a topic.
 ///
 /// Provisioned via `@ResourceQualifier(type = Publisher.class, config = "messaging.xxx")`

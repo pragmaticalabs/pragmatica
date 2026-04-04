@@ -17,11 +17,11 @@ import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// DHT network adapter for workers.
 /// Phase 2b.5a: routes DHT messages directly via cluster network (intra-community).
 /// Phase 2b.5b: adds cross-community routing through governor mesh relay.
-@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
-public final class WorkerDHTNetwork implements DHTNetwork {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) public final class WorkerDHTNetwork implements DHTNetwork {
     private static final Logger LOG = LoggerFactory.getLogger(WorkerDHTNetwork.class);
 
     private final DelegateRouter delegateRouter;
@@ -45,7 +45,6 @@ public final class WorkerDHTNetwork implements DHTNetwork {
         this.selfCommunityId = selfCommunityId;
     }
 
-    /// Create a simple intra-community-only DHT network (backward compat).
     public static WorkerDHTNetwork workerDHTNetwork(DelegateRouter delegateRouter,
                                                     Supplier<Set<NodeId>> connectedPeersSupplier) {
         return new WorkerDHTNetwork(delegateRouter,
@@ -56,7 +55,6 @@ public final class WorkerDHTNetwork implements DHTNetwork {
                                     () -> "");
     }
 
-    /// Create a cross-community-aware DHT network with governor mesh relay.
     public static WorkerDHTNetwork workerDHTNetwork(DelegateRouter delegateRouter,
                                                     Supplier<Set<NodeId>> connectedPeersSupplier,
                                                     GovernorMesh governorMesh,
@@ -72,14 +70,13 @@ public final class WorkerDHTNetwork implements DHTNetwork {
     }
 
     @Override public void send(NodeId target, ProtocolMessage message) {
-        if ( isLocalPeer(target)) {
+        if (isLocalPeer(target)) {
             delegateRouter.route(new NetworkServiceMessage.Send(target, message));
             return;
         }
-        if ( tryCrossCommunityRelay(target, message)) {
-        return;}
-        if ( governorMesh.isPresent() && !isKnownInAnyCommunity(target)) {
-        LOG.warn("DHT target {} not found in any known community — falling back to direct send (may fail)", target.id());}
+        if (tryCrossCommunityRelay(target, message)) {return;}
+        if (governorMesh.isPresent() && !isKnownInAnyCommunity(target)) {LOG.warn("DHT target {} not found in any known community — falling back to direct send (may fail)",
+                                                                                  target.id());}
         delegateRouter.route(new NetworkServiceMessage.Send(target, message));
     }
 
@@ -93,19 +90,15 @@ public final class WorkerDHTNetwork implements DHTNetwork {
 
     private boolean tryCrossCommunityRelay(NodeId target, ProtocolMessage message) {
         return governorMesh.flatMap(mesh -> serializer.map(ser -> relayCrossCommunity(mesh, ser, target, message)))
-        .or(false);
+                                   .or(false);
     }
 
-    private boolean relayCrossCommunity(GovernorMesh mesh,
-                                        Serializer ser,
-                                        NodeId target,
-                                        ProtocolMessage message) {
+    private boolean relayCrossCommunity(GovernorMesh mesh, Serializer ser, NodeId target, ProtocolMessage message) {
         var targetCommunity = findCommunityFor(target);
-        if ( targetCommunity.isEmpty()) {
-        return false;}
+        if (targetCommunity.isEmpty()) {return false;}
         var community = targetCommunity.unwrap();
         var governor = mesh.governorFor(community);
-        if ( governor.isEmpty()) {
+        if (governor.isEmpty()) {
             LOG.warn("No governor for community '{}' to relay DHT message to {}", community, target.id());
             return false;
         }
@@ -120,9 +113,7 @@ public final class WorkerDHTNetwork implements DHTNetwork {
     }
 
     private Option<String> findCommunityFor(NodeId target) {
-        for ( var entry : communityMembers.entrySet()) {
-        if ( entry.getValue().contains(target)) {
-        return Option.option(entry.getKey());}}
+        for (var entry : communityMembers.entrySet()) {if (entry.getValue().contains(target)) {return Option.option(entry.getKey());}}
         return Option.empty();
     }
 }

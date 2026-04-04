@@ -14,6 +14,7 @@ import java.util.stream.Collectors;
 
 import static org.pragmatica.lang.Option.option;
 
+
 /// Expands a Blueprint by resolving all transitive dependencies.
 ///
 /// Process:
@@ -25,30 +26,16 @@ import static org.pragmatica.lang.Option.option;
 ///
 /// Explicit slices keep their instance counts.
 /// Transitive dependencies get instances=1, isDependency=true.
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-02"})
-public interface BlueprintExpander {
-    /// Expand a Blueprint using Repository to load dependencies.
-    ///
-    /// @param blueprint  The blueprint to expand
-    /// @param repository Repository to locate slice JARs
-    ///
-    /// @return ExpandedBlueprint with topologically sorted load order
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-02"}) public interface BlueprintExpander {
     static Promise<ExpandedBlueprint> expand(Blueprint blueprint, Repository repository) {
         return expand(blueprint, RepositoryDependencyLoader.repositoryDependencyLoader(repository));
     }
 
-    /// Expand a Blueprint using custom DependencyLoader.
-    ///
-    /// This overload enables testing with mock loaders.
-    ///
-    /// @param blueprint The blueprint to expand
-    /// @param loader    Dependency loader
-    ///
-    /// @return ExpandedBlueprint with topologically sorted load order
     static Promise<ExpandedBlueprint> expand(Blueprint blueprint, DependencyLoader loader) {
         var explicitSlices = collectExplicitSlices(blueprint);
-        return resolveDependencies(explicitSlices, loader)
-        .flatMap(allDeps -> buildExpandedBlueprint(blueprint, explicitSlices, allDeps));
+        return resolveDependencies(explicitSlices, loader).flatMap(allDeps -> buildExpandedBlueprint(blueprint,
+                                                                                                     explicitSlices,
+                                                                                                     allDeps));
     }
 
     private static Promise<ExpandedBlueprint> buildExpandedBlueprint(Blueprint blueprint,
@@ -63,23 +50,18 @@ public interface BlueprintExpander {
                           .async();
     }
 
-    /// Collect explicit slices from Blueprint into a map.
     private static Map<Artifact, SliceSpec> collectExplicitSlices(Blueprint blueprint) {
         return blueprint.slices().stream()
                                .collect(Collectors.toUnmodifiableMap(SliceSpec::artifact, spec -> spec));
     }
 
-    /// Resolve all transitive dependencies for given slices.
-    /// Returns map of artifact -> set of dependency artifacts.
     private static Promise<Map<Artifact, Set<Artifact>>> resolveDependencies(Map<Artifact, SliceSpec> explicitSlices,
                                                                              DependencyLoader loader) {
         var processed = new HashSet<Artifact>();
         var dependencies = new HashMap<Artifact, Set<Artifact>>();
-        return resolveDependenciesRecursive(explicitSlices.keySet(), loader, processed, dependencies)
-        .map(_ -> Collections.unmodifiableMap(dependencies));
+        return resolveDependenciesRecursive(explicitSlices.keySet(), loader, processed, dependencies).map(_ -> Collections.unmodifiableMap(dependencies));
     }
 
-    /// Recursively resolve dependencies for a set of artifacts.
     private static Promise<Unit> resolveDependenciesRecursive(Set<Artifact> artifacts,
                                                               DependencyLoader loader,
                                                               Set<Artifact> processed,
@@ -87,19 +69,16 @@ public interface BlueprintExpander {
         var toProcess = artifacts.stream().filter(artifact -> !processed.contains(artifact))
                                         .peek(processed::add)
                                         .toList();
-        if ( toProcess.isEmpty()) {
-        return Promise.success(Unit.unit());}
+        if (toProcess.isEmpty()) {return Promise.success(Unit.unit());}
         return processArtifactsSequentially(toProcess, loader, processed, dependencies, 0);
     }
 
-    /// Process artifacts sequentially to resolve dependencies.
     private static Promise<Unit> processArtifactsSequentially(List<Artifact> artifacts,
                                                               DependencyLoader loader,
                                                               Set<Artifact> processed,
                                                               Map<Artifact, Set<Artifact>> dependencies,
                                                               int index) {
-        if ( index >= artifacts.size()) {
-        return Promise.success(Unit.unit());}
+        if (index >= artifacts.size()) {return Promise.success(Unit.unit());}
         var artifact = artifacts.get(index);
         return loader.loadDependencies(artifact).flatMap(deps -> storeDepsAndRecurse(artifact,
                                                                                      deps,
@@ -122,7 +101,6 @@ public interface BlueprintExpander {
         return resolveDependenciesRecursive(deps, loader, processed, dependencies);
     }
 
-    /// Build dependency graph (artifact class name -> dependency class names).
     private static Map<String, List<String>> buildDependencyGraph(Map<Artifact, Set<Artifact>> dependencies) {
         return dependencies.entrySet().stream()
                                     .collect(Collectors.toUnmodifiableMap(entry -> ArtifactMapper.toClassName(entry.getKey()),
@@ -131,12 +109,10 @@ public interface BlueprintExpander {
                                                                                                  .toList()));
     }
 
-    /// Check for circular dependencies.
     private static Result<Unit> checkCycles(Map<String, List<String>> graph) {
         return DependencyCycleDetector.checkForCycles(graph);
     }
 
-    /// Build topologically sorted load order.
     private static Result<List<ResolvedSlice>> buildLoadOrder(Map<Artifact, SliceSpec> explicitSlices,
                                                               Map<Artifact, Set<Artifact>> allDependencies,
                                                               Map<String, List<String>> graph) {
@@ -148,7 +124,6 @@ public interface BlueprintExpander {
                                          .toList());
     }
 
-    /// Collect all artifacts (explicit + transitive).
     private static Set<Artifact> collectAllArtifacts(Set<Artifact> explicit,
                                                      Map<Artifact, Set<Artifact>> dependencies) {
         var all = new HashSet<>(explicit);
@@ -156,7 +131,6 @@ public interface BlueprintExpander {
         return all;
     }
 
-    /// Topological sort using DFS.
     private static List<Artifact> topologicalSort(Set<Artifact> artifacts, Map<Artifact, Set<Artifact>> dependencies) {
         var visited = new HashSet<Artifact>();
         var result = new ArrayList<Artifact>();
@@ -165,7 +139,6 @@ public interface BlueprintExpander {
         return result;
     }
 
-    /// DFS for topological sort.
     private static void topologicalSortDfs(Artifact artifact,
                                            Map<Artifact, Set<Artifact>> dependencies,
                                            Set<Artifact> visited,
@@ -178,13 +151,15 @@ public interface BlueprintExpander {
         result.add(artifact);
     }
 
-    /// Create ResolvedSlice from artifact, explicit slices map, and dependencies map.
     private static Result<ResolvedSlice> createResolvedSlice(Artifact artifact,
                                                              Map<Artifact, SliceSpec> explicitSlices,
                                                              Map<Artifact, Set<Artifact>> allDeps) {
         var deps = allDeps.getOrDefault(artifact, Set.of());
-        return option(explicitSlices.get(artifact))
-        .fold(() -> ResolvedSlice.resolvedSlice(artifact, 1, true, deps),
-              spec -> ResolvedSlice.resolvedSlice(artifact, spec.instances(), spec.minAvailable(), false, deps));
+        return option(explicitSlices.get(artifact)).fold(() -> ResolvedSlice.resolvedSlice(artifact, 1, true, deps),
+                                                         spec -> ResolvedSlice.resolvedSlice(artifact,
+                                                                                             spec.instances(),
+                                                                                             spec.minAvailable(),
+                                                                                             false,
+                                                                                             deps));
     }
 }

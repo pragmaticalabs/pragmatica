@@ -9,6 +9,7 @@ import org.pragmatica.serialization.Deserializer;
 
 import java.util.function.Function;
 
+
 /// Adapts slice consumer methods to ConsumerCallback for stream subscription.
 ///
 /// Bridges between the raw byte-oriented ring buffer delivery and typed
@@ -17,23 +18,13 @@ import java.util.function.Function;
 ///
 /// Slice methods return `Promise<Unit>` per spec. The adapter awaits the promise
 /// with a timeout to bridge to the synchronous `Result<Unit>` ConsumerCallback contract.
-@SuppressWarnings("JBCT-UTIL-02")
-public interface StreamConsumerAdapter {
+@SuppressWarnings("JBCT-UTIL-02") public interface StreamConsumerAdapter {
     TimeSpan HANDLER_TIMEOUT = TimeSpan.timeSpan(30).seconds();
 
-    /// Create an adapter for a single-event consumer method.
-    ///
-    /// The deserializer converts raw bytes to the event type T.
-    /// The handler is the slice method accepting a single event and returning Promise<Unit>.
     static <T> ConsumerCallback singleEvent(Deserializer deserializer, Function<T, Promise<Unit>> handler) {
         return (offset, payload, timestamp) -> invokeHandler(deserializer, handler, payload);
     }
 
-    /// Create an adapter for a batch consumer method.
-    ///
-    /// Events are accumulated by the consumer runtime based on batch-size config.
-    /// Each event in the batch is deserialized individually, then the full list
-    /// is passed to the handler.
     static <T> StreamConsumerRuntime.BatchConsumerCallback batch(Deserializer deserializer,
                                                                  Function<java.util.List<T>, Promise<Unit>> handler) {
         return events -> invokeBatchHandler(deserializer, handler, events);

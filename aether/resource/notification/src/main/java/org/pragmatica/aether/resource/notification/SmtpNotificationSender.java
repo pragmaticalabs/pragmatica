@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit;
 import static org.pragmatica.aether.resource.notification.NotificationResult.notificationResult;
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// NotificationSender backed by async SMTP.
 final class SmtpNotificationSender implements NotificationSender {
     private final SmtpClient client;
@@ -21,7 +22,9 @@ final class SmtpNotificationSender implements NotificationSender {
     }
 
     @Override public Promise<NotificationResult> send(Notification notification) {
-        return switch (notification) {case Notification.Email email -> sendEmail(email);};
+        return switch (notification){
+            case Notification.Email email -> sendEmail(email);
+        };
     }
 
     private Promise<NotificationResult> sendEmail(Notification.Email email) {
@@ -32,12 +35,10 @@ final class SmtpNotificationSender implements NotificationSender {
     private Promise<NotificationResult> sendWithRetry(SmtpMessage message, int attempt, long delayMs) {
         return client.send(message).map(response -> notificationResult(response, "smtp"))
                           .fold(result -> result.fold(cause -> {
-                                                          if ( attempt >= retryConfig.maxAttempts()) {
-        return new NotificationError.DeliveryFailed("SMTP delivery failed after " + attempt + " attempts: " + cause.message()).<NotificationResult>promise();}
-                                                          return delayThen(delayMs)
-        .flatMap(_ -> sendWithRetry(message,
-                                    attempt + 1,
-                                    nextDelay(delayMs)));
+                                                          if (attempt >= retryConfig.maxAttempts()) {return new NotificationError.DeliveryFailed("SMTP delivery failed after " + attempt + " attempts: " + cause.message()).<NotificationResult>promise();}
+                                                          return delayThen(delayMs).flatMap(_ -> sendWithRetry(message,
+                                                                                                               attempt + 1,
+                                                                                                               nextDelay(delayMs)));
                                                       },
                                                       Promise::success));
     }
@@ -49,27 +50,23 @@ final class SmtpNotificationSender implements NotificationSender {
     private static Promise<Unit> delayThen(long delayMs) {
         return Promise.promise(promise -> {
                                    Thread.ofVirtual()
-        .start(() -> {
-                   try {
-                       TimeUnit.MILLISECONDS.sleep(delayMs);
-                       promise.succeed(unit());
-                   }
-
-
-
-
-
-        catch (InterruptedException _) {
-                       Thread.currentThread().interrupt();
-                       promise.succeed(unit());
-                   }
-               });
+                                                   .start(() -> {
+                                                              try {
+                                                                  TimeUnit.MILLISECONDS.sleep(delayMs);
+                                                                  promise.succeed(unit());
+                                                              } catch (InterruptedException _) {
+                                                                  Thread.currentThread().interrupt();
+                                                                  promise.succeed(unit());
+                                                              }
+                                                          });
                                });
     }
 
     static SmtpMessage toSmtpMessage(Notification.Email email) {
-        var body = switch (email.body()) {case NotificationBody.Text text -> text.content();case NotificationBody.Html html -> html.fallback()
-        .or(html.content());};
+        var body = switch (email.body()){
+            case NotificationBody.Text text -> text.content();
+            case NotificationBody.Html html -> html.fallback().or(html.content());
+        };
         return SmtpMessage.smtpMessage(email.from(),
                                        email.to(),
                                        email.subject(),

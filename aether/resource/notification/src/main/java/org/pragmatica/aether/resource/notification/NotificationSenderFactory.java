@@ -6,6 +6,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.net.smtp.SmtpClient;
 
+
 /// ResourceFactory for provisioning NotificationSender instances.
 ///
 /// Routes to SMTP or HTTP backend based on configuration.
@@ -19,7 +20,11 @@ public final class NotificationSenderFactory implements ResourceFactory<Notifica
     }
 
     @Override public Promise<NotificationSender> provision(NotificationConfig config) {
-        return switch (config.backend()) {case "smtp" -> provisionSmtp(config);case "http" -> provisionHttp(config);default -> new NotificationError.BackendNotConfigured("Unknown notification backend: " + config.backend()).<NotificationSender>promise();};
+        return switch (config.backend()){
+            case "smtp" -> provisionSmtp(config);
+            case "http" -> provisionHttp(config);
+            default -> new NotificationError.BackendNotConfigured("Unknown notification backend: " + config.backend()).<NotificationSender>promise();
+        };
     }
 
     @Override public Promise<Unit> close(NotificationSender resource) {

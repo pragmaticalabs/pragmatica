@@ -22,13 +22,16 @@ import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Validates API key authentication.
 ///
 /// Checks X-API-Key header against configured valid keys.
 /// Stores SHA-256 hashes of keys — raw key values are never held in memory.
 class ApiKeySecurityValidator implements SecurityValidator {
     private static final Logger log = LoggerFactory.getLogger(ApiKeySecurityValidator.class);
+
     private static final String API_KEY_HEADER = "X-API-Key";
+
     private final Map<String, ApiKeyEntry> keyEntries;
 
     ApiKeySecurityValidator(Map<String, ApiKeyEntry> keyEntries) {
@@ -37,7 +40,6 @@ class ApiKeySecurityValidator implements SecurityValidator {
         this.keyEntries = Map.copyOf(hashedEntries);
     }
 
-    /// Convert a simple key set to key entries (backward compatibility).
     static Map<String, ApiKeyEntry> fromKeySet(Set<String> validKeys) {
         var entries = new HashMap<String, ApiKeyEntry>();
         validKeys.forEach(key -> entries.put(key, ApiKeyEntry.defaultEntry(key)));
@@ -45,19 +47,25 @@ class ApiKeySecurityValidator implements SecurityValidator {
     }
 
     @Override public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
-        return switch (policy) {case SecurityPolicy.Public() -> Result.success(SecurityContext.securityContext());case SecurityPolicy.ApiKeyRequired() -> validateApiKey(request);case SecurityPolicy.Authenticated() -> validateApiKey(request);case SecurityPolicy.RoleRequired _ -> validateApiKey(request);case SecurityPolicy.BearerTokenRequired() -> Result.success(SecurityContext.securityContext());default -> Result.success(SecurityContext.securityContext());};
+        return switch (policy){
+            case SecurityPolicy.Public() -> Result.success(SecurityContext.securityContext());
+            case SecurityPolicy.ApiKeyRequired() -> validateApiKey(request);
+            case SecurityPolicy.Authenticated() -> validateApiKey(request);
+            case SecurityPolicy.RoleRequired _ -> validateApiKey(request);
+            case SecurityPolicy.BearerTokenRequired() -> Result.success(SecurityContext.securityContext());
+            default -> Result.success(SecurityContext.securityContext());
+        };
     }
 
     private Result<SecurityContext> validateApiKey(HttpRequestContext request) {
-        return extractApiKey(request.headers()).toResult(SecurityError.MISSING_API_KEY)
-                            .flatMap(this::checkApiKey);
+        return extractApiKey(request.headers()).toResult(SecurityError.MISSING_API_KEY).flatMap(this::checkApiKey);
     }
 
     private Result<SecurityContext> checkApiKey(String apiKey) {
         var candidateHash = hashKey(apiKey).getBytes(StandardCharsets.UTF_8);
         return Option.from(keyEntries.entrySet().stream()
                                               .filter(e -> MessageDigest.isEqual(e.getKey()
-        .getBytes(StandardCharsets.UTF_8),
+                                                                                         .getBytes(StandardCharsets.UTF_8),
                                                                                  candidateHash))
                                               .map(Map.Entry::getValue)
                                               .findFirst()).toResult(SecurityError.INVALID_API_KEY)
@@ -74,10 +82,15 @@ class ApiKeySecurityValidator implements SecurityValidator {
     }
 
     private static AuthorizationRole parseAuthorizationRole(String value) {
-        return switch (value) {case "ADMIN" -> AuthorizationRole.ADMIN;case "OPERATOR" -> AuthorizationRole.OPERATOR;case "VIEWER" -> AuthorizationRole.VIEWER;default -> {
-            log.warn("Unknown authorization role '{}', defaulting to VIEWER", value);
-            yield AuthorizationRole.VIEWER;
-        }};
+        return switch (value){
+            case "ADMIN" -> AuthorizationRole.ADMIN;
+            case "OPERATOR" -> AuthorizationRole.OPERATOR;
+            case "VIEWER" -> AuthorizationRole.VIEWER;
+            default -> {
+                log.warn("Unknown authorization role '{}', defaulting to VIEWER", value);
+                yield AuthorizationRole.VIEWER;
+            }
+        };
     }
 
     private Option<String> extractApiKey(Map<String, List<String>> headers) {
@@ -99,19 +112,12 @@ class ApiKeySecurityValidator implements SecurityValidator {
         return Option.from(value);
     }
 
-    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-EX-01"})
-    private static String hashKey(String key) {
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-EX-01"}) private static String hashKey(String key) {
         try {
             var digest = MessageDigest.getInstance("SHA-256");
             var hash = digest.digest(key.getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(hash);
-        }
-
-
-
-
-        catch (NoSuchAlgorithmException e) {
-            // SHA-256 is guaranteed to be available in all JVMs
+        } catch (NoSuchAlgorithmException e) {
             throw new AssertionError("SHA-256 not available", e);
         }
     }

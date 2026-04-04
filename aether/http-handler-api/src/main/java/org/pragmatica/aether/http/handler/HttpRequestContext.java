@@ -11,6 +11,7 @@ import java.util.Objects;
 
 import static org.pragmatica.lang.Result.success;
 
+
 /// Raw HTTP request data passed through SliceInvoker.
 ///
 /// Contains all information needed to reconstruct HTTP request at destination node
@@ -24,13 +25,13 @@ import static org.pragmatica.lang.Result.success;
 /// @param body        request body bytes (empty for GET)
 /// @param requestId   unique request identifier for tracing
 /// @param security    security context with authentication info
-@Codec public record HttpRequestContext( String path,
-                                         String method,
-                                         Map<String, List<String>> queryParams,
-                                         Map<String, List<String>> headers,
-                                         byte[] body,
-                                         String requestId,
-                                         SecurityContext security) {
+@Codec public record HttpRequestContext(String path,
+                                        String method,
+                                        Map<String, List<String>> queryParams,
+                                        Map<String, List<String>> headers,
+                                        byte[] body,
+                                        String requestId,
+                                        SecurityContext security) {
     private static final byte[] EMPTY_BODY = new byte[0];
 
     public HttpRequestContext {
@@ -40,11 +41,9 @@ import static org.pragmatica.lang.Result.success;
         Objects.requireNonNull(headers, "headers");
         Objects.requireNonNull(requestId, "requestId");
         Objects.requireNonNull(security, "security");
-        if ( body == null || body.length == 0) {
-        body = EMPTY_BODY;}
+        if (body == null || body.length == 0) {body = EMPTY_BODY;}
     }
 
-    /// Validated factory for constructing request context.
     public static Result<HttpRequestContext> httpRequestContext(Result<String> path,
                                                                 Result<String> method,
                                                                 Result<Map<String, List<String>>> queryParams,
@@ -55,7 +54,6 @@ import static org.pragmatica.lang.Result.success;
         return Result.all(path, method, queryParams, headers, body, requestId, security).map(HttpRequestContext::new);
     }
 
-    /// Create context with empty body and anonymous security.
     public static HttpRequestContext httpRequestContext(String path,
                                                         String method,
                                                         Map<String, List<String>> queryParams,
@@ -70,7 +68,6 @@ import static org.pragmatica.lang.Result.success;
                                   SecurityContext.securityContext());
     }
 
-    /// Create context with body and anonymous security.
     public static HttpRequestContext httpRequestContext(String path,
                                                         String method,
                                                         Map<String, List<String>> queryParams,
@@ -80,7 +77,6 @@ import static org.pragmatica.lang.Result.success;
         return httpRequestContext(path, method, queryParams, headers, body, requestId, SecurityContext.securityContext());
     }
 
-    /// Create context with body and security context.
     public static HttpRequestContext httpRequestContext(String path,
                                                         String method,
                                                         Map<String, List<String>> queryParams,
@@ -98,22 +94,18 @@ import static org.pragmatica.lang.Result.success;
                          .unwrap();
     }
 
-    /// Create new context with updated security (immutable copy).
     public HttpRequestContext withSecurity(SecurityContext newSecurity) {
         return httpRequestContext(path, method, queryParams, headers, body, requestId, newSecurity);
     }
 
-    /// Check if request is authenticated (not anonymous).
     public boolean isAuthenticated() {
         return security.isAuthenticated();
     }
 
-    /// Check if request has specific role.
     public boolean hasRole(Role role) {
         return security.hasRole(role);
     }
 
-    /// Check if request has role by name.
     public boolean hasRole(String roleName) {
         return security.hasRole(roleName);
     }

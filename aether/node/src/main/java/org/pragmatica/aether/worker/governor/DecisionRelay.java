@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Relays committed Decisions within the worker group.
 ///
 /// When this node IS the governor:
@@ -23,40 +24,27 @@ import org.slf4j.LoggerFactory;
 /// - Receives relayed Decisions from the governor via cluster network
 ///
 /// Maintains a bounded buffer for gap recovery (configurable size).
-@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
-public interface DecisionRelay {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) public interface DecisionRelay {
     Logger LOG = LoggerFactory.getLogger(DecisionRelay.class);
 
     int DEFAULT_BUFFER_SIZE = 1000;
 
-    /// Called when a Decision is received from the core cluster (governor path).
-    /// Buffers the decision and broadcasts to followers.
     void onDecisionFromCore(Decision<?> decision, List<NodeId> followers);
-
-    /// Called when a relayed Decision is received from the governor (follower path).
     void onDecisionFromGovernor(Decision<?> decision);
-
-    /// Get the last known sequence number.
     long lastSequence();
-
-    /// Get a snapshot of buffered decisions for gap recovery.
     List<Decision<?>> bufferedDecisions();
-
-    /// Get the buffered decision at a specific sequence, if present.
     Option<Decision<?>> decisionAt(long sequence);
 
-    /// Factory method.
     static DecisionRelay decisionRelay(NodeId selfId, DelegateRouter delegateRouter) {
         return decisionRelay(selfId, delegateRouter, DEFAULT_BUFFER_SIZE);
     }
 
-    /// Factory method with custom buffer size.
     static DecisionRelay decisionRelay(NodeId selfId, DelegateRouter delegateRouter, int bufferSize) {
-        record decisionRelay( NodeId selfId,
-                              DelegateRouter delegateRouter,
-                              int bufferSize,
-                              ConcurrentLinkedDeque<Decision<?>> decisionBuffer,
-                              AtomicLong lastSequenceHolder) implements DecisionRelay {
+        record decisionRelay(NodeId selfId,
+                             DelegateRouter delegateRouter,
+                             int bufferSize,
+                             ConcurrentLinkedDeque<Decision<?>> decisionBuffer,
+                             AtomicLong lastSequenceHolder) implements DecisionRelay {
             @Override public void onDecisionFromCore(Decision<?> decision, List<NodeId> followers) {
                 bufferDecision(decision);
                 followers.forEach(followerId -> delegateRouter.route(new NetworkServiceMessage.Send(followerId, decision)));
@@ -91,8 +79,7 @@ public interface DecisionRelay {
             }
 
             private void trimBuffer() {
-                while ( decisionBuffer.size() > bufferSize) {
-                decisionBuffer.pollFirst();}
+                while (decisionBuffer.size() > bufferSize) {decisionBuffer.pollFirst();}
             }
         }
         return new decisionRelay(selfId, delegateRouter, bufferSize, new ConcurrentLinkedDeque<>(), new AtomicLong(- 1));

@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.aether.slice.repository.Location.location;
 
+
 /// Repository implementation for Maven local repository (~/.m2/repository).
 ///
 /// Resolves artifacts to their JAR locations following Maven conventions:
@@ -23,39 +24,32 @@ import static org.pragmatica.aether.slice.repository.Location.location;
 /// {localRepo}/{groupId as path}/{artifactId}/{version}/{artifactId}-{version}.jar
 /// Example: ~/.m2/repository/org/example/my-slice/1.0.0/my-slice-1.0.0.jar
 /// ```
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-ZONE-02"})
-public interface LocalRepository extends Repository {
-    /// Create a LocalRepository using the detected Maven local repository location.
-    /// Detection order: maven.repo.local property → user settings.xml → global settings.xml → default ~/.m2/repository
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-ZONE-02"}) public interface LocalRepository extends Repository {
     static LocalRepository localRepository() {
         return localRepository(Path.of(MavenLocalRepoLocator.findLocalRepository()));
     }
 
-    /// Create a LocalRepository at a specific path (useful for testing).
     static LocalRepository localRepository(Path localRepo) {
         return localRepository(localRepo, timeSpan(30).seconds());
     }
 
-    /// Create a LocalRepository at a specific path with custom timeout.
     static LocalRepository localRepository(Path localRepo, TimeSpan locateTimeout) {
-        record repository( Path localRepo, TimeSpan locateTimeout) implements LocalRepository {
+        record repository(Path localRepo, TimeSpan locateTimeout) implements LocalRepository {
             @Override public Promise<Location> locate(Artifact artifact) {
-                return resolveLocation(artifact, "").async()
-                                      .timeout(locateTimeout);
+                return resolveLocation(artifact, "").async().timeout(locateTimeout);
             }
 
             @Override public Promise<Location> locate(Artifact artifact, String classifier) {
                 var suffix = classifier.isEmpty()
-                             ? ""
-                             : "-" + classifier;
-                return resolveLocation(artifact, suffix).async()
-                                      .timeout(locateTimeout);
+                            ? ""
+                            : "-" + classifier;
+                return resolveLocation(artifact, suffix).async().timeout(locateTimeout);
             }
 
             private Result<Location> resolveLocation(Artifact artifact, String classifier) {
                 var jarPath = resolvePath(artifact, classifier);
-                if ( !Files.exists(jarPath)) {
-                return ARTIFACT_NOT_FOUND.apply(artifact.asString() + " at " + jarPath).result();}
+                if (!Files.exists(jarPath)) {return ARTIFACT_NOT_FOUND.apply(artifact.asString() + " at " + jarPath)
+                                                                            .result();}
                 return Result.lift(Causes::fromThrowable,
                                    () -> jarPath.toUri().toURL())
                 .flatMap(url -> location(artifact, url));

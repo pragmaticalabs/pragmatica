@@ -6,6 +6,7 @@ import org.pragmatica.serialization.Codec;
 
 import java.util.List;
 
+
 /// Rich metrics snapshot from a governor, sent on-demand to core.
 /// Contains full sliding window history and per-slice breakdown.
 /// ~1-5KB depending on window size and slice count.
@@ -17,14 +18,13 @@ import java.util.List;
 /// @param sliceMetrics per-slice metrics breakdown
 /// @param slidingWindow sliding window history
 /// @param timestampMs  when the snapshot was created
-@Codec public record CommunityMetricsSnapshot( String communityId,
-                                               NodeId governorId,
-                                               long requestId,
-                                               int memberCount,
-                                               List<PerSliceMetrics> sliceMetrics,
-                                               List<WindowSample> slidingWindow,
-                                               long timestampMs) implements Message.Wired {
-    /// Factory following JBCT naming convention.
+@Codec public record CommunityMetricsSnapshot(String communityId,
+                                              NodeId governorId,
+                                              long requestId,
+                                              int memberCount,
+                                              List<PerSliceMetrics> sliceMetrics,
+                                              List<WindowSample> slidingWindow,
+                                              long timestampMs) implements Message.Wired {
     public static CommunityMetricsSnapshot communityMetricsSnapshot(String communityId,
                                                                     NodeId governorId,
                                                                     long requestId,
@@ -41,7 +41,6 @@ import java.util.List;
                                             timestampMs);
     }
 
-    /// Factory with current timestamp.
     public static CommunityMetricsSnapshot communityMetricsSnapshot(String communityId,
                                                                     NodeId governorId,
                                                                     long requestId,

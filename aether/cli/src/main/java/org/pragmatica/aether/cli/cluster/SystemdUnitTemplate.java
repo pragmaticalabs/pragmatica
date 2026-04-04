@@ -1,19 +1,19 @@
 package org.pragmatica.aether.cli.cluster;
+
 sealed interface SystemdUnitTemplate {
     record unused() implements SystemdUnitTemplate{}
 
     String DEFAULT_JAVA_OPTS = "-Xmx4g -XX:+UseZGC";
+
     String DEFAULT_JAR_PATH = "/opt/aether/aether-node.jar";
+
     String DEFAULT_CONFIG_PATH = "/opt/aether/config/aether.toml";
+
     String DEFAULT_USER = "aether";
+
     String DEFAULT_GROUP = "aether";
 
-    /// Generate a systemd unit file with explicit parameters.
-    static String generate(String javaOpts,
-                           String jarPath,
-                           String configPath,
-                           String user,
-                           String group) {
+    static String generate(String javaOpts, String jarPath, String configPath, String user, String group) {
         var sb = new StringBuilder();
         sb.append("[Unit]\n");
         sb.append("Description=Aether Node %i\n");
@@ -44,7 +44,6 @@ sealed interface SystemdUnitTemplate {
         return sb.toString();
     }
 
-    /// Generate a systemd unit file with default values.
     static String generateDefault() {
         return generate(DEFAULT_JAVA_OPTS, DEFAULT_JAR_PATH, DEFAULT_CONFIG_PATH, DEFAULT_USER, DEFAULT_GROUP);
     }

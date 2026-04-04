@@ -6,6 +6,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.util.Arrays;
 
+
 /// Supported deployment provider types.
 public enum DeploymentType {
     HETZNER("hetzner"),
@@ -14,7 +15,8 @@ public enum DeploymentType {
     AZURE("azure"),
     KUBERNETES("kubernetes"),
     ON_PREMISES("on-premises"),
-    EMBEDDED("embedded");
+    EMBEDDED("embedded"),
+    DOCKER("docker");
     private static final Cause INVALID_TYPE = Causes.cause("Invalid deployment type");
     private final String value;
     DeploymentType(String value) {
@@ -23,7 +25,6 @@ public enum DeploymentType {
     public String value() {
         return value;
     }
-    /// Parse a deployment type from its string representation.
     public static Result<DeploymentType> deploymentType(String raw) {
         return Arrays.stream(values()).filter(dt -> dt.value.equals(raw))
                             .findFirst()

@@ -3,6 +3,7 @@ package org.pragmatica.aether.slice;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
 
+
 /// Interceptor for slice method invocations.
 ///
 /// Unlike {@link Aspect}, which wraps entire slice instances,
@@ -24,11 +25,5 @@ import org.pragmatica.lang.Promise;
 /// };
 /// }```
 @FunctionalInterface public interface MethodInterceptor {
-    /// Intercept a method invocation, wrapping it with additional behavior.
-    ///
-    /// @param method The original method to intercept
-    /// @param <R>    Response type
-    /// @param <T>    Request type
-    /// @return Wrapped method with interceptor behavior applied
     <R, T> Fn1<Promise<R>, T> intercept(Fn1<Promise<R>, T> method);
 }

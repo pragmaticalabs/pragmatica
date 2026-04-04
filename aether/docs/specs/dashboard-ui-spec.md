@@ -705,7 +705,7 @@ See [Section 10: Drill-Down Flows](#10-drill-down-flows) for the full drill-down
 
 **Data sources:**
 - Blueprints: `GET /api/blueprints` + `GET /api/blueprint/{id}/status`
-- Rolling updates: `GET /api/rolling-updates` + `GET /api/rolling-update/{id}/health`
+- Deployments: `GET /api/deploy` + `GET /api/deploy/{id}/health`
 - Scaling: `GET /api/slices/status` + `GET /api/controller/status`
 - Scale actions: `POST /api/scale`
 
@@ -1579,12 +1579,12 @@ Extracted from `DashboardWebSocketHandler.java` and `DashboardMetricsPublisher.j
 | `GET /api/blueprints` | 2 | Blueprint list |
 | `GET /api/blueprint/{id}` | 2 | Blueprint detail |
 | `GET /api/blueprint/{id}/status` | 2 | Blueprint deployment status |
-| `GET /api/rolling-updates` | 2 | Active rolling updates |
-| `GET /api/rolling-update/{id}` | 2 | Rolling update detail |
-| `GET /api/rolling-update/{id}/health` | 2 | Rolling update health metrics |
-| `POST /api/rolling-update/{id}/routing` | 2 | Adjust traffic routing |
-| `POST /api/rolling-update/{id}/complete` | 2 | Complete rolling update |
-| `POST /api/rolling-update/{id}/rollback` | 2 | Rollback rolling update |
+| `GET /api/deploy` | 2 | Active deployments |
+| `GET /api/deploy/{id}` | 2 | Deployment detail |
+| `GET /api/deploy/{id}/health` | 2 | Deployment health metrics |
+| `POST /api/deploy/{id}/promote` | 2 | Advance deployment |
+| `POST /api/deploy/{id}/complete` | 2 | Complete deployment |
+| `POST /api/deploy/{id}/rollback` | 2 | Rollback deployment |
 | `POST /api/scale` | 2 | Manual scaling |
 | `GET /api/alerts/active` | 2 | Active alerts |
 | `GET /api/alerts/history` | 2 | Alert history |

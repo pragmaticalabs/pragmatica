@@ -27,48 +27,31 @@ import io.micrometer.core.instrument.Metrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Manages TTM lifecycle, leader awareness, and periodic evaluation.
 ///
 /// Only runs inference on the leader node. Followers receive state updates
 /// via Rabia replication (through the DecisionTreeController threshold adjustments).
-@SuppressWarnings("JBCT-RET-01") // MessageReceiver callbacks and registration methods — void is intentional
+@SuppressWarnings("JBCT-RET-01")
+// MessageReceiver callbacks and registration methods — void is intentional
 public interface TTMManager {
-    /// React to leader changes.
     @MessageReceiver void onLeaderChange(LeaderChange leaderChange);
-
-    /// Get current forecast if available.
     Option<TTMForecast> currentForecast();
-
-    /// Get current TTM state.
     TTMState state();
-
-    /// Register callback for forecast updates.
     void onForecast(Consumer<TTMForecast> callback);
-
-    /// Get the TTM configuration.
     TtmConfig config();
-
-    /// Check if TTM is actually enabled and functional.
-    /// Returns false for NoOpTTMManager or if model failed to load.
     boolean isEnabled();
-
-    /// Stop the TTM manager.
     Unit stop();
 
-    /// Create TTM manager.
-    ///
-    /// @param config                   TTM configuration
-    /// @param aggregator               MinuteAggregator providing input data
-    /// @param controllerConfigSupplier Supplier for current controller config
-    ///
-    /// @return Result containing TTMManager or error
     static Result<TTMManager> ttmManager(TtmConfig config,
                                          MinuteAggregator aggregator,
                                          Supplier<ControllerConfig> controllerConfigSupplier) {
-        if ( !config.enabled()) {
-        return Result.success(noOp(config));}
+        if (!config.enabled()) {return Result.success(noOp(config));}
         return TTMPredictor.ttmPredictor(config)
-        .map(predictor -> createManager(config, predictor, aggregator, controllerConfigSupplier));
+                                        .map(predictor -> createManager(config,
+                                                                        predictor,
+                                                                        aggregator,
+                                                                        controllerConfigSupplier));
     }
 
     private static TTMManager createManager(TtmConfig config,
@@ -87,12 +70,10 @@ public interface TTMManager {
                                     new CopyOnWriteArrayList<>());
     }
 
-    /// Create a no-op TTM manager (for when TTM is disabled).
     static TTMManager noOp(TtmConfig config) {
         return new NoOpTTMManager(config);
     }
 
-    /// No-op implementation for when TTM is disabled.
     record NoOpTTMManager(TtmConfig config) implements TTMManager {
         @Override public void onLeaderChange(LeaderChange leaderChange) {}
 
@@ -115,7 +96,6 @@ public interface TTMManager {
         }
     }
 
-    /// Implementation of TTMManager.
     record ActiveTTMManager(TtmConfig config,
                             TTMPredictor predictor,
                             ForecastAnalyzer analyzer,
@@ -126,22 +106,22 @@ public interface TTMManager {
                             AtomicReference<TTMState> stateRef,
                             CopyOnWriteArrayList<Consumer<TTMForecast>> callbacks) implements TTMManager {
         private static final Logger log = LoggerFactory.getLogger(ActiveTTMManager.class);
+
         private static final Counter PREDICTION_COUNTER = Metrics.counter("ttm.predictions.count");
+
         private static final Counter SCALE_UP_COUNTER = Metrics.counter("ttm.recommendations", "type", "scale_up");
+
         private static final Counter SCALE_DOWN_COUNTER = Metrics.counter("ttm.recommendations", "type", "scale_down");
+
         private static final Counter ADJUST_COUNTER = Metrics.counter("ttm.recommendations", "type", "adjust_thresholds");
+
         private static final Counter HOLD_COUNTER = Metrics.counter("ttm.recommendations", "type", "hold");
 
         @Override public void onLeaderChange(LeaderChange leaderChange) {
-            if ( leaderChange.localNodeIsLeader()) {
+            if (leaderChange.localNodeIsLeader()) {
                 log.info("Node became leader, starting TTM evaluation");
                 startEvaluation();
-            } else
-
-
-
-
-            {
+            } else {
                 log.info("Node is no longer leader, stopping TTM evaluation");
                 stopEvaluation();
             }
@@ -189,7 +169,7 @@ public interface TTMManager {
         private Promise<Unit> evaluateAsync() {
             int available = aggregator.aggregateCount();
             int required = config.inputWindowMinutes();
-            if ( available < required / 2) {
+            if (available <required / 2) {
                 log.debug("Insufficient data for TTM: {} minutes available, {} required", available, required);
                 return Promise.unitPromise();
             }
@@ -219,7 +199,7 @@ public interface TTMManager {
         }
 
         private void trackRecommendationType(ScalingRecommendation rec) {
-            switch ( rec) {
+            switch (rec){
                 case ScalingRecommendation.PreemptiveScaleUp _ -> SCALE_UP_COUNTER.increment();
                 case ScalingRecommendation.PreemptiveScaleDown _ -> SCALE_DOWN_COUNTER.increment();
                 case ScalingRecommendation.AdjustThresholds _ -> ADJUST_COUNTER.increment();
@@ -234,7 +214,8 @@ public interface TTMManager {
         private void safeInvokeCallback(Consumer<TTMForecast> callback, TTMForecast forecast) {
             Result.lift(e -> new TTMError.InferenceFailed("Callback error: " + e.getMessage()),
                         () -> invokeCallback(callback, forecast))
-            .onFailure(cause -> log.warn("Forecast callback error: {}", cause.message()));
+            .onFailure(cause -> log.warn("Forecast callback error: {}",
+                                         cause.message()));
         }
 
         private static Unit invokeCallback(Consumer<TTMForecast> callback, TTMForecast forecast) {

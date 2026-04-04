@@ -18,6 +18,12 @@ window.Formatters = {
         return (rate * 100).toFixed(1) + '%';
     },
 
+    // Normalize server success rate: values > 1 are already percentage (0-100), convert to fraction (0-1)
+    normalizeRate: function(rate) {
+        if (rate == null || isNaN(rate)) return 1;
+        return rate > 1 ? rate / 100 : rate;
+    },
+
     uptime: function(seconds) {
         if (!seconds) return '0:00';
         var h = Math.floor(seconds / 3600);

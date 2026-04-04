@@ -5,7 +5,8 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
-public record Quantity( int value) {
+
+public record Quantity(int value) {
     public sealed interface QuantityError extends Cause {
         record Negative(int value) implements QuantityError {
             @Override public String message() {
@@ -21,6 +22,7 @@ public record Quantity( int value) {
     }
 
     public static final int MAX_QUANTITY = 10_000;
+
     public static final Quantity ZERO = quantity(0).expect("Quantity.ZERO");
 
     public static Result<Quantity> quantity(int value) {
@@ -41,7 +43,7 @@ public record Quantity( int value) {
     }
 
     public boolean isPositive() {
-        return value >0;
+        return value > 0;
     }
 
     public boolean isZero() {
