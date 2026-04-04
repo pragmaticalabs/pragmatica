@@ -153,7 +153,11 @@ document.addEventListener('alpine:init', function() {
                     Alpine.store('governors').refresh();
                     Alpine.store('strategies').refresh();
                     Alpine.store('streams').refresh();
+                    Alpine.store('storage').refresh();
                     Alpine.store('observability').refresh();
+                    Alpine.store('deployments').refreshSlices();
+                    Alpine.store('deployments').refreshRoutes();
+                    Alpine.store('schema').refresh();
                 }, 10000);
             },
 
@@ -186,6 +190,7 @@ document.addEventListener('alpine:init', function() {
                 Alpine.store('governors').refresh();
                 Alpine.store('strategies').refresh();
                 Alpine.store('streams').refresh();
+                Alpine.store('storage').refresh();
             },
 
             initSparklines() {

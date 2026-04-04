@@ -81,7 +81,7 @@ document.addEventListener('alpine:init', function() {
                 avgDurationMs: snap.avgDurationMs,
                 p50Ns: snap.p50DurationNs || 0,
                 p95Ns: snap.p95DurationNs || 0,
-                p99Ns: snap.p95DurationNs || 0,
+                p99Ns: snap.p99DurationNs || snap.p95DurationNs || 0,
                 errorRate: errorRate,
                 errorsPerMin: errorsPerMin,
                 slowCalls: snap.slowInvocations || 0

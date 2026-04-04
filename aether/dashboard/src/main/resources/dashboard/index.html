@@ -751,6 +751,63 @@
                     </table>
                     <div x-show="$store.streams.streams.length === 0" class="no-data">No streams registered</div>
                 </div>
+
+                <!-- Storage -->
+                <div class="panel" x-show="$store.storage.totalInstances() > 0">
+                    <h2 class="panel-header">
+                        STORAGE
+                        <span class="panel-count" x-text="$store.storage.totalInstances() + ' INSTANCES'"></span>
+                        <span style="margin-left:auto; display:flex; gap:var(--space-xs);">
+                            <button class="btn btn-small" :class="$store.storage.viewMode === 'local' ? 'btn-primary' : 'btn-secondary'"
+                                    @click="$store.storage.viewMode = 'local'">Local</button>
+                            <button class="btn btn-small" :class="$store.storage.viewMode === 'cluster' ? 'btn-primary' : 'btn-secondary'"
+                                    @click="$store.storage.viewMode = 'cluster'">Cluster</button>
+                        </span>
+                    </h2>
+
+                    <!-- Local view -->
+                    <template x-if="$store.storage.viewMode === 'local'">
+                        <table class="streams-table">
+                            <thead><tr><th>Name</th><th>State</th><th>Tiers</th><th>Actions</th></tr></thead>
+                            <tbody>
+                                <template x-for="inst in $store.storage.instances" :key="inst.name">
+                                    <tr>
+                                        <td><span class="mono-text" x-text="inst.name"></span></td>
+                                        <td>
+                                            <span class="status-badge" :class="$store.storage.readinessClass(inst.readiness)"
+                                                  x-text="$store.storage.readinessLabel(inst.readiness)"></span>
+                                        </td>
+                                        <td>
+                                            <template x-for="tier in (inst.tiers || [])" :key="tier.level">
+                                                <span class="member-badge" x-text="tier.level + ' ' + $store.storage.tierUtilization(tier)"></span>
+                                            </template>
+                                        </td>
+                                        <td>
+                                            <button class="btn btn-small btn-secondary" @click="$store.storage.forceSnapshot(inst.name)">Snapshot</button>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </template>
+
+                    <!-- Cluster view -->
+                    <template x-if="$store.storage.viewMode === 'cluster'">
+                        <table class="streams-table">
+                            <thead><tr><th>Name</th><th>Nodes</th><th>Used</th><th>Max</th></tr></thead>
+                            <tbody>
+                                <template x-for="inst in $store.storage.clusterInstances" :key="inst.name">
+                                    <tr>
+                                        <td><span class="mono-text" x-text="inst.name"></span></td>
+                                        <td x-text="inst.nodeCount"></td>
+                                        <td x-text="formatBytes(inst.totalUsedBytes)"></td>
+                                        <td x-text="formatBytes(inst.totalMaxBytes)"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </template>
+                </div>
             </div>
 
             <!-- Observability Page -->
@@ -919,6 +976,7 @@
     <script src="js/stores/governors.js"></script>
     <script src="js/stores/strategies.js"></script>
     <script src="js/stores/streams.js"></script>
+    <script src="js/stores/storage.js"></script>
     <script src="js/stores/topology.js"></script>
     <script src="js/stores/requests.js"></script>
     <script src="js/stores/forge.js"></script>
