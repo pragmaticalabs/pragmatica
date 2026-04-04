@@ -21,13 +21,16 @@ import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import org.pragmatica.lang.Option;
 
 /// ARM request body for creating a Virtual Machine.
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record CreateVmRequest(String name,
                                String location,
                                Map<String, String> tags,
-                               VmRequestProperties properties) {
+                               VmRequestProperties properties,
+                               @JsonInclude(JsonInclude.Include.NON_EMPTY) List<String> zones) {
     /// VM creation properties.
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record VmRequestProperties(HardwareProfile hardwareProfile,
@@ -75,6 +78,15 @@ public record CreateVmRequest(String name,
                                                    String location,
                                                    Map<String, String> tags,
                                                    VmRequestProperties properties) {
-        return new CreateVmRequest(name, location, tags, properties);
+        return new CreateVmRequest(name, location, tags, properties, List.of());
+    }
+
+    /// Factory method for creating a VM request with availability zones.
+    public static CreateVmRequest createVmRequest(String name,
+                                                   String location,
+                                                   Map<String, String> tags,
+                                                   VmRequestProperties properties,
+                                                   List<String> zones) {
+        return new CreateVmRequest(name, location, tags, properties, zones);
     }
 }

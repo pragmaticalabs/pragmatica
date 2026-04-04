@@ -21,6 +21,8 @@ import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import org.pragmatica.lang.Option;
 
 /// Request to insert a new GCP Compute Engine instance.
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -29,7 +31,17 @@ public record InsertInstanceRequest(String name,
                                     List<Disk> disks,
                                     List<NetworkInterfaceConfig> networkInterfaces,
                                     Map<String, String> labels,
-                                    Metadata metadata) {
+                                    Metadata metadata,
+                                    @JsonIgnore Option<String> zoneOverride) {
+    /// Convenience constructor without zone override.
+    public InsertInstanceRequest(String name,
+                                 String machineType,
+                                 List<Disk> disks,
+                                 List<NetworkInterfaceConfig> networkInterfaces,
+                                 Map<String, String> labels,
+                                 Metadata metadata) {
+        this(name, machineType, disks, networkInterfaces, labels, metadata, Option.empty());
+    }
     /// Disk configuration for instance creation.
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record Disk(boolean autoDelete,
