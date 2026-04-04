@@ -2,6 +2,7 @@ package org.pragmatica.aether.invoke;
 
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.update.CleanupPolicy;
 import org.pragmatica.aether.update.Deployment;
 import org.pragmatica.aether.update.DeploymentError;
@@ -9,9 +10,10 @@ import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.update.DeploymentStrategy;
 import org.pragmatica.aether.update.HealthThresholds;
 import org.pragmatica.aether.update.StrategyConfig;
-import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.util.List;
 
@@ -60,5 +62,22 @@ class StubDeploymentManager implements DeploymentManager {
     }
 
     @Override
-    public void onLeaderChange(LeaderChange leaderChange) {}
+    public Promise<Unit> activate() {
+        return Promise.success(Unit.unit());
+    }
+
+    @Override
+    public Promise<Unit> deactivate() {
+        return Promise.success(Unit.unit());
+    }
+
+    @Override
+    public TaskGroup taskGroup() {
+        return TaskGroup.STRATEGIES;
+    }
+
+    @Override
+    public boolean isActive() {
+        return false;
+    }
 }
