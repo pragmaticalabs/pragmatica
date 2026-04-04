@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 FORGE_JAR="$PROJECT_ROOT/aether/forge/forge-core/target/aether-forge.jar"
-BLUEPRINT_COORDS="org.pragmatica.aether.example:notification-hub-notification-service:0.25.0:blueprint"
+BLUEPRINT_COORDS="org.pragmatica.aether.example:notification-hub-notification-service:1.0.0-rc1:blueprint"
 
 SKIP_BUILD=false
 
