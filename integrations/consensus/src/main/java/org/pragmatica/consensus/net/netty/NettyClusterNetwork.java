@@ -138,7 +138,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
 
     private void peerConnected(Channel channel) {
         pendingChannels.add(channel);
-        channel.writeAndFlush(new Hello(self.id(), self.role(), self.address()));
+        channel.writeAndFlush(new Hello(self.id(), self.role(), self.address(), self.labels()));
         scheduleHelloTimeout(channel);
         log.debug("Channel active, sent Hello and waiting for response: {}", channel.remoteAddress());
     }
@@ -177,9 +177,10 @@ public class NettyClusterNetwork implements ClusterNetwork {
                 channel.close();
                 return;
             }
-            unknownNodeInfo = addressResult.map(addr -> new NodeInfo(hello.sender(),
-                                                                     addr,
-                                                                     hello.role()))
+            unknownNodeInfo = addressResult.map(addr -> NodeInfo.nodeInfo(hello.sender(),
+                                                                        addr,
+                                                                        hello.role(),
+                                                                        hello.labels()))
                                            .option();
             log.info("Unknown node {} connecting from {}", hello.sender(), channel.remoteAddress());
         }

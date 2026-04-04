@@ -20,16 +20,44 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Codec;
 
-/// Node information: ID, address, and role.
+import java.util.Map;
+
+/// Node information: ID, address, role, and metadata labels.
+///
+/// Labels are key-value metadata describing the node's environment (hostname, zone,
+/// instance type, pool). They propagate through the Hello handshake so all cluster
+/// members can see them.
 @Codec
-public record NodeInfo(NodeId id, NodeAddress address, NodeRole role) {
-    /// Factory method for creating NodeInfo (backward-compatible, defaults to ACTIVE).
-    public static NodeInfo nodeInfo(NodeId id, NodeAddress address) {
-        return new NodeInfo(id, address, NodeRole.ACTIVE);
+public record NodeInfo(NodeId id, NodeAddress address, NodeRole role, Map<String, String> labels) {
+    /// Standard label key for the node's hostname.
+    public static final String LABEL_HOSTNAME = "hostname";
+
+    /// Standard label key for the availability zone.
+    public static final String LABEL_ZONE = "zone";
+
+    /// Standard label key for the compute instance type.
+    public static final String LABEL_INSTANCE_TYPE = "instance-type";
+
+    /// Standard label key for the node pool name.
+    public static final String LABEL_POOL = "pool";
+
+    /// Compact constructor ensures labels are an immutable copy.
+    public NodeInfo {
+        labels = Map.copyOf(labels);
     }
 
-    /// Factory method for creating NodeInfo with explicit role.
+    /// Factory method for creating NodeInfo (backward-compatible, defaults to ACTIVE with no labels).
+    public static NodeInfo nodeInfo(NodeId id, NodeAddress address) {
+        return new NodeInfo(id, address, NodeRole.ACTIVE, Map.of());
+    }
+
+    /// Factory method for creating NodeInfo with explicit role (no labels).
     public static NodeInfo nodeInfo(NodeId id, NodeAddress address, NodeRole role) {
-        return new NodeInfo(id, address, role);
+        return new NodeInfo(id, address, role, Map.of());
+    }
+
+    /// Factory method for creating NodeInfo with explicit role and labels.
+    public static NodeInfo nodeInfo(NodeId id, NodeAddress address, NodeRole role, Map<String, String> labels) {
+        return new NodeInfo(id, address, role, labels);
     }
 }

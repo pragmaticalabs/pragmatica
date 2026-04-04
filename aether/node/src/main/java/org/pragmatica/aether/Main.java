@@ -12,6 +12,7 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -19,11 +20,14 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.security.CertificateProvider;
 import org.pragmatica.net.tcp.security.SelfSignedCertificateProvider;
 
+import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.IntStream;
 
 import org.slf4j.Logger;
@@ -63,7 +67,8 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
         var nodeId = parseNodeId(aetherConfig);
         var port = parsePort(aetherConfig);
         var managementPort = parseManagementPort(aetherConfig);
-        var peers = parsePeers(nodeId, port, aetherConfig);
+        var nodeLabels = collectNodeLabels();
+        var peers = parsePeers(nodeId, port, nodeLabels, aetherConfig);
         var sliceConfig = parseSliceConfig(aetherConfig);
         var dhtConfig = parseDhtConfig(aetherConfig);
         logStartupInfo(nodeId, port, managementPort, peers, aetherConfig, sliceConfig);
@@ -293,8 +298,8 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
                                                   .management()).or(AetherNodeConfig.DEFAULT_MANAGEMENT_PORT);
     }
 
-    private List<NodeInfo> parsePeers(NodeId self, int selfPort, Option<AetherConfig> aetherConfig) {
-        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", selfPort).unwrap());
+    private List<NodeInfo> parsePeers(NodeId self, int selfPort, Map<String, String> labels, Option<AetherConfig> aetherConfig) {
+        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", selfPort).unwrap(), NodeRole.ACTIVE, labels);
         return findArg("--peers=").map(peersStr -> parsePeersFromString(peersStr, self, selfInfo))
                       .orElse(findEnv("CLUSTER_PEERS").map(peersStr -> parsePeersFromString(peersStr, self, selfInfo)))
                       .orElse(aetherConfig.map(this::generatePeersFromConfig))
@@ -366,6 +371,28 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
     private Option<NodeInfo> logInvalidPeerFormat(String peerStr) {
         log.warn("Invalid peer format: {}. Expected host:port or nodeId:host:port", peerStr);
         return Option.none();
+    }
+
+    private Map<String, String> collectNodeLabels() {
+        var labels = new HashMap<String, String>();
+        labels.put(NodeInfo.LABEL_HOSTNAME, resolveHostname());
+        findEnv("AETHER_ZONE").onPresent(z -> labels.put(NodeInfo.LABEL_ZONE, z));
+        findEnv("AETHER_INSTANCE_TYPE").onPresent(t -> labels.put(NodeInfo.LABEL_INSTANCE_TYPE, t));
+        findEnv("AETHER_POOL").onPresent(p -> labels.put(NodeInfo.LABEL_POOL, p));
+        return Map.copyOf(labels);
+    }
+
+    @SuppressWarnings("JBCT-RET-01")
+    private static String resolveHostname() {
+        try {
+            return InetAddress.getLocalHost().getHostName();
+        } catch (Exception e) {
+            return findContainerHostname().or("unknown");
+        }
+    }
+
+    private static Option<String> findContainerHostname() {
+        return Option.option(System.getenv("HOSTNAME")).filter(s -> !s.isBlank());
     }
 
     private Option<String> findArg(String prefix) {

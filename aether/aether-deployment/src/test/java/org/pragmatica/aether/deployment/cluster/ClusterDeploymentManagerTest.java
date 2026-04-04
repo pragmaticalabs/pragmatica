@@ -138,12 +138,12 @@ class ClusterDeploymentManagerTest {
         return new TopologyManager() {
             @Override
             public NodeInfo self() {
-                return new NodeInfo(self, new NodeAddress("localhost", 9000), NodeRole.ACTIVE);
+                return NodeInfo.nodeInfo(self, new NodeAddress("localhost", 9000));
             }
 
             @Override
             public Option<NodeInfo> get(NodeId id) {
-                return Option.some(new NodeInfo(id, new NodeAddress("localhost", 9000), NodeRole.ACTIVE));
+                return Option.some(NodeInfo.nodeInfo(id, new NodeAddress("localhost", 9000)));
             }
 
             @Override

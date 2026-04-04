@@ -17,6 +17,7 @@
 package org.pragmatica.consensus.net.quic;
 
 import java.net.InetSocketAddress;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import io.netty.bootstrap.Bootstrap;
@@ -73,6 +74,8 @@ public sealed interface QuicClusterClient {
     ///
     /// @param selfId          this node's identity
     /// @param selfRole        this node's role in the cluster
+    /// @param selfAddress     this node's cluster address
+    /// @param selfLabels      this node's metadata labels
     /// @param serializer      message serializer
     /// @param deserializer    message deserializer
     /// @param sslContext      QUIC client SSL context (TLS 1.3)
@@ -81,12 +84,13 @@ public sealed interface QuicClusterClient {
     static QuicClusterClient quicClusterClient(NodeId selfId,
                                                NodeRole selfRole,
                                                NodeAddress selfAddress,
+                                               Map<String, String> selfLabels,
                                                Serializer serializer,
                                                Deserializer deserializer,
                                                QuicSslContext sslContext,
                                                Option<EventLoopGroup> eventLoop,
                                                QuicClusterServer.MessageReceiver messageReceiver) {
-        return new QuicClusterClientInstance(selfId, selfRole, selfAddress, serializer, deserializer,
+        return new QuicClusterClientInstance(selfId, selfRole, selfAddress, selfLabels, serializer, deserializer,
                                             sslContext, eventLoop, messageReceiver);
     }
 
@@ -115,6 +119,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     private final NodeId selfId;
     private final NodeRole selfRole;
     private final NodeAddress selfAddress;
+    private final Map<String, String> selfLabels;
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final QuicSslContext sslContext;
@@ -126,6 +131,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     QuicClusterClientInstance(NodeId selfId,
                               NodeRole selfRole,
                               NodeAddress selfAddress,
+                              Map<String, String> selfLabels,
                               Serializer serializer,
                               Deserializer deserializer,
                               QuicSslContext sslContext,
@@ -134,6 +140,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         this.selfId = selfId;
         this.selfRole = selfRole;
         this.selfAddress = selfAddress;
+        this.selfLabels = Map.copyOf(selfLabels);
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.sslContext = sslContext;
@@ -236,7 +243,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     }
 
     private void sendHello(QuicStreamChannel streamChannel, NodeId peerId) {
-        var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfRole, selfAddress));
+        var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfRole, selfAddress, selfLabels));
         streamChannel.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
         log.debug("Sent Hello to peer {} on stream", peerId);
     }

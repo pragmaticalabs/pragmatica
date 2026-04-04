@@ -38,9 +38,9 @@ class CoreSwimHealthDetectorTest {
         var router = MessageRouter.mutable();
         router.addRoute(NetworkServiceMessage.DisconnectNode.class, disconnectNotifications::add);
 
-        var nodeA = new NodeInfo(SELF, NodeAddress.nodeAddress("127.0.0.1", 9001).unwrap(), NodeRole.ACTIVE);
-        var nodeB = new NodeInfo(PEER_A, NodeAddress.nodeAddress("127.0.0.2", 9001).unwrap(), NodeRole.ACTIVE);
-        var nodeC = new NodeInfo(PEER_B, NodeAddress.nodeAddress("127.0.0.3", 9001).unwrap(), NodeRole.ACTIVE);
+        var nodeA = NodeInfo.nodeInfo(SELF, NodeAddress.nodeAddress("127.0.0.1", 9001).unwrap());
+        var nodeB = NodeInfo.nodeInfo(PEER_A, NodeAddress.nodeAddress("127.0.0.2", 9001).unwrap());
+        var nodeC = NodeInfo.nodeInfo(PEER_B, NodeAddress.nodeAddress("127.0.0.3", 9001).unwrap());
         var topologyConfig = new TopologyConfig(SELF, 3, timeSpan(1).seconds(), timeSpan(10).seconds(),
                                                 List.of(nodeA, nodeB, nodeC));
         Serializer serializer = Mockito.mock(Serializer.class);

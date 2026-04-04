@@ -145,11 +145,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return Promise.unitPromise();
         }
         server = QuicClusterServer.quicClusterServer(
-            self.id(), self.role(), self.address(), serializer, deserializer,
+            self.id(), self.role(), self.address(), self.labels(), serializer, deserializer,
             serverSslContext, Option.empty(), this::onPeerConnected, this::onMessageReceived
         );
         client = QuicClusterClient.quicClusterClient(
-            self.id(), self.role(), self.address(), serializer, deserializer,
+            self.id(), self.role(), self.address(), self.labels(), serializer, deserializer,
             clientSslContext, Option.empty(), this::onMessageReceived
         );
         return server.start(port)
@@ -279,11 +279,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private Promise<Unit> rebuildAndStart(int port, QuicSslContext newServerSsl, QuicSslContext newClientSsl) {
         server = QuicClusterServer.quicClusterServer(
-            self.id(), self.role(), self.address(), serializer, deserializer,
+            self.id(), self.role(), self.address(), self.labels(), serializer, deserializer,
             newServerSsl, Option.empty(), this::onPeerConnected, this::onMessageReceived
         );
         client = QuicClusterClient.quicClusterClient(
-            self.id(), self.role(), self.address(), serializer, deserializer,
+            self.id(), self.role(), self.address(), self.labels(), serializer, deserializer,
             newClientSsl, Option.empty(), this::onMessageReceived
         );
         return server.start(port)
@@ -332,7 +332,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var address = new InetSocketAddress(peer.address().host(), peer.address().port());
         client.connect(peerId, address)
               .onResult(_ -> connectingInProgress.remove(peerId))
-              .onSuccess(conn -> onPeerConnected(conn, peer.role(), peer.address()))
+              .onSuccess(conn -> onPeerConnected(conn, peer.role(), peer.address(), peer.labels()))
               .onFailure(cause -> onConnectFailed(peer, cause));
     }
 
@@ -344,7 +344,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Multi-step peer registration
-    private void onPeerConnected(QuicPeerConnection connection, NodeRole peerRole, NodeAddress peerAddress) {
+    private void onPeerConnected(QuicPeerConnection connection, NodeRole peerRole, NodeAddress peerAddress, Map<String, String> peerLabels) {
         var peerId = connection.peerId();
 
         // Never register self as a peer — self-connections cause removal cascades
@@ -360,9 +360,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
             passivePeers.add(peerId);
         }
 
-        // Check for unknown node — build NodeInfo from Hello data (NodeId, role, address)
+        // Check for unknown node — build NodeInfo from Hello data (NodeId, role, address, labels)
         Option<NodeInfo> unknownNodeInfo = topologyManager.get(peerId).isEmpty()
-            ? buildUnknownNodeInfo(peerId, peerRole, peerAddress)
+            ? buildUnknownNodeInfo(peerId, peerRole, peerAddress, peerLabels)
             : Option.empty();
 
         var existing = peerLinks.putIfAbsent(peerId, connection);
@@ -396,9 +396,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         log.debug("Node {} connected via QUIC Hello handshake", peerId);
     }
 
-    private Option<NodeInfo> buildUnknownNodeInfo(NodeId peerId, NodeRole peerRole, NodeAddress peerAddress) {
+    private Option<NodeInfo> buildUnknownNodeInfo(NodeId peerId, NodeRole peerRole, NodeAddress peerAddress, Map<String, String> peerLabels) {
         log.info("Unknown node {} connected via QUIC Hello with address {}", peerId, peerAddress.asString());
-        return Option.some(NodeInfo.nodeInfo(peerId, peerAddress, peerRole));
+        return Option.some(NodeInfo.nodeInfo(peerId, peerAddress, peerRole, peerLabels));
     }
 
     private void trackPassiveRole(NodeId nodeId, Option<NodeInfo> unknownNodeInfo) {

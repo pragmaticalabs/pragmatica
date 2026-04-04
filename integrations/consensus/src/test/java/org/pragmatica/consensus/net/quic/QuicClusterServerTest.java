@@ -18,6 +18,7 @@ package org.pragmatica.consensus.net.quic;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -87,8 +88,8 @@ class QuicClusterServerTest {
             server = serverSslResult.fold(
                 _ -> fail("unreachable"),
                 ssl -> QuicClusterServer.quicClusterServer(
-                    SERVER_NODE, NodeRole.ACTIVE, SERVER_ADDRESS, codec, codec, ssl, Option.empty(),
-                    (conn, _, _) -> {
+                    SERVER_NODE, NodeRole.ACTIVE, SERVER_ADDRESS, Map.of(), codec, codec, ssl, Option.empty(),
+                    (conn, _, _, _) -> {
                         connections.add(conn);
                         latch.countDown();
                     },
@@ -105,7 +106,7 @@ class QuicClusterServerTest {
             client = clientSslResult.fold(
                 _ -> fail("unreachable"),
                 ssl -> QuicClusterClient.quicClusterClient(
-                    CLIENT_NODE, NodeRole.ACTIVE, CLIENT_ADDRESS, codec, codec, ssl, Option.empty(),
+                    CLIENT_NODE, NodeRole.ACTIVE, CLIENT_ADDRESS, Map.of(), codec, codec, ssl, Option.empty(),
                     (_, _) -> {}
                 )
             );
@@ -138,8 +139,8 @@ class QuicClusterServerTest {
             server = sslResult.fold(
                 _ -> fail("unreachable"),
                 ssl -> QuicClusterServer.quicClusterServer(
-                    SERVER_NODE, NodeRole.ACTIVE, SERVER_ADDRESS, codec, codec, ssl, Option.empty(),
-                    (_, _, _) -> {}, (_, _) -> {}
+                    SERVER_NODE, NodeRole.ACTIVE, SERVER_ADDRESS, Map.of(), codec, codec, ssl, Option.empty(),
+                    (_, _, _, _) -> {}, (_, _) -> {}
                 )
             );
 
@@ -158,8 +159,8 @@ class QuicClusterServerTest {
             server = sslResult.fold(
                 _ -> fail("unreachable"),
                 ssl -> QuicClusterServer.quicClusterServer(
-                    SERVER_NODE, NodeRole.ACTIVE, SERVER_ADDRESS, codec, codec, ssl, Option.empty(),
-                    (_, _, _) -> {}, (_, _) -> {}
+                    SERVER_NODE, NodeRole.ACTIVE, SERVER_ADDRESS, Map.of(), codec, codec, ssl, Option.empty(),
+                    (_, _, _, _) -> {}, (_, _) -> {}
                 )
             );
 
