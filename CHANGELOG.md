@@ -70,6 +70,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Integration test TLS handling** — certificate-status and cert-rotation tests handle `NOT_CONFIGURED` state when TLS is disabled
 - **Integration test load target** — cert-rotation load test uses management endpoint `/health/live` (was app endpoint)
 - **Smoke test node count** — uses `>=` assertion to accommodate passive LB node
+- **Status endpoint self-node** — `/api/status` now includes responding node in `cluster.nodes` list (was excluded, showing 4/5)
+- **Deployment lifecycle** — `start()` auto-advances through PENDING → DEPLOYING → DEPLOYED; `complete` allowed from DEPLOYED, ROUTING, or PROMOTING states
+- **Dashboard auth** — API key login overlay with sessionStorage; static files bypass auth; no data fetching until key validated; 401 handling doesn't interrupt login
+- **Dashboard success rate** — normalizes server values (0-100) to client fraction (0-1) across all data sources (REST, WebSocket, seed)
+- **Dashboard nodes/slices** — populates nodes from REST `cluster.nodes`; fetches slice details from `/api/slices`
+- **Release workflow** — added `binutils` for `objcopy` in arm64 jlink build
+- **k6 load test** — sends `X-API-Key` header for authenticated app endpoints
 - **Storage management test** — handles empty `{}` response when no storage configured
 - **JBCT formatter blank-line artifacts** — removed 13,911 blank lines across 91 aether files from previous formatter bug
 
