@@ -131,7 +131,9 @@ jobs:
             -w /workspace \
             azul/zulu-openjdk:25 \
             bash -c '
-              apt-get update -qq && apt-get install -y -qq zip binutils > /dev/null
+              apt-get update -qq && apt-get install -y -qq zip binutils curl > /dev/null
+              curl -sL https://archive.apache.org/dist/maven/maven-3/3.9.12/binaries/apache-maven-3.9.12-bin.tar.gz | tar xz -C /opt
+              export PATH="/opt/apache-maven-3.9.12/bin:$PATH"
               mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor -am
               mvn package -B -DskipTests
               chmod +x aether/dist/build-dist.sh
