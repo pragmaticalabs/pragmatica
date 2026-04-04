@@ -18,7 +18,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 1 | Blueprint management | Battle-tested | Declarative TOML-based deployment specs with dependency ordering, validation, pub-sub orphan detection, and status tracking |
 | 2 | Slice lifecycle | Battle-tested | Full state machine: DOWNLOADING, LOADING, STARTING, ACTIVE, UNLOADING, UNLOADED, FAILED. Per-node tracking via KV-Store |
 | 3 | Unified deployment strategies | Battle-tested | Single `aether deploy` command and `/api/deploy` endpoint supporting immediate, canary (progressive traffic shift with auto-evaluation), blue-green (atomic switchover with instant rollback), and rolling (weighted traffic shifting with health thresholds) strategies. Includes promote, rollback, complete lifecycle, cleanup policies |
-| 4 | Auto-healing | Battle-tested | Bidirectional convergence: scale-up (provision replacements) and scale-down (terminate surplus). Node selection: empty-nodes-first, most-recent, never-self. CAS-based state transitions. Separate configured vs desired size for future blue-green support. Leader-only with failover |
+| 4 | Auto-healing | Battle-tested | Bidirectional convergence with metadata-aware scheduling: spot-first, host-spread, zone-balanced provisioning. PlacementHint-driven node placement. Node labels (hostname, zone, instance-type, pool) propagated via Hello handshake. CAS-based state transitions. Leader-only with failover |
 | 5 | Classloader isolation | Complete | Per-slice classloader prevents dependency conflicts between slices |
 | 6 | Manifest versioning | Complete | Envelope format versioning (v1-v6) for backward-compatible manifest evolution |
 | 66 | Compile-time serde | Complete | `@Codec` annotation processor generates `*Codec` classes for records, enums, and sealed interfaces with recursive nested type scanning. `SliceCodec` wire format with deterministic hash-based tags, VLQ encoding, zero runtime reflection. Replaces Fory/Kryo for slice boundary serialization |
@@ -278,6 +278,15 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 157 | Per-blueprint artifact scoping (Tier 2) | Planned | Per-blueprint SliceTargetKey scoping for multi-tenant clusters. Prerequisite: Tier 1 (#102) |
 | 174 | DigitalOcean cloud integration | Planned | DigitalOcean compute, discovery, load balancer providers. Spec exists |
 | 175 | Fluid cross-environment migration | Planned | Cross-environment migration protocol. Spec exists |
+| 176 | Application config provisioning | Complete | `@ResourceQualifier(type = ConfigurationSection.class)` pattern. Compile-time parser generation via `Result.all()`. Three-source merge (bundled + aether.toml + KV-Store). Runtime notification via single-threaded executor with record diff. ACTIVATE integration |
+| 177 | ContentStore resource | Complete | `@ContentStoreQualifier` annotation, `ContentStoreFactory` SPI. AHSE-backed content-addressable storage with chunking and compression |
+| 178 | Cloud certificate adapters | Complete | AWS (ACM/Secrets Manager), GCP (Certificate Manager), Azure (Key Vault) via `CertificateProvider` SPI. `CloudCertificateProvider` shared implementation |
+| 179 | Streaming retention enforcement | Complete | Scheduled `RetentionEnforcer` scans SegmentIndex, removes expired segments from AHSE |
+| 180 | Consumer cursor persistence | Complete | `CursorStore` persists consumer group cursors in AHSE via named references |
+| 181 | Node metadata labels | Complete | `NodeInfo.labels` (hostname, zone, instance-type, pool) propagated via Hello handshake. Bootstrap from environment |
+| 182 | PlacementHint provisioning | Complete | `ZoneHint`, `HostGroupHint`, `AffinityHint`, `AntiAffinityHint` in `ProvisionSpec`. Cloud providers respect zone placement |
+| 183 | Same-version deploy rejection | Complete | Strategy deploys rejected when oldVersion == newVersion. `/api/blueprint/publish` for register-without-deploy |
+| 184 | Disruption budget enforcement | Complete | Drain endpoint checks quorum-based minAvailable before allowing transition to DRAINING |
 
 ---
 
