@@ -4,7 +4,15 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [1.0.0-alpha] - Unreleased
+## [1.0.0-rc1] - Unreleased
+
+### Added
+
+### Changed
+
+### Fixed
+
+## [1.0.0-alpha] - 2026-04-04
 
 ### Added
 - **CTM bidirectional convergence** — ClusterTopologyManager now reliably converges cluster to configured size in both directions: scale-up (provision) and scale-down (terminate). Separate `configuredSizeRef` (operator intent) from `desiredSizeRef` (working target). Node selection for termination: empty nodes first, then most recently joined, never self. CAS-based state transitions eliminate race conditions

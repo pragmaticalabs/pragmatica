@@ -92,7 +92,7 @@ GENERATOR_CODE
 
 # Compile and run generator
 PEGLIB_JAR="$HOME/.m2/repository/org/pragmatica-lite/peglib/0.2.1/peglib-0.2.1.jar"
-CORE_JAR="$HOME/.m2/repository/org/pragmatica-lite/core/1.0.0-alpha/core-1.0.0-alpha.jar"
+CORE_JAR="$HOME/.m2/repository/org/pragmatica-lite/core/1.0.0-rc1/core-1.0.0-rc1.jar"
 CLASSPATH="$PEGLIB_JAR:$CORE_JAR"
 
 echo "Compiling generator..."
