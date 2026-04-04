@@ -18,7 +18,6 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -78,7 +77,7 @@ class RollbackManagerTest {
 
         @Test
         void leader_tracksVersionChanges() {
-            rollbackManager.onLeaderChange(new LeaderChange(Option.some(LEADER), true));
+            rollbackManager.activate();
             var v1 = Artifact.artifact("org.example:test:1.0.0").unwrap();
             var v2 = Artifact.artifact("org.example:test:2.0.0").unwrap();
 
@@ -97,7 +96,7 @@ class RollbackManagerTest {
     class RollbackTriggering {
         @BeforeEach
         void becomeLeader() {
-            rollbackManager.onLeaderChange(new LeaderChange(Option.some(LEADER), true));
+            rollbackManager.activate();
         }
 
         @Test
@@ -137,7 +136,7 @@ class RollbackManagerTest {
     class StatsTracking {
         @BeforeEach
         void becomeLeader() {
-            rollbackManager.onLeaderChange(new LeaderChange(Option.some(LEADER), true));
+            rollbackManager.activate();
         }
 
         @Test

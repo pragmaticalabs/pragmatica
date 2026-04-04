@@ -185,9 +185,11 @@ public sealed interface TaskAssignmentCoordinator {
             private Option<NodeId> selectLeastLoadedNode(TaskGroup group, List<NodeId> healthyNodes) {
                 var cooldownExpiry = System.currentTimeMillis() - FAILURE_COOLDOWN_MS;
                 var recentlyFailed = failedNodes.getOrDefault(group, Set.of());
-                return Option.from(healthyNodes.stream().filter(node -> !isRecentlyFailed(node, recentlyFailed, cooldownExpiry))
-                                                       .min(Comparator.<NodeId, Long>comparing(node -> countActiveAssignments(node))
-                                                                      .thenComparing(Comparator.naturalOrder())));
+                return Option.from(healthyNodes.stream().filter(node -> !isRecentlyFailed(node,
+                                                                                          recentlyFailed,
+                                                                                          cooldownExpiry))
+                                                      .min(Comparator.<NodeId, Long>comparing(node -> countActiveAssignments(node))
+                                                                     .thenComparing(Comparator.naturalOrder())));
             }
 
             private boolean isRecentlyFailed(NodeId node, Set<NodeId> recentlyFailed, long cooldownExpiry) {
@@ -222,10 +224,10 @@ public sealed interface TaskAssignmentCoordinator {
                 assignmentMap.put(group, value);
                 var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
                 return clusterNode.apply(List.of(command)).await()
-                                  .map(_ -> Unit.unit())
-                                  .onFailure(cause -> log.error("Consensus proposal failed for task group {} assignment: {}",
-                                                                group,
-                                                                cause.message()));
+                                        .map(_ -> Unit.unit())
+                                        .onFailure(cause -> log.error("Consensus proposal failed for task group {} assignment: {}",
+                                                                      group,
+                                                                      cause.message()));
             }
         }
     }

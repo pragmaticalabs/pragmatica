@@ -5,7 +5,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.consensus.ProtocolMessage;
-import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsPing;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
@@ -58,7 +57,7 @@ class DeploymentMetricsSchedulerTest {
         scheduler.onTopologyChange(TopologyChangeNotification.nodeAdded(node2, List.of(self, node2)));
 
         // Become leader
-        scheduler.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+        scheduler.activate();
 
         // Wait for ping to be sent
         waitUntil(() -> !network.sentMessages.isEmpty(), 500);
@@ -73,13 +72,13 @@ class DeploymentMetricsSchedulerTest {
     void scheduler_stops_pinging_when_losing_leadership() {
         // Setup topology and become leader
         scheduler.onTopologyChange(TopologyChangeNotification.nodeAdded(node2, List.of(self, node2)));
-        scheduler.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+        scheduler.activate();
 
         // Wait for initial ping
         waitUntil(() -> !network.sentMessages.isEmpty(), 500);
 
         // Lose leadership
-        scheduler.onLeaderChange(LeaderNotification.leaderChange(Option.option(node2), false));
+        scheduler.deactivate();
 
         // Clear and wait - no new pings should arrive
         network.sentMessages.clear();
@@ -103,7 +102,7 @@ class DeploymentMetricsSchedulerTest {
     @Test
     void scheduler_tracks_topology_changes() {
         // Become leader first
-        scheduler.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+        scheduler.activate();
 
         // Add nodes via topology changes
         scheduler.onTopologyChange(TopologyChangeNotification.nodeAdded(node2, List.of(self, node2)));
@@ -125,7 +124,7 @@ class DeploymentMetricsSchedulerTest {
         // Setup: leader with 2 other nodes
         scheduler.onTopologyChange(TopologyChangeNotification.nodeAdded(node2, List.of(self, node2)));
         scheduler.onTopologyChange(TopologyChangeNotification.nodeAdded(node3, List.of(self, node2, node3)));
-        scheduler.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+        scheduler.activate();
 
         // Wait for initial pings
         waitUntil(() -> network.sentMessages.size() >= 2, 500);
@@ -151,7 +150,7 @@ class DeploymentMetricsSchedulerTest {
     void scheduler_does_not_ping_self() {
         // Become leader with only self in topology
         scheduler.onTopologyChange(TopologyChangeNotification.nodeAdded(self, List.of(self)));
-        scheduler.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+        scheduler.activate();
 
         sleep(100);
 
@@ -162,7 +161,7 @@ class DeploymentMetricsSchedulerTest {
     @Test
     void scheduler_does_not_ping_with_empty_topology() {
         // Become leader without adding topology
-        scheduler.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+        scheduler.activate();
 
         sleep(100);
 
@@ -178,13 +177,13 @@ class DeploymentMetricsSchedulerTest {
         scheduler.onTopologyChange(TopologyChangeNotification.nodeAdded(node2, List.of(self, node2)));
 
         // Become leader
-        scheduler.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+        scheduler.activate();
 
         // Wait for ping
         waitUntil(() -> !network.sentMessages.isEmpty(), 500);
 
         // Lose leadership
-        scheduler.onLeaderChange(LeaderNotification.leaderChange(Option.option(node2), false));
+        scheduler.deactivate();
 
         // Clear and verify no pings
         network.sentMessages.clear();
@@ -192,7 +191,7 @@ class DeploymentMetricsSchedulerTest {
         assertThat(network.sentMessages).isEmpty();
 
         // Regain leadership
-        scheduler.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+        scheduler.activate();
 
         // Wait for new pings
         waitUntil(() -> !network.sentMessages.isEmpty(), 500);

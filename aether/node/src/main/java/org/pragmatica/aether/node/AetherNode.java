@@ -66,6 +66,7 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
 import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.slice.*;
+import org.pragmatica.aether.slice.delegation.DelegatedComponent;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -1063,6 +1064,11 @@ public interface AetherNode {
         if (change.localNodeIsLeader()) {ctm.activate();} else {ctm.deactivate();}
     }
 
+    @SuppressWarnings("JBCT-RET-01") private static void handleDelegatedLeaderChange(LeaderNotification.LeaderChange change,
+                                                                                     DelegatedComponent component) {
+        if (change.localNodeIsLeader()) {component.activate();} else {component.deactivate();}
+    }
+
     private static void startSwimOnQuorum(QuorumStateNotification notification,
                                           CoreSwimHealthDetector swimHealthDetector,
                                           ClusterNetwork network,
@@ -1467,19 +1473,23 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, scheduledTaskManager::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, appHttpServer::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              clusterDeploymentManager::onLeaderChange));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> handleCtmLeaderChange(change, clusterTopologyManager)));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, metricsScheduler::onLeaderChange));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, controlLoop::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              change -> handleDelegatedLeaderChange(change, metricsScheduler)));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              change -> handleDelegatedLeaderChange(change, controlLoop)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> rabiaMetricsCollector.updateRole(change.localNodeIsLeader(),
                                                                                          change.leaderId()
                                                                                                         .map(NodeId::id))));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, ttmManager::onLeaderChange));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, deploymentManager::onLeaderChange));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, abTestManager::onLeaderChange));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, rollbackManager::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              change -> handleDelegatedLeaderChange(change, ttmManager)));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              change -> handleDelegatedLeaderChange(change, deploymentManager)));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              change -> handleDelegatedLeaderChange(change, abTestManager)));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              change -> handleDelegatedLeaderChange(change, rollbackManager)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               scheduledTaskManager::onLeaderChange));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
@@ -1531,7 +1541,7 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
                                               deploymentMetricsCollector::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              deploymentMetricsScheduler::onLeaderChange));
+                                              change -> handleDelegatedLeaderChange(change, deploymentMetricsScheduler)));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
                                               deploymentMetricsScheduler::onTopologyChange));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
@@ -1585,8 +1595,6 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
                                               notification -> handleLeaderCommit(notification, leaderManager)));
         loadBalancerManager.onPresent(lbm -> {
-                                          entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                                                                lbm::onLeaderChange));
                                           entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
                                                                                 lbm::onTopologyChange));
                                           entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,

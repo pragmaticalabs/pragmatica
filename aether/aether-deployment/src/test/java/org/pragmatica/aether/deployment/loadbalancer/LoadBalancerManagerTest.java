@@ -17,7 +17,6 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
@@ -117,7 +116,7 @@ class LoadBalancerManagerTest {
             provider.clear();
 
             // Lose leadership
-            manager.onLeaderChange(LeaderNotification.leaderChange(Option.some(node2), false));
+            manager.deactivate().await();
 
             // Subsequent events should be no-ops
             fireNodeRoutesPut("GET", "/api/test", node1);
@@ -197,7 +196,7 @@ class LoadBalancerManagerTest {
     // === Helpers ===
 
     private void activateAsLeader() {
-        manager.onLeaderChange(LeaderNotification.leaderChange(Option.some(selfNode), true));
+        manager.activate().await();
     }
 
     private void fireNodeRoutesPut(String method, String path, NodeId nodeId) {

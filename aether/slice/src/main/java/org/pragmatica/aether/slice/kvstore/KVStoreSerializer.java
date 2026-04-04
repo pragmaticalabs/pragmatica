@@ -910,14 +910,15 @@ import static org.pragmatica.lang.Result.success;
         if (parts.length != 4) {return parseFailure("task-assignment value requires 4 fields, got " + parts.length);}
         return TaskAssignmentKey.taskAssignmentKey("task-assignment/" + identity)
                                                   .flatMap(key -> NodeId.nodeId(parts[0])
-                                                                               .flatMap(nodeId -> buildTaskAssignmentValue(nodeId, parts)
-                                                                                                  .map(value -> entry(key, value))));
+                                                                               .flatMap(nodeId -> buildTaskAssignmentValue(nodeId,
+                                                                                                                           parts).map(value -> entry(key,
+                                                                                                                                                     value))));
     }
 
     private static Result<TaskAssignmentValue> buildTaskAssignmentValue(NodeId nodeId, String[] parts) {
         return Result.lift(() -> Long.parseLong(parts[1]))
-                     .flatMap(ts -> Result.lift(() -> TaskAssignmentValue.AssignmentStatus.valueOf(parts[2]))
-                                          .map(status -> new TaskAssignmentValue(nodeId, ts, status, parts[3])));
+                          .flatMap(ts -> Result.lift(() -> TaskAssignmentValue.AssignmentStatus.valueOf(parts[2]))
+                                                    .map(status -> new TaskAssignmentValue(nodeId, ts, status, parts[3])));
     }
 
     private static <T> Result<T> parseFailure(String detail) {
