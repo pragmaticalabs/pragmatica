@@ -69,6 +69,10 @@ public final class SliceLoadingContext implements SliceCreationContext {
         return delegate.sliceId();
     }
 
+    @Override public ConfigFacade config() {
+        return delegate.config();
+    }
+
     @Override public ResourceProviderFacade resources() {
         return delegate.sliceId().map(id -> sliceAwareResourceProvider(delegate.resources(),
                                                                        id))

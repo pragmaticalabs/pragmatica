@@ -118,6 +118,10 @@ public class FactoryClassGenerator {
             importTracker.use("org.pragmatica.lang.Functions.Fn1");
         }
         importTracker.use("java.util.List");
+        if (allDeps.stream().anyMatch(DependencyModel::isConfigurationSection)) {
+            importTracker.use("org.pragmatica.aether.slice.ConfigFacade");
+            importTracker.use("org.pragmatica.lang.Result");
+        }
         // Register dependency imports
         for (var dep : allDeps) {
             if (!dep.interfacePackage().equals(basePackage)) {
@@ -1044,24 +1048,128 @@ public class FactoryClassGenerator {
     /// wraps the connector in a factory call: InterfaceFactory.interface(connector).
     private String generateResourceProvideCall(DependencyModel resource, ImportTracker importTracker) {
         return resource.resourceQualifier()
-                       .map(qualifier -> {
-                           var qualifiedTypeName = qualifier.resourceType().toString();
-                           var typeName = importTracker.use(qualifiedTypeName);
-                           var configSection = escapeJavaString(qualifier.configSection());
-                           var provideCall = resource.isPublisher() || resource.isStreamResource()
-                               ? "ctx.resources().provide(" + typeName + ".class, \""
-                                 + configSection + "\", ProvisioningContext.provisioningContext())"
-                               : "ctx.resources().provide(" + typeName + ".class, \"" + configSection + "\")";
-                           // If resource type differs from parameter type, wrap in factory call
-                           // e.g., @PgSql AnalyticsPersistence -> provide PgSqlConnector, wrap via factory
-                           if (!qualifiedTypeName.equals(resource.interfaceQualifiedName())) {
-                               var factoryClass = importTracker.use(resource.interfaceQualifiedName() + "Factory");
-                               var factoryMethod = lowercaseFirst(resource.interfaceSimpleName());
-                               return provideCall + ".map(" + factoryClass + "::" + factoryMethod + ")";
-                           }
-                           return provideCall;
-                       })
+                       .map(qualifier -> qualifier.isConfigurationSection()
+                                         ? generateConfigSectionCall(resource, qualifier, importTracker)
+                                         : generateStandardProvideCall(resource, qualifier, importTracker))
                        .or("ctx.resources().provide(Object.class, \"unknown\")");
+    }
+
+    private String generateStandardProvideCall(DependencyModel resource,
+                                                ResourceQualifierModel qualifier,
+                                                ImportTracker importTracker) {
+        var qualifiedTypeName = qualifier.resourceType().toString();
+        var typeName = importTracker.use(qualifiedTypeName);
+        var configSection = escapeJavaString(qualifier.configSection());
+        var provideCall = resource.isPublisher() || resource.isStreamResource()
+                          ? "ctx.resources().provide(" + typeName + ".class, \""
+                            + configSection + "\", ProvisioningContext.provisioningContext())"
+                          : "ctx.resources().provide(" + typeName + ".class, \"" + configSection + "\")";
+        // If resource type differs from parameter type, wrap in factory call
+        // e.g., @PgSql AnalyticsPersistence -> provide PgSqlConnector, wrap via factory
+        if (!qualifiedTypeName.equals(resource.interfaceQualifiedName())) {
+            var factoryClass = importTracker.use(resource.interfaceQualifiedName() + "Factory");
+            var factoryMethod = lowercaseFirst(resource.interfaceSimpleName());
+            return provideCall + ".map(" + factoryClass + "::" + factoryMethod + ")";
+        }
+        return provideCall;
+    }
+
+    /// Generate config section parsing code for ConfigurationSection resources.
+    ///
+    /// Introspects the config record's factory method to find parameter names and types,
+    /// then generates Result.all() calls that read each field from the config facade.
+    private String generateConfigSectionCall(DependencyModel resource,
+                                              ResourceQualifierModel qualifier,
+                                              ImportTracker importTracker) {
+        var configSection = escapeJavaString(qualifier.configSection());
+        var configTypeName = importTracker.use(resource.interfaceQualifiedName());
+        var factoryParams = analyzeConfigRecordFactory(resource);
+        if (factoryParams.isEmpty()) {
+            // No factory method found or no params — fall back to no-arg constructor via Result
+            importTracker.use("org.pragmatica.lang.Result");
+            return "Result.success(new " + configTypeName + "()).async()";
+        }
+        importTracker.use("org.pragmatica.lang.Result");
+        var sb = new StringBuilder();
+        sb.append("Result.all(\n");
+        for (int i = 0; i < factoryParams.size(); i++) {
+            var param = factoryParams.get(i);
+            var comma = (i < factoryParams.size() - 1) ? "," : "";
+            var tomlKey = camelToSnakeCase(param.name());
+            sb.append("                ctx.config().")
+              .append(param.configAccessMethod())
+              .append("(\"").append(configSection).append("\", \"").append(tomlKey).append("\")")
+              .append(comma).append("\n");
+        }
+        var factoryMethod = lowercaseFirst(resource.interfaceSimpleName());
+        sb.append("            ).flatMap(").append(configTypeName).append("::").append(factoryMethod).append(").async()");
+        return sb.toString();
+    }
+
+    /// Analyze a config record's factory method to extract parameter names and types.
+    private List<ConfigFieldParam> analyzeConfigRecordFactory(DependencyModel dep) {
+        var typeElement = elements.getTypeElement(dep.interfaceQualifiedName());
+        if (typeElement == null) {
+            return List.of();
+        }
+        var factoryMethodName = lowercaseFirst(dep.interfaceSimpleName());
+        for (var enclosed : typeElement.getEnclosedElements()) {
+            if (enclosed.getKind() != ElementKind.METHOD) {
+                continue;
+            }
+            var method = (ExecutableElement) enclosed;
+            if (!method.getModifiers().contains(Modifier.STATIC)
+                || !method.getSimpleName().toString().equals(factoryMethodName)) {
+                continue;
+            }
+            return method.getParameters()
+                         .stream()
+                         .map(ConfigFieldParam::fromParameter)
+                         .toList();
+        }
+        return List.of();
+    }
+
+    /// Represents a config record factory method parameter.
+    private record ConfigFieldParam(String name, String typeName) {
+        static ConfigFieldParam fromParameter(javax.lang.model.element.VariableElement param) {
+            return new ConfigFieldParam(
+                param.getSimpleName().toString(),
+                param.asType().toString()
+            );
+        }
+
+        /// Returns the ConfigFacade method name for reading this parameter type.
+        String configAccessMethod() {
+            return switch (typeName) {
+                case "java.lang.String" -> "requireString";
+                case "int", "java.lang.Integer" -> "requireInt";
+                case "long", "java.lang.Long" -> "requireLong";
+                case "double", "java.lang.Double" -> "requireDouble";
+                case "boolean", "java.lang.Boolean" -> "requireBoolean";
+                default -> "requireString";
+            };
+        }
+    }
+
+    /// Convert camelCase to snake_case for TOML key mapping.
+    /// Examples: enableTls -> enable_tls, maxRetries -> max_retries
+    private static String camelToSnakeCase(String camelCase) {
+        if (camelCase == null || camelCase.isEmpty()) {
+            return "";
+        }
+        var sb = new StringBuilder();
+        sb.append(Character.toLowerCase(camelCase.charAt(0)));
+        for (int i = 1; i < camelCase.length(); i++) {
+            char c = camelCase.charAt(i);
+            if (Character.isUpperCase(c)) {
+                sb.append('_');
+                sb.append(Character.toLowerCase(c));
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
     }
 
     /// Holds info needed to generate a TypeCodec entry for a single serializable type.

@@ -166,4 +166,12 @@ public record ResourceQualifierModel(TypeMirror resourceType,
     public String deduplicationKey() {
         return resourceTypeSimpleName + ":" + configSection;
     }
+
+    private static final String CONFIGURATION_SECTION_TYPE = "org.pragmatica.aether.slice.annotation.ConfigurationSection";
+
+    /// Check if this resource qualifier is a ConfigurationSection marker.
+    /// When true, the processor generates config parsing code instead of ctx.resources().provide().
+    public boolean isConfigurationSection() {
+        return CONFIGURATION_SECTION_TYPE.equals(resourceType.toString());
+    }
 }

@@ -212,6 +212,36 @@ class SliceProcessorTest {
             }
             """);
 
+    private static final JavaFileObject CONFIG_FACADE = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.ConfigFacade",
+            """
+            package org.pragmatica.aether.slice;
+
+            import org.pragmatica.lang.Option;
+            import org.pragmatica.lang.Result;
+
+            public interface ConfigFacade {
+                Result<String> requireString(String section, String key);
+                Result<Integer> requireInt(String section, String key);
+                Result<Long> requireLong(String section, String key);
+                Result<Double> requireDouble(String section, String key);
+                Result<Boolean> requireBoolean(String section, String key);
+                Option<String> getString(String section, String key);
+                Option<Integer> getInt(String section, String key);
+                Option<Long> getLong(String section, String key);
+                Option<Double> getDouble(String section, String key);
+                Option<Boolean> getBoolean(String section, String key);
+            }
+            """);
+
+    private static final JavaFileObject CONFIGURATION_SECTION = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.annotation.ConfigurationSection",
+            """
+            package org.pragmatica.aether.slice.annotation;
+
+            public interface ConfigurationSection {}
+            """);
+
     private static final JavaFileObject SLICE_CREATION_CONTEXT = JavaFileObjects.forSourceString(
             "org.pragmatica.aether.slice.SliceCreationContext",
             """
@@ -220,6 +250,7 @@ class SliceProcessorTest {
             public interface SliceCreationContext {
                 SliceInvokerFacade invoker();
                 ResourceProviderFacade resources();
+                ConfigFacade config();
             }
             """);
 
@@ -255,8 +286,8 @@ class SliceProcessorTest {
                 SLICE_ANNOTATION,
                 ASPECT, SLICE_CODEC, SLICE, SLICE_METHOD, METHOD_NAME, METHOD_HANDLE, INVOKER_FACADE,
                 METHOD_INTERCEPTOR, PROVISIONING_CONTEXT,
-                RESOURCE_PROVIDER_FACADE, SLICE_CREATION_CONTEXT, RESOURCE_QUALIFIER,
-                KEY_ANNOTATION, UNIT
+                RESOURCE_PROVIDER_FACADE, CONFIG_FACADE, SLICE_CREATION_CONTEXT, RESOURCE_QUALIFIER,
+                CONFIGURATION_SECTION, KEY_ANNOTATION, UNIT
         ));
     }
 
@@ -2330,5 +2361,197 @@ class SliceProcessorTest {
 
         // Verify stream event classes
         assertThat(manifestContent).contains("stream.event.classes=test.dto.OrderEvent");
+    }
+
+    // ========== ConfigurationSection Tests ==========
+
+    @Test
+    void should_generate_config_parsing_code_for_configuration_section() throws Exception {
+        var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.annotation.ConfigurationSection;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = ConfigurationSection.class, config = "app.orders")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface AppConfig {}
+            """);
+        var serviceConfig = JavaFileObjects.forSourceString("test.config.ServiceConfig",
+                                                             """
+            package test.config;
+            import org.pragmatica.lang.Result;
+            public record ServiceConfig(String host, int port, boolean enableTls) {
+                public static Result<ServiceConfig> serviceConfig(String host, int port, boolean enableTls) {
+                    return Result.success(new ServiceConfig(host, port, enableTls));
+                }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.AppConfig;
+            import test.config.ServiceConfig;
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+                static OrderService orderService(@AppConfig ServiceConfig config) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(appConfig);
+        sources.add(serviceConfig);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // Should NOT generate ctx.resources().provide() for config sections
+        assertThat(factoryContent).doesNotContain("ctx.resources().provide(ConfigurationSection.class");
+        // Should generate Result.all() with config facade calls
+        assertThat(factoryContent).contains("Result.all(");
+        assertThat(factoryContent).contains("ctx.config().requireString(\"app.orders\", \"host\")");
+        assertThat(factoryContent).contains("ctx.config().requireInt(\"app.orders\", \"port\")");
+        assertThat(factoryContent).contains("ctx.config().requireBoolean(\"app.orders\", \"enable_tls\")");
+        assertThat(factoryContent).contains("ServiceConfig::serviceConfig");
+        assertThat(factoryContent).contains(".async()");
+        // Should import ConfigFacade and Result
+        assertThat(factoryContent).contains("import org.pragmatica.aether.slice.ConfigFacade;");
+        assertThat(factoryContent).contains("import org.pragmatica.lang.Result;");
+    }
+
+    @Test
+    void should_handle_mixed_config_and_resource_dependencies() throws Exception {
+        var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.annotation.ConfigurationSection;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = ConfigurationSection.class, config = "app.orders")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface AppConfig {}
+            """);
+        var primaryDb = JavaFileObjects.forSourceString("test.annotation.PrimaryDb",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = test.infra.DatabaseConnector.class, config = "database.primary")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface PrimaryDb {}
+            """);
+        var databaseConnector = JavaFileObjects.forSourceString("test.infra.DatabaseConnector",
+                                                                """
+            package test.infra;
+            import org.pragmatica.lang.Promise;
+            public interface DatabaseConnector {
+                Promise<String> query(String sql);
+            }
+            """);
+        var serviceConfig = JavaFileObjects.forSourceString("test.config.ServiceConfig",
+                                                             """
+            package test.config;
+            import org.pragmatica.lang.Result;
+            public record ServiceConfig(String host, int port) {
+                public static Result<ServiceConfig> serviceConfig(String host, int port) {
+                    return Result.success(new ServiceConfig(host, port));
+                }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.AppConfig;
+            import test.annotation.PrimaryDb;
+            import test.config.ServiceConfig;
+            import test.infra.DatabaseConnector;
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+                static OrderService orderService(@AppConfig ServiceConfig config,
+                                                 @PrimaryDb DatabaseConnector db) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(appConfig);
+        sources.add(primaryDb);
+        sources.add(databaseConnector);
+        sources.add(serviceConfig);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // Config section: parsed via Result.all()
+        assertThat(factoryContent).contains("ctx.config().requireString(\"app.orders\", \"host\")");
+        assertThat(factoryContent).contains("ctx.config().requireInt(\"app.orders\", \"port\")");
+        // Resource: provisioned via ctx.resources().provide()
+        assertThat(factoryContent).contains("ctx.resources().provide(DatabaseConnector.class, \"database.primary\")");
+    }
+
+    @Test
+    void should_generate_config_parsing_for_long_and_double_fields() throws Exception {
+        var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.annotation.ConfigurationSection;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = ConfigurationSection.class, config = "app.cache")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface AppConfig {}
+            """);
+        var cacheConfig = JavaFileObjects.forSourceString("test.config.CacheConfig",
+                                                          """
+            package test.config;
+            import org.pragmatica.lang.Result;
+            public record CacheConfig(long maxSizeBytes, double evictionRate) {
+                public static Result<CacheConfig> cacheConfig(long maxSizeBytes, double evictionRate) {
+                    return Result.success(new CacheConfig(maxSizeBytes, evictionRate));
+                }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.CacheService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.AppConfig;
+            import test.config.CacheConfig;
+            @Slice
+            public interface CacheService {
+                Promise<String> get(String key);
+                static CacheService cacheService(@AppConfig CacheConfig config) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(appConfig);
+        sources.add(cacheConfig);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.CacheServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("ctx.config().requireLong(\"app.cache\", \"max_size_bytes\")");
+        assertThat(factoryContent).contains("ctx.config().requireDouble(\"app.cache\", \"eviction_rate\")");
+        assertThat(factoryContent).contains("CacheConfig::cacheConfig");
     }
 }

@@ -55,7 +55,10 @@ public record DependencyModel(String parameterName,
                          .result();
         }
         var element = dt.asElement();
-        if (element.getKind() != ElementKind.INTERFACE) {
+        // Check for @ResourceQualifier meta-annotation early — ConfigurationSection allows records
+        var resourceQualifier = ResourceQualifierModel.fromParameter(param, env);
+        var isConfigSection = resourceQualifier.map(ResourceQualifierModel::isConfigurationSection).or(false);
+        if (element.getKind() != ElementKind.INTERFACE && !isConfigSection) {
             return Causes.cause("Dependency parameter '" + paramName + "' must be an interface, found: " + element.getKind())
                          .result();
         }
@@ -68,10 +71,8 @@ public record DependencyModel(String parameterName,
                              .getPackageOf(typeElement)
                              .getQualifiedName()
                              .toString();
-        // Check for @ResourceQualifier meta-annotation
-        var resourceQualifier = ResourceQualifierModel.fromParameter(param, env);
         // Check if the interface has @Slice annotation
-        var isSlice = hasSliceAnnotation(typeElement);
+        var isSlice = isConfigSection ? false : hasSliceAnnotation(typeElement);
         // Check if the interface has a factory method (lowercase-first of simple name, static)
         var hasFactory = hasFactoryMethod(typeElement, simpleName);
         return Result.success(new DependencyModel(paramName,
@@ -99,6 +100,14 @@ public record DependencyModel(String parameterName,
     /// Check if this dependency is a plain interface: not resource, not slice, has factory method.
     public boolean isPlainInterface() {
         return !isResource() && !sliceAnnotated && hasFactoryMethod;
+    }
+
+    /// Check if this dependency is a ConfigurationSection resource.
+    /// ConfigurationSection resources trigger config parsing code generation
+    /// instead of resource provisioning.
+    public boolean isConfigurationSection() {
+        return resourceQualifier.map(ResourceQualifierModel::isConfigurationSection)
+                                .or(false);
     }
 
     /// Check if this dependency is a Publisher resource.
