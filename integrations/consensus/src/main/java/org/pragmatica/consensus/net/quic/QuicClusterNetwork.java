@@ -18,7 +18,7 @@ package org.pragmatica.consensus.net.quic;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
-import java.util.EnumMap;
+
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
@@ -464,7 +464,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private Queue<byte[]> getOrCreateQueue(NodeId peerId, StreamType streamType) {
-        return outboundQueues.computeIfAbsent(peerId, _ -> new EnumMap<>(StreamType.class))
+        return outboundQueues.computeIfAbsent(peerId, _ -> new ConcurrentHashMap<>())
                              .computeIfAbsent(streamType, _ -> new ConcurrentLinkedQueue<>());
     }
 
