@@ -35,21 +35,27 @@ public interface EnvironmentIntegration {
         return empty();
     }
 
+    /// DNS provider for record management during cross-environment migration.
+    /// Cloud implementations delegate to Route53, Cloud DNS, Azure DNS, etc.
+    default Option<DnsProvider> dns() {
+        return empty();
+    }
+
     static EnvironmentIntegration withCompute(ComputeProvider compute) {
-        return environmentIntegration(some(compute), empty(), empty(), empty(), empty());
+        return environmentIntegration(some(compute), empty(), empty(), empty(), empty(), empty());
     }
 
     static EnvironmentIntegration environmentIntegration(Option<ComputeProvider> compute,
                                                          Option<SecretsProvider> secrets,
                                                          Option<LoadBalancerProvider> loadBalancer) {
-        return environmentIntegration(compute, secrets, loadBalancer, empty(), empty());
+        return environmentIntegration(compute, secrets, loadBalancer, empty(), empty(), empty());
     }
 
     static EnvironmentIntegration environmentIntegration(Option<ComputeProvider> compute,
                                                          Option<SecretsProvider> secrets,
                                                          Option<LoadBalancerProvider> loadBalancer,
                                                          Option<DiscoveryProvider> discovery) {
-        return environmentIntegration(compute, secrets, loadBalancer, discovery, empty());
+        return environmentIntegration(compute, secrets, loadBalancer, discovery, empty(), empty());
     }
 
     static EnvironmentIntegration environmentIntegration(Option<ComputeProvider> compute,
@@ -57,20 +63,31 @@ public interface EnvironmentIntegration {
                                                          Option<LoadBalancerProvider> loadBalancer,
                                                          Option<DiscoveryProvider> discovery,
                                                          Option<CertificateProvider> certificateProvider) {
-        return FacetedEnvironment.facetedEnvironment(compute, secrets, loadBalancer, discovery, certificateProvider).unwrap();
+        return environmentIntegration(compute, secrets, loadBalancer, discovery, certificateProvider, empty());
+    }
+
+    static EnvironmentIntegration environmentIntegration(Option<ComputeProvider> compute,
+                                                         Option<SecretsProvider> secrets,
+                                                         Option<LoadBalancerProvider> loadBalancer,
+                                                         Option<DiscoveryProvider> discovery,
+                                                         Option<CertificateProvider> certificateProvider,
+                                                         Option<DnsProvider> dns) {
+        return FacetedEnvironment.facetedEnvironment(compute, secrets, loadBalancer, discovery, certificateProvider, dns).unwrap();
     }
 
     record FacetedEnvironment(Option<ComputeProvider> compute,
                               Option<SecretsProvider> secrets,
                               Option<LoadBalancerProvider> loadBalancer,
                               Option<DiscoveryProvider> discovery,
-                              Option<CertificateProvider> certificateProvider) implements EnvironmentIntegration {
+                              Option<CertificateProvider> certificateProvider,
+                              Option<DnsProvider> dns) implements EnvironmentIntegration {
         public static Result<FacetedEnvironment> facetedEnvironment(Option<ComputeProvider> compute,
                                                                     Option<SecretsProvider> secrets,
                                                                     Option<LoadBalancerProvider> loadBalancer,
                                                                     Option<DiscoveryProvider> discovery,
-                                                                    Option<CertificateProvider> certificateProvider) {
-            return success(new FacetedEnvironment(compute, secrets, loadBalancer, discovery, certificateProvider));
+                                                                    Option<CertificateProvider> certificateProvider,
+                                                                    Option<DnsProvider> dns) {
+            return success(new FacetedEnvironment(compute, secrets, loadBalancer, discovery, certificateProvider, dns));
         }
     }
 }
