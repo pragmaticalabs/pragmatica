@@ -15,7 +15,6 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
-import org.pragmatica.lang.Functions;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -39,13 +38,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
-import static org.pragmatica.consensus.net.NodeInfo.LABEL_HOSTNAME;
-import static org.pragmatica.consensus.net.NodeInfo.LABEL_INSTANCE_TYPE;
-import static org.pragmatica.consensus.net.NodeInfo.LABEL_ZONE;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.consensus.net.NodeInfo.LABEL_HOSTNAME;
+import static org.pragmatica.consensus.net.NodeInfo.LABEL_INSTANCE_TYPE;
+import static org.pragmatica.consensus.net.NodeInfo.LABEL_ZONE;
 import static org.pragmatica.lang.Unit.unit;
 
 
@@ -352,44 +350,39 @@ import static org.pragmatica.lang.Unit.unit;
                                            .toList();
         var emptyNodes = deploymentMap.nodesWithoutSlices(activeNodes);
         var hostCounts = buildHostCounts(activeNodes);
-        var sortedCandidates = activeNodes.stream()
-                                         .sorted(surplusNodeComparator(emptyNodes, hostCounts))
-                                         .toList();
+        var sortedCandidates = activeNodes.stream().sorted(surplusNodeComparator(emptyNodes, hostCounts))
+                                                 .toList();
         return sortedCandidates.stream().limit(Math.min(count, MAX_WAVE_SIZE))
                                       .toList();
     }
 
     private Map<String, Long> buildHostCounts(List<NodeId> activeNodes) {
-        return activeNodes.stream()
-                          .map(this::hostnameLabel)
-                          .collect(Collectors.groupingBy(h -> h, Collectors.counting()));
+        return activeNodes.stream().map(this::hostnameLabel)
+                                 .collect(Collectors.groupingBy(h -> h,
+                                                                Collectors.counting()));
     }
 
     private String hostnameLabel(NodeId nodeId) {
-        return observer.get(nodeId)
-                       .map(info -> info.labels().getOrDefault(LABEL_HOSTNAME, ""))
-                       .fold(() -> "", Functions::id);
+        return observer.get(nodeId).map(info -> info.labels().getOrDefault(LABEL_HOSTNAME, ""))
+                           .or("");
     }
 
     private boolean isSpotInstance(NodeId nodeId) {
-        return observer.get(nodeId)
-                       .map(info -> "spot".equals(info.labels().getOrDefault(LABEL_INSTANCE_TYPE, "")))
-                       .fold(() -> false, Functions::id);
+        return observer.get(nodeId).map(info -> "spot".equals(info.labels().getOrDefault(LABEL_INSTANCE_TYPE, "")))
+                           .or(false);
     }
 
     private long hostCount(NodeId nodeId, Map<String, Long> hostCounts) {
         var hostname = hostnameLabel(nodeId);
-        return hostname.isEmpty() ? 0L : hostCounts.getOrDefault(hostname, 0L);
+        return hostname.isEmpty()
+              ? 0L
+              : hostCounts.getOrDefault(hostname, 0L);
     }
 
-    /// Metadata-driven surplus node comparator chain:
-    /// 1. Spot instances first (terminate before on-demand)
-    /// 2. Over-represented hosts (more nodes on same host = higher termination priority)
-    /// 3. Nodes without slices (empty nodes first)
-    /// 4. Most recently joined (newest first)
     private Comparator<NodeId> surplusNodeComparator(Set<NodeId> emptyNodes, Map<String, Long> hostCounts) {
         return Comparator.<NodeId, Boolean>comparing(id -> !isSpotInstance(id))
-                         .thenComparing(id -> hostCount(id, hostCounts), Comparator.reverseOrder())
+                         .thenComparing(id -> hostCount(id, hostCounts),
+                                        Comparator.reverseOrder())
                          .thenComparing(id -> !emptyNodes.contains(id))
                          .thenComparing(id -> nodeJoinTimes.getOrDefault(id, Instant.EPOCH),
                                         Comparator.reverseOrder());
@@ -418,9 +411,7 @@ import static org.pragmatica.lang.Unit.unit;
 
     private void provisionSingleNode() {
         var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", Map.of()).unwrap();
-        var spec = computePlacementHint()
-                       .map(baseSpec::withPlacement)
-                       .fold(() -> baseSpec, Functions::id);
+        var spec = computePlacementHint().map(baseSpec::withPlacement).or(baseSpec);
         lifecycleManager.provisionNode(spec).onSuccess(_ -> log.info("CTM: Node provisioning succeeded"))
                                       .onFailure(cause -> log.warn("CTM: Node provisioning failed: {}",
                                                                    cause.message()));
@@ -430,26 +421,29 @@ import static org.pragmatica.lang.Unit.unit;
         var zoneCounts = observer.topology().stream()
                                           .map(this::zoneLabel)
                                           .filter(z -> !z.isEmpty())
-                                          .collect(Collectors.groupingBy(z -> z, Collectors.counting()));
+                                          .collect(Collectors.groupingBy(z -> z,
+                                                                         Collectors.counting()));
         if (zoneCounts.isEmpty()) {return Option.empty();}
-        var minCount = zoneCounts.values().stream().mapToLong(Long::longValue).min().orElse(0L);
+        var minCount = zoneCounts.values().stream()
+                                        .mapToLong(Long::longValue)
+                                        .min()
+                                        .orElse(0L);
         var underRepresented = zoneCounts.entrySet().stream()
-                                        .filter(e -> e.getValue() == minCount)
-                                        .map(Map.Entry::getKey)
-                                        .toList();
+                                                  .filter(e -> e.getValue() == minCount)
+                                                  .map(Map.Entry::getKey)
+                                                  .toList();
         if (underRepresented.size() == 1) {return Option.some(PlacementHint.zoneHint(underRepresented.getFirst()));}
         var overRepresented = zoneCounts.entrySet().stream()
-                                       .filter(e -> e.getValue() > minCount)
-                                       .map(Map.Entry::getKey)
-                                       .collect(Collectors.toSet());
+                                                 .filter(e -> e.getValue() > minCount)
+                                                 .map(Map.Entry::getKey)
+                                                 .collect(Collectors.toSet());
         if (overRepresented.isEmpty()) {return Option.empty();}
         return Option.some(PlacementHint.antiAffinityHint(overRepresented));
     }
 
     private String zoneLabel(NodeId nodeId) {
-        return observer.get(nodeId)
-                       .map(info -> info.labels().getOrDefault(LABEL_ZONE, ""))
-                       .fold(() -> "", Functions::id);
+        return observer.get(nodeId).map(info -> info.labels().getOrDefault(LABEL_ZONE, ""))
+                           .or("");
     }
 
     private void scheduleRecheck() {

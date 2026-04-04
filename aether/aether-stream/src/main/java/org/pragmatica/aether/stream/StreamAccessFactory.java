@@ -16,7 +16,7 @@ import java.util.function.Function;
 
 /// ResourceFactory SPI implementation for provisioning StreamAccess instances.
 ///
-/// Discovered via ServiceLoader. Creates StreamAccessImpl instances using
+/// Discovered via ServiceLoader. Creates PartitionedStreamAccess instances using
 /// runtime extensions (StreamPartitionManager, Serializer, Deserializer) from the ProvisioningContext.
 public final class StreamAccessFactory implements ResourceFactory<StreamAccess, StreamConfig> {
     private static final Cause REQUIRES_CONTEXT = Causes.cause("StreamAccess requires ProvisioningContext with runtime extensions");
@@ -51,12 +51,12 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
                                                                            ProvisioningContext context) {
         ensureStreamExists(manager, config);
         var keyExtractor = extractPartitionKeyFunction(context);
-        return StreamAccessImpl.streamAccess(manager,
-                                             serializer,
-                                             deserializer,
-                                             config.name(),
-                                             config.partitions(),
-                                             keyExtractor);
+        return PartitionedStreamAccess.streamAccess(manager,
+                                                    serializer,
+                                                    deserializer,
+                                                    config.name(),
+                                                    config.partitions(),
+                                                    keyExtractor);
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"}) private static <T> Option<Function<T, Object>> extractPartitionKeyFunction(ProvisioningContext context) {

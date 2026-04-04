@@ -28,7 +28,7 @@ import static org.pragmatica.lang.Result.allOf;
 /// Provides full publish/fetch/commit/metadata operations on a stream.
 ///
 /// @param <T> Event type
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01"}) public final class StreamAccessImpl<T> implements StreamAccess<T> {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01"}) public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     @FunctionalInterface public interface CursorCheckpointWriter {
         Promise<Unit> checkpoint(String streamName, String consumerGroup, int partition, long offset);
     }
@@ -47,15 +47,15 @@ import static org.pragmatica.lang.Result.allOf;
     private final AtomicLong roundRobinCounter;
     private final ConcurrentHashMap<ConsumerPartitionKey, Long> committedOffsets;
 
-    private StreamAccessImpl(StreamPartitionManager partitionManager,
-                             Serializer serializer,
-                             Deserializer deserializer,
-                             String streamName,
-                             int partitionCount,
-                             Option<Function<T, Object>> partitionKeyExtractor,
-                             CursorCheckpointWriter cursorWriter,
-                             Option<TieredStreamReader> tieredReader,
-                             Option<CursorStore> cursorStore) {
+    private PartitionedStreamAccess(StreamPartitionManager partitionManager,
+                                    Serializer serializer,
+                                    Deserializer deserializer,
+                                    String streamName,
+                                    int partitionCount,
+                                    Option<Function<T, Object>> partitionKeyExtractor,
+                                    CursorCheckpointWriter cursorWriter,
+                                    Option<TieredStreamReader> tieredReader,
+                                    Option<CursorStore> cursorStore) {
         this.partitionManager = partitionManager;
         this.serializer = serializer;
         this.deserializer = deserializer;
@@ -69,78 +69,78 @@ import static org.pragmatica.lang.Result.allOf;
         this.committedOffsets = new ConcurrentHashMap<>();
     }
 
-    public static <T> StreamAccessImpl<T> streamAccess(StreamPartitionManager partitionManager,
-                                                       Serializer serializer,
-                                                       Deserializer deserializer,
-                                                       String streamName,
-                                                       int partitionCount,
-                                                       Option<Function<T, Object>> partitionKeyExtractor) {
-        return new StreamAccessImpl<>(partitionManager,
-                                      serializer,
-                                      deserializer,
-                                      streamName,
-                                      partitionCount,
-                                      partitionKeyExtractor,
-                                      NOOP_WRITER,
-                                      Option.none(),
-                                      Option.none());
+    public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              String streamName,
+                                                              int partitionCount,
+                                                              Option<Function<T, Object>> partitionKeyExtractor) {
+        return new PartitionedStreamAccess<>(partitionManager,
+                                             serializer,
+                                             deserializer,
+                                             streamName,
+                                             partitionCount,
+                                             partitionKeyExtractor,
+                                             NOOP_WRITER,
+                                             Option.none(),
+                                             Option.none());
     }
 
-    public static <T> StreamAccessImpl<T> streamAccess(StreamPartitionManager partitionManager,
-                                                       Serializer serializer,
-                                                       Deserializer deserializer,
-                                                       String streamName,
-                                                       int partitionCount,
-                                                       Option<Function<T, Object>> partitionKeyExtractor,
-                                                       CursorCheckpointWriter cursorWriter) {
-        return new StreamAccessImpl<>(partitionManager,
-                                      serializer,
-                                      deserializer,
-                                      streamName,
-                                      partitionCount,
-                                      partitionKeyExtractor,
-                                      cursorWriter,
-                                      Option.none(),
-                                      Option.none());
+    public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              String streamName,
+                                                              int partitionCount,
+                                                              Option<Function<T, Object>> partitionKeyExtractor,
+                                                              CursorCheckpointWriter cursorWriter) {
+        return new PartitionedStreamAccess<>(partitionManager,
+                                             serializer,
+                                             deserializer,
+                                             streamName,
+                                             partitionCount,
+                                             partitionKeyExtractor,
+                                             cursorWriter,
+                                             Option.none(),
+                                             Option.none());
     }
 
-    public static <T> StreamAccessImpl<T> streamAccess(StreamPartitionManager partitionManager,
-                                                       Serializer serializer,
-                                                       Deserializer deserializer,
-                                                       String streamName,
-                                                       int partitionCount,
-                                                       Option<Function<T, Object>> partitionKeyExtractor,
-                                                       CursorCheckpointWriter cursorWriter,
-                                                       TieredStreamReader tieredReader) {
-        return new StreamAccessImpl<>(partitionManager,
-                                      serializer,
-                                      deserializer,
-                                      streamName,
-                                      partitionCount,
-                                      partitionKeyExtractor,
-                                      cursorWriter,
-                                      Option.some(tieredReader),
-                                      Option.none());
+    public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              String streamName,
+                                                              int partitionCount,
+                                                              Option<Function<T, Object>> partitionKeyExtractor,
+                                                              CursorCheckpointWriter cursorWriter,
+                                                              TieredStreamReader tieredReader) {
+        return new PartitionedStreamAccess<>(partitionManager,
+                                             serializer,
+                                             deserializer,
+                                             streamName,
+                                             partitionCount,
+                                             partitionKeyExtractor,
+                                             cursorWriter,
+                                             Option.some(tieredReader),
+                                             Option.none());
     }
 
-    public static <T> StreamAccessImpl<T> streamAccess(StreamPartitionManager partitionManager,
-                                                       Serializer serializer,
-                                                       Deserializer deserializer,
-                                                       String streamName,
-                                                       int partitionCount,
-                                                       Option<Function<T, Object>> partitionKeyExtractor,
-                                                       CursorCheckpointWriter cursorWriter,
-                                                       TieredStreamReader tieredReader,
-                                                       CursorStore cursorStore) {
-        return new StreamAccessImpl<>(partitionManager,
-                                      serializer,
-                                      deserializer,
-                                      streamName,
-                                      partitionCount,
-                                      partitionKeyExtractor,
-                                      cursorWriter,
-                                      Option.some(tieredReader),
-                                      Option.some(cursorStore));
+    public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              String streamName,
+                                                              int partitionCount,
+                                                              Option<Function<T, Object>> partitionKeyExtractor,
+                                                              CursorCheckpointWriter cursorWriter,
+                                                              TieredStreamReader tieredReader,
+                                                              CursorStore cursorStore) {
+        return new PartitionedStreamAccess<>(partitionManager,
+                                             serializer,
+                                             deserializer,
+                                             streamName,
+                                             partitionCount,
+                                             partitionKeyExtractor,
+                                             cursorWriter,
+                                             Option.some(tieredReader),
+                                             Option.some(cursorStore));
     }
 
     @Override public Promise<Long> publish(T event) {
@@ -165,8 +165,8 @@ import static org.pragmatica.lang.Result.allOf;
     @Override public Promise<Option<Long>> committedOffset(String consumerGroup, int partition) {
         var inMemory = option(committedOffsets.get(new ConsumerPartitionKey(consumerGroup, partition)));
         return Promise.success(inMemory.isPresent()
-                              ? inMemory
-                              : fetchFromCursorStore(consumerGroup, partition));
+                               ? inMemory
+                               : fetchFromCursorStore(consumerGroup, partition));
     }
 
     private Option<Long> fetchFromCursorStore(String consumerGroup, int partition) {
@@ -181,7 +181,7 @@ import static org.pragmatica.lang.Result.allOf;
     private StreamMetadata toStreamMetadata(List<StreamPartitionManager.PartitionInfo> partitions) {
         return new StreamMetadata(streamName,
                                   partitionCount,
-                                  partitions.stream().map(StreamAccessImpl::toPartitionInfo)
+                                  partitions.stream().map(PartitionedStreamAccess::toPartitionInfo)
                                                    .toList());
     }
 
@@ -220,16 +220,16 @@ import static org.pragmatica.lang.Result.allOf;
                                                                  int maxEvents,
                                                                  long expiredOffset) {
         return tieredReader.map(reader -> readFromTieredReader(reader, partition, fromOffset, maxEvents))
-                                .or(() -> new StreamError.CursorExpired(expiredOffset,
-                                                                        partitionManager.partitionInfo(streamName,
-                                                                                                       partition).map(StreamPartitionManager.PartitionInfo::tailOffset)
-                                                                                                      .or(0L)).result());
+                               .or(() -> new StreamError.CursorExpired(expiredOffset,
+                                                                       partitionManager.partitionInfo(streamName,
+                                                                                                      partition).map(StreamPartitionManager.PartitionInfo::tailOffset)
+                                                                                                     .or(0L)).result());
     }
 
     private Result<List<StreamEvent<T>>> readFromTieredReader(TieredStreamReader reader,
-                                                               int partition,
-                                                               long fromOffset,
-                                                               int maxEvents) {
+                                                              int partition,
+                                                              long fromOffset,
+                                                              int maxEvents) {
         var segmentEvents = reader.read(streamName, partition, fromOffset, maxEvents).await();
         return segmentEvents.map(sealedEvents -> combineWithBufferEvents(sealedEvents, partition, fromOffset, maxEvents));
     }

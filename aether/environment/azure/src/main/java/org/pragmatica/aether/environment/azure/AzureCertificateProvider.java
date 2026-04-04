@@ -37,36 +37,30 @@ public final class AzureCertificateProvider implements CertificateProvider {
         this.currentGossipKey = currentGossipKey;
     }
 
-    /// Create an Azure certificate provider that fetches material from Key Vault.
-    ///
-    /// @param client       Azure client for Key Vault access
-    /// @param secretPrefix prefix path in format `{vaultName}/{secretPrefix}`
-    /// @return configured provider or error
-    public static Result<AzureCertificateProvider> azureCertificateProvider(AzureClient client,
-                                                                            String secretPrefix) {
-        return splitVaultAndPrefix(secretPrefix)
-            .flatMap(vp -> fetchAndBuild(client, vp.vaultName(), vp.prefix()).await());
+    public static Result<AzureCertificateProvider> azureCertificateProvider(AzureClient client, String secretPrefix) {
+        return splitVaultAndPrefix(secretPrefix).flatMap(vp -> fetchAndBuild(client, vp.vaultName(), vp.prefix()).await());
     }
 
     private static Promise<AzureCertificateProvider> fetchAndBuild(AzureClient client,
-                                                                    String vaultName,
-                                                                    String prefix) {
-        return Promise.all(
-            fetchSecret(client, vaultName, prefix + "-ca-cert"),
-            fetchSecret(client, vaultName, prefix + "-ca-key"),
-            fetchSecret(client, vaultName, prefix + "-gossip-key"),
-            fetchSecret(client, vaultName, prefix + "-gossip-key-id")
-        ).map(AzureCertificateProvider::assembleProvider);
+                                                                   String vaultName,
+                                                                   String prefix) {
+        return Promise.all(fetchSecret(client, vaultName, prefix + "-ca-cert"),
+                           fetchSecret(client, vaultName, prefix + "-ca-key"),
+                           fetchSecret(client, vaultName, prefix + "-gossip-key"),
+                           fetchSecret(client, vaultName, prefix + "-gossip-key-id"))
+        .map(AzureCertificateProvider::assembleProvider);
     }
 
     private static Promise<String> fetchSecret(AzureClient client, String vaultName, String secretName) {
         return client.getSecret(vaultName, secretName)
-                     .mapError(cause -> new CloudCertificateProviderError.CertificateFetchFailed(
-                         vaultName + "/" + secretName, new RuntimeException(cause.message())));
+                               .mapError(cause -> CloudCertificateProviderError.certificateFetchFailed(vaultName + "/" + secretName,
+                                                                                                       new RuntimeException(cause.message())));
     }
 
-    private static AzureCertificateProvider assembleProvider(String caCert, String caKey,
-                                                              String gossipKeyHex, String gossipKeyIdStr) {
+    private static AzureCertificateProvider assembleProvider(String caCert,
+                                                             String caKey,
+                                                             String gossipKeyHex,
+                                                             String gossipKeyIdStr) {
         var caCertBytes = caCert.getBytes(StandardCharsets.UTF_8);
         var caKeyBytes = caKey.getBytes(StandardCharsets.UTF_8);
         var gossipKey = parseGossipKey(gossipKeyHex, gossipKeyIdStr);
@@ -79,48 +73,42 @@ public final class AzureCertificateProvider implements CertificateProvider {
         return GossipKey.gossipKey(keyBytes, keyId, Instant.now());
     }
 
-    @Override
-    public Result<CertificateBundle> issueCertificate(String nodeId, String hostname) {
-        return success(CertificateBundle.certificateBundle(caCertPem, caKeyPem, caCertPem,
+    @Override public Result<CertificateBundle> issueCertificate(String nodeId, String hostname) {
+        return success(CertificateBundle.certificateBundle(caCertPem,
+                                                           caKeyPem,
+                                                           caCertPem,
                                                            Instant.now().plusSeconds(7 * 24 * 3600)));
     }
 
-    @Override
-    public Result<CertificateBundle> caCertificate() {
-        return success(CertificateBundle.certificateBundle(caCertPem, new byte[0], caCertPem,
+    @Override public Result<CertificateBundle> caCertificate() {
+        return success(CertificateBundle.certificateBundle(caCertPem,
+                                                           new byte[0],
+                                                           caCertPem,
                                                            Instant.now().plusSeconds(365 * 24 * 3600)));
     }
 
-    @Override
-    public Result<GossipKey> currentGossipKey() {
+    @Override public Result<GossipKey> currentGossipKey() {
         return success(currentGossipKey);
     }
 
-    @Override
-    public Option<GossipKey> previousGossipKey() {
+    @Override public Option<GossipKey> previousGossipKey() {
         return none();
     }
 
     private static Result<VaultAndPrefix> splitVaultAndPrefix(String path) {
         var slashIndex = path.indexOf('/');
-        if (slashIndex <= 0 || slashIndex >= path.length() - 1) {
-            return new CloudCertificateProviderError.InvalidCertificateMaterial(
-                "Secret prefix must be in format: vaultName/secretPrefix, got: " + path).result();
-        }
+        if (slashIndex <= 0 || slashIndex >= path.length() - 1) {return CloudCertificateProviderError.invalidCertificateMaterial("Secret prefix must be in format: vaultName/secretPrefix, got: " + path)
+                                                                                                                                .result();}
         return success(new VaultAndPrefix(path.substring(0, slashIndex), path.substring(slashIndex + 1)));
     }
 
     private static byte[] hexToBytes(String hex) {
         var len = hex.length();
         var data = new byte[len / 2];
-
-        for (int i = 0; i < len; i += 2) {
-            data[i / 2] = (byte) ((Character.digit(hex.charAt(i), 16) << 4)
-                                  + Character.digit(hex.charAt(i + 1), 16));
-        }
-
+        for (int i = 0;i <len;i += 2) {data[i / 2] = (byte)((Character.digit(hex.charAt(i), 16)<<4) + Character.digit(hex.charAt(i + 1),
+                                                                                                                      16));}
         return data;
     }
 
-    private record VaultAndPrefix(String vaultName, String prefix) {}
+    private record VaultAndPrefix(String vaultName, String prefix){}
 }

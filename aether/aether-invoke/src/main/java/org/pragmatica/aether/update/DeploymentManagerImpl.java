@@ -38,6 +38,7 @@ import static org.pragmatica.aether.update.DeploymentError.SameVersionDeployment
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 
+
 /// Unified deployment manager implementation that operates at blueprint level.
 ///
 /// All deployment operations are synchronous (return Result) because they
@@ -51,26 +52,22 @@ final class DeploymentManagerImpl implements DeploymentManager {
 
     private final RabiaNode<KVCommand<AetherKey>> clusterNode;
     private final KVStore<AetherKey, AetherValue> kvStore;
+
     private final ConcurrentHashMap<String, Deployment> activeDeployments = new ConcurrentHashMap<>();
+
     private volatile boolean leader;
 
-    DeploymentManagerImpl(RabiaNode<KVCommand<AetherKey>> clusterNode,
-                          KVStore<AetherKey, AetherValue> kvStore) {
+    DeploymentManagerImpl(RabiaNode<KVCommand<AetherKey>> clusterNode, KVStore<AetherKey, AetherValue> kvStore) {
         this.clusterNode = clusterNode;
         this.kvStore = kvStore;
     }
 
-    @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void onLeaderChange(LeaderChange leaderChange) {
-        if ( leaderChange.localNodeIsLeader()) {
+    @Override@SuppressWarnings("JBCT-RET-01") public void onLeaderChange(LeaderChange leaderChange) {
+        if (leaderChange.localNodeIsLeader()) {
             log.info("Deployment manager active (leader)");
             leader = true;
             restoreState();
-        } else
-
-
-        {
+        } else {
             log.info("Deployment manager passive (follower)");
             leader = false;
             activeDeployments.clear();
@@ -98,8 +95,7 @@ final class DeploymentManagerImpl implements DeploymentManager {
     }
 
     @Override public Result<Deployment> promote(String deploymentId) {
-        return requireLeader().flatMap(_ -> findDeployment(deploymentId))
-                            .flatMap(this::applyPromoteRouting);
+        return requireLeader().flatMap(_ -> findDeployment(deploymentId)).flatMap(this::applyPromoteRouting);
     }
 
     @Override public Result<Deployment> rollback(String deploymentId) {
@@ -136,14 +132,11 @@ final class DeploymentManagerImpl implements DeploymentManager {
                                        .orElse(none());
     }
 
-    // --- Leader check ---
     private Result<Unit> requireLeader() {
-        if ( !leader) {
-        return DeploymentError.General.NOT_LEADER.result();}
+        if (!leader) {return DeploymentError.General.NOT_LEADER.result();}
         return Result.unitResult();
     }
 
-    // --- Blueprint resolution ---
     private Result<ExpandedBlueprint> resolveBlueprint(String blueprintId) {
         return BlueprintId.blueprintId(blueprintId).flatMap(this::lookupBlueprint);
     }
@@ -156,50 +149,43 @@ final class DeploymentManagerImpl implements DeploymentManager {
                           .toResult(blueprintNotFound(id.asString()));
     }
 
-    // --- Duplicate check ---
     private Result<Unit> checkNoActiveDeployment(String blueprintId) {
         var existing = activeDeployments.values().stream()
                                                .filter(Deployment::isActive)
                                                .anyMatch(d -> d.blueprintId().equals(blueprintId));
-        if ( existing) {
-        return deploymentAlreadyExists(blueprintId).result();}
+        if (existing) {return deploymentAlreadyExists(blueprintId).result();}
         return Result.unitResult();
     }
 
-    // --- Slice resolution ---
     private Result<SliceContext> resolveSlicesAndCurrentVersion(ExpandedBlueprint blueprint, Version newVersion) {
         var artifacts = new ArrayList<ArtifactBase>();
-        Version currentVersion = null;
-        for ( var slice : blueprint.loadOrder()) {
+        var currentVersion = Option.<Version>none();
+        for (var slice : blueprint.loadOrder()) {
             var base = slice.artifact().base();
             artifacts.add(base);
-            if ( currentVersion == null) {
+            if (currentVersion.isEmpty()) {
                 var target = kvStore.get(SliceTargetKey.sliceTargetKey(base)).filter(SliceTargetValue.class::isInstance)
                                         .map(SliceTargetValue.class::cast);
-                if ( target.isEmpty()) {
-                return noCurrentVersion(base.asString()).result();}
-                currentVersion = target.unwrap().currentVersion();
+                if (target.isEmpty()) {return noCurrentVersion(base.asString()).result();}
+                currentVersion = Option.some(target.unwrap().currentVersion());
             }
         }
-        if ( currentVersion == null) {
-        return blueprintNotFound("empty blueprint").result();}
-        if ( currentVersion.equals(newVersion)) {
-        return sameVersionDeployment(newVersion.toString()).result();}
-        return Result.success(new SliceContext(artifacts, currentVersion));
+        if (currentVersion.isEmpty()) {return blueprintNotFound("empty blueprint").result();}
+        var resolved = currentVersion.unwrap();
+        if (resolved.equals(newVersion)) {return sameVersionDeployment(newVersion.toString()).result();}
+        return Result.success(new SliceContext(artifacts, resolved));
     }
 
     private record SliceContext(List<ArtifactBase> artifacts, Version currentVersion){}
 
-    // --- Deployment creation ---
-    @SuppressWarnings("JBCT-SEQ-01")
-    private Result<Deployment> createDeployment(SliceContext context,
-                                                String blueprintId,
-                                                Version newVersion,
-                                                DeploymentStrategy strategy,
-                                                StrategyConfig config,
-                                                HealthThresholds thresholds,
-                                                CleanupPolicy cleanupPolicy,
-                                                int instances) {
+    @SuppressWarnings("JBCT-SEQ-01") private Result<Deployment> createDeployment(SliceContext context,
+                                                                                 String blueprintId,
+                                                                                 Version newVersion,
+                                                                                 DeploymentStrategy strategy,
+                                                                                 StrategyConfig config,
+                                                                                 HealthThresholds thresholds,
+                                                                                 CleanupPolicy cleanupPolicy,
+                                                                                 int instances) {
         var deploymentId = KSUID.ksuid().encoded();
         var deployment = Deployment.deployment(deploymentId,
                                                blueprintId,
@@ -211,19 +197,18 @@ final class DeploymentManagerImpl implements DeploymentManager {
                                                cleanupPolicy,
                                                context.artifacts(),
                                                instances);
-        // Advance through initial states: PENDING → DEPLOYING → DEPLOYED.
-        // The blueprint slices are already running, so the deploy phase is immediate.
-        return deployment.deploy()
-                         .flatMap(Deployment::deployed)
-                         .flatMap(deployed -> {
-                             var commands = buildStartCommands(deployed, context);
-                             return applyConsensus(commands).map(_ -> cacheDeployment(deployed));
-                         });
+        return deployment.deploy().flatMap(Deployment::deployed)
+                                .flatMap(deployed -> persistAndCacheDeployment(deployed, context));
+    }
+
+    private Result<Deployment> persistAndCacheDeployment(Deployment deployed, SliceContext context) {
+        var commands = buildStartCommands(deployed, context);
+        return applyConsensus(commands).map(_ -> cacheDeployment(deployed));
     }
 
     private List<KVCommand<AetherKey>> buildStartCommands(Deployment deployment, SliceContext context) {
         var commands = new ArrayList<KVCommand<AetherKey>>();
-        for ( var base : context.artifacts()) {
+        for (var base : context.artifacts()) {
             addSliceTargetCommand(commands, base, deployment.newVersion(), deployment.newInstances());
             addVersionRoutingCommand(commands, base, deployment.oldVersion(), deployment.newVersion());
         }
@@ -231,16 +216,14 @@ final class DeploymentManagerImpl implements DeploymentManager {
         return commands;
     }
 
-    // --- Promote routing ---
     private Result<Deployment> applyPromoteRouting(Deployment deployment) {
         var newRouting = computePromoteRouting(deployment);
-        return transitionForPromote(deployment, newRouting)
-        .flatMap(updated -> applyRoutingAndPersist(updated, newRouting));
+        return transitionForPromote(deployment, newRouting).flatMap(updated -> applyRoutingAndPersist(updated,
+                                                                                                      newRouting));
     }
 
     private Result<Deployment> transitionForPromote(Deployment deployment, VersionRouting newRouting) {
-        if ( newRouting.isAllNew()) {
-        return deployment.promote();}
+        if (newRouting.isAllNew()) {return deployment.promote();}
         return deployment.route(newRouting);
     }
 
@@ -250,11 +233,15 @@ final class DeploymentManagerImpl implements DeploymentManager {
     }
 
     private VersionRouting computePromoteRouting(Deployment deployment) {
-        return switch (deployment.strategy()) {case CANARY -> computeCanaryPromoteRouting(deployment);case BLUE_GREEN -> VersionRouting.ALL_NEW;case ROLLING -> VersionRouting.ALL_NEW;};
+        return switch (deployment.strategy()){
+            case CANARY -> computeCanaryPromoteRouting(deployment);
+            case BLUE_GREEN -> VersionRouting.ALL_NEW;
+            case ROLLING -> VersionRouting.ALL_NEW;
+        };
     }
 
     private VersionRouting computeCanaryPromoteRouting(Deployment deployment) {
-        if ( deployment.strategyConfig() instanceof StrategyConfig.CanaryConfig canaryConfig) {
+        if (deployment.strategyConfig() instanceof StrategyConfig.CanaryConfig canaryConfig) {
             var stages = canaryConfig.stages();
             var currentRouting = deployment.routing();
             return advanceCanaryStage(stages, currentRouting);
@@ -263,20 +250,17 @@ final class DeploymentManagerImpl implements DeploymentManager {
     }
 
     private VersionRouting advanceCanaryStage(List<CanaryStage> stages, VersionRouting current) {
-        for ( int i = 0; i < stages.size(); i++) {
+        for (int i = 0;i <stages.size();i++) {
             var stageRouting = stageToRouting(stages.get(i));
-            if ( isBeforeOrEqual(current, stageRouting) && i + 1 < stages.size()) {
-            return stageToRouting(stages.get(i + 1));}
+            if (isBeforeOrEqual(current, stageRouting) && i + 1 <stages.size()) {return stageToRouting(stages.get(i + 1));}
         }
         return VersionRouting.ALL_NEW;
     }
 
     private VersionRouting stageToRouting(CanaryStage stage) {
         int pct = stage.trafficPercent();
-        if ( pct <= 0) {
-        return VersionRouting.ALL_OLD;}
-        if ( pct >= 100) {
-        return VersionRouting.ALL_NEW;}
+        if (pct <= 0) {return VersionRouting.ALL_OLD;}
+        if (pct >= 100) {return VersionRouting.ALL_NEW;}
         return VersionRouting.versionRouting(pct, 100 - pct).unwrap();
     }
 
@@ -284,10 +268,9 @@ final class DeploymentManagerImpl implements DeploymentManager {
         return current.newVersionPercentage() <= stageRouting.newVersionPercentage();
     }
 
-    // --- Rollback routing ---
     private Result<Deployment> applyRollbackRouting(Deployment deployment) {
         var commands = new ArrayList<KVCommand<AetherKey>>();
-        for ( var base : deployment.artifacts()) {
+        for (var base : deployment.artifacts()) {
             addVersionRoutingAllOld(commands, base, deployment.oldVersion(), deployment.newVersion());
             addSliceTargetCommand(commands, base, deployment.oldVersion(), deployment.newInstances());
         }
@@ -295,25 +278,20 @@ final class DeploymentManagerImpl implements DeploymentManager {
         return applyConsensus(commands).map(_ -> cacheDeployment(deployment));
     }
 
-    // --- Complete routing ---
     private Result<Deployment> applyCompleteRouting(Deployment deployment) {
         var commands = new ArrayList<KVCommand<AetherKey>>();
-        for ( var base : deployment.artifacts()) {
-        commands.add(new KVCommand.Remove<>(VersionRoutingKey.versionRoutingKey(base)));}
+        for (var base : deployment.artifacts()) {commands.add(new KVCommand.Remove<>(VersionRoutingKey.versionRoutingKey(base)));}
         addDeploymentCommand(commands, deployment);
         return applyConsensus(commands).map(_ -> cacheDeployment(deployment));
     }
 
-    // --- Routing commands for promote ---
     private List<KVCommand<AetherKey>> buildRoutingCommands(Deployment deployment) {
         var commands = new ArrayList<KVCommand<AetherKey>>();
-        for ( var base : deployment.artifacts()) {
-        addVersionRoutingWeighted(commands, base, deployment);}
+        for (var base : deployment.artifacts()) {addVersionRoutingWeighted(commands, base, deployment);}
         addDeploymentCommand(commands, deployment);
         return commands;
     }
 
-    // --- KV command builders ---
     private void addSliceTargetCommand(List<KVCommand<AetherKey>> commands,
                                        ArtifactBase base,
                                        Version version,
@@ -346,13 +324,15 @@ final class DeploymentManagerImpl implements DeploymentManager {
                                            Deployment deployment) {
         var key = VersionRoutingKey.versionRoutingKey(base);
         var routing = deployment.routing();
-        var value = VersionRoutingValue.versionRoutingValue(deployment.oldVersion(), deployment.newVersion())
-        .withRouting(routing.newWeight(), routing.oldWeight());
+        var value = VersionRoutingValue.versionRoutingValue(deployment.oldVersion(),
+                                                            deployment.newVersion())
+        .withRouting(routing.newWeight(),
+                     routing.oldWeight());
         commands.add(new KVCommand.Put<>(key, value));
     }
 
-    @SuppressWarnings("JBCT-SEQ-01")
-    private void addDeploymentCommand(List<KVCommand<AetherKey>> commands, Deployment deployment) {
+    @SuppressWarnings("JBCT-SEQ-01") private void addDeploymentCommand(List<KVCommand<AetherKey>> commands,
+                                                                       Deployment deployment) {
         var key = DeploymentKey.deploymentKey(deployment.deploymentId());
         var artifactsStr = deployment.artifacts().stream()
                                                .map(ArtifactBase::asString)
@@ -379,17 +359,13 @@ final class DeploymentManagerImpl implements DeploymentManager {
         return t.maxErrorRate() + ":" + t.maxLatencyMs() + ":" + t.requireManualApproval();
     }
 
-    // --- Consensus ---
-    @SuppressWarnings("JBCT-RET-01")
-    private Result<Unit> applyConsensus(List<KVCommand<AetherKey>> commands) {
-        if ( commands.isEmpty()) {
-        return Result.unitResult();}
+    @SuppressWarnings("JBCT-RET-01") private Result<Unit> applyConsensus(List<KVCommand<AetherKey>> commands) {
+        if (commands.isEmpty()) {return Result.unitResult();}
         return clusterNode.apply(commands).await()
                                 .mapToUnit()
                                 .mapError(DeploymentError.ConsensusFailure::consensusFailure);
     }
 
-    // --- Persistence and caching ---
     private Deployment cacheDeployment(Deployment deployment) {
         activeDeployments.put(deployment.deploymentId(), deployment);
         log.info("Deployment {} for blueprint {} in state {}",
@@ -403,26 +379,21 @@ final class DeploymentManagerImpl implements DeploymentManager {
         return option(activeDeployments.get(deploymentId)).toResult(deploymentNotFound(deploymentId));
     }
 
-    // --- State restoration ---
-    @SuppressWarnings("JBCT-RET-01")
-    private void restoreState() {
+    @SuppressWarnings("JBCT-RET-01") private void restoreState() {
         var beforeCount = activeDeployments.size();
         kvStore.forEach(DeploymentKey.class, DeploymentValue.class, (_, value) -> restoreDeployment(value));
         var restoredCount = activeDeployments.size() - beforeCount;
-        if ( restoredCount > 0) {
-        log.info("Restored {} deployments from KV-Store", restoredCount);}
+        if (restoredCount > 0) {log.info("Restored {} deployments from KV-Store", restoredCount);}
     }
 
-    @SuppressWarnings({"JBCT-VO-02", "JBCT-RET-01"})
-    private void restoreDeployment(DeploymentValue dv) {
+    @SuppressWarnings({"JBCT-VO-02", "JBCT-RET-01"}) private void restoreDeployment(DeploymentValue dv) {
         var state = DeploymentState.valueOf(dv.state());
-        if ( state.isTerminal()) {
-        return;}
+        if (state.isTerminal()) {return;}
         var strategy = DeploymentStrategy.valueOf(dv.strategy());
         var routing = VersionRouting.versionRouting(dv.routing());
         var version = Version.version(dv.oldVersion());
         var newVersion = Version.version(dv.newVersion());
-        if ( routing.isFailure() || version.isFailure() || newVersion.isFailure()) {
+        if (routing.isFailure() || version.isFailure() || newVersion.isFailure()) {
             log.warn("Failed to restore deployment {}: invalid stored data", dv.deploymentId());
             return;
         }
@@ -446,35 +417,33 @@ final class DeploymentManagerImpl implements DeploymentManager {
     }
 
     private List<ArtifactBase> parseArtifacts(String artifactsStr) {
-        if ( artifactsStr == null || artifactsStr.isEmpty()) {
-        return List.of();}
+        if (artifactsStr.isEmpty()) {return List.of();}
         var results = new ArrayList<ArtifactBase>();
-        for ( var part : artifactsStr.split(",")) {
-        ArtifactBase.artifactBase(part.trim()).onSuccess(results::add)
-                                 .onFailure(cause -> log.warn("Failed to parse artifact '{}': {}",
-                                                              part,
-                                                              cause.message()));}
+        for (var part : artifactsStr.split(",")) {ArtifactBase.artifactBase(part.trim()).onSuccess(results::add)
+                                                                           .onFailure(cause -> log.warn("Failed to parse artifact '{}': {}",
+                                                                                                        part,
+                                                                                                        cause.message()));}
         return List.copyOf(results);
     }
 
     private HealthThresholds parseThresholds(String thresholdsStr) {
-        if ( thresholdsStr == null || thresholdsStr.isEmpty()) {
-        return HealthThresholds.DEFAULT;}
+        if (thresholdsStr.isEmpty()) {return HealthThresholds.DEFAULT;}
         var parts = thresholdsStr.split(":");
-        if ( parts.length != 3) {
-        return HealthThresholds.DEFAULT;}
-        return HealthThresholds.healthThresholds(Double.parseDouble(parts[0]),
-                                                 Long.parseLong(parts[1]),
-                                                 Boolean.parseBoolean(parts[2]))
-        .or(HealthThresholds.DEFAULT);
+        if (parts.length != 3) {return HealthThresholds.DEFAULT;}
+        return Result.lift(() -> HealthThresholds.healthThresholds(Double.parseDouble(parts[0]),
+                                                                   Long.parseLong(parts[1]),
+                                                                   Boolean.parseBoolean(parts[2]))).flatMap(r -> r)
+                          .or(HealthThresholds.DEFAULT);
     }
 
     private StrategyConfig parseStrategyConfig(DeploymentStrategy strategy, String configStr) {
-        return switch (strategy) {case CANARY -> new StrategyConfig.CanaryConfig(CanaryStage.defaultStages(),
-                                                                                 CanaryAnalysisConfig.DEFAULT);case BLUE_GREEN -> new StrategyConfig.BlueGreenConfig(30_000L);case ROLLING -> new StrategyConfig.RollingConfig(false);};
+        return switch (strategy){
+            case CANARY -> new StrategyConfig.CanaryConfig(CanaryStage.defaultStages(), CanaryAnalysisConfig.DEFAULT);
+            case BLUE_GREEN -> new StrategyConfig.BlueGreenConfig(30_000L);
+            case ROLLING -> new StrategyConfig.RollingConfig(false);
+        };
     }
 
-    // --- Utility ---
     private boolean containsArtifact(Deployment deployment, ArtifactBase artifactBase) {
         return deployment.artifacts().stream()
                                    .anyMatch(a -> a.equals(artifactBase));

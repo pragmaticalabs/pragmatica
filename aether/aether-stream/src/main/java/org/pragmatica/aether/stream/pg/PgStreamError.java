@@ -5,6 +5,10 @@ import org.pragmatica.lang.Cause;
 
 /// Error types for PostgreSQL stream storage operations.
 public sealed interface PgStreamError extends Cause {
+    static DatabaseFailure databaseFailure(Throwable cause) {
+        return new DatabaseFailure(cause);
+    }
+
     enum General implements PgStreamError {
         SEGMENT_NOT_FOUND("Segment not found in PostgreSQL"),
         CURSOR_NOT_FOUND("Cursor not found in PostgreSQL"),
