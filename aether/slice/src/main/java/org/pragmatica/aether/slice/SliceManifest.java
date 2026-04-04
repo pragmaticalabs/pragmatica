@@ -37,7 +37,7 @@ import static org.pragmatica.lang.Option.option;
 
     String ENVELOPE_VERSION_ATTR = "Envelope-Version";
 
-    Set<Integer> SUPPORTED_ENVELOPE_VERSIONS = Set.of(1, 2, 3, 4, 5, 6, 7);
+    Set<Integer> SUPPORTED_ENVELOPE_VERSIONS = Set.of(1, 2, 3, 4, 5, 6, 7, 8);
 
     static Result<SliceManifestInfo> read(URL jarUrl) {
         return readManifest(jarUrl).flatMap(SliceManifest::parseManifest);

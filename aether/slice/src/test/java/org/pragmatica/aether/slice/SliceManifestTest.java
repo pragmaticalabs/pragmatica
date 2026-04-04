@@ -195,6 +195,12 @@ class SliceManifestTest {
         }
 
         @Test
+        void checkEnvelopeCompatibility_currentEnvelopeVersion8_succeeds() {
+            SliceManifest.checkEnvelopeCompatibility(Option.some("8"))
+                         .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+        }
+
+        @Test
         void checkEnvelopeCompatibility_unsupportedVersion_fails() {
             SliceManifest.checkEnvelopeCompatibility(Option.some("99"))
                          .onSuccessRun(Assertions::fail)
