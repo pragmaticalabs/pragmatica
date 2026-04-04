@@ -12,6 +12,7 @@ import java.util.Map;
 import static org.pragmatica.aether.environment.gcp.GcpEnvironmentConfig.GcpNegConfig.gcpNegConfig;
 import static org.pragmatica.aether.environment.gcp.GcpEnvironmentConfig.gcpEnvironmentConfig;
 
+
 /// ServiceLoader factory for creating GcpEnvironmentIntegration from generic CloudConfig.
 public record GcpEnvironmentIntegrationFactory() implements EnvironmentIntegrationFactory {
     @Override public String providerName() {
@@ -23,7 +24,6 @@ public record GcpEnvironmentIntegrationFactory() implements EnvironmentIntegrati
                                      .map(EnvironmentIntegration.class::cast);
     }
 
-    // --- Leaf: assemble GcpEnvironmentConfig from generic maps ---
     private static Result<GcpEnvironmentConfig> buildEnvironmentConfig(CloudConfig config) {
         var creds = config.credentials();
         var compute = config.compute();
@@ -44,43 +44,38 @@ public record GcpEnvironmentIntegrationFactory() implements EnvironmentIntegrati
                                                                             config.security()));
     }
 
-    // --- Leaf: apply optional load balancer (NEG) config ---
-    private static GcpEnvironmentConfig applyLoadBalancer(GcpEnvironmentConfig envConfig,
-                                                          Map<String, String> lbMap) {
+    private static GcpEnvironmentConfig applyLoadBalancer(GcpEnvironmentConfig envConfig, Map<String, String> lbMap) {
         var negName = lbMap.getOrDefault("neg_name", "");
         var portStr = lbMap.getOrDefault("port", "");
-        if (negName.isEmpty() || portStr.isEmpty()) {
-            return envConfig;
-        }
-        return gcpNegConfig(negName,
-                            Integer.parseInt(portStr)).map(neg -> withNetworkEndpointGroup(envConfig, neg))
-                           .or(envConfig);
+        if (negName.isEmpty() || portStr.isEmpty()) {return envConfig;}
+        return Result.lift(() -> Integer.parseInt(portStr)).flatMap(port -> gcpNegConfig(negName, port))
+                          .map(neg -> withNetworkEndpointGroup(envConfig, neg))
+                          .or(envConfig);
     }
 
-    // --- Leaf: apply optional discovery config ---
     private static GcpEnvironmentConfig applyDiscovery(GcpEnvironmentConfig envConfig,
                                                        Map<String, String> discoveryMap) {
         var clusterName = discoveryMap.getOrDefault("cluster_name", "");
         var pollInterval = discoveryMap.getOrDefault("poll_interval_ms", "");
         var result = clusterName.isEmpty()
-                     ? envConfig
-                     : envConfig.withDiscovery(clusterName);
+                    ? envConfig
+                    : envConfig.withDiscovery(clusterName);
         return pollInterval.isEmpty()
-               ? result
-               : result.withDiscoveryPollInterval(Long.parseLong(pollInterval));
+              ? result
+              : Result.lift(() -> Long.parseLong(pollInterval)).map(result::withDiscoveryPollInterval)
+                           .or(result);
     }
 
-    // --- Leaf: apply optional certificate secret prefix ---
     private static GcpEnvironmentConfig applyCertificatePrefix(GcpEnvironmentConfig envConfig,
                                                                Map<String, String> securityMap) {
         var prefix = securityMap.getOrDefault("certificate_secret_prefix", "");
-        return prefix.isEmpty() ? envConfig : envConfig.withCertificateSecretPrefix(prefix);
+        return prefix.isEmpty()
+              ? envConfig
+              : envConfig.withCertificateSecretPrefix(prefix);
     }
 
-    // --- Leaf: withNetworkEndpointGroup copy helper ---
-    @SuppressWarnings("JBCT-VO-02") // Copy-with-change — direct constructor use in config builder
-    private static GcpEnvironmentConfig withNetworkEndpointGroup(GcpEnvironmentConfig envConfig,
-                                                                  GcpEnvironmentConfig.GcpNegConfig negConfig) {
+    @SuppressWarnings("JBCT-VO-02") private static GcpEnvironmentConfig withNetworkEndpointGroup(GcpEnvironmentConfig envConfig,
+                                                                                                 GcpEnvironmentConfig.GcpNegConfig negConfig) {
         return new GcpEnvironmentConfig(envConfig.gcpConfig(),
                                         envConfig.machineType(),
                                         envConfig.sourceImage(),

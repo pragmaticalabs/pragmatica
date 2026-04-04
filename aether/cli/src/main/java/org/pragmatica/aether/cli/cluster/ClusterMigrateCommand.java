@@ -53,14 +53,20 @@ import picocli.CommandLine.Option;
 
     private String buildRequestJson(String validStrategy) {
         var sb = new StringBuilder(128);
-        sb.append("{\"targetProvider\":\"").append(targetProvider).append('"');
-        sb.append(",\"targetZone\":\"").append(targetZone).append('"');
-        sb.append(",\"strategy\":\"").append(validStrategy).append('"');
-        if (dnsHostname != null && !dnsHostname.isEmpty()) {
-            sb.append(",\"dnsHostname\":\"").append(dnsHostname).append('"');
-        }
+        sb.append("{\"targetProvider\":\"").append(escapeJson(targetProvider))
+                 .append('"');
+        sb.append(",\"targetZone\":\"").append(escapeJson(targetZone))
+                 .append('"');
+        sb.append(",\"strategy\":\"").append(escapeJson(validStrategy))
+                 .append('"');
+        if (dnsHostname != null && !dnsHostname.isEmpty()) {sb.append(",\"dnsHostname\":\"").append(escapeJson(dnsHostname))
+                                                                     .append('"');}
         sb.append('}');
         return sb.toString();
+    }
+
+    private static String escapeJson(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     private int onSuccess(String json) {

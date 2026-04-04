@@ -15,6 +15,7 @@ import static org.pragmatica.aether.environment.aws.AwsEnvironmentConfig.AwsLbCo
 import static org.pragmatica.aether.environment.aws.AwsEnvironmentConfig.awsEnvironmentConfig;
 import static org.pragmatica.lang.Option.option;
 
+
 /// ServiceLoader factory for creating AwsEnvironmentIntegration from generic CloudConfig.
 public record AwsEnvironmentIntegrationFactory() implements EnvironmentIntegrationFactory {
     @Override public String providerName() {
@@ -26,7 +27,6 @@ public record AwsEnvironmentIntegrationFactory() implements EnvironmentIntegrati
                                      .map(EnvironmentIntegration.class::cast);
     }
 
-    // --- Leaf: assemble AwsEnvironmentConfig from generic maps ---
     private static Result<AwsEnvironmentConfig> buildEnvironmentConfig(CloudConfig config) {
         var creds = config.credentials();
         var compute = config.compute();
@@ -47,41 +47,35 @@ public record AwsEnvironmentIntegrationFactory() implements EnvironmentIntegrati
                                                                             config.security()));
     }
 
-    // --- Leaf: apply optional load balancer config ---
-    private static AwsEnvironmentConfig applyLoadBalancer(AwsEnvironmentConfig envConfig,
-                                                          Map<String, String> lbMap) {
+    private static AwsEnvironmentConfig applyLoadBalancer(AwsEnvironmentConfig envConfig, Map<String, String> lbMap) {
         var targetGroupArn = lbMap.getOrDefault("target_group_arn", "");
-        if (targetGroupArn.isEmpty()) {
-            return envConfig;
-        }
-        return awsLbConfig(targetGroupArn).map(lb -> withLoadBalancer(envConfig, lb))
-                          .or(envConfig);
+        if (targetGroupArn.isEmpty()) {return envConfig;}
+        return awsLbConfig(targetGroupArn).map(lb -> withLoadBalancer(envConfig, lb)).or(envConfig);
     }
 
-    // --- Leaf: apply optional discovery config ---
     private static AwsEnvironmentConfig applyDiscovery(AwsEnvironmentConfig envConfig,
                                                        Map<String, String> discoveryMap) {
         var clusterName = discoveryMap.getOrDefault("cluster_name", "");
         var pollInterval = discoveryMap.getOrDefault("poll_interval_ms", "");
         var result = clusterName.isEmpty()
-                     ? envConfig
-                     : envConfig.withDiscovery(clusterName);
+                    ? envConfig
+                    : envConfig.withDiscovery(clusterName);
         return pollInterval.isEmpty()
-               ? result
-               : result.withDiscoveryPollInterval(Long.parseLong(pollInterval));
+              ? result
+              : Result.lift(() -> Long.parseLong(pollInterval)).map(result::withDiscoveryPollInterval)
+                           .or(result);
     }
 
-    // --- Leaf: apply optional certificate secret prefix ---
     private static AwsEnvironmentConfig applyCertificatePrefix(AwsEnvironmentConfig envConfig,
                                                                Map<String, String> securityMap) {
         var prefix = securityMap.getOrDefault("certificate_secret_prefix", "");
-        return prefix.isEmpty() ? envConfig : envConfig.withCertificateSecretPrefix(prefix);
+        return prefix.isEmpty()
+              ? envConfig
+              : envConfig.withCertificateSecretPrefix(prefix);
     }
 
-    // --- Leaf: withLoadBalancer copy helper ---
-    @SuppressWarnings("JBCT-VO-02") // Copy-with-change — direct constructor use in config builder
-    private static AwsEnvironmentConfig withLoadBalancer(AwsEnvironmentConfig envConfig,
-                                                         AwsEnvironmentConfig.AwsLbConfig lbConfig) {
+    @SuppressWarnings("JBCT-VO-02") private static AwsEnvironmentConfig withLoadBalancer(AwsEnvironmentConfig envConfig,
+                                                                                         AwsEnvironmentConfig.AwsLbConfig lbConfig) {
         return new AwsEnvironmentConfig(envConfig.awsConfig(),
                                         envConfig.amiId(),
                                         envConfig.instanceType(),
@@ -95,11 +89,8 @@ public record AwsEnvironmentIntegrationFactory() implements EnvironmentIntegrati
                                         envConfig.certificateSecretPrefix());
     }
 
-    // --- Leaf: parse comma-separated string list ---
     private static List<String> parseStringList(String value) {
-        if (value.isEmpty()) {
-            return List.of();
-        }
+        if (value.isEmpty()) {return List.of();}
         return Arrays.stream(value.split(",")).map(String::trim)
                             .filter(s -> !s.isEmpty())
                             .toList();

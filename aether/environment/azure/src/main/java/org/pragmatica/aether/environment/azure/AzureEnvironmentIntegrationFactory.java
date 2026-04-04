@@ -12,6 +12,7 @@ import java.util.Map;
 import static org.pragmatica.aether.environment.azure.AzureEnvironmentConfig.AzureLbConfig.azureLbConfig;
 import static org.pragmatica.aether.environment.azure.AzureEnvironmentConfig.azureEnvironmentConfig;
 
+
 /// ServiceLoader factory for creating AzureEnvironmentIntegration from generic CloudConfig.
 public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegrationFactory {
     @Override public String providerName() {
@@ -23,7 +24,6 @@ public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegra
                                      .map(EnvironmentIntegration.class::cast);
     }
 
-    // --- Leaf: assemble AzureEnvironmentConfig from generic maps ---
     private static Result<AzureEnvironmentConfig> buildEnvironmentConfig(CloudConfig config) {
         var creds = config.credentials();
         var compute = config.compute();
@@ -47,43 +47,38 @@ public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegra
                                                                               config.security()));
     }
 
-    // --- Leaf: apply optional load balancer config ---
     private static AzureEnvironmentConfig applyLoadBalancer(AzureEnvironmentConfig envConfig,
                                                             Map<String, String> lbMap) {
         var lbName = lbMap.getOrDefault("load_balancer_name", "");
         var poolName = lbMap.getOrDefault("backend_pool_name", "");
         var vnetId = lbMap.getOrDefault("vnet_id", "");
-        if (lbName.isEmpty() || poolName.isEmpty() || vnetId.isEmpty()) {
-            return envConfig;
-        }
-        return azureLbConfig(lbName, poolName, vnetId).map(lb -> withLoadBalancer(envConfig, lb))
-                            .or(envConfig);
+        if (lbName.isEmpty() || poolName.isEmpty() || vnetId.isEmpty()) {return envConfig;}
+        return azureLbConfig(lbName, poolName, vnetId).map(lb -> withLoadBalancer(envConfig, lb)).or(envConfig);
     }
 
-    // --- Leaf: apply optional discovery config ---
     private static AzureEnvironmentConfig applyDiscovery(AzureEnvironmentConfig envConfig,
                                                          Map<String, String> discoveryMap) {
         var clusterName = discoveryMap.getOrDefault("cluster_name", "");
         var pollInterval = discoveryMap.getOrDefault("poll_interval_ms", "");
         var result = clusterName.isEmpty()
-                     ? envConfig
-                     : envConfig.withDiscovery(clusterName);
+                    ? envConfig
+                    : envConfig.withDiscovery(clusterName);
         return pollInterval.isEmpty()
-               ? result
-               : result.withDiscoveryPollInterval(Long.parseLong(pollInterval));
+              ? result
+              : Result.lift(() -> Long.parseLong(pollInterval)).map(result::withDiscoveryPollInterval)
+                           .or(result);
     }
 
-    // --- Leaf: apply optional certificate secret prefix ---
     private static AzureEnvironmentConfig applyCertificatePrefix(AzureEnvironmentConfig envConfig,
-                                                                  Map<String, String> securityMap) {
+                                                                 Map<String, String> securityMap) {
         var prefix = securityMap.getOrDefault("certificate_secret_prefix", "");
-        return prefix.isEmpty() ? envConfig : envConfig.withCertificateSecretPrefix(prefix);
+        return prefix.isEmpty()
+              ? envConfig
+              : envConfig.withCertificateSecretPrefix(prefix);
     }
 
-    // --- Leaf: withLoadBalancer copy helper ---
-    @SuppressWarnings("JBCT-VO-02") // Copy-with-change — direct constructor use in config builder
-    private static AzureEnvironmentConfig withLoadBalancer(AzureEnvironmentConfig envConfig,
-                                                           AzureEnvironmentConfig.AzureLbConfig lbConfig) {
+    @SuppressWarnings("JBCT-VO-02") private static AzureEnvironmentConfig withLoadBalancer(AzureEnvironmentConfig envConfig,
+                                                                                           AzureEnvironmentConfig.AzureLbConfig lbConfig) {
         return new AzureEnvironmentConfig(envConfig.azureConfig(),
                                           envConfig.vmSize(),
                                           envConfig.image(),
