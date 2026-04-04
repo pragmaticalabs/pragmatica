@@ -300,7 +300,7 @@ class DockerComputeProviderTest {
         @Test
         void create_withDefaults_succeeds() {
             var config = new org.pragmatica.aether.environment.CloudConfig("docker", Map.of(), Map.of(),
-                                                                            Map.of(), Map.of(), Map.of());
+                                                                            Map.of(), Map.of(), Map.of(), Map.of());
             var factory = new DockerEnvironmentIntegrationFactory();
             var result = factory.create(config);
 
@@ -315,7 +315,7 @@ class DockerComputeProviderTest {
                                  "management_port_base", "9000",
                                  "app_port_base", "9100");
             var config = new org.pragmatica.aether.environment.CloudConfig("docker", Map.of(), compute,
-                                                                            Map.of(), Map.of(), Map.of());
+                                                                            Map.of(), Map.of(), Map.of(), Map.of());
             var factory = new DockerEnvironmentIntegrationFactory();
             var result = factory.create(config);
 
