@@ -11,7 +11,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 FORGE_JAR="$PROJECT_ROOT/aether/forge/forge-core/target/aether-forge.jar"
-BLUEPRINT_COORDS="org.pragmatica.aether.example:pricing-engine:1.0.0-rc1:blueprint"
+
+VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout -f "$SCRIPT_DIR/pom.xml")
+BLUEPRINT_COORDS="org.pragmatica.aether.example:pricing-engine:${VERSION}:blueprint"
 
 WITH_LOAD=false
 SKIP_BUILD=false

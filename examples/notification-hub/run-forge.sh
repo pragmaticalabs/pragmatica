@@ -10,7 +10,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 FORGE_JAR="$PROJECT_ROOT/aether/forge/forge-core/target/aether-forge.jar"
-BLUEPRINT_COORDS="org.pragmatica.aether.example:notification-hub-notification-service:1.0.0-rc1:blueprint"
+
+VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout -f "$SCRIPT_DIR/pom.xml")
+BLUEPRINT_COORDS="org.pragmatica.aether.example:notification-hub-notification-service:${VERSION}:blueprint"
 
 SKIP_BUILD=false
 
