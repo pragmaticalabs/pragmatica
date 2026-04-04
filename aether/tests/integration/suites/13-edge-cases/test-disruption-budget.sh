@@ -99,16 +99,14 @@ if len(entries) >= 3:
     local status
     status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain/${node3}" -X POST -H "X-API-Key: ${API_KEY}")
 
-    if [ "$status" -ge 400 ] && [ "$status" -lt 500 ] 2>/dev/null; then
+    if [ "$status" -eq 409 ] 2>/dev/null; then
+        log_pass "Third drain rejected by disruption budget (${status} Conflict)"
+    elif [ "$status" -ge 400 ] && [ "$status" -lt 500 ] 2>/dev/null; then
         log_pass "Third drain rejected by disruption budget (${status})"
     elif [ "$status" -eq 503 ] 2>/dev/null; then
         log_pass "Third drain rejected — service unavailable (${status})"
-    elif [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
-        # TODO: Budget enforcement not yet implemented in drain endpoint — accept for now
-        log_warn "Third drain accepted (${status}) — budget enforcement pending"
-        log_pass "Drain endpoint operational (budget enforcement TODO)"
     else
-        log_fail "Unexpected status from third drain: ${status}"
+        log_fail "Third drain should be rejected by disruption budget, got ${status}"
         return 1
     fi
 }

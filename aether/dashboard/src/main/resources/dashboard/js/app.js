@@ -4,6 +4,7 @@ document.addEventListener('alpine:init', function() {
             currentPage: 'overview',
             wsConnected: false,
             pollTimer: null,
+            secondaryPollTimer: null,
             sparklines: {},
             charts: {},
             chartsInitialized: false,
@@ -144,6 +145,16 @@ document.addEventListener('alpine:init', function() {
                     self.pollStatus();
                     Alpine.store('events').refresh();
                 }, 2000);
+
+                // Secondary stores: poll at lower frequency as fallback
+                // for when WS misses INITIAL_STATE or drops connection
+                this.secondaryPollTimer = setInterval(function() {
+                    Alpine.store('topology').refresh();
+                    Alpine.store('governors').refresh();
+                    Alpine.store('strategies').refresh();
+                    Alpine.store('streams').refresh();
+                    Alpine.store('observability').refresh();
+                }, 10000);
             },
 
             async pollStatus() {

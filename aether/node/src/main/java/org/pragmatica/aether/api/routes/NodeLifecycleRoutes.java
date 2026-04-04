@@ -10,6 +10,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.routing.HttpError;
+import org.pragmatica.http.routing.HttpStatus;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -18,6 +20,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -84,7 +87,46 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private Promise<TransitionResult> drainNode(String nodeIdStr) {
-        return transitionLifecycle(nodeIdStr, NodeLifecycleState.ON_DUTY, NodeLifecycleState.DRAINING, "drain");
+        return checkDisruptionBudget(nodeIdStr)
+                   .flatMap(_ -> transitionLifecycle(nodeIdStr,
+                                                     NodeLifecycleState.ON_DUTY,
+                                                     NodeLifecycleState.DRAINING,
+                                                     "drain"));
+    }
+
+    private Promise<TransitionResult> checkDisruptionBudget(String nodeIdStr) {
+        var totalNodes = nodeSupplier.get().initialTopology().size();
+        var currentlyDraining = countDrainingNodes();
+        var minAvailable = (totalNodes / 2) + 1;
+        var operationalAfterDrain = totalNodes - currentlyDraining - 1;
+
+        if (operationalAfterDrain >= minAvailable) {
+            return Promise.success(new TransitionResult(true, nodeIdStr, "", "Budget check passed"));
+        }
+
+        return budgetExceededError(nodeIdStr, operationalAfterDrain, minAvailable).promise();
+    }
+
+    private int countDrainingNodes() {
+        var count = new AtomicInteger(0);
+        nodeSupplier.get().kvStore()
+                        .forEach(NodeLifecycleKey.class,
+                                 NodeLifecycleValue.class,
+                                 (_, value) -> incrementIfDraining(count, value));
+        return count.get();
+    }
+
+    private static void incrementIfDraining(AtomicInteger count, NodeLifecycleValue value) {
+        if (value.state() == NodeLifecycleState.DRAINING) {
+            count.incrementAndGet();
+        }
+    }
+
+    private static Cause budgetExceededError(String nodeIdStr, int operationalAfterDrain, int minAvailable) {
+        var message = "Disruption budget exceeded: draining " + nodeIdStr
+                      + " would leave " + operationalAfterDrain
+                      + " operational nodes, minimum is " + minAvailable;
+        return HttpError.httpError(HttpStatus.CONFLICT, Causes.cause(message));
     }
 
     @SuppressWarnings("JBCT-PAT-01") private Promise<TransitionResult> activateNode(String nodeIdStr) {

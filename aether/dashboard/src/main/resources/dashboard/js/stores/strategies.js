@@ -4,13 +4,16 @@ document.addEventListener('alpine:init', function() {
         blueGreen: [],
         abTests: [],
 
+        _splitDeployments(deployments) {
+            if (!Array.isArray(deployments)) return;
+            this.canaries = deployments.filter(function(d) { return d.strategy === 'CANARY'; });
+            this.blueGreen = deployments.filter(function(d) { return d.strategy === 'BLUE_GREEN'; });
+        },
+
         updateFromWsDashboard(data) {
             if (data.strategies) {
-                if (Array.isArray(data.strategies.canaries)) {
-                    this.canaries = data.strategies.canaries;
-                }
-                if (Array.isArray(data.strategies.blueGreen)) {
-                    this.blueGreen = data.strategies.blueGreen;
+                if (Array.isArray(data.strategies.deployments)) {
+                    this._splitDeployments(data.strategies.deployments);
                 }
                 if (Array.isArray(data.strategies.abTests)) {
                     this.abTests = data.strategies.abTests;
@@ -19,13 +22,9 @@ document.addEventListener('alpine:init', function() {
         },
 
         async refresh() {
-            var canaryData = await RestClient.get('/api/canaries');
-            if (canaryData && canaryData.canaries) {
-                this.canaries = canaryData.canaries;
-            }
-            var bgData = await RestClient.get('/api/blue-green-deployments');
-            if (bgData && bgData.deployments) {
-                this.blueGreen = bgData.deployments;
+            var deployData = await RestClient.get('/api/deploy');
+            if (deployData && deployData.deployments) {
+                this._splitDeployments(deployData.deployments);
             }
             var abData = await RestClient.get('/api/ab-tests');
             if (abData && abData.tests) {

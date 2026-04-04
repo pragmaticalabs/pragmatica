@@ -62,7 +62,24 @@ public final class ManagementRouter {
     }
 
     private void writeError(ResponseWriter response, org.pragmatica.lang.Cause cause) {
-        response.error(org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR, cause.message());
+        var status = resolveHttpStatus(cause);
+        response.error(status, cause.message());
+    }
+
+    private static org.pragmatica.http.HttpStatus resolveHttpStatus(org.pragmatica.lang.Cause cause) {
+        if (cause instanceof org.pragmatica.http.routing.HttpError httpError) {
+            return findByCode(httpError.status().code());
+        }
+        return org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR;
+    }
+
+    private static org.pragmatica.http.HttpStatus findByCode(int code) {
+        for (var status : org.pragmatica.http.HttpStatus.values()) {
+            if (status.code() == code) {
+                return status;
+            }
+        }
+        return org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR;
     }
 
     private void writeSuccess(Object value, ContentType contentType, ResponseWriter response) {

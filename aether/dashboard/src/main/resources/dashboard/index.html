@@ -674,17 +674,16 @@
                     <template x-if="$store.strategies.canaries.length > 0">
                         <div class="strategy-section">
                             <h3 class="strategy-section-title">Canary Deployments</h3>
-                            <template x-for="c in $store.strategies.canaries" :key="c.canaryId">
+                            <template x-for="c in $store.strategies.canaries" :key="c.deploymentId">
                                 <div class="strategy-card">
                                     <div class="strategy-card-header">
-                                        <span class="mono-text" x-text="c.artifactBase"></span>
+                                        <span class="mono-text" x-text="c.blueprintId"></span>
                                         <span class="status-badge" :class="$store.strategies.stateClass(c.state)" x-text="c.state"></span>
                                     </div>
                                     <div class="strategy-card-details">
                                         <span x-text="c.oldVersion + ' → ' + c.newVersion"></span>
-                                        <span x-text="'Stage ' + c.currentStage + '/' + c.totalStages"></span>
-                                        <span x-text="c.newInstances + ' instances'"></span>
-                                        <span class="strategy-routing" x-text="c.routing"></span>
+                                        <span x-text="(c.newInstances || 0) + ' instances'"></span>
+                                        <span class="strategy-routing" x-text="c.routing || (c.routingNewWeight + '/' + c.routingOldWeight)"></span>
                                     </div>
                                 </div>
                             </template>
@@ -698,14 +697,13 @@
                             <template x-for="bg in $store.strategies.blueGreen" :key="bg.deploymentId">
                                 <div class="strategy-card">
                                     <div class="strategy-card-header">
-                                        <span class="mono-text" x-text="bg.artifactBase"></span>
+                                        <span class="mono-text" x-text="bg.blueprintId"></span>
                                         <span class="status-badge" :class="$store.strategies.stateClass(bg.state)" x-text="bg.state"></span>
                                     </div>
                                     <div class="strategy-card-details">
-                                        <span class="strategy-env blue" x-text="'Blue: ' + bg.blueVersion"></span>
-                                        <span class="strategy-env green" x-text="'Green: ' + bg.greenVersion"></span>
-                                        <span x-text="'Active: ' + bg.activeEnvironment"></span>
-                                        <span class="strategy-routing" x-text="bg.routing"></span>
+                                        <span x-text="bg.oldVersion + ' → ' + bg.newVersion"></span>
+                                        <span x-text="(bg.newInstances || 0) + ' instances'"></span>
+                                        <span class="strategy-routing" x-text="bg.routing || (bg.routingNewWeight + '/' + bg.routingOldWeight)"></span>
                                     </div>
                                 </div>
                             </template>
