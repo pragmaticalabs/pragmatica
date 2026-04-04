@@ -95,6 +95,9 @@ public final class SliceRoutes implements RouteSource {
                          Route.<BlueprintResponse>post("/api/blueprint/deploy")
                               .withBody(BlueprintDeployRequest.class)
                               .toJson(this::handleBlueprintDeploy),
+                         Route.<BlueprintResponse>post("/api/blueprint/publish")
+                              .withBody(BlueprintDeployRequest.class)
+                              .toJson(this::handleBlueprintPublish),
                          Route.<BlueprintValidationResponse>post("/api/blueprint/validate")
                               .to(ctx -> handleValidateBlueprint(ctx.bodyAsString()))
                               .asJson(),
@@ -199,6 +202,20 @@ public final class SliceRoutes implements RouteSource {
                             .onSuccess(r -> auditAndEmitBlueprintDeployed(r.blueprint(),
                                                                           r.slices()))
                             .onFailure(cause -> log.warn("Blueprint artifact deploy failed: {}",
+                                                         cause.message()));
+    }
+
+    private Promise<BlueprintResponse> handleBlueprintPublish(BlueprintDeployRequest request) {
+        return Option.option(request.artifact()).toResult(MISSING_ARTIFACT_COORDS)
+                            .async()
+                            .flatMap(coords -> nodeSupplier.get().blueprintService()
+                                                               .publishFromArtifact(coords))
+                            .map(expanded -> new BlueprintResponse("published",
+                                                                   expanded.id().asString(),
+                                                                   expanded.loadOrder().size()))
+                            .onSuccess(r -> log.info("Blueprint {} published (no security overrides applied)",
+                                                     r.blueprint()))
+                            .onFailure(cause -> log.warn("Blueprint artifact publish failed: {}",
                                                          cause.message()));
     }
 

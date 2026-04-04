@@ -34,6 +34,7 @@ import static org.pragmatica.aether.update.DeploymentError.BlueprintNotFound.blu
 import static org.pragmatica.aether.update.DeploymentError.DeploymentAlreadyExists.deploymentAlreadyExists;
 import static org.pragmatica.aether.update.DeploymentError.DeploymentNotFound.deploymentNotFound;
 import static org.pragmatica.aether.update.DeploymentError.NoCurrentVersion.noCurrentVersion;
+import static org.pragmatica.aether.update.DeploymentError.SameVersionDeployment.sameVersionDeployment;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 
@@ -182,6 +183,8 @@ final class DeploymentManagerImpl implements DeploymentManager {
         }
         if ( currentVersion == null) {
         return blueprintNotFound("empty blueprint").result();}
+        if ( currentVersion.equals(newVersion)) {
+        return sameVersionDeployment(newVersion.toString()).result();}
         return Result.success(new SliceContext(artifacts, currentVersion));
     }
 

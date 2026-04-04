@@ -45,6 +45,16 @@ public sealed interface DeploymentError extends Cause {
         }
     }
 
+    record SameVersionDeployment(String version) implements DeploymentError {
+        public static SameVersionDeployment sameVersionDeployment(String version) {
+            return new SameVersionDeployment(version);
+        }
+
+        @Override public String message() {
+            return "Cannot deploy version " + version + " — already active. Use /api/blueprint/deploy for redeployment.";
+        }
+    }
+
     record ConsensusFailure(Cause cause) implements DeploymentError {
         public static ConsensusFailure consensusFailure(Cause cause) {
             return new ConsensusFailure(cause);
