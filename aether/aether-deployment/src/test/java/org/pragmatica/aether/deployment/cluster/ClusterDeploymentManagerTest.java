@@ -27,9 +27,11 @@ import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.consensus.topology.NodeState;
 
 import java.net.SocketAddress;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class ClusterDeploymentManagerTest {
@@ -61,15 +63,17 @@ class ClusterDeploymentManagerTest {
     @Nested
     class DrainCompletionTests {
         private ClusterDeploymentManager cdm;
+        private final List<KVCommand<AetherKey>> capturedCommands = new ArrayList<>();
 
         @BeforeEach
         void setUp() {
+            capturedCommands.clear();
             var initialTopology = List.of(NODE_1, NODE_2, NODE_3, DRAINING_NODE);
             var router = MessageRouter.mutable();
 
             var kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
 
-            ClusterNode<KVCommand<AetherKey>> clusterNode = stubClusterNode(NODE_1);
+            ClusterNode<KVCommand<AetherKey>> clusterNode = stubClusterNode(NODE_1, capturedCommands);
 
             TopologyManager topologyManager = stubTopologyManager(NODE_1, initialTopology);
 
@@ -98,14 +102,26 @@ class ClusterDeploymentManagerTest {
                 Option.<NodeLifecycleValue>empty());
             cdm.onNodeLifecyclePut(drainingPut);
 
-            // Give async operations time to complete — no exceptions expected
+            // Give async operations time to complete
             Thread.sleep(500);
-            // Success: drain completion writes DECOMMISSIONED without errors
+
+            // Verify DECOMMISSIONED state was written via cluster.apply
+            assertThat(capturedCommands).isNotEmpty();
+            var putCommand = capturedCommands.stream()
+                .filter(KVCommand.Put.class::isInstance)
+                .map(cmd -> (KVCommand.Put<AetherKey, AetherValue>) cmd)
+                .filter(put -> put.key() instanceof NodeLifecycleKey)
+                .filter(put -> put.value() instanceof NodeLifecycleValue)
+                .findFirst();
+            assertThat(putCommand).isPresent();
+            var lifecycle = (NodeLifecycleValue) putCommand.get().value();
+            assertThat(lifecycle.state()).isEqualTo(NodeLifecycleState.DECOMMISSIONED);
         }
     }
 
     @SuppressWarnings("unchecked")
-    private static ClusterNode<KVCommand<AetherKey>> stubClusterNode(NodeId self) {
+    private static ClusterNode<KVCommand<AetherKey>> stubClusterNode(NodeId self,
+                                                                      List<KVCommand<AetherKey>> capturedCommands) {
         return new ClusterNode<>() {
             @Override
             public NodeId self() {
@@ -129,6 +145,7 @@ class ClusterDeploymentManagerTest {
 
             @Override
             public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+                capturedCommands.addAll(commands);
                 return Promise.success(Collections.emptyList());
             }
         };

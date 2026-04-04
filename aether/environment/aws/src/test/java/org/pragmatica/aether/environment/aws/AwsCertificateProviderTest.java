@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Promise;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 class AwsCertificateProviderTest {
 
@@ -25,11 +26,11 @@ class AwsCertificateProviderTest {
 
             var result = AwsCertificateProvider.awsCertificateProvider(testClient, "aether/cluster");
 
-            result.onFailure(cause -> assertThat(cause).isNull())
+            result.onFailure(cause -> fail("Expected success but got: " + cause.message()))
                   .onSuccess(provider -> {
                       assertThat(provider).isNotNull();
                       provider.caCertificate()
-                              .onFailure(c -> assertThat(c).isNull())
+                              .onFailure(c -> fail("Expected success but got: " + c.message()))
                               .onSuccess(bundle -> assertThat(bundle.certificatePem()).isNotEmpty());
                   });
         }
@@ -41,7 +42,7 @@ class AwsCertificateProviderTest {
             var provider = AwsCertificateProvider.awsCertificateProvider(testClient, "aether/cluster").unwrap();
 
             provider.issueCertificate("node-1", "10.0.0.1")
-                    .onFailure(c -> assertThat(c).isNull())
+                    .onFailure(c -> fail("Expected success but got: " + c.message()))
                     .onSuccess(bundle -> {
                         assertThat(bundle.certificatePem()).isNotEmpty();
                         assertThat(bundle.caCertificatePem()).isNotEmpty();
@@ -56,7 +57,7 @@ class AwsCertificateProviderTest {
             var provider = AwsCertificateProvider.awsCertificateProvider(testClient, "aether/cluster").unwrap();
 
             provider.currentGossipKey()
-                    .onFailure(c -> assertThat(c).isNull())
+                    .onFailure(c -> fail("Expected success but got: " + c.message()))
                     .onSuccess(key -> {
                         assertThat(key.key()).hasSize(32);
                         assertThat(key.keyId()).isEqualTo(42);

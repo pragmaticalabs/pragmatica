@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 class DockerComputeProviderTest {
 
@@ -39,7 +40,7 @@ class DockerComputeProviderTest {
 
             provider.provision(InstanceType.ON_DEMAND)
                     .await()
-                    .onFailure(cause -> assertThat(cause).isNull())
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                     .onSuccess(DockerComputeProviderTest::assertProvisionedInstance);
         }
 
@@ -52,7 +53,7 @@ class DockerComputeProviderTest {
 
             provider.provision(spec)
                     .await()
-                    .onFailure(cause -> assertThat(cause).isNull())
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                     .onSuccess(info -> assertThat(info.tags().get("aether.cluster")).isEqualTo("test-cluster"));
 
             assertThat(testRunner.lastCommand).isNotEmpty();
@@ -79,7 +80,7 @@ class DockerComputeProviderTest {
 
             provider.terminate(new InstanceId("container-id"))
                     .await()
-                    .onFailure(cause -> assertThat(cause).isNull())
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                     .onSuccess(unit -> assertThat(unit).isNotNull());
         }
 
@@ -105,7 +106,7 @@ class DockerComputeProviderTest {
 
             provider.listInstances()
                     .await()
-                    .onFailure(cause -> assertThat(cause).isNull())
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                     .onSuccess(DockerComputeProviderTest::assertTwoInstanceList);
         }
 
@@ -115,7 +116,7 @@ class DockerComputeProviderTest {
 
             provider.listInstances()
                     .await()
-                    .onFailure(cause -> assertThat(cause).isNull())
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                     .onSuccess(instances -> assertThat(instances).isEmpty());
         }
 
@@ -135,7 +136,7 @@ class DockerComputeProviderTest {
 
             provider.listInstances(Map.of("aether.cluster", "prod"))
                     .await()
-                    .onFailure(cause -> assertThat(cause).isNull())
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                     .onSuccess(instances -> assertThat(instances).hasSize(1));
 
             assertThat(testRunner.lastCommand).contains("--filter", "label=aether.cluster=prod");
@@ -151,7 +152,7 @@ class DockerComputeProviderTest {
 
             provider.instanceStatus(new InstanceId("abc123"))
                     .await()
-                    .onFailure(cause -> assertThat(cause).isNull())
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                     .onSuccess(info -> assertThat(info.status()).isEqualTo(InstanceStatus.RUNNING));
         }
 
@@ -175,7 +176,7 @@ class DockerComputeProviderTest {
 
             provider.restart(new InstanceId("container-id"))
                     .await()
-                    .onFailure(cause -> assertThat(cause).isNull())
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                     .onSuccess(unit -> assertThat(unit).isNotNull());
 
             assertThat(testRunner.lastCommand).contains("docker", "restart", "container-id");
@@ -304,7 +305,7 @@ class DockerComputeProviderTest {
             var factory = new DockerEnvironmentIntegrationFactory();
             var result = factory.create(config);
 
-            result.onFailure(cause -> assertThat(cause).isNull())
+            result.onFailure(cause -> fail("Expected success but got: " + cause.message()))
                   .onSuccess(env -> assertThat(env.compute().isPresent()).isTrue());
         }
 
@@ -319,7 +320,7 @@ class DockerComputeProviderTest {
             var factory = new DockerEnvironmentIntegrationFactory();
             var result = factory.create(config);
 
-            result.onFailure(cause -> assertThat(cause).isNull())
+            result.onFailure(cause -> fail("Expected success but got: " + cause.message()))
                   .onSuccess(env -> assertThat(env.compute().isPresent()).isTrue());
         }
     }

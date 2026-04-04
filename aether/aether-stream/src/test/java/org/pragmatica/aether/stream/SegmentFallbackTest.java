@@ -23,7 +23,7 @@ import java.util.List;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.aether.stream.StreamAccessImpl.streamAccess;
+import static org.pragmatica.aether.stream.PartitionedStreamAccess.streamAccess;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
@@ -31,7 +31,7 @@ import static org.pragmatica.aether.stream.segment.TieredStreamReader.tieredStre
 
 /// Tests the read-through fallback from ring buffer to sealed segments.
 /// When events are evicted from the ring buffer and sealed to storage,
-/// StreamAccessImpl should transparently read them from SegmentReader.
+/// PartitionedStreamAccess should transparently read them from SegmentReader.
 class SegmentFallbackTest {
 
     private static final String STREAM = "fallback-test";
@@ -49,7 +49,7 @@ class SegmentFallbackTest {
     private TieredStreamReader tieredReader;
     private SegmentSealer sealer;
     private StreamPartitionManager partitionManager;
-    private StreamAccessImpl<byte[]> access;
+    private PartitionedStreamAccess<byte[]> access;
 
     @BeforeEach
     void setUp() {
@@ -64,7 +64,7 @@ class SegmentFallbackTest {
         var retention = RetentionPolicy.retentionPolicy(RING_CAPACITY, RING_DATA_BYTES, 600_000);
         partitionManager.createStream(StreamConfig.streamConfig(STREAM, PARTITION_COUNT, retention, "earliest"));
 
-        StreamAccessImpl.CursorCheckpointWriter noopWriter = (_, _, _, _) -> org.pragmatica.lang.Promise.unitPromise();
+        PartitionedStreamAccess.CursorCheckpointWriter noopWriter = (_, _, _, _) -> org.pragmatica.lang.Promise.unitPromise();
         access = streamAccess(partitionManager, identitySerializer(), identityDeserializer(),
                               STREAM, PARTITION_COUNT, Option.<Function<byte[], Object>>none(),
                               noopWriter, tieredReader);

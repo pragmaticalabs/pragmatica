@@ -7,6 +7,7 @@ import org.pragmatica.aether.environment.CloudCertificateProviderError;
 import org.pragmatica.lang.Promise;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 class AzureCertificateProviderTest {
 
@@ -26,11 +27,11 @@ class AzureCertificateProviderTest {
 
             var result = AzureCertificateProvider.azureCertificateProvider(testClient, "my-vault/aether-cluster");
 
-            result.onFailure(cause -> assertThat(cause).isNull())
+            result.onFailure(cause -> fail("Expected success but got: " + cause.message()))
                   .onSuccess(provider -> {
                       assertThat(provider).isNotNull();
                       provider.caCertificate()
-                              .onFailure(c -> assertThat(c).isNull())
+                              .onFailure(c -> fail("Expected success but got: " + c.message()))
                               .onSuccess(bundle -> assertThat(bundle.certificatePem()).isNotEmpty());
                   });
         }
@@ -42,7 +43,7 @@ class AzureCertificateProviderTest {
             var provider = AzureCertificateProvider.azureCertificateProvider(testClient, "my-vault/aether-cluster").unwrap();
 
             provider.currentGossipKey()
-                    .onFailure(c -> assertThat(c).isNull())
+                    .onFailure(c -> fail("Expected success but got: " + c.message()))
                     .onSuccess(key -> {
                         assertThat(key.key()).hasSize(32);
                         assertThat(key.keyId()).isEqualTo(99);
@@ -64,7 +65,7 @@ class AzureCertificateProviderTest {
 
         @Test
         void azureCertificateProvider_missingSecret_failsWithError() {
-            testClient.getSecretResponse = new CloudCertificateProviderError.CertificateFetchFailed(
+            testClient.getSecretResponse = CloudCertificateProviderError.certificateFetchFailed(
                 "my-vault/aether-cluster-ca-cert", new RuntimeException("not found")).promise();
 
             var result = AzureCertificateProvider.azureCertificateProvider(testClient, "my-vault/aether-cluster");
