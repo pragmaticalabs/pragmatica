@@ -5,6 +5,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
+import java.util.List;
+
 
 /// No-op implementation of ConfigFacade for backward compatibility.
 ///
@@ -32,6 +34,10 @@ enum NoOpConfigFacade implements ConfigFacade {
     }
 
     @Override public Result<Boolean> requireBoolean(String section, String key) {
+        return NO_CONFIG.result();
+    }
+
+    @Override public Result<List<String>> requireStringList(String section, String key) {
         return NO_CONFIG.result();
     }
 

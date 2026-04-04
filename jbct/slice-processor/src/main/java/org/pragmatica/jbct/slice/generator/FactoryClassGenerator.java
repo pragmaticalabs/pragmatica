@@ -1087,12 +1087,19 @@ public class FactoryClassGenerator {
     ///
     /// Introspects the config record's factory method to find parameter names and types,
     /// then generates Result.all() calls that read each field from the config facade.
+    ///
+    /// Supported parameter types:
+    ///   - Primitives: String, int, long, double, boolean → require* methods
+    ///   - Optional primitives: Option<String>, Option<Integer>, etc. → get* wrapped in Result.success
+    ///   - Collections: List<String> → requireStringList
+    ///   - Value objects: any type with a JBCT factory `typeName(String) → Result<T>` → requireString + flatMap
+    ///   - Optional value objects: Option<T> where T has a factory → getString + map with unwrap
     private String generateConfigSectionCall(DependencyModel resource,
                                               ResourceQualifierModel qualifier,
                                               ImportTracker importTracker) {
         var configSection = escapeJavaString(qualifier.configSection());
         var configTypeName = importTracker.use(resource.interfaceQualifiedName());
-        var factoryParams = analyzeConfigRecordFactory(resource);
+        var factoryParams = analyzeConfigRecordFactory(resource, importTracker);
         if (factoryParams.isEmpty()) {
             // No factory method found or no params — fall back to no-arg constructor via Result
             importTracker.use("org.pragmatica.lang.Result");
@@ -1105,9 +1112,8 @@ public class FactoryClassGenerator {
             var param = factoryParams.get(i);
             var comma = (i < factoryParams.size() - 1) ? "," : "";
             var tomlKey = camelToSnakeCase(param.name());
-            sb.append("                ctx.config().")
-              .append(param.configAccessMethod())
-              .append("(\"").append(configSection).append("\", \"").append(tomlKey).append("\")")
+            sb.append("                ")
+              .append(param.configAccessExpression("ctx.config()", configSection, tomlKey))
               .append(comma).append("\n");
         }
         var factoryMethod = lowercaseFirst(resource.interfaceSimpleName());
@@ -1116,7 +1122,7 @@ public class FactoryClassGenerator {
     }
 
     /// Analyze a config record's factory method to extract parameter names and types.
-    private List<ConfigFieldParam> analyzeConfigRecordFactory(DependencyModel dep) {
+    private List<ConfigFieldParam> analyzeConfigRecordFactory(DependencyModel dep, ImportTracker importTracker) {
         var typeElement = elements.getTypeElement(dep.interfaceQualifiedName());
         if (typeElement == null) {
             return List.of();
@@ -1133,33 +1139,189 @@ public class FactoryClassGenerator {
             }
             return method.getParameters()
                          .stream()
-                         .map(ConfigFieldParam::fromParameter)
+                         .map(p -> ConfigFieldParam.fromParameter(p, elements, types, importTracker))
                          .toList();
         }
         return List.of();
     }
 
-    /// Represents a config record factory method parameter.
-    private record ConfigFieldParam(String name, String typeName) {
-        static ConfigFieldParam fromParameter(javax.lang.model.element.VariableElement param) {
-            return new ConfigFieldParam(
-                param.getSimpleName().toString(),
-                param.asType().toString()
-            );
+    /// Determines config access strategy for a parameter type.
+    private enum ConfigAccessKind {
+        /// Primitive types: String, int, long, double, boolean → requireX(section, key)
+        REQUIRED_PRIMITIVE,
+        /// Optional primitives: Option<String>, Option<Integer>, etc. → Result.success(getX(section, key))
+        OPTIONAL_PRIMITIVE,
+        /// String list: List<String> → requireStringList(section, key)
+        REQUIRED_STRING_LIST,
+        /// Value object with JBCT factory: requireString(section, key).flatMap(Type::factory)
+        REQUIRED_VALUE_OBJECT,
+        /// Optional value object: Result.success(getString(section, key).map(s -> Type.factory(s).unwrap()))
+        OPTIONAL_VALUE_OBJECT,
+    }
+
+    /// Represents a config record factory method parameter with full type analysis.
+    private record ConfigFieldParam(String name, ConfigAccessKind kind, String facadeMethod,
+                                     String valueObjectType, String valueObjectFactory) {
+
+        static ConfigFieldParam fromParameter(javax.lang.model.element.VariableElement param,
+                                               Elements elements, Types types, ImportTracker importTracker) {
+            var paramName = param.getSimpleName().toString();
+            var typeMirror = param.asType();
+            var typeName = typeMirror.toString();
+            return analyzeType(paramName, typeName, typeMirror, elements, types, importTracker);
         }
 
-        /// Returns the ConfigFacade method name for reading this parameter type.
-        String configAccessMethod() {
+        private static ConfigFieldParam analyzeType(String paramName, String typeName, TypeMirror typeMirror,
+                                                      Elements elements, Types types, ImportTracker importTracker) {
+            // Check for Option<X> wrapper
+            if (typeName.startsWith("org.pragmatica.lang.Option<")) {
+                return analyzeOptionType(paramName, typeName, typeMirror, elements, types, importTracker);
+            }
+            // Check for List<String>
+            if (typeName.equals("java.util.List<java.lang.String>")) {
+                return new ConfigFieldParam(paramName, ConfigAccessKind.REQUIRED_STRING_LIST,
+                                            "requireStringList", "", "");
+            }
+            // Check for primitive/boxed types
+            var primitiveMethod = primitiveAccessMethod(typeName);
+            if (primitiveMethod != null) {
+                return new ConfigFieldParam(paramName, ConfigAccessKind.REQUIRED_PRIMITIVE,
+                                            primitiveMethod, "", "");
+            }
+            // Check for value object with JBCT factory
+            return analyzeValueObjectType(paramName, typeName, elements, importTracker);
+        }
+
+        private static ConfigFieldParam analyzeOptionType(String paramName, String typeName, TypeMirror typeMirror,
+                                                            Elements elements, Types types,
+                                                            ImportTracker importTracker) {
+            var innerTypeName = extractOptionInnerType(typeName);
+            var optionalPrimitiveMethod = optionalPrimitiveAccessMethod(innerTypeName);
+            if (optionalPrimitiveMethod != null) {
+                return new ConfigFieldParam(paramName, ConfigAccessKind.OPTIONAL_PRIMITIVE,
+                                            optionalPrimitiveMethod, "", "");
+            }
+            // Optional value object: Option<Url> → getString + map with factory unwrap
+            var voInfo = findValueObjectFactory(innerTypeName, elements);
+            if (voInfo != null) {
+                var voType = importTracker.use(innerTypeName);
+                return new ConfigFieldParam(paramName, ConfigAccessKind.OPTIONAL_VALUE_OBJECT,
+                                            "getString", voType, voInfo.factoryMethodName());
+            }
+            // Unknown optional type — fall back to optional string
+            return new ConfigFieldParam(paramName, ConfigAccessKind.OPTIONAL_PRIMITIVE, "getString", "", "");
+        }
+
+        private static ConfigFieldParam analyzeValueObjectType(String paramName, String typeName,
+                                                                 Elements elements, ImportTracker importTracker) {
+            var voInfo = findValueObjectFactory(typeName, elements);
+            if (voInfo != null) {
+                var voType = importTracker.use(typeName);
+                return new ConfigFieldParam(paramName, ConfigAccessKind.REQUIRED_VALUE_OBJECT,
+                                            "requireString", voType, voInfo.factoryMethodName());
+            }
+            // Unknown type without factory — fall back to requireString
+            return new ConfigFieldParam(paramName, ConfigAccessKind.REQUIRED_PRIMITIVE, "requireString", "", "");
+        }
+
+        /// Extract inner type name from Option<X> type string.
+        private static String extractOptionInnerType(String optionTypeName) {
+            var prefix = "org.pragmatica.lang.Option<";
+            if (optionTypeName.startsWith(prefix) && optionTypeName.endsWith(">")) {
+                return optionTypeName.substring(prefix.length(), optionTypeName.length() - 1);
+            }
+            return optionTypeName;
+        }
+
+        /// Returns ConfigFacade require* method for primitive/boxed types, or null if not a primitive.
+        private static String primitiveAccessMethod(String typeName) {
             return switch (typeName) {
                 case "java.lang.String" -> "requireString";
                 case "int", "java.lang.Integer" -> "requireInt";
                 case "long", "java.lang.Long" -> "requireLong";
                 case "double", "java.lang.Double" -> "requireDouble";
                 case "boolean", "java.lang.Boolean" -> "requireBoolean";
-                default -> "requireString";
+                default -> null;
+            };
+        }
+
+        /// Returns ConfigFacade get* method for optional primitive types, or null if not a primitive.
+        private static String optionalPrimitiveAccessMethod(String innerTypeName) {
+            return switch (innerTypeName) {
+                case "java.lang.String" -> "getString";
+                case "java.lang.Integer" -> "getInt";
+                case "java.lang.Long" -> "getLong";
+                case "java.lang.Double" -> "getDouble";
+                case "java.lang.Boolean" -> "getBoolean";
+                default -> null;
+            };
+        }
+
+        /// Check if a type has a JBCT factory method: static typeName(String) returning Result<T>.
+        private static ValueObjectInfo findValueObjectFactory(String qualifiedName, Elements elements) {
+            var typeElement = elements.getTypeElement(qualifiedName);
+            if (typeElement == null) {
+                return null;
+            }
+            var simpleName = typeElement.getSimpleName().toString();
+            var factoryName = lowercaseFirstStatic(simpleName);
+            for (var enclosed : typeElement.getEnclosedElements()) {
+                if (enclosed.getKind() != ElementKind.METHOD) {
+                    continue;
+                }
+                var method = (ExecutableElement) enclosed;
+                if (!method.getModifiers().contains(Modifier.STATIC)
+                    || !method.getSimpleName().toString().equals(factoryName)
+                    || method.getParameters().size() != 1) {
+                    continue;
+                }
+                var paramType = method.getParameters().getFirst().asType().toString();
+                if (!"java.lang.String".equals(paramType)) {
+                    continue;
+                }
+                var returnType = method.getReturnType().toString();
+                if (returnType.startsWith("org.pragmatica.lang.Result<")) {
+                    return new ValueObjectInfo(factoryName);
+                }
+            }
+            return null;
+        }
+
+        private static String lowercaseFirstStatic(String name) {
+            if (name == null || name.isEmpty()) {
+                return "";
+            }
+            int i = 0;
+            while (i < name.length() && Character.isUpperCase(name.charAt(i))) {
+                i++;
+            }
+            if (i == 0) {
+                return name;
+            }
+            if (i == name.length() || i == 1) {
+                return name.substring(0, i).toLowerCase() + name.substring(i);
+            }
+            return name.substring(0, i - 1).toLowerCase() + name.substring(i - 1);
+        }
+
+        /// Generates the full config access expression for use inside Result.all().
+        ///
+        /// @param configPrefix the config facade access expression (e.g. "ctx.config()" or "config")
+        String configAccessExpression(String configPrefix, String section, String tomlKey) {
+            var configCall = configPrefix + "." + facadeMethod + "(\"" + section + "\", \"" + tomlKey + "\")";
+            return switch (kind) {
+                case REQUIRED_PRIMITIVE, REQUIRED_STRING_LIST -> configCall;
+                case OPTIONAL_PRIMITIVE -> "Result.success(" + configCall + ")";
+                case REQUIRED_VALUE_OBJECT -> configCall + ".flatMap(" + valueObjectType + "::" + valueObjectFactory + ")";
+                case OPTIONAL_VALUE_OBJECT -> "Result.success(" + configCall
+                    + ".map(s -> " + valueObjectType + "." + valueObjectFactory + "(s).unwrap()))";
             };
         }
     }
+
+    /// Info about a detected JBCT value object factory method.
+    private record ValueObjectInfo(String factoryMethodName) {}
+
 
     /// Convert camelCase to snake_case for TOML key mapping.
     /// Examples: enableTls -> enable_tls, maxRetries -> max_retries
@@ -1479,7 +1641,7 @@ public class FactoryClassGenerator {
                                                String configSection,
                                                String configTypeName,
                                                ImportTracker importTracker) {
-        var factoryParams = analyzeConfigRecordFactory(dep);
+        var factoryParams = analyzeConfigRecordFactory(dep, importTracker);
         if (factoryParams.isEmpty()) {
             return "Result.success(new " + configTypeName + "())";
         }
@@ -1489,9 +1651,8 @@ public class FactoryClassGenerator {
             var param = factoryParams.get(i);
             var comma = (i < factoryParams.size() - 1) ? "," : "";
             var tomlKey = camelToSnakeCase(param.name());
-            sb.append("                config.")
-              .append(param.configAccessMethod())
-              .append("(\"").append(configSection).append("\", \"").append(tomlKey).append("\")")
+            sb.append("                ")
+              .append(param.configAccessExpression("config", configSection, tomlKey))
               .append(comma).append("\n");
         }
         var factoryMethod = lowercaseFirst(dep.interfaceSimpleName());

@@ -1114,6 +1114,7 @@ public interface NodeDeploymentManager {
         @Override public Result<Long> requireLong(String section, String key) { return NO_CONFIG.result(); }
         @Override public Result<Double> requireDouble(String section, String key) { return NO_CONFIG.result(); }
         @Override public Result<Boolean> requireBoolean(String section, String key) { return NO_CONFIG.result(); }
+        @Override public Result<List<String>> requireStringList(String section, String key) { return NO_CONFIG.result(); }
         @Override public Option<String> getString(String section, String key) { return Option.none(); }
         @Override public Option<Integer> getInt(String section, String key) { return Option.none(); }
         @Override public Option<Long> getLong(String section, String key) { return Option.none(); }
@@ -1145,6 +1146,11 @@ public interface NodeDeploymentManager {
         }
         @Override public Result<Boolean> requireBoolean(String section, String key) {
             return delegate.getBoolean(section + "." + key).toResult(MISSING_KEY);
+        }
+        private static final Cause STRING_LIST_NOT_SUPPORTED =
+            Causes.cause("String list config not supported via legacy ConfigService adapter");
+        @Override public Result<List<String>> requireStringList(String section, String key) {
+            return STRING_LIST_NOT_SUPPORTED.result();
         }
         @Override public Option<String> getString(String section, String key) {
             return delegate.getString(section + "." + key);

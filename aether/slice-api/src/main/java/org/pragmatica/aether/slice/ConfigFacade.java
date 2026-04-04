@@ -3,6 +3,8 @@ package org.pragmatica.aether.slice;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
+import java.util.List;
+
 
 /// Facade for typed configuration access within slice context.
 ///
@@ -30,6 +32,7 @@ public interface ConfigFacade {
     Result<Long> requireLong(String section, String key);
     Result<Double> requireDouble(String section, String key);
     Result<Boolean> requireBoolean(String section, String key);
+    Result<List<String>> requireStringList(String section, String key);
 
     Option<String> getString(String section, String key);
     Option<Integer> getInt(String section, String key);

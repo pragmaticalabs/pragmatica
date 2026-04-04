@@ -220,12 +220,15 @@ class SliceProcessorTest {
             import org.pragmatica.lang.Option;
             import org.pragmatica.lang.Result;
 
+            import java.util.List;
+
             public interface ConfigFacade {
                 Result<String> requireString(String section, String key);
                 Result<Integer> requireInt(String section, String key);
                 Result<Long> requireLong(String section, String key);
                 Result<Double> requireDouble(String section, String key);
                 Result<Boolean> requireBoolean(String section, String key);
+                Result<List<String>> requireStringList(String section, String key);
                 Option<String> getString(String section, String key);
                 Option<Integer> getInt(String section, String key);
                 Option<Long> getLong(String section, String key);
@@ -2553,5 +2556,239 @@ class SliceProcessorTest {
         assertThat(factoryContent).contains("ctx.config().requireLong(\"app.cache\", \"max_size_bytes\")");
         assertThat(factoryContent).contains("ctx.config().requireDouble(\"app.cache\", \"eviction_rate\")");
         assertThat(factoryContent).contains("CacheConfig::cacheConfig");
+    }
+
+    @Test
+    void should_generate_config_parsing_for_value_object_fields() throws Exception {
+        var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.annotation.ConfigurationSection;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = ConfigurationSection.class, config = "app.gateway")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface AppConfig {}
+            """);
+        var apiUrl = JavaFileObjects.forSourceString("test.config.ApiUrl",
+                                                      """
+            package test.config;
+            import org.pragmatica.lang.Result;
+            public record ApiUrl(String value) {
+                public static Result<ApiUrl> apiUrl(String raw) {
+                    return Result.success(new ApiUrl(raw));
+                }
+            }
+            """);
+        var gatewayConfig = JavaFileObjects.forSourceString("test.config.GatewayConfig",
+                                                             """
+            package test.config;
+            import org.pragmatica.lang.Result;
+            public record GatewayConfig(ApiUrl baseUrl, int maxRetries) {
+                public static Result<GatewayConfig> gatewayConfig(ApiUrl baseUrl, int maxRetries) {
+                    return Result.success(new GatewayConfig(baseUrl, maxRetries));
+                }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.GatewayService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.AppConfig;
+            import test.config.GatewayConfig;
+            @Slice
+            public interface GatewayService {
+                Promise<String> call(String request);
+                static GatewayService gatewayService(@AppConfig GatewayConfig config) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(appConfig);
+        sources.add(apiUrl);
+        sources.add(gatewayConfig);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.GatewayServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("ctx.config().requireString(\"app.gateway\", \"base_url\").flatMap(ApiUrl::apiUrl)");
+        assertThat(factoryContent).contains("ctx.config().requireInt(\"app.gateway\", \"max_retries\")");
+        assertThat(factoryContent).contains("GatewayConfig::gatewayConfig");
+    }
+
+    @Test
+    void should_generate_config_parsing_for_optional_primitive_fields() throws Exception {
+        var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.annotation.ConfigurationSection;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = ConfigurationSection.class, config = "app.server")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface AppConfig {}
+            """);
+        var serverConfig = JavaFileObjects.forSourceString("test.config.ServerConfig",
+                                                            """
+            package test.config;
+            import org.pragmatica.lang.Option;
+            import org.pragmatica.lang.Result;
+            public record ServerConfig(String host, Option<Integer> port, Option<Boolean> enableTls) {
+                public static Result<ServerConfig> serverConfig(String host, Option<Integer> port, Option<Boolean> enableTls) {
+                    return Result.success(new ServerConfig(host, port, enableTls));
+                }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.ServerService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.AppConfig;
+            import test.config.ServerConfig;
+            @Slice
+            public interface ServerService {
+                Promise<String> serve(String request);
+                static ServerService serverService(@AppConfig ServerConfig config) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(appConfig);
+        sources.add(serverConfig);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.ServerServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("ctx.config().requireString(\"app.server\", \"host\")");
+        assertThat(factoryContent).contains("Result.success(ctx.config().getInt(\"app.server\", \"port\"))");
+        assertThat(factoryContent).contains("Result.success(ctx.config().getBoolean(\"app.server\", \"enable_tls\"))");
+        assertThat(factoryContent).contains("ServerConfig::serverConfig");
+    }
+
+    @Test
+    void should_generate_config_parsing_for_string_list_field() throws Exception {
+        var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.annotation.ConfigurationSection;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = ConfigurationSection.class, config = "app.cors")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface AppConfig {}
+            """);
+        var corsConfig = JavaFileObjects.forSourceString("test.config.CorsConfig",
+                                                          """
+            package test.config;
+            import org.pragmatica.lang.Result;
+            import java.util.List;
+            public record CorsConfig(List<String> allowedOrigins, boolean allowCredentials) {
+                public static Result<CorsConfig> corsConfig(List<String> allowedOrigins, boolean allowCredentials) {
+                    return Result.success(new CorsConfig(allowedOrigins, allowCredentials));
+                }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.CorsService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.AppConfig;
+            import test.config.CorsConfig;
+            @Slice
+            public interface CorsService {
+                Promise<String> check(String origin);
+                static CorsService corsService(@AppConfig CorsConfig config) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(appConfig);
+        sources.add(corsConfig);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.CorsServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("ctx.config().requireStringList(\"app.cors\", \"allowed_origins\")");
+        assertThat(factoryContent).contains("ctx.config().requireBoolean(\"app.cors\", \"allow_credentials\")");
+        assertThat(factoryContent).contains("CorsConfig::corsConfig");
+    }
+
+    @Test
+    void should_generate_config_parsing_for_optional_value_object_field() throws Exception {
+        var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.annotation.ConfigurationSection;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = ConfigurationSection.class, config = "app.proxy")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface AppConfig {}
+            """);
+        var proxyUrl = JavaFileObjects.forSourceString("test.config.ProxyUrl",
+                                                        """
+            package test.config;
+            import org.pragmatica.lang.Result;
+            public record ProxyUrl(String value) {
+                public static Result<ProxyUrl> proxyUrl(String raw) {
+                    return Result.success(new ProxyUrl(raw));
+                }
+            }
+            """);
+        var proxyConfig = JavaFileObjects.forSourceString("test.config.ProxyConfig",
+                                                           """
+            package test.config;
+            import org.pragmatica.lang.Option;
+            import org.pragmatica.lang.Result;
+            public record ProxyConfig(String host, Option<ProxyUrl> fallbackUrl) {
+                public static Result<ProxyConfig> proxyConfig(String host, Option<ProxyUrl> fallbackUrl) {
+                    return Result.success(new ProxyConfig(host, fallbackUrl));
+                }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.ProxyService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.AppConfig;
+            import test.config.ProxyConfig;
+            @Slice
+            public interface ProxyService {
+                Promise<String> proxy(String request);
+                static ProxyService proxyService(@AppConfig ProxyConfig config) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(appConfig);
+        sources.add(proxyUrl);
+        sources.add(proxyConfig);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.ProxyServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("ctx.config().requireString(\"app.proxy\", \"host\")");
+        assertThat(factoryContent).contains("Result.success(ctx.config().getString(\"app.proxy\", \"fallback_url\").map(s -> ProxyUrl.proxyUrl(s).unwrap()))");
+        assertThat(factoryContent).contains("ProxyConfig::proxyConfig");
     }
 }
