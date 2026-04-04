@@ -10,7 +10,9 @@ import org.pragmatica.cloud.azure.AzureClient;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.net.tcp.security.CertificateProvider;
 
+import static org.pragmatica.aether.environment.azure.AzureCertificateProvider.azureCertificateProvider;
 import static org.pragmatica.aether.environment.azure.AzureComputeProvider.azureComputeProvider;
 import static org.pragmatica.aether.environment.azure.AzureDiscoveryProvider.azureDiscoveryProvider;
 import static org.pragmatica.aether.environment.azure.AzureLoadBalancerProvider.azureLoadBalancerProvider;
@@ -26,7 +28,8 @@ import static org.pragmatica.lang.Result.success;
 public record AzureEnvironmentIntegration(AzureComputeProvider computeProvider,
                                           Option<LoadBalancerProvider> loadBalancerProvider,
                                           Option<DiscoveryProvider> discoveryProvider,
-                                          Option<SecretsProvider> secretsProvider) implements EnvironmentIntegration {
+                                          Option<SecretsProvider> secretsProvider,
+                                          Option<CertificateProvider> certProvider) implements EnvironmentIntegration {
     public static Result<AzureEnvironmentIntegration> azureEnvironmentIntegration(AzureEnvironmentConfig config) {
         var client = AzureClient.azureClient(config.azureConfig());
         return azureEnvironmentIntegration(client, config);
@@ -38,8 +41,9 @@ public record AzureEnvironmentIntegration(AzureComputeProvider computeProvider,
         var lbProvider = resolveLbProvider(client, config);
         var discovery = resolveDiscoveryProvider(client, config);
         var secrets = resolveSecretsProvider(client);
+        var certProv = resolveCertificateProvider(client, config);
         return Result.all(compute, lbProvider)
-                         .map((cp, lb) -> new AzureEnvironmentIntegration(cp, lb, discovery, secrets));
+                         .map((cp, lb) -> new AzureEnvironmentIntegration(cp, lb, discovery, secrets, certProv));
     }
 
     private static Result<Option<LoadBalancerProvider>> resolveLbProvider(AzureClient client,
@@ -87,5 +91,17 @@ public record AzureEnvironmentIntegration(AzureComputeProvider computeProvider,
 
     @Override public Option<DiscoveryProvider> discovery() {
         return discoveryProvider;
+    }
+
+    @Override public Option<CertificateProvider> certificateProvider() {
+        return certProvider;
+    }
+
+    private static Option<CertificateProvider> resolveCertificateProvider(AzureClient client,
+                                                                          AzureEnvironmentConfig config) {
+        return config.certificateSecretPrefix()
+                     .flatMap(prefix -> azureCertificateProvider(client, prefix)
+                                            .map(CertificateProvider.class::cast)
+                                            .option());
     }
 }

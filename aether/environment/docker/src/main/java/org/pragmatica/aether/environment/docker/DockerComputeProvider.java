@@ -6,12 +6,16 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Contract;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -28,6 +32,7 @@ import static org.pragmatica.lang.Result.success;
 @Contract public record DockerComputeProvider(DockerCommandRunner runner,
                                               DockerConfig config,
                                               AtomicInteger nodeCounter) implements ComputeProvider {
+    private static final Logger log = LoggerFactory.getLogger(DockerComputeProvider.class);
     public static Result<DockerComputeProvider> dockerComputeProvider(DockerCommandRunner runner, DockerConfig config) {
         return success(new DockerComputeProvider(runner, config, new AtomicInteger(0)));
     }
@@ -129,6 +134,7 @@ import static org.pragmatica.lang.Result.success;
                                               "-e",
                                               "AETHER_API_KEY=" + apiKey));
         addSpecLabels(command, spec.tags());
+        addPlacementLabels(command, spec.placement());
         command.add(config.imageName());
         return List.copyOf(command);
     }
@@ -146,6 +152,24 @@ import static org.pragmatica.lang.Result.success;
     private static void addLabelArgs(ArrayList<String> command, Map.Entry<String, String> entry) {
         command.add("--label");
         command.add(entry.getKey() + "=" + entry.getValue());
+    }
+
+    private static void addPlacementLabels(ArrayList<String> command, Option<PlacementHint> placement) {
+        placement.onPresent(hint -> applyPlacementHint(command, hint));
+    }
+
+    private static void applyPlacementHint(ArrayList<String> command, PlacementHint hint) {
+        switch (hint) {
+            case PlacementHint.ZoneHint zone -> addPlacementLabel(command, "zone", zone.zoneName());
+            case PlacementHint.HostGroupHint group -> addPlacementLabel(command, "host-group", group.groupId());
+            case PlacementHint.AffinityHint ignored -> log.debug("Docker provider ignoring AffinityHint — not supported");
+            case PlacementHint.AntiAffinityHint ignored -> log.debug("Docker provider ignoring AntiAffinityHint — not supported");
+        }
+    }
+
+    private static void addPlacementLabel(ArrayList<String> command, String key, String value) {
+        command.add("--label");
+        command.add("aether.placement." + key + "=" + value);
     }
 
     private static List<String> buildStopCommand(InstanceId instanceId) {

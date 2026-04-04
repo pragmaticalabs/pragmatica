@@ -6,11 +6,13 @@ import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.LoadBalancerProvider;
 import org.pragmatica.aether.environment.SecretsProvider;
-import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.cloud.aws.AwsClient;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.net.tcp.security.CertificateProvider;
 
+import static org.pragmatica.aether.environment.aws.AwsCertificateProvider.awsCertificateProvider;
 import static org.pragmatica.aether.environment.aws.AwsComputeProvider.awsComputeProvider;
 import static org.pragmatica.aether.environment.aws.AwsDiscoveryProvider.awsDiscoveryProvider;
 import static org.pragmatica.aether.environment.aws.AwsLoadBalancerProvider.awsLoadBalancerProvider;
@@ -26,7 +28,8 @@ import static org.pragmatica.lang.Result.success;
 public record AwsEnvironmentIntegration(AwsComputeProvider computeProvider,
                                         Option<LoadBalancerProvider> loadBalancerProvider,
                                         Option<DiscoveryProvider> discoveryProvider,
-                                        Option<SecretsProvider> secretsProvider) implements EnvironmentIntegration {
+                                        Option<SecretsProvider> secretsProvider,
+                                        Option<CertificateProvider> certProvider) implements EnvironmentIntegration {
     public static Result<AwsEnvironmentIntegration> awsEnvironmentIntegration(AwsEnvironmentConfig config) {
         var client = AwsClient.awsClient(config.awsConfig());
         return awsEnvironmentIntegration(client, config);
@@ -38,8 +41,9 @@ public record AwsEnvironmentIntegration(AwsComputeProvider computeProvider,
         var lbProvider = resolveLbProvider(client, config);
         var discovery = resolveDiscoveryProvider(client, config);
         var secrets = resolveSecretsProvider(client);
+        var certProv = resolveCertificateProvider(client, config);
         return Result.all(compute, lbProvider)
-                         .map((cp, lb) -> new AwsEnvironmentIntegration(cp, lb, discovery, secrets));
+                         .map((cp, lb) -> new AwsEnvironmentIntegration(cp, lb, discovery, secrets, certProv));
     }
 
     private static Result<Option<LoadBalancerProvider>> resolveLbProvider(AwsClient client,
@@ -79,5 +83,17 @@ public record AwsEnvironmentIntegration(AwsComputeProvider computeProvider,
 
     @Override public Option<DiscoveryProvider> discovery() {
         return discoveryProvider;
+    }
+
+    @Override public Option<CertificateProvider> certificateProvider() {
+        return certProvider;
+    }
+
+    private static Option<CertificateProvider> resolveCertificateProvider(AwsClient client,
+                                                                          AwsEnvironmentConfig config) {
+        return config.certificateSecretPrefix()
+                     .flatMap(prefix -> awsCertificateProvider(client, prefix)
+                                            .map(CertificateProvider.class::cast)
+                                            .option());
     }
 }

@@ -6,6 +6,8 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.cloud.aws.AwsClient;
 import org.pragmatica.cloud.aws.api.DescribeInstancesResponse;
 import org.pragmatica.cloud.aws.api.Instance;
@@ -16,6 +18,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
@@ -30,6 +34,8 @@ import static org.pragmatica.lang.Result.success;
 /// Delegates to AwsClient for EC2 instance lifecycle management and maps
 /// EC2 instance models to the environment integration domain types.
 public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) implements ComputeProvider {
+    private static final Logger log = LoggerFactory.getLogger(AwsComputeProvider.class);
+
     private static final String MANAGED_TAG_KEY = "aether-managed";
 
     private static final String MANAGED_TAG_VALUE = "true";
@@ -39,7 +45,13 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        return client.runInstances(buildRunRequest()).flatMap(this::tagAndMapFirstInstance)
+        return client.runInstances(buildRunRequest(Option.empty())).flatMap(this::tagAndMapFirstInstance)
+                                  .mapError(AwsComputeProvider::toProvisionError);
+    }
+
+    @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
+        var zone = extractAvailabilityZone(spec.placement());
+        return client.runInstances(buildRunRequest(zone)).flatMap(this::tagAndMapFirstInstance)
                                   .mapError(AwsComputeProvider::toProvisionError);
     }
 
@@ -89,7 +101,7 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
                                        .mapError(AwsComputeProvider::toListInstancesError);
     }
 
-    private RunInstancesRequest buildRunRequest() {
+    private RunInstancesRequest buildRunRequest(Option<String> availabilityZone) {
         return RunInstancesRequest.runInstancesRequest(config.amiId(),
                                                        config.instanceType(),
                                                        1,
@@ -97,7 +109,26 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
                                                        config.keyName(),
                                                        config.securityGroupIds(),
                                                        Option.some(config.subnetId()),
-                                                       Option.some(config.userData()));
+                                                       Option.some(config.userData()),
+                                                       availabilityZone);
+    }
+
+    private static Option<String> extractAvailabilityZone(Option<PlacementHint> placement) {
+        return placement.flatMap(AwsComputeProvider::zoneFromHint);
+    }
+
+    private static Option<String> zoneFromHint(PlacementHint hint) {
+        return switch (hint) {
+            case PlacementHint.ZoneHint zone -> Option.some(zone.zoneName());
+            case PlacementHint.HostGroupHint ignored -> logUnsupported("HostGroupHint");
+            case PlacementHint.AffinityHint ignored -> logUnsupported("AffinityHint");
+            case PlacementHint.AntiAffinityHint ignored -> logUnsupported("AntiAffinityHint");
+        };
+    }
+
+    private static Option<String> logUnsupported(String hintType) {
+        log.debug("AWS provider ignoring {} — not yet supported", hintType);
+        return Option.empty();
     }
 
     static InstanceInfo toInstanceInfo(Instance instance) {

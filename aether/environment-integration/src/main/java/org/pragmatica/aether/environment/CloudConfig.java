@@ -31,7 +31,8 @@ public record CloudConfig(String provider,
                           Map<String, String> compute,
                           Map<String, String> loadBalancer,
                           Map<String, String> discovery,
-                          Map<String, String> secrets) {
+                          Map<String, String> secrets,
+                          Map<String, String> security) {
     public static Result<CloudConfig> cloudConfig(String provider,
                                                   Map<String, String> credentials,
                                                   Map<String, String> compute) {
@@ -40,18 +41,23 @@ public record CloudConfig(String provider,
                                        Map.copyOf(compute),
                                        Map.of(),
                                        Map.of(),
+                                       Map.of(),
                                        Map.of()));
     }
 
     @SuppressWarnings("JBCT-VO-02") public CloudConfig withLoadBalancer(Map<String, String> loadBalancer) {
-        return new CloudConfig(provider, credentials, compute, Map.copyOf(loadBalancer), discovery, secrets);
+        return new CloudConfig(provider, credentials, compute, Map.copyOf(loadBalancer), discovery, secrets, security);
     }
 
     @SuppressWarnings("JBCT-VO-02") public CloudConfig withDiscovery(Map<String, String> discovery) {
-        return new CloudConfig(provider, credentials, compute, loadBalancer, Map.copyOf(discovery), secrets);
+        return new CloudConfig(provider, credentials, compute, loadBalancer, Map.copyOf(discovery), secrets, security);
     }
 
     @SuppressWarnings("JBCT-VO-02") public CloudConfig withSecrets(Map<String, String> secrets) {
-        return new CloudConfig(provider, credentials, compute, loadBalancer, discovery, Map.copyOf(secrets));
+        return new CloudConfig(provider, credentials, compute, loadBalancer, discovery, Map.copyOf(secrets), security);
+    }
+
+    @SuppressWarnings("JBCT-VO-02") public CloudConfig withSecurity(Map<String, String> security) {
+        return new CloudConfig(provider, credentials, compute, loadBalancer, discovery, secrets, Map.copyOf(security));
     }
 }

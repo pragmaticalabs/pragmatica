@@ -6,6 +6,8 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.cloud.hetzner.api.Server;
 import org.pragmatica.cloud.hetzner.api.Server.CreateServerRequest;
@@ -15,6 +17,8 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
@@ -30,13 +34,21 @@ import static org.pragmatica.lang.Result.success;
 /// Delegates to HetznerClient for server lifecycle management and maps
 /// Hetzner server models to the environment integration domain types.
 public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentConfig config) implements ComputeProvider {
+    private static final Logger log = LoggerFactory.getLogger(HetznerComputeProvider.class);
+
     public static Result<HetznerComputeProvider> hetznerComputeProvider(HetznerClient client,
                                                                         HetznerEnvironmentConfig config) {
         return success(new HetznerComputeProvider(client, config));
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        return client.createServer(buildCreateRequest()).map(HetznerComputeProvider::toInstanceInfo)
+        return client.createServer(buildCreateRequest(config.region())).map(HetznerComputeProvider::toInstanceInfo)
+                                  .mapError(HetznerComputeProvider::toProvisionError);
+    }
+
+    @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
+        var location = extractLocation(spec.placement());
+        return client.createServer(buildCreateRequest(location)).map(HetznerComputeProvider::toInstanceInfo)
                                   .mapError(HetznerComputeProvider::toProvisionError);
     }
 
@@ -91,14 +103,13 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return client.getServer(serverId);
     }
 
-    private CreateServerRequest buildCreateRequest() {
+    private CreateServerRequest buildCreateRequest(String location) {
         var name = generateServerName();
         var serverType = config.serverType();
         var image = config.image();
         var sshKeyIds = config.sshKeyIds();
         var networkIds = config.networkIds();
         var firewallIds = config.firewallIds();
-        var region = config.region();
         var userData = config.userData();
         return CreateServerRequest.createServerRequest(name,
                                                        serverType,
@@ -106,9 +117,28 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                        sshKeyIds,
                                                        networkIds,
                                                        firewallIds,
-                                                       region,
+                                                       location,
                                                        userData,
                                                        true);
+    }
+
+    private String extractLocation(Option<PlacementHint> placement) {
+        return placement.flatMap(HetznerComputeProvider::locationFromHint)
+                        .or(config.region());
+    }
+
+    private static Option<String> locationFromHint(PlacementHint hint) {
+        return switch (hint) {
+            case PlacementHint.ZoneHint zone -> Option.some(zone.zoneName());
+            case PlacementHint.HostGroupHint ignored -> logUnsupported("HostGroupHint");
+            case PlacementHint.AffinityHint ignored -> logUnsupported("AffinityHint");
+            case PlacementHint.AntiAffinityHint ignored -> logUnsupported("AntiAffinityHint");
+        };
+    }
+
+    private static Option<String> logUnsupported(String hintType) {
+        log.debug("Hetzner provider ignoring {} — not yet supported", hintType);
+        return Option.empty();
     }
 
     private static String generateServerName() {

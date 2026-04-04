@@ -6,6 +6,8 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.cloud.gcp.GcpClient;
 import org.pragmatica.cloud.gcp.api.InsertInstanceRequest;
 import org.pragmatica.cloud.gcp.api.InsertInstanceRequest.AccessConfig;
@@ -21,6 +23,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
@@ -34,6 +38,8 @@ import static org.pragmatica.lang.Result.success;
 /// Delegates to GcpClient for instance lifecycle management and maps
 /// GCP instance models to the environment integration domain types.
 public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) implements ComputeProvider {
+    private static final Logger log = LoggerFactory.getLogger(GcpComputeProvider.class);
+
     private static final String MANAGED_LABEL_KEY = "aether-managed";
 
     private static final String MANAGED_LABEL_VALUE = "true";
@@ -43,7 +49,13 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        return client.insertInstance(buildInsertRequest()).map(GcpComputeProvider::toInstanceInfo)
+        return client.insertInstance(buildInsertRequest(Option.empty())).map(GcpComputeProvider::toInstanceInfo)
+                                    .mapError(GcpComputeProvider::toProvisionError);
+    }
+
+    @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
+        var zone = extractZone(spec.placement());
+        return client.insertInstance(buildInsertRequest(zone)).map(GcpComputeProvider::toInstanceInfo)
                                     .mapError(GcpComputeProvider::toProvisionError);
     }
 
@@ -83,14 +95,32 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         return "";
     }
 
-    private InsertInstanceRequest buildInsertRequest() {
+    private InsertInstanceRequest buildInsertRequest(Option<String> zoneOverride) {
         var name = generateInstanceName();
         var machineType = config.machineType();
         var disk = buildBootDisk();
         var networkInterface = buildNetworkInterface();
         var labels = Map.of(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE);
         var metadata = buildMetadata();
-        return new InsertInstanceRequest(name, machineType, List.of(disk), List.of(networkInterface), labels, metadata);
+        return new InsertInstanceRequest(name, machineType, List.of(disk), List.of(networkInterface), labels, metadata, zoneOverride);
+    }
+
+    private static Option<String> extractZone(Option<PlacementHint> placement) {
+        return placement.flatMap(GcpComputeProvider::zoneFromHint);
+    }
+
+    private static Option<String> zoneFromHint(PlacementHint hint) {
+        return switch (hint) {
+            case PlacementHint.ZoneHint zone -> Option.some(zone.zoneName());
+            case PlacementHint.HostGroupHint ignored -> logUnsupported("HostGroupHint");
+            case PlacementHint.AffinityHint ignored -> logUnsupported("AffinityHint");
+            case PlacementHint.AntiAffinityHint ignored -> logUnsupported("AntiAffinityHint");
+        };
+    }
+
+    private static Option<String> logUnsupported(String hintType) {
+        log.debug("GCP provider ignoring {} — not yet supported", hintType);
+        return Option.empty();
     }
 
     private Disk buildBootDisk() {

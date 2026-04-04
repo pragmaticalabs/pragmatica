@@ -11,6 +11,7 @@ import org.pragmatica.lang.Unit;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 
 /// Test stub for GcpClient that returns canned responses and captures arguments.
 final class TestGcpClient implements GcpClient {
@@ -26,6 +27,7 @@ final class TestGcpClient implements GcpClient {
     Promise<Operation> detachEndpointResponse = Promise.success(OK_OPERATION);
     Promise<List<NetworkEndpoint>> listEndpointsResponse = Promise.success(List.of());
     Promise<String> accessSecretResponse = Promise.success("test-secret");
+    Queue<Promise<String>> secretResponses;
 
     String lastDeletedInstanceName;
     String lastGetInstanceName;
@@ -104,6 +106,9 @@ final class TestGcpClient implements GcpClient {
     @Override
     public Promise<String> accessSecretVersion(String secretName) {
         lastSecretName = secretName;
+        if (secretResponses != null && !secretResponses.isEmpty()) {
+            return secretResponses.poll();
+        }
         return accessSecretResponse;
     }
 }

@@ -6,6 +6,8 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.cloud.azure.AzureClient;
 import org.pragmatica.cloud.azure.api.CreateVmRequest;
 import org.pragmatica.cloud.azure.api.CreateVmRequest.HardwareProfile;
@@ -28,6 +30,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
@@ -42,12 +46,20 @@ import static org.pragmatica.lang.Result.success;
 /// Delegates to AzureClient for VM lifecycle management and maps
 /// Azure VM models to the environment integration domain types.
 public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig config) implements ComputeProvider {
+    private static final Logger log = LoggerFactory.getLogger(AzureComputeProvider.class);
+
     public static Result<AzureComputeProvider> azureComputeProvider(AzureClient client, AzureEnvironmentConfig config) {
         return success(new AzureComputeProvider(client, config));
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        return client.createVm(buildCreateRequest()).map(AzureComputeProvider::toInstanceInfo)
+        return client.createVm(buildCreateRequest(List.of())).map(AzureComputeProvider::toInstanceInfo)
+                              .mapError(AzureComputeProvider::toProvisionError);
+    }
+
+    @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
+        var zones = extractZones(spec.placement());
+        return client.createVm(buildCreateRequest(zones)).map(AzureComputeProvider::toInstanceInfo)
                               .mapError(AzureComputeProvider::toProvisionError);
     }
 
@@ -78,7 +90,7 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
                                     .mapError(AzureComputeProvider::toListInstancesError);
     }
 
-    private CreateVmRequest buildCreateRequest() {
+    private CreateVmRequest buildCreateRequest(List<String> zones) {
         var name = generateVmName();
         var imageRef = parseImageUrn(config.image());
         var hardware = new HardwareProfile(config.vmSize());
@@ -92,7 +104,28 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         return CreateVmRequest.createVmRequest(name,
                                                config.azureConfig().location(),
                                                tags,
-                                               properties);
+                                               properties,
+                                               zones);
+    }
+
+    private static List<String> extractZones(Option<PlacementHint> placement) {
+        return placement.flatMap(AzureComputeProvider::zoneFromHint)
+                        .map(zone -> List.of(zone))
+                        .or(List.of());
+    }
+
+    private static Option<String> zoneFromHint(PlacementHint hint) {
+        return switch (hint) {
+            case PlacementHint.ZoneHint zone -> Option.some(zone.zoneName());
+            case PlacementHint.HostGroupHint ignored -> logUnsupported("HostGroupHint");
+            case PlacementHint.AffinityHint ignored -> logUnsupported("AffinityHint");
+            case PlacementHint.AntiAffinityHint ignored -> logUnsupported("AntiAffinityHint");
+        };
+    }
+
+    private static Option<String> logUnsupported(String hintType) {
+        log.debug("Azure provider ignoring {} — not yet supported", hintType);
+        return Option.empty();
     }
 
     private static String generateVmName() {

@@ -14,6 +14,7 @@ import org.pragmatica.lang.Unit;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 
 /// Test stub for AwsClient that returns canned responses and captures arguments.
 final class TestAwsClient implements AwsClient {
@@ -26,6 +27,7 @@ final class TestAwsClient implements AwsClient {
     Promise<Unit> deregisterTargetsResponse = Promise.success(Unit.unit());
     Promise<List<TargetHealth>> describeTargetHealthResponse = Promise.success(List.of());
     Promise<String> getSecretValueResponse = Promise.success("secret-value");
+    Queue<Promise<String>> secretResponses;
 
     List<String> lastTerminatedIds;
     List<String> lastRebootedIds;
@@ -99,6 +101,9 @@ final class TestAwsClient implements AwsClient {
     @Override
     public Promise<String> getSecretValue(String secretId) {
         lastSecretId = secretId;
+        if (secretResponses != null && !secretResponses.isEmpty()) {
+            return secretResponses.poll();
+        }
         return getSecretValueResponse;
     }
 

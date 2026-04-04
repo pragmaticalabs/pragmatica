@@ -12,6 +12,7 @@ import org.pragmatica.lang.Unit;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 
 /// Test stub for AzureClient that returns canned responses and captures arguments.
 final class TestAzureClient implements AzureClient {
@@ -30,6 +31,7 @@ final class TestAzureClient implements AzureClient {
         new AzureLoadBalancer("lb-id", "test-lb", new AzureLoadBalancer.LbProperties(List.of())));
     Promise<List<ResourceRow>> queryResourcesResponse = Promise.success(List.of());
     Promise<String> getSecretResponse = Promise.success("secret-value");
+    Queue<Promise<String>> secretResponses;
 
     String lastDeletedVmName;
     String lastGetVmName;
@@ -103,6 +105,9 @@ final class TestAzureClient implements AzureClient {
     public Promise<String> getSecret(String vaultName, String secretName) {
         lastGetSecretVaultName = vaultName;
         lastGetSecretName = secretName;
+        if (secretResponses != null && !secretResponses.isEmpty()) {
+            return secretResponses.poll();
+        }
         return getSecretResponse;
     }
 }

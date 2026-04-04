@@ -10,7 +10,9 @@ import org.pragmatica.cloud.gcp.GcpClient;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.net.tcp.security.CertificateProvider;
 
+import static org.pragmatica.aether.environment.gcp.GcpCertificateProvider.gcpCertificateProvider;
 import static org.pragmatica.aether.environment.gcp.GcpComputeProvider.gcpComputeProvider;
 import static org.pragmatica.aether.environment.gcp.GcpDiscoveryProvider.gcpDiscoveryProvider;
 import static org.pragmatica.aether.environment.gcp.GcpLoadBalancerProvider.gcpLoadBalancerProvider;
@@ -26,7 +28,8 @@ import static org.pragmatica.lang.Result.success;
 public record GcpEnvironmentIntegration(GcpComputeProvider computeProvider,
                                         Option<LoadBalancerProvider> loadBalancerProvider,
                                         Option<DiscoveryProvider> discoveryProvider,
-                                        Option<SecretsProvider> secretsProvider) implements EnvironmentIntegration {
+                                        Option<SecretsProvider> secretsProvider,
+                                        Option<CertificateProvider> certProvider) implements EnvironmentIntegration {
     public static Result<GcpEnvironmentIntegration> gcpEnvironmentIntegration(GcpEnvironmentConfig config) {
         var client = GcpClient.gcpClient(config.gcpConfig());
         return gcpEnvironmentIntegration(client, config);
@@ -38,8 +41,9 @@ public record GcpEnvironmentIntegration(GcpComputeProvider computeProvider,
         var lbProvider = resolveLbProvider(client, config);
         var discovery = resolveDiscoveryProvider(client, config);
         var secrets = resolveSecretsProvider(client);
+        var certProv = resolveCertificateProvider(client, config);
         return Result.all(compute, lbProvider)
-                         .map((cp, lb) -> new GcpEnvironmentIntegration(cp, lb, discovery, secrets));
+                         .map((cp, lb) -> new GcpEnvironmentIntegration(cp, lb, discovery, secrets, certProv));
     }
 
     private static Result<Option<LoadBalancerProvider>> resolveLbProvider(GcpClient client,
@@ -81,5 +85,17 @@ public record GcpEnvironmentIntegration(GcpComputeProvider computeProvider,
 
     @Override public Option<DiscoveryProvider> discovery() {
         return discoveryProvider;
+    }
+
+    @Override public Option<CertificateProvider> certificateProvider() {
+        return certProvider;
+    }
+
+    private static Option<CertificateProvider> resolveCertificateProvider(GcpClient client,
+                                                                          GcpEnvironmentConfig config) {
+        return config.certificateSecretPrefix()
+                     .flatMap(prefix -> gcpCertificateProvider(client, prefix)
+                                            .map(CertificateProvider.class::cast)
+                                            .option());
     }
 }

@@ -2,6 +2,7 @@ package org.pragmatica.aether.environment;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.net.tcp.security.CertificateProvider;
 
 import java.util.ServiceLoader;
 
@@ -28,32 +29,48 @@ public interface EnvironmentIntegration {
         return empty();
     }
 
+    /// Certificate provider for mTLS and gossip key management.
+    /// Cloud implementations fetch certificate material from their respective secrets/certificate services.
+    default Option<CertificateProvider> certificateProvider() {
+        return empty();
+    }
+
     static EnvironmentIntegration withCompute(ComputeProvider compute) {
-        return environmentIntegration(some(compute), empty(), empty(), empty());
+        return environmentIntegration(some(compute), empty(), empty(), empty(), empty());
     }
 
     static EnvironmentIntegration environmentIntegration(Option<ComputeProvider> compute,
                                                          Option<SecretsProvider> secrets,
                                                          Option<LoadBalancerProvider> loadBalancer) {
-        return environmentIntegration(compute, secrets, loadBalancer, empty());
+        return environmentIntegration(compute, secrets, loadBalancer, empty(), empty());
     }
 
     static EnvironmentIntegration environmentIntegration(Option<ComputeProvider> compute,
                                                          Option<SecretsProvider> secrets,
                                                          Option<LoadBalancerProvider> loadBalancer,
                                                          Option<DiscoveryProvider> discovery) {
-        return FacetedEnvironment.facetedEnvironment(compute, secrets, loadBalancer, discovery).unwrap();
+        return environmentIntegration(compute, secrets, loadBalancer, discovery, empty());
+    }
+
+    static EnvironmentIntegration environmentIntegration(Option<ComputeProvider> compute,
+                                                         Option<SecretsProvider> secrets,
+                                                         Option<LoadBalancerProvider> loadBalancer,
+                                                         Option<DiscoveryProvider> discovery,
+                                                         Option<CertificateProvider> certificateProvider) {
+        return FacetedEnvironment.facetedEnvironment(compute, secrets, loadBalancer, discovery, certificateProvider).unwrap();
     }
 
     record FacetedEnvironment(Option<ComputeProvider> compute,
                               Option<SecretsProvider> secrets,
                               Option<LoadBalancerProvider> loadBalancer,
-                              Option<DiscoveryProvider> discovery) implements EnvironmentIntegration {
+                              Option<DiscoveryProvider> discovery,
+                              Option<CertificateProvider> certificateProvider) implements EnvironmentIntegration {
         public static Result<FacetedEnvironment> facetedEnvironment(Option<ComputeProvider> compute,
                                                                     Option<SecretsProvider> secrets,
                                                                     Option<LoadBalancerProvider> loadBalancer,
-                                                                    Option<DiscoveryProvider> discovery) {
-            return success(new FacetedEnvironment(compute, secrets, loadBalancer, discovery));
+                                                                    Option<DiscoveryProvider> discovery,
+                                                                    Option<CertificateProvider> certificateProvider) {
+            return success(new FacetedEnvironment(compute, secrets, loadBalancer, discovery, certificateProvider));
         }
     }
 }
