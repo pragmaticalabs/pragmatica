@@ -23,7 +23,7 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 
 public class ManifestGenerator {
-    static final int ENVELOPE_FORMAT_VERSION = 7;
+    static final int ENVELOPE_FORMAT_VERSION = 8;
 
     private final Filer filer;
     private final DependencyVersionResolver versionResolver;
@@ -74,6 +74,7 @@ public class ManifestGenerator {
             props.setProperty("slice.interface", model.qualifiedName());
             props.setProperty("slice.artifactSuffix", toKebabCase(sliceName));
             props.setProperty("slice.package", model.packageName());
+            props.setProperty("slice.factory", model.packageName() + "." + sliceName + "Factory");
             // Implementation classes
             var implClasses = collectImplClasses(model, routesClass);
             props.setProperty("impl.classes", String.join(",", implClasses));
@@ -233,6 +234,22 @@ public class ManifestGenerator {
                 }
             }
             props.setProperty("pg.notifications.count", String.valueOf(pgNotifIndex));
+            // Config update subscription metadata
+            var configUpdateMethods = model.configUpdateMethods();
+            int configUpdateIndex = 0;
+            for (var method : configUpdateMethods) {
+                for (var configSub : method.configUpdateSubscriptions()) {
+                    var cuPrefix = "config.update." + configUpdateIndex + ".";
+                    props.setProperty(cuPrefix + "config", configSub.configSection());
+                    props.setProperty(cuPrefix + "method", method.name());
+                    if (method.hasSingleParam()) {
+                        props.setProperty(cuPrefix + "paramType",
+                                          getQualifiedTypeName(method.parameters().getFirst().type()));
+                    }
+                    configUpdateIndex++;
+                }
+            }
+            props.setProperty("config.updates.count", String.valueOf(configUpdateIndex));
             // Stream event codec classes (union of all stream event types)
             var streamEventTypes = collectStreamEventTypes(model);
             if (!streamEventTypes.isEmpty()) {

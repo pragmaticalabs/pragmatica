@@ -118,9 +118,13 @@ public class FactoryClassGenerator {
             importTracker.use("org.pragmatica.lang.Functions.Fn1");
         }
         importTracker.use("java.util.List");
-        if (allDeps.stream().anyMatch(DependencyModel::isConfigurationSection)) {
+        if (allDeps.stream().anyMatch(DependencyModel::isConfigurationSection) || model.hasConfigUpdateSubscriptions()) {
             importTracker.use("org.pragmatica.aether.slice.ConfigFacade");
             importTracker.use("org.pragmatica.lang.Result");
+        }
+        if (model.hasConfigUpdateSubscriptions()) {
+            importTracker.use("org.slf4j.Logger");
+            importTracker.use("org.slf4j.LoggerFactory");
         }
         // Register dependency imports
         for (var dep : allDeps) {
@@ -143,6 +147,11 @@ public class FactoryClassGenerator {
         bodyOut.println();
         // createSlice() method
         generateCreateSliceMethod(bodyOut, model, proxyMethodsCache, importTracker);
+        // notifyConfigUpdate() method (only if config update methods exist)
+        if (model.hasConfigUpdateSubscriptions()) {
+            bodyOut.println();
+            generateNotifyConfigUpdateMethod(bodyOut, model, importTracker);
+        }
         bodyOut.println("}");
         bodyOut.flush();
         // Phase 2: Assemble output — package, imports, body
@@ -1419,6 +1428,83 @@ public class FactoryClassGenerator {
                || typeName.equals("boolean")
                || typeName.equals("double")
                || typeName.equals("float");
+    }
+
+    /// Generate the notifyConfigUpdate static method for config runtime notification.
+    ///
+    /// Generates a method that parses config sections and calls update methods on the slice
+    /// only when the parsed config differs from the previous value (diff detection at call site).
+    private void generateNotifyConfigUpdateMethod(PrintWriter out, SliceModel model, ImportTracker importTracker) {
+        var sliceName = model.simpleName();
+        var factoryName = sliceName + "Factory";
+        out.println("    private static final Logger configLog = LoggerFactory.getLogger(" + factoryName + ".class);");
+        out.println();
+        out.println("    public static void notifyConfigUpdate(Object sliceInstance, String section, ConfigFacade config) {");
+        for (var method : model.configUpdateMethods()) {
+            for (var configSub : method.configUpdateSubscriptions()) {
+                var configSection = escapeJavaString(configSub.configSection());
+                generateConfigUpdateBranch(out, model, method, configSection, sliceName, importTracker);
+            }
+        }
+        out.println("    }");
+    }
+
+    private void generateConfigUpdateBranch(PrintWriter out,
+                                             SliceModel model,
+                                             MethodModel method,
+                                             String configSection,
+                                             String sliceName,
+                                             ImportTracker importTracker) {
+        var paramType = method.parameters().getFirst().type().toString();
+        var configTypeName = importTracker.use(paramType);
+        var configDep = findConfigDependencyForType(model, paramType);
+        out.println("        if (\"" + configSection + "\".equals(section)) {");
+        out.println("            var parsed = " + generateConfigParseExpression(configDep, configSection, configTypeName, importTracker) + ";");
+        out.println("            parsed.onSuccess(c -> ((" + sliceName + ") sliceInstance)." + method.name() + "(c));");
+        out.println("            parsed.onFailure(cause -> configLog.warn(\"Config parse failed for section {}: {}\", section, cause.message()));");
+        out.println("        }");
+    }
+
+    private String generateConfigParseExpression(Option<DependencyModel> configDep,
+                                                  String configSection,
+                                                  String configTypeName,
+                                                  ImportTracker importTracker) {
+        return configDep.fold(
+            () -> "Result.success(new " + configTypeName + "())",
+            dep -> generateConfigParseFromDep(dep, configSection, configTypeName, importTracker)
+        );
+    }
+
+    private String generateConfigParseFromDep(DependencyModel dep,
+                                               String configSection,
+                                               String configTypeName,
+                                               ImportTracker importTracker) {
+        var factoryParams = analyzeConfigRecordFactory(dep);
+        if (factoryParams.isEmpty()) {
+            return "Result.success(new " + configTypeName + "())";
+        }
+        var sb = new StringBuilder();
+        sb.append("Result.all(\n");
+        for (int i = 0; i < factoryParams.size(); i++) {
+            var param = factoryParams.get(i);
+            var comma = (i < factoryParams.size() - 1) ? "," : "";
+            var tomlKey = camelToSnakeCase(param.name());
+            sb.append("                config.")
+              .append(param.configAccessMethod())
+              .append("(\"").append(configSection).append("\", \"").append(tomlKey).append("\")")
+              .append(comma).append("\n");
+        }
+        var factoryMethod = lowercaseFirst(dep.interfaceSimpleName());
+        sb.append("            ).flatMap(").append(configTypeName).append("::").append(factoryMethod).append(")");
+        return sb.toString();
+    }
+
+    private Option<DependencyModel> findConfigDependencyForType(SliceModel model, String paramType) {
+        return Option.from(model.dependencies()
+                                .stream()
+                                .filter(DependencyModel::isConfigurationSection)
+                                .filter(dep -> dep.interfaceQualifiedName().equals(paramType))
+                                .findFirst());
     }
 
     /// Tracks imports during two-phase code generation.

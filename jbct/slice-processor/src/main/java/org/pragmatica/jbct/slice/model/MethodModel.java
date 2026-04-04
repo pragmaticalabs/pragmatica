@@ -28,6 +28,7 @@ public record MethodModel(String name,
                            List<ResourceQualifierModel> scheduled,
                            List<ResourceQualifierModel> streamSubscriptions,
                            List<ResourceQualifierModel> pgNotificationSubscriptions,
+                           List<ResourceQualifierModel> configUpdateSubscriptions,
                            Option<KeyExtractorInfo> keyExtractor,
                            Option<MethodParameterInfo> multiParamKeyParam) {
 
@@ -41,6 +42,7 @@ public record MethodModel(String name,
     private static final String SCHEDULED_TYPE = "org.pragmatica.aether.slice.Scheduled";
     private static final String STREAM_SUBSCRIBER_TYPE = "org.pragmatica.aether.slice.StreamSubscriber";
     private static final String PG_NOTIFICATION_SUBSCRIBER_TYPE = "org.pragmatica.aether.slice.PgNotificationSubscriber";
+    private static final String CONFIGURATION_SECTION_TYPE = "org.pragmatica.aether.slice.annotation.ConfigurationSection";
     private static final String PRINCIPAL_TYPE = "org.pragmatica.aether.http.handler.security.Principal";
     private static final String SECURITY_CONTEXT_TYPE = "org.pragmatica.aether.http.handler.security.SecurityContext";
 
@@ -50,6 +52,7 @@ public record MethodModel(String name,
         scheduled = List.copyOf(scheduled);
         streamSubscriptions = List.copyOf(streamSubscriptions);
         pgNotificationSubscriptions = List.copyOf(pgNotificationSubscriptions);
+        configUpdateSubscriptions = List.copyOf(configUpdateSubscriptions);
         parameters = List.copyOf(parameters);
     }
 
@@ -90,6 +93,11 @@ public record MethodModel(String name,
     /// Check if this method has any PostgreSQL notification subscriptions.
     public boolean hasPgNotificationSubscriptions() {
         return !pgNotificationSubscriptions.isEmpty();
+    }
+
+    /// Check if this method has any config update subscriptions.
+    public boolean hasConfigUpdateSubscriptions() {
+        return !configUpdateSubscriptions.isEmpty();
     }
 
     /// Check if a parameter is a security injection type (Principal or SecurityContext).
@@ -214,6 +222,7 @@ public record MethodModel(String name,
         var methodScheduled = methodAnnotations.scheduled();
         var methodStreamSubscriptions = methodAnnotations.streamSubscriptions();
         var methodPgNotificationSubscriptions = methodAnnotations.pgNotificationSubscriptions();
+        var methodConfigUpdateSubscriptions = methodAnnotations.configUpdateSubscriptions();
         var paramInfos = buildParameterInfos(params, env);
 
         // Validate subscription methods
@@ -240,6 +249,12 @@ public record MethodModel(String name,
             return pgNotifValidation.flatMap(_ -> Result.success(null)); // propagate error
         }
 
+        // Validate config update subscription methods
+        var configUpdateValidation = validateConfigUpdateSubscriptions(methodConfigUpdateSubscriptions, paramInfos, name, returnType);
+        if (configUpdateValidation.isFailure()) {
+            return configUpdateValidation.flatMap(_ -> Result.success(null)); // propagate error
+        }
+
         return validateKeyAnnotations(paramInfos, name)
         .flatMap(_ -> resolveKeyInfo(paramInfos, env, methodInterceptors, name))
         .map(keyResult -> new MethodModel(name,
@@ -252,6 +267,7 @@ public record MethodModel(String name,
                                            methodScheduled,
                                            methodStreamSubscriptions,
                                            methodPgNotificationSubscriptions,
+                                           methodConfigUpdateSubscriptions,
                                            keyResult.keyExtractor(),
                                            keyResult.multiParamKeyParam()));
     }
@@ -344,7 +360,8 @@ public record MethodModel(String name,
                                       List<ResourceQualifierModel> subscriptions,
                                       List<ResourceQualifierModel> scheduled,
                                       List<ResourceQualifierModel> streamSubscriptions,
-                                      List<ResourceQualifierModel> pgNotificationSubscriptions) {}
+                                      List<ResourceQualifierModel> pgNotificationSubscriptions,
+                                      List<ResourceQualifierModel> configUpdateSubscriptions) {}
 
     /// Extract method-level annotations with @ResourceQualifier meta-annotation.
     /// Splits them into interceptors, subscriptions, scheduled, and stream subscriptions based on resource type.
@@ -355,12 +372,15 @@ public record MethodModel(String name,
         var scheduled = new ArrayList<ResourceQualifierModel>();
         var streamSubscriptions = new ArrayList<ResourceQualifierModel>();
         var pgNotificationSubscriptions = new ArrayList<ResourceQualifierModel>();
+        var configUpdateSubscriptions = new ArrayList<ResourceQualifierModel>();
         for (var annotation : method.getAnnotationMirrors()) {
             ResourceQualifierModel.fromAnnotationMirror(annotation, env)
                                   .onPresent(model -> classifyAnnotation(model, interceptors, subscriptions, scheduled,
-                                                                         streamSubscriptions, pgNotificationSubscriptions));
+                                                                         streamSubscriptions, pgNotificationSubscriptions,
+                                                                         configUpdateSubscriptions));
         }
-        return new MethodAnnotations(interceptors, subscriptions, scheduled, streamSubscriptions, pgNotificationSubscriptions);
+        return new MethodAnnotations(interceptors, subscriptions, scheduled, streamSubscriptions,
+                                     pgNotificationSubscriptions, configUpdateSubscriptions);
     }
 
     private static void classifyAnnotation(ResourceQualifierModel model,
@@ -368,7 +388,8 @@ public record MethodModel(String name,
                                             List<ResourceQualifierModel> subscriptions,
                                             List<ResourceQualifierModel> scheduled,
                                             List<ResourceQualifierModel> streamSubscriptions,
-                                            List<ResourceQualifierModel> pgNotificationSubscriptions) {
+                                            List<ResourceQualifierModel> pgNotificationSubscriptions,
+                                            List<ResourceQualifierModel> configUpdateSubscriptions) {
         if (SUBSCRIBER_TYPE.equals(model.resourceType().toString())) {
             subscriptions.add(model);
         } else if (SCHEDULED_TYPE.equals(model.resourceType().toString())) {
@@ -377,6 +398,8 @@ public record MethodModel(String name,
             streamSubscriptions.add(model);
         } else if (PG_NOTIFICATION_SUBSCRIBER_TYPE.equals(model.resourceType().toString())) {
             pgNotificationSubscriptions.add(model);
+        } else if (CONFIGURATION_SECTION_TYPE.equals(model.resourceType().toString())) {
+            configUpdateSubscriptions.add(model);
         } else {
             interceptors.add(model);
         }
@@ -482,6 +505,31 @@ public record MethodModel(String name,
             var typeArg = dt.getTypeArguments().getFirst().toString();
             if (!"org.pragmatica.lang.Unit".equals(typeArg)) {
                 return Causes.cause("PG notification subscription method '" + methodName
+                                    + "' must return Promise<Unit>, found: Promise<" + typeArg + ">")
+                             .result();
+            }
+        }
+        return Result.unitResult();
+    }
+
+    private static Result<Unit> validateConfigUpdateSubscriptions(List<ResourceQualifierModel> configUpdateSubscriptions,
+                                                                      List<MethodParameterInfo> params,
+                                                                      String methodName,
+                                                                      TypeMirror returnType) {
+        if (configUpdateSubscriptions.isEmpty()) {
+            return Result.unitResult();
+        }
+        // Config update methods must have exactly one parameter (the config record type)
+        if (params.size() != 1) {
+            return Causes.cause("Config update method '" + methodName
+                                + "' must have exactly one parameter (the config record type), found: " + params.size())
+                         .result();
+        }
+        // Return type must be Promise<Unit>
+        if (returnType instanceof DeclaredType dt && !dt.getTypeArguments().isEmpty()) {
+            var typeArg = dt.getTypeArguments().getFirst().toString();
+            if (!"org.pragmatica.lang.Unit".equals(typeArg)) {
+                return Causes.cause("Config update method '" + methodName
                                     + "' must return Promise<Unit>, found: Promise<" + typeArg + ">")
                              .result();
             }

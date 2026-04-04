@@ -2278,7 +2278,7 @@ class SliceProcessorTest {
     }
 
     @Test
-    void should_detect_envelope_version_7() {
+    void should_detect_envelope_version_8() {
         assertThat(org.pragmatica.jbct.slice.generator.ManifestGenerator.class).isNotNull();
         // Verify the constant was bumped — accessed via reflection since it's package-private
         // The manifest test below verifies it appears in output
@@ -2344,8 +2344,8 @@ class SliceProcessorTest {
         assertThat(manifestFile.isPresent()).isTrue();
         var manifestContent = manifestFile.get().getCharContent(false).toString();
 
-        // Verify envelope version was bumped to 7
-        assertThat(manifestContent).contains("envelope.version=7");
+        // Verify envelope version was bumped to 8
+        assertThat(manifestContent).contains("envelope.version=8");
 
         // Verify stream publisher metadata
         assertThat(manifestContent).contains("stream.publishers.count=1");

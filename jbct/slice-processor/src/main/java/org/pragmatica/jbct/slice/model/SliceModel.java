@@ -239,6 +239,19 @@ public record SliceModel(String packageName,
                       .toList();
     }
 
+    /// Check if any method has config update subscriptions.
+    public boolean hasConfigUpdateSubscriptions() {
+        return methods.stream()
+                      .anyMatch(MethodModel::hasConfigUpdateSubscriptions);
+    }
+
+    /// Get all methods that have config update subscriptions.
+    public List<MethodModel> configUpdateMethods() {
+        return methods.stream()
+                      .filter(MethodModel::hasConfigUpdateSubscriptions)
+                      .toList();
+    }
+
     public String factoryMethodName() {
         return factoryMethod.getSimpleName()
                             .toString();

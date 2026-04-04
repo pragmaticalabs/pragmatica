@@ -1,6 +1,7 @@
 package org.pragmatica.aether.deployment.node;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.config.ConfigNotificationManager;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.*;
@@ -11,6 +12,7 @@ import org.pragmatica.aether.slice.DefaultSliceBridge;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.ConfigFacade;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
@@ -114,7 +116,8 @@ public interface NodeDeploymentManager {
                                          Option<HttpRoutePublisher> httpRoutePublisher,
                                          Option<SliceInvokerFacade> sliceInvokerFacade,
                                          TimeSpan activationChainTimeout,
-                                         TimeSpan transitionRetryDelay) implements NodeDeploymentState {
+                                         TimeSpan transitionRetryDelay,
+                                         ConfigNotificationManager configNotificationManager) implements NodeDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(ActiveNodeDeploymentState.class);
 
             private static final TimeSpan CONSENSUS_OPERATION_TIMEOUT = TimeSpan.timeSpan(30).seconds();
@@ -260,6 +263,7 @@ public interface NodeDeploymentManager {
                             .flatMap(this::publishTopicSubscriptions)
                             .flatMap(this::publishStreamSubscriptions)
                             .flatMap(this::publishScheduledTasks)
+                            .flatMap(this::registerAndNotifyConfig)
                             .flatMap(key -> transitionTo(key, SliceState.ACTIVE))
                             .flatMap(this::publishEndpointsAndRoutes)
                             .timeout(activationChainTimeout)
@@ -392,6 +396,7 @@ public interface NodeDeploymentManager {
                             .flatMap(this::unpublishScheduledTasks)
                             .flatMap(this::unpublishHttpRoutes)
                             .withSuccess(this::unregisterSliceFromInvocation)
+                            .withSuccess(this::unregisterConfig)
                             .flatMap(this::deactivateSliceWithTimeout)
                             .flatMap(key -> transitionTo(key, SliceState.LOADED))
                             .withFailure(cause -> handleDeactivationFailure(sliceKey, cause));
@@ -599,6 +604,75 @@ public interface NodeDeploymentManager {
                                                                          ScheduledTaskManifestEntry entry) {
                 var key = ScheduledTaskKey.scheduledTaskKey(entry.configSection(), artifact, entry.methodName());
                 return new KVCommand.Remove<>(key);
+            }
+
+            private record ConfigUpdateManifestEntry(String configSection, String factoryClassName) {}
+
+            private Promise<SliceNodeKey> registerAndNotifyConfig(SliceNodeKey sliceKey) {
+                var artifact = sliceKey.artifact();
+                findLoadedSlice(artifact).onPresent(ls -> registerSliceForConfigUpdates(artifact, ls.slice()));
+                return Promise.success(sliceKey);
+            }
+
+            private void registerSliceForConfigUpdates(Artifact artifact, Slice slice) {
+                var entries = readConfigUpdateEntriesFromManifest(slice);
+                if (entries.isEmpty()) {return;}
+                var classLoader = slice.getClass().getClassLoader();
+                var factoryClassName = entries.getFirst().factoryClassName();
+                var sliceInstance = extractSliceInstance(slice);
+                configNotificationManager.register(artifact, sliceInstance, classLoader, factoryClassName);
+                var sections = entries.stream().map(ConfigUpdateManifestEntry::configSection).toList();
+                configNotificationManager.notifyInitial(artifact, sections, buildConfigFacade());
+                log.debug("Registered slice {} for config updates on sections: {}", artifact, sections);
+            }
+
+            private void unregisterConfig(SliceNodeKey sliceKey) {
+                configNotificationManager.unregister(sliceKey.artifact());
+            }
+
+            private Object extractSliceInstance(Slice slice) {
+                for (var iface : slice.getClass().getInterfaces()) {
+                    if (iface != Slice.class) {return slice;}
+                }
+                return slice;
+            }
+
+            @SuppressWarnings("JBCT-EX-01") private List<ConfigUpdateManifestEntry> readConfigUpdateEntriesFromManifest(Slice slice) {
+                var result = new ArrayList<ConfigUpdateManifestEntry>();
+                var classLoader = slice.getClass().getClassLoader();
+                for (var iface : slice.getClass().getInterfaces()) {
+                    if (iface == Slice.class) {continue;}
+                    var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
+                    readConfigUpdateEntries(classLoader, manifestPath, result);
+                }
+                return result;
+            }
+
+            @SuppressWarnings("JBCT-EX-01") private void readConfigUpdateEntries(ClassLoader classLoader,
+                                                                                   String manifestPath,
+                                                                                   List<ConfigUpdateManifestEntry> result) {
+                try (var is = classLoader.getResourceAsStream(manifestPath)) {
+                    if (is == null) {return;}
+                    var props = new Properties();
+                    props.load(is);
+                    var factoryClassName = props.getProperty("slice.factory", "");
+                    if (factoryClassName.isEmpty()) {return;}
+                    var count = Integer.parseInt(props.getProperty("config.updates.count", "0"));
+                    for (int i = 0; i < count; i++) {
+                        var configSection = props.getProperty("config.update." + i + ".config");
+                        if (configSection != null) {
+                            result.add(new ConfigUpdateManifestEntry(configSection, factoryClassName));
+                        }
+                    }
+                } catch (Exception e) {
+                    log.debug("Could not read config update manifest {}: {}", manifestPath, e.getMessage());
+                }
+            }
+
+            private ConfigFacade buildConfigFacade() {
+                return ConfigService.instance()
+                                    .map(NodeDeploymentManager::configServiceToFacade)
+                                    .or(NodeDeploymentManager.NO_OP_CONFIG);
             }
 
             @SuppressWarnings("JBCT-EX-01") private List<ScheduledTaskManifestEntry> readScheduledTasksFromManifest(Slice slice) {
@@ -1029,6 +1103,66 @@ public interface NodeDeploymentManager {
         }
     }
 
+    /// No-op ConfigFacade for when ConfigService is not available.
+    ConfigFacade NO_OP_CONFIG = new NoOpDeploymentConfigFacade();
+
+    /// No-op ConfigFacade implementation for deployment layer.
+    record NoOpDeploymentConfigFacade() implements ConfigFacade {
+        private static final Cause NO_CONFIG = Causes.cause("Config service not available");
+        @Override public Result<String> requireString(String section, String key) { return NO_CONFIG.result(); }
+        @Override public Result<Integer> requireInt(String section, String key) { return NO_CONFIG.result(); }
+        @Override public Result<Long> requireLong(String section, String key) { return NO_CONFIG.result(); }
+        @Override public Result<Double> requireDouble(String section, String key) { return NO_CONFIG.result(); }
+        @Override public Result<Boolean> requireBoolean(String section, String key) { return NO_CONFIG.result(); }
+        @Override public Option<String> getString(String section, String key) { return Option.none(); }
+        @Override public Option<Integer> getInt(String section, String key) { return Option.none(); }
+        @Override public Option<Long> getLong(String section, String key) { return Option.none(); }
+        @Override public Option<Double> getDouble(String section, String key) { return Option.none(); }
+        @Override public Option<Boolean> getBoolean(String section, String key) { return Option.none(); }
+    }
+
+    /// Adapts a ConfigService to ConfigFacade by composing section + key paths.
+    @SuppressWarnings("JBCT-UTIL-02") static ConfigFacade configServiceToFacade(ConfigService svc) {
+        return new ConfigServiceConfigFacade(svc);
+    }
+
+    /// ConfigFacade adapter backed by ConfigService.
+    /// Composes section.key paths for lookups.
+    record ConfigServiceConfigFacade(ConfigService delegate) implements ConfigFacade {
+        private static final Cause MISSING_KEY = Causes.cause("Required config key not found");
+
+        @Override public Result<String> requireString(String section, String key) {
+            return delegate.getString(section + "." + key).toResult(MISSING_KEY);
+        }
+        @Override public Result<Integer> requireInt(String section, String key) {
+            return delegate.getInt(section + "." + key).toResult(MISSING_KEY);
+        }
+        @Override public Result<Long> requireLong(String section, String key) {
+            return delegate.getString(section + "." + key).map(Long::parseLong).toResult(MISSING_KEY);
+        }
+        @Override public Result<Double> requireDouble(String section, String key) {
+            return delegate.getString(section + "." + key).map(Double::parseDouble).toResult(MISSING_KEY);
+        }
+        @Override public Result<Boolean> requireBoolean(String section, String key) {
+            return delegate.getBoolean(section + "." + key).toResult(MISSING_KEY);
+        }
+        @Override public Option<String> getString(String section, String key) {
+            return delegate.getString(section + "." + key);
+        }
+        @Override public Option<Integer> getInt(String section, String key) {
+            return delegate.getInt(section + "." + key);
+        }
+        @Override public Option<Long> getLong(String section, String key) {
+            return delegate.getString(section + "." + key).map(Long::parseLong);
+        }
+        @Override public Option<Double> getDouble(String section, String key) {
+            return delegate.getString(section + "." + key).map(Double::parseDouble);
+        }
+        @Override public Option<Boolean> getBoolean(String section, String key) {
+            return delegate.getBoolean(section + "." + key);
+        }
+    }
+
     TimeSpan DEFAULT_ACTIVATION_CHAIN_TIMEOUT = TimeSpan.timeSpan(120_000).millis();
 
     TimeSpan DEFAULT_TRANSITION_RETRY_DELAY = TimeSpan.timeSpan(2000).millis();
@@ -1146,7 +1280,8 @@ public interface NodeDeploymentManager {
                                                                                     httpRoutePublisher(),
                                                                                     sliceInvokerFacade(),
                                                                                     activationChainTimeout(),
-                                                                                    transitionRetryDelay());
+                                                                                    transitionRetryDelay(),
+                                                                                    ConfigNotificationManager.configNotificationManager());
                 state().set(activeState);
                 log.info("Node {} NodeDeploymentManager activated", self().id());
                 registerLifecycleOnDuty();
