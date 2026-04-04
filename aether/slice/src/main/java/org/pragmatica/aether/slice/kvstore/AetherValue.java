@@ -878,4 +878,24 @@ import static org.pragmatica.lang.Option.none;
                                           System.currentTimeMillis());
         }
     }
+
+    record TaskAssignmentValue(NodeId assignedTo, long assignedAtMs, AssignmentStatus status, String failureReason) implements AetherValue {
+        @Codec public enum AssignmentStatus {
+            ASSIGNED,
+            ACTIVE,
+            FAILED
+        }
+
+        public static TaskAssignmentValue taskAssignmentValue(NodeId assignedTo) {
+            return new TaskAssignmentValue(assignedTo, System.currentTimeMillis(), AssignmentStatus.ASSIGNED, "");
+        }
+
+        public TaskAssignmentValue withStatus(AssignmentStatus newStatus) {
+            return new TaskAssignmentValue(assignedTo, assignedAtMs, newStatus, failureReason);
+        }
+
+        public TaskAssignmentValue withFailure(String reason) {
+            return new TaskAssignmentValue(assignedTo, assignedAtMs, AssignmentStatus.FAILED, reason);
+        }
+    }
 }
