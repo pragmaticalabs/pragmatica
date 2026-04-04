@@ -77,11 +77,60 @@ The slice processor validates:
 
 ## Supported Field Types
 
-| Java Type | TOML Type | ConfigFacade Method |
-|-----------|-----------|-------------------|
+### Primitives (required)
+
+| Java Type | TOML Type | Generated Code |
+|-----------|-----------|----------------|
 | `String` | string | `requireString(key)` |
 | `int` | integer | `requireInt(key)` |
 | `long` | integer | `requireLong(key)` |
 | `boolean` | boolean | `requireBoolean(key)` |
 | `double` | float | `requireDouble(key)` |
-| `Option<String>` | string (optional) | `getString(key)` |
+
+### Optional primitives
+
+| Java Type | TOML Type | Generated Code |
+|-----------|-----------|----------------|
+| `Option<String>` | string | `getString(key)` |
+| `Option<Integer>` | integer | `getInt(key)` |
+| `Option<Long>` | integer | `getLong(key)` |
+| `Option<Boolean>` | boolean | `getBoolean(key)` |
+| `Option<Double>` | float | `getDouble(key)` |
+
+### Collections
+
+| Java Type | TOML Type | Generated Code |
+|-----------|-----------|----------------|
+| `List<String>` | array | `requireStringList(key)` |
+
+### Core value objects
+
+All core value objects parse from a TOML string via their factory method:
+
+| Java Type | TOML Example | Generated Code |
+|-----------|-------------|----------------|
+| `TimeSpan` | `"5s"`, `"100ms"`, `"2m"` | `requireString(key).flatMap(TimeSpan::timeSpan)` |
+| `NonBlankString` | `"my-value"` | `requireString(key).flatMap(NonBlankString::nonBlankString)` |
+| `Email` | `"user@example.com"` | `requireString(key).flatMap(Email::email)` |
+| `Url` | `"https://api.example.com"` | `requireString(key).flatMap(Url::url)` |
+| `Uuid` | `"550e8400-e29b-..."` | `requireString(key).flatMap(Uuid::uuid)` |
+| `IsoDateTime` | `"2026-04-04T12:00:00Z"` | `requireString(key).flatMap(IsoDateTime::isoDateTime)` |
+
+### User-defined parseable types
+
+Any type with a JBCT-standard factory method `TypeName.typeName(String) → Result<T>` is automatically supported. The processor detects the factory at compile time:
+
+```java
+// Your custom value object
+public record ApiEndpoint(Url baseUrl, int port) {
+    public static Result<ApiEndpoint> apiEndpoint(String raw) {
+        // parse "https://host:8080" into Url + port
+        return ...;
+    }
+}
+
+// Used directly in config record — no extra registration needed
+public record ServiceConfig(ApiEndpoint endpoint, TimeSpan timeout) { ... }
+```
+
+The processor generates `requireString(key).flatMap(ApiEndpoint::apiEndpoint)` — validation errors propagate through `Result.all()` with clear per-field messages.
