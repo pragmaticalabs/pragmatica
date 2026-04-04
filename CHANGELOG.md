@@ -7,10 +7,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc1] - Unreleased
 
 ### Added
+- **Application config provisioning** — `@ResourceQualifier(type = ConfigurationSection.class)` pattern for typed config. Compile-time parser generation via `Result.all()`. Three-source merge (bundled `META-INF/config.toml` + `aether.toml` `[app.*]` + KV-Store). Runtime notification via single-threaded executor with record diff. ACTIVATE integration ensures config before routes
+- **Config value object support** — Primitives, `Option<T>` variants, `List<String>`, core value objects (`TimeSpan`, `Url`, `Email`, `Uuid`, `NonBlankString`, `IsoDateTime`), and any user-defined type with `TypeName.typeName(String) → Result<T>` factory
+- **Node metadata labels** — `NodeInfo.labels` (hostname, zone, instance-type, pool) propagated via Hello handshake, bootstrap from environment variables
+- **PlacementHint provisioning** — `ZoneHint`, `HostGroupHint`, `AffinityHint`, `AntiAffinityHint` in `ProvisionSpec`. Cloud providers respect zone placement
+- **Metadata-aware CTM scheduling** — Surplus comparator: spot-first → over-represented hosts → empty nodes → newest. Provisioning: zone-balanced placement based on current topology
+- **ContentStore resource** — `@ContentStoreQualifier` annotation, `ContentStoreFactory` SPI for AHSE-backed content storage
+- **Streaming retention enforcement** — Scheduled `RetentionEnforcer` removes expired segments from AHSE
+- **Consumer cursor persistence** — `CursorStore` persists consumer group cursors in AHSE via named references
+- **Governor failover** — `WatermarkTracker` + `GovernorFailoverHandler` for watermark-based replica catch-up from AHSE segments
+- **Cross-tier stream reads** — `TieredStreamReader` with segment prefetch for optimized historical reads
+- **Cloud certificate adapters** — AWS (Secrets Manager), GCP (Secret Manager), Azure (Key Vault) via `CertificateProvider` SPI with shared `CloudCertificateProvider`
+- **Cloud provider placement** — AWS, GCP, Azure implement zone-aware provisioning from `ProvisionSpec.placement()`
+- **Same-version deploy rejection** — Strategy deploys rejected when oldVersion == newVersion. `/api/blueprint/publish` for register-without-deploy
+- **Disruption budget enforcement** — Drain endpoint checks quorum-based `minAvailable` before allowing DRAINING transition
+- **Promise.allOrCancel()** — Cancels remaining promises on first failure; fixed instance `all()` from sequential to parallel
 
 ### Changed
+- **Dashboard** — Fixed empty panels (strategies store endpoints, template fields). Added 10s secondary polling for topology/governors/strategies/streams/observability. Fixed success rate display
 
 ### Fixed
+- **Envelope format version** bumped to v8 for config update manifest entries
 
 ## [1.0.0-alpha] - 2026-04-04
 
