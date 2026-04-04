@@ -13,12 +13,7 @@ import org.pragmatica.lang.Unit;
 /// Implementations coordinate with ComputeProvider (provisioning/termination),
 /// DnsProvider (record updates), and the cluster management API (drain/sync).
 public interface MigrationOrchestrator {
-    /// Plan a migration: analyze current topology, compute target state, and produce ordered steps.
     Result<MigrationPlan> plan(MigrationRequest request);
-
-    /// Execute a planned migration step-by-step.
     Promise<Unit> execute(MigrationPlan plan);
-
-    /// Rollback a failed migration by reversing completed steps.
     Promise<Unit> rollback(MigrationPlan plan);
 }

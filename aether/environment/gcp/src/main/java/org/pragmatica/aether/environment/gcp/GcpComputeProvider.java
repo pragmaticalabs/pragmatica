@@ -23,12 +23,13 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
@@ -102,7 +103,13 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         var networkInterface = buildNetworkInterface();
         var labels = Map.of(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE);
         var metadata = buildMetadata();
-        return new InsertInstanceRequest(name, machineType, List.of(disk), List.of(networkInterface), labels, metadata, zoneOverride);
+        return new InsertInstanceRequest(name,
+                                         machineType,
+                                         List.of(disk),
+                                         List.of(networkInterface),
+                                         labels,
+                                         metadata,
+                                         zoneOverride);
     }
 
     private static Option<String> extractZone(Option<PlacementHint> placement) {
@@ -110,7 +117,7 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     }
 
     private static Option<String> zoneFromHint(PlacementHint hint) {
-        return switch (hint) {
+        return switch (hint){
             case PlacementHint.ZoneHint zone -> Option.some(zone.zoneName());
             case PlacementHint.HostGroupHint ignored -> logUnsupported("HostGroupHint");
             case PlacementHint.AffinityHint ignored -> logUnsupported("AffinityHint");

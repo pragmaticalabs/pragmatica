@@ -6,10 +6,11 @@ import org.pragmatica.cloud.gcp.GcpClient;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.List;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
@@ -25,7 +26,11 @@ public record CloudDnsDnsProvider(GcpClient client, String managedZone) implemen
     }
 
     @Override public Promise<Unit> upsertRecord(String hostname, List<String> addresses, DnsRecordType type) {
-        log.info("Cloud DNS UPSERT {} {} -> {} (zone: {})", type, hostname, addresses, managedZone);
+        log.info("Cloud DNS UPSERT {} {} -> {} (zone: {})",
+                 type,
+                 hostname,
+                 addresses,
+                 managedZone);
         return Promise.success(unit());
     }
 

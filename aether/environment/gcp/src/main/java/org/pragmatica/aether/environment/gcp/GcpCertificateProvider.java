@@ -28,37 +28,28 @@ public final class GcpCertificateProvider implements CertificateProvider {
         this.delegate = delegate;
     }
 
-    /// Create a GCP certificate provider that fetches material from Secret Manager.
-    ///
-    /// @param client       GCP client for Secret Manager access
-    /// @param secretPrefix prefix path for certificate secrets (e.g., "aether-cluster-prod")
-    /// @return configured provider or error
     public static Result<GcpCertificateProvider> gcpCertificateProvider(GcpClient client, String secretPrefix) {
         return buildFromSecrets(gcpSecretsProvider(client), secretPrefix);
     }
 
     private static Result<GcpCertificateProvider> buildFromSecrets(GcpSecretsProvider secrets, String secretPrefix) {
         return CloudCertificateProvider.cloudCertificateProvider(secrets, secretPrefix)
-                                       .map(GcpCertificateProvider::new);
+                                                                .map(GcpCertificateProvider::new);
     }
 
-    @Override
-    public Result<CertificateBundle> issueCertificate(String nodeId, String hostname) {
+    @Override public Result<CertificateBundle> issueCertificate(String nodeId, String hostname) {
         return delegate.issueCertificate(nodeId, hostname);
     }
 
-    @Override
-    public Result<CertificateBundle> caCertificate() {
+    @Override public Result<CertificateBundle> caCertificate() {
         return delegate.caCertificate();
     }
 
-    @Override
-    public Result<GossipKey> currentGossipKey() {
+    @Override public Result<GossipKey> currentGossipKey() {
         return delegate.currentGossipKey();
     }
 
-    @Override
-    public Option<GossipKey> previousGossipKey() {
+    @Override public Option<GossipKey> previousGossipKey() {
         return delegate.previousGossipKey();
     }
 }

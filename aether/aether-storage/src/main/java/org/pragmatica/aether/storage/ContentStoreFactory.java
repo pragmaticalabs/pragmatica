@@ -34,9 +34,8 @@ public final class ContentStoreFactory implements ResourceFactory<ContentStore, 
     }
 
     @Override public Promise<ContentStore> provision(ContentStoreConfig config, ProvisioningContext context) {
-        return context.extension(StorageInstance.class)
-                      .map(instance -> ContentStore.contentStore(instance, config))
-                      .async();
+        return context.extension(StorageInstance.class).map(instance -> ContentStore.contentStore(instance, config))
+                                .async();
     }
 
     @Override public Promise<Unit> close(ContentStore resource) {

@@ -24,7 +24,6 @@ public final class SegmentIndex {
             return new SegmentRef(startOffset, endOffset, maxTimestamp);
         }
 
-        /// Backward-compatible factory for rebuilds where timestamp is unknown.
         public static SegmentRef segmentRef(long startOffset, long endOffset) {
             return new SegmentRef(startOffset, endOffset, 0L);
         }
@@ -34,7 +33,11 @@ public final class SegmentIndex {
         }
     }
 
-    @Contract public void addSegment(String streamName, int partition, long startOffset, long endOffset, long maxTimestamp) {
+    @Contract public void addSegment(String streamName,
+                                     int partition,
+                                     long startOffset,
+                                     long endOffset,
+                                     long maxTimestamp) {
         var key = PartitionKey.partitionKey(streamName, partition);
         var map = partitions.computeIfAbsent(key, _ -> new ConcurrentSkipListMap<>());
         map.put(startOffset, SegmentRef.segmentRef(startOffset, endOffset, maxTimestamp));
@@ -50,8 +53,7 @@ public final class SegmentIndex {
     }
 
     public List<SegmentRef> listSegments(String streamName, int partition) {
-        return option(partitions.get(PartitionKey.partitionKey(streamName, partition)))
-                     .map(map -> List.copyOf(map.values()))
+        return option(partitions.get(PartitionKey.partitionKey(streamName, partition))).map(map -> List.copyOf(map.values()))
                      .or(List.of());
     }
 
@@ -100,7 +102,7 @@ public final class SegmentIndex {
 
     private void parseOffsetRange(String streamName, int partition, String range) {
         var dash = range.indexOf('-');
-        if (dash < 0) {return;}
+        if (dash <0) {return;}
         Number.parseLong(range.substring(0, dash))
                         .onSuccess(start -> Number.parseLong(range.substring(dash + 1))
                                                             .onSuccess(end -> addSegment(streamName,

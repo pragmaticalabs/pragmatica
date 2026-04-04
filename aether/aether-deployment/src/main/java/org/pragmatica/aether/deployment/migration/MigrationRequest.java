@@ -11,16 +11,16 @@ import static org.pragmatica.lang.Result.success;
 ///
 /// Specifies the target provider, zone/region, migration strategy, and DNS hostname to update.
 public record MigrationRequest(String targetProvider,
-                                String targetZone,
-                                MigrationStrategy strategy,
-                                Option<String> dnsHostname) {
+                               String targetZone,
+                               MigrationStrategy strategy,
+                               Option<String> dnsHostname) {
     public static Result<MigrationRequest> migrationRequest(String targetProvider,
-                                                             String targetZone,
-                                                             MigrationStrategy strategy,
-                                                             String dnsHostname) {
+                                                            String targetZone,
+                                                            MigrationStrategy strategy,
+                                                            String dnsHostname) {
         return success(new MigrationRequest(targetProvider,
-                                             targetZone,
-                                             strategy,
-                                             option(dnsHostname).filter(s -> !s.isEmpty())));
+                                            targetZone,
+                                            strategy,
+                                            option(dnsHostname).filter(s -> !s.isEmpty())));
     }
 }

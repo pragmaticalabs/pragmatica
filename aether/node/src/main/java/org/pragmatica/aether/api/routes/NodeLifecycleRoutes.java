@@ -87,23 +87,22 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private Promise<TransitionResult> drainNode(String nodeIdStr) {
-        return checkDisruptionBudget(nodeIdStr)
-                   .flatMap(_ -> transitionLifecycle(nodeIdStr,
-                                                     NodeLifecycleState.ON_DUTY,
-                                                     NodeLifecycleState.DRAINING,
-                                                     "drain"));
+        return checkDisruptionBudget(nodeIdStr).flatMap(_ -> transitionLifecycle(nodeIdStr,
+                                                                                 NodeLifecycleState.ON_DUTY,
+                                                                                 NodeLifecycleState.DRAINING,
+                                                                                 "drain"));
     }
 
     private Promise<TransitionResult> checkDisruptionBudget(String nodeIdStr) {
-        var totalNodes = nodeSupplier.get().initialTopology().size();
+        var totalNodes = nodeSupplier.get().initialTopology()
+                                         .size();
         var currentlyDraining = countDrainingNodes();
         var minAvailable = (totalNodes / 2) + 1;
         var operationalAfterDrain = totalNodes - currentlyDraining - 1;
-
-        if (operationalAfterDrain >= minAvailable) {
-            return Promise.success(new TransitionResult(true, nodeIdStr, "", "Budget check passed"));
-        }
-
+        if (operationalAfterDrain >= minAvailable) {return Promise.success(new TransitionResult(true,
+                                                                                                nodeIdStr,
+                                                                                                "",
+                                                                                                "Budget check passed"));}
         return budgetExceededError(nodeIdStr, operationalAfterDrain, minAvailable).promise();
     }
 
@@ -117,15 +116,11 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private static void incrementIfDraining(AtomicInteger count, NodeLifecycleValue value) {
-        if (value.state() == NodeLifecycleState.DRAINING) {
-            count.incrementAndGet();
-        }
+        if (value.state() == NodeLifecycleState.DRAINING) {count.incrementAndGet();}
     }
 
     private static Cause budgetExceededError(String nodeIdStr, int operationalAfterDrain, int minAvailable) {
-        var message = "Disruption budget exceeded: draining " + nodeIdStr
-                      + " would leave " + operationalAfterDrain
-                      + " operational nodes, minimum is " + minAvailable;
+        var message = "Disruption budget exceeded: draining " + nodeIdStr + " would leave " + operationalAfterDrain + " operational nodes, minimum is " + minAvailable;
         return HttpError.httpError(HttpStatus.CONFLICT, Causes.cause(message));
     }
 

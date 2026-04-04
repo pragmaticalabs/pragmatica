@@ -34,38 +34,36 @@ public final class CursorStore {
         return new CursorStore(storage);
     }
 
-    /// Persist a consumer cursor. Stores the offset as a data block and creates/updates
-    /// the named reference pointing to it.
     public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
         var refName = buildRefName(consumerGroup, streamName, partition);
         var payload = encodeOffset(offset);
-        return storage.put(payload)
-                      .flatMap(blockId -> replaceRef(refName, blockId))
-                      .onSuccess(_ -> logCommit(consumerGroup, streamName, partition, offset));
+        return storage.put(payload).flatMap(blockId -> replaceRef(refName, blockId))
+                          .onSuccess(_ -> logCommit(consumerGroup, streamName, partition, offset));
     }
 
-    /// Retrieve the last committed offset for a consumer group on a specific partition.
     public Option<Long> fetch(String consumerGroup, String streamName, int partition) {
         var refName = buildRefName(consumerGroup, streamName, partition);
-        return storage.resolveRef(refName)
-                      .flatMap(this::readOffset);
+        return storage.resolveRef(refName).flatMap(this::readOffset);
     }
 
     private Promise<Unit> replaceRef(String refName, BlockId blockId) {
-        return storage.deleteRef(refName)
-                      .flatMap(_ -> storage.createRef(refName, blockId));
+        return storage.deleteRef(refName).flatMap(_ -> storage.createRef(refName, blockId));
     }
 
     private Option<Long> readOffset(BlockId blockId) {
         return storage.get(blockId).await()
-                      .option()
-                      .flatMap(opt -> opt)
-                      .filter(bytes -> bytes.length == Long.BYTES)
-                      .map(CursorStore::decodeOffset);
+                          .option()
+                          .flatMap(opt -> opt)
+                          .filter(bytes -> bytes.length == Long.BYTES)
+                          .map(CursorStore::decodeOffset);
     }
 
     private static void logCommit(String consumerGroup, String streamName, int partition, long offset) {
-        log.debug("Cursor committed: {}/{}/{} -> {}", consumerGroup, streamName, partition, offset);
+        log.debug("Cursor committed: {}/{}/{} -> {}",
+                  consumerGroup,
+                  streamName,
+                  partition,
+                  offset);
     }
 
     static String buildRefName(String consumerGroup, String streamName, int partition) {
@@ -73,10 +71,13 @@ public final class CursorStore {
     }
 
     static byte[] encodeOffset(long offset) {
-        return ByteBuffer.allocate(Long.BYTES).order(ByteOrder.BIG_ENDIAN).putLong(offset).array();
+        return ByteBuffer.allocate(Long.BYTES).order(ByteOrder.BIG_ENDIAN)
+                                  .putLong(offset)
+                                  .array();
     }
 
     static long decodeOffset(byte[] bytes) {
-        return ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).getLong();
+        return ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
+                              .getLong();
     }
 }

@@ -21,12 +21,10 @@ public final class PgCursorStore {
         return new PgCursorStore(store);
     }
 
-    /// Transactionally commit a cursor offset. Uses PostgreSQL UPSERT for exactly-once.
     public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
         return store.commitCursor(consumerGroup, streamName, partition, offset);
     }
 
-    /// Fetch the last committed cursor offset.
     public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
         return store.fetchCursor(consumerGroup, streamName, partition);
     }

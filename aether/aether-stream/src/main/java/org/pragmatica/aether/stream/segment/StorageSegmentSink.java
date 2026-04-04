@@ -33,7 +33,11 @@ public final class StorageSegmentSink implements SegmentSink {
     }
 
     private void updateIndex(SealedSegment segment) {
-        index.addSegment(segment.streamName(), segment.partition(), segment.startOffset(), segment.endOffset(), segment.maxTimestamp());
+        index.addSegment(segment.streamName(),
+                         segment.partition(),
+                         segment.startOffset(),
+                         segment.endOffset(),
+                         segment.maxTimestamp());
     }
 
     private void logSealed(SealedSegment segment) {

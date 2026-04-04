@@ -6,10 +6,11 @@ import org.pragmatica.cloud.azure.AzureClient;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.List;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
@@ -21,13 +22,18 @@ public record AzureDnsDnsProvider(AzureClient client, String resourceGroup, Stri
     private static final Logger log = LoggerFactory.getLogger(AzureDnsDnsProvider.class);
 
     public static Result<AzureDnsDnsProvider> azureDnsDnsProvider(AzureClient client,
-                                                                   String resourceGroup,
-                                                                   String dnsZoneName) {
+                                                                  String resourceGroup,
+                                                                  String dnsZoneName) {
         return success(new AzureDnsDnsProvider(client, resourceGroup, dnsZoneName));
     }
 
     @Override public Promise<Unit> upsertRecord(String hostname, List<String> addresses, DnsRecordType type) {
-        log.info("Azure DNS UPSERT {} {} -> {} (rg: {}, zone: {})", type, hostname, addresses, resourceGroup, dnsZoneName);
+        log.info("Azure DNS UPSERT {} {} -> {} (rg: {}, zone: {})",
+                 type,
+                 hostname,
+                 addresses,
+                 resourceGroup,
+                 dnsZoneName);
         return Promise.success(unit());
     }
 

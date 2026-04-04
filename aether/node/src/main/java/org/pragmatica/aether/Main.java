@@ -298,7 +298,10 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
                                                   .management()).or(AetherNodeConfig.DEFAULT_MANAGEMENT_PORT);
     }
 
-    private List<NodeInfo> parsePeers(NodeId self, int selfPort, Map<String, String> labels, Option<AetherConfig> aetherConfig) {
+    private List<NodeInfo> parsePeers(NodeId self,
+                                      int selfPort,
+                                      Map<String, String> labels,
+                                      Option<AetherConfig> aetherConfig) {
         var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", selfPort).unwrap(), NodeRole.ACTIVE, labels);
         return findArg("--peers=").map(peersStr -> parsePeersFromString(peersStr, self, selfInfo))
                       .orElse(findEnv("CLUSTER_PEERS").map(peersStr -> parsePeersFromString(peersStr, self, selfInfo)))
@@ -382,8 +385,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
         return Map.copyOf(labels);
     }
 
-    @SuppressWarnings("JBCT-RET-01")
-    private static String resolveHostname() {
+    @SuppressWarnings("JBCT-RET-01") private static String resolveHostname() {
         try {
             return InetAddress.getLocalHost().getHostName();
         } catch (Exception e) {

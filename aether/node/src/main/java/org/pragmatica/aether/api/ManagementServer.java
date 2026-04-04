@@ -550,8 +550,6 @@ class ManagementServerImpl implements ManagementServer {
             recordRequestMetrics(methodName, path, instrumented, startTime);
             return;
         }
-        // Dashboard static files bypass API key auth — auth happens client-side via login overlay.
-        // Serve static files for paths that are not API endpoints or WebSocket paths.
         if (isDashboardPath(path)) {
             staticFileHandler.handle(ctx, instrumented);
             recordRequestMetrics(methodName, path, instrumented, startTime);
@@ -579,9 +577,7 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private static boolean isDashboardPath(String path) {
-        return "/".equals(path) || "/index.html".equals(path)
-               || path.startsWith("/css/") || path.startsWith("/js/")
-               || path.startsWith("/vendor/") || path.endsWith(".ico");
+        return "/".equals(path) || "/index.html".equals(path) || path.startsWith("/css/") || path.startsWith("/js/") || path.startsWith("/vendor/") || path.endsWith(".ico");
     }
 
     @SuppressWarnings("JBCT-PAT-01") private boolean handleProbeRequest(String path, ResponseWriter response) {

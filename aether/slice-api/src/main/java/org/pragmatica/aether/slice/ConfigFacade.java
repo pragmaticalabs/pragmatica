@@ -33,7 +33,6 @@ public interface ConfigFacade {
     Result<Double> requireDouble(String section, String key);
     Result<Boolean> requireBoolean(String section, String key);
     Result<List<String>> requireStringList(String section, String key);
-
     Option<String> getString(String section, String key);
     Option<Integer> getInt(String section, String key);
     Option<Long> getLong(String section, String key);

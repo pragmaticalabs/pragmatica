@@ -14,14 +14,15 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Contract;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Result.success;
 
@@ -33,6 +34,7 @@ import static org.pragmatica.lang.Result.success;
                                               DockerConfig config,
                                               AtomicInteger nodeCounter) implements ComputeProvider {
     private static final Logger log = LoggerFactory.getLogger(DockerComputeProvider.class);
+
     public static Result<DockerComputeProvider> dockerComputeProvider(DockerCommandRunner runner, DockerConfig config) {
         return success(new DockerComputeProvider(runner, config, new AtomicInteger(0)));
     }
@@ -159,7 +161,7 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static void applyPlacementHint(ArrayList<String> command, PlacementHint hint) {
-        switch (hint) {
+        switch (hint){
             case PlacementHint.ZoneHint zone -> addPlacementLabel(command, "zone", zone.zoneName());
             case PlacementHint.HostGroupHint group -> addPlacementLabel(command, "host-group", group.groupId());
             case PlacementHint.AffinityHint ignored -> log.debug("Docker provider ignoring AffinityHint — not supported");

@@ -25,9 +25,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 - **Dashboard** — Fixed empty panels (strategies store endpoints, template fields). Added 10s secondary polling for topology/governors/strategies/streams/observability. Fixed success rate display
+- **StreamAccessImpl → PartitionedStreamAccess** — JBCT naming compliance, removed Impl suffix
+- **Example scripts** — `run-forge.sh` scripts now extract version from POM dynamically instead of hardcoding
 
 ### Fixed
 - **Envelope format version** bumped to v8 for config update manifest entries
+- **JSON injection in CLI** — `aether cluster migrate` now escapes user-supplied values in JSON request body
+- **Config parse safety** — Environment integration factories wrap `Long.parseLong`/`Integer.parseInt` with `Result.lift()` to prevent node crash on malformed config
+- **Thread safety** — Replaced non-thread-safe `EnumMap` with `ConcurrentHashMap` in QUIC outbound queues
+- **Null policy** — `DeploymentManagerImpl` uses `Option<Version>` instead of raw null in domain logic; `parseThresholds` wrapped with `Result.lift()` fallback
+- **Composition** — Replaced 4x `fold(() → default, id)` with `.or(default)` in CTM; simplified nested fold in `GovernorFailoverHandler`
+- **Factory methods** — Added JBCT-compliant factories for `MigrationStep`, `MigrationError`, `PgStreamError`, `CloudCertificateProviderError` subtypes
+- **Test assertions** — Fixed assertion-free drain test; replaced silent-pass `assertThat(cause).isNull()` pattern in 4 provider test files
 
 ## [1.0.0-alpha] - 2026-04-04
 
@@ -113,7 +122,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 - **Hierarchical Storage Engine (AHSE)** — Content-addressed block storage with tiered Memory + Disk hierarchy. Core library at `integrations/storage` (zero Aether deps), Aether adapter at `aether/aether-storage`. BlockId (SHA-256), MemoryTier (CAS-bounded), LocalDiskTier (sharded filesystem), StorageInstance (write-through + tier-waterfall reads), SingleFlightCache (read dedup), MetadataStore (in-memory + KV-Store backed), SnapshotManager (dual-trigger: mutation count + time interval, rolling pruning), StorageReadinessGate (startup sequencing with read/write barriers), per-instance TOML config (`[storage.*]` sections), ArtifactStore migration (chunks via StorageInstance), config-driven StorageFactory with node wiring, per-node REST API (`/api/storage`, `/api/storage/{name}`, `/api/storage/{name}/snapshot`), per-cluster REST API (`/api/cluster/storage`, `/api/cluster/storage/{name}`) with KV-Store status publishing, CLI commands (`aether storage list/status/snapshot`), 107 unit + integration tests
-- **Streaming Phase 1 runtime** — `StreamPublisherFactory` and `StreamAccessFactory` (ResourceFactory SPI), `StreamPublisherImpl` with partition-key routing or round-robin, `StreamAccessImpl` with cross-partition fetch and consensus cursor checkpointing, `StreamConsumerAdapter` for single-event and batch handlers, `StreamConfigParser` for blueprint `[streams.xxx]` TOML sections
+- **Streaming Phase 1 runtime** — `StreamPublisherFactory` and `StreamAccessFactory` (ResourceFactory SPI), `StreamPublisherImpl` with partition-key routing or round-robin, `PartitionedStreamAccess` with cross-partition fetch and consensus cursor checkpointing, `StreamConsumerAdapter` for single-event and batch handlers, `StreamConfigParser` for blueprint `[streams.xxx]` TOML sections
 - **CDM stream integration** — stream creation from blueprint config during deployment, consumer subscription registration at slice activation via KV-Store, unsubscription on deactivation
 - **QUIC certificate rotation** — `CertificateRenewalScheduler` wired to node startup, triggers at 60% remaining validity, exponential retry backoff (5min→4h cap), server restart on same port with atomic SSL context swap
 - **HTTP server certificate rotation** — ManagementServer and AppHttpServer receive renewed bundles and restart with new TLS contexts (H1 + H3)

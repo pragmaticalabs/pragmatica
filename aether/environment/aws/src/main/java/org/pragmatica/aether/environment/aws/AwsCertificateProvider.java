@@ -29,38 +29,28 @@ public final class AwsCertificateProvider implements CertificateProvider {
         this.delegate = delegate;
     }
 
-    /// Create an AWS certificate provider that fetches material from Secrets Manager.
-    ///
-    /// @param client       AWS client for Secrets Manager access
-    /// @param secretPrefix prefix path for certificate secrets (e.g., "aether/cluster-prod")
-    /// @return configured provider or error
     public static Result<AwsCertificateProvider> awsCertificateProvider(AwsClient client, String secretPrefix) {
-        return awsSecretsProvider(client)
-            .flatMap(secrets -> buildFromSecrets(secrets, secretPrefix));
+        return awsSecretsProvider(client).flatMap(secrets -> buildFromSecrets(secrets, secretPrefix));
     }
 
     private static Result<AwsCertificateProvider> buildFromSecrets(AwsSecretsProvider secrets, String secretPrefix) {
         return CloudCertificateProvider.cloudCertificateProvider(secrets, secretPrefix)
-                                       .map(AwsCertificateProvider::new);
+                                                                .map(AwsCertificateProvider::new);
     }
 
-    @Override
-    public Result<CertificateBundle> issueCertificate(String nodeId, String hostname) {
+    @Override public Result<CertificateBundle> issueCertificate(String nodeId, String hostname) {
         return delegate.issueCertificate(nodeId, hostname);
     }
 
-    @Override
-    public Result<CertificateBundle> caCertificate() {
+    @Override public Result<CertificateBundle> caCertificate() {
         return delegate.caCertificate();
     }
 
-    @Override
-    public Result<GossipKey> currentGossipKey() {
+    @Override public Result<GossipKey> currentGossipKey() {
         return delegate.currentGossipKey();
     }
 
-    @Override
-    public Option<GossipKey> previousGossipKey() {
+    @Override public Option<GossipKey> previousGossipKey() {
         return delegate.previousGossipKey();
     }
 }

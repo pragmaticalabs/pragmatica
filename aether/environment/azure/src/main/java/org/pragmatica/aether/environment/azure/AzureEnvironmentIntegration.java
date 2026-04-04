@@ -100,8 +100,7 @@ public record AzureEnvironmentIntegration(AzureComputeProvider computeProvider,
     private static Option<CertificateProvider> resolveCertificateProvider(AzureClient client,
                                                                           AzureEnvironmentConfig config) {
         return config.certificateSecretPrefix()
-                     .flatMap(prefix -> azureCertificateProvider(client, prefix)
-                                            .map(CertificateProvider.class::cast)
-                                            .option());
+                                             .flatMap(prefix -> azureCertificateProvider(client, prefix).map(CertificateProvider.class::cast)
+                                                                                        .option());
     }
 }

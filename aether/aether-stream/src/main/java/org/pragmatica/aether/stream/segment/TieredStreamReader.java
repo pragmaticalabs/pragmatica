@@ -18,13 +18,9 @@ import org.slf4j.LoggerFactory;
 /// 2. Reads via StorageInstance (which does tier-waterfall internally)
 /// 3. Async prefetch of the next segment when reading near the end of a segment
 public sealed interface TieredStreamReader {
-    /// Read events starting from offset, up to maxEvents.
     Promise<List<RawEvent>> read(String streamName, int partition, long fromOffset, int maxEvents);
-
-    /// Prefetch a segment range into faster tier (triggers async get to warm cache).
     Promise<Unit> prefetch(String streamName, int partition, long fromOffset);
 
-    /// Factory method.
     static TieredStreamReader tieredStreamReader(SegmentIndex index, StorageInstance storage) {
         return new TieredReader(index, storage);
     }
@@ -33,7 +29,6 @@ public sealed interface TieredStreamReader {
 final class TieredReader implements TieredStreamReader {
     private static final Logger log = LoggerFactory.getLogger(TieredReader.class);
 
-    /// Prefetch triggers when read position is within last 20% of a segment's offset range.
     private static final double PREFETCH_THRESHOLD = 0.8;
 
     private final SegmentIndex index;
@@ -46,17 +41,18 @@ final class TieredReader implements TieredStreamReader {
         this.storage = storage;
     }
 
-    @Override
-    public Promise<List<RawEvent>> read(String streamName, int partition, long fromOffset, int maxEvents) {
+    @Override public Promise<List<RawEvent>> read(String streamName, int partition, long fromOffset, int maxEvents) {
         return reader.readEvents(streamName, partition, fromOffset, maxEvents)
-                     .onSuccess(events -> triggerPrefetchIfNearEnd(streamName, partition, fromOffset, maxEvents, events));
+                                .onSuccess(events -> triggerPrefetchIfNearEnd(streamName,
+                                                                              partition,
+                                                                              fromOffset,
+                                                                              maxEvents,
+                                                                              events));
     }
 
-    @Override
-    public Promise<Unit> prefetch(String streamName, int partition, long fromOffset) {
-        return index.findSegment(streamName, partition, fromOffset)
-                     .map(ref -> warmSegment(streamName, partition, ref))
-                     .or(Promise.unitPromise());
+    @Override public Promise<Unit> prefetch(String streamName, int partition, long fromOffset) {
+        return index.findSegment(streamName, partition, fromOffset).map(ref -> warmSegment(streamName, partition, ref))
+                                .or(Promise.unitPromise());
     }
 
     private void triggerPrefetchIfNearEnd(String streamName,
@@ -64,13 +60,10 @@ final class TieredReader implements TieredStreamReader {
                                           long fromOffset,
                                           int maxEvents,
                                           List<RawEvent> events) {
-        if (events.isEmpty()) {
-            return;
-        }
+        if (events.isEmpty()) {return;}
         var lastReadOffset = events.getLast().offset();
-        index.findSegment(streamName, partition, lastReadOffset)
-             .filter(ref -> isNearSegmentEnd(lastReadOffset, ref))
-             .onPresent(ref -> prefetchNextSegment(streamName, partition, ref));
+        index.findSegment(streamName, partition, lastReadOffset).filter(ref -> isNearSegmentEnd(lastReadOffset, ref))
+                         .onPresent(ref -> prefetchNextSegment(streamName, partition, ref));
     }
 
     private static boolean isNearSegmentEnd(long currentOffset, SegmentIndex.SegmentRef ref) {
@@ -82,20 +75,22 @@ final class TieredReader implements TieredStreamReader {
     private void prefetchNextSegment(String streamName, int partition, SegmentIndex.SegmentRef currentRef) {
         var nextOffset = currentRef.endOffset() + 1;
         index.findSegment(streamName, partition, nextOffset)
-             .onPresent(nextRef -> firePrefetch(streamName, partition, nextRef));
+                         .onPresent(nextRef -> firePrefetch(streamName, partition, nextRef));
     }
 
     private void firePrefetch(String streamName, int partition, SegmentIndex.SegmentRef ref) {
         log.debug("Prefetching segment {}/{}:[{}-{}]", streamName, partition, ref.startOffset(), ref.endOffset());
-        warmSegment(streamName, partition, ref)
-            .onFailure(cause -> log.debug("Prefetch failed for {}/{}:[{}-{}]: {}",
-                                          streamName, partition, ref.startOffset(), ref.endOffset(), cause.message()));
+        warmSegment(streamName, partition, ref).onFailure(cause -> log.debug("Prefetch failed for {}/{}:[{}-{}]: {}",
+                                                                             streamName,
+                                                                             partition,
+                                                                             ref.startOffset(),
+                                                                             ref.endOffset(),
+                                                                             cause.message()));
     }
 
     private Promise<Unit> warmSegment(String streamName, int partition, SegmentIndex.SegmentRef ref) {
         var refName = SegmentIndex.buildRefName(streamName, partition, ref);
-        return storage.resolveRef(refName)
-                      .map(blockId -> storage.get(blockId).mapToUnit())
-                      .or(Promise.unitPromise());
+        return storage.resolveRef(refName).map(blockId -> storage.get(blockId).mapToUnit())
+                                 .or(Promise.unitPromise());
     }
 }

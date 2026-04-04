@@ -9,6 +9,7 @@ import java.util.List;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
+
 /// Configuration for the AWS environment integration.
 /// Contains AWS API credentials and default EC2 provisioning parameters.
 public record AwsEnvironmentConfig(AwsConfig awsConfig,
@@ -24,15 +25,12 @@ public record AwsEnvironmentConfig(AwsConfig awsConfig,
                                    Option<String> certificateSecretPrefix) {
     private static final long DEFAULT_POLL_INTERVAL_MS = 30_000L;
 
-    /// Load balancer configuration for AWS environment.
     public record AwsLbConfig(String targetGroupArn) {
-        /// Factory method for creating an AWS load balancer configuration.
         public static Result<AwsLbConfig> awsLbConfig(String targetGroupArn) {
             return success(new AwsLbConfig(targetGroupArn));
         }
     }
 
-    /// Factory method for creating an AWS environment configuration.
     public static Result<AwsEnvironmentConfig> awsEnvironmentConfig(AwsConfig awsConfig,
                                                                     String amiId,
                                                                     String instanceType,
@@ -53,7 +51,6 @@ public record AwsEnvironmentConfig(AwsConfig awsConfig,
                                                 Option.empty()));
     }
 
-    /// Factory method for creating an AWS environment configuration with load balancer.
     public static Result<AwsEnvironmentConfig> awsEnvironmentConfig(AwsConfig awsConfig,
                                                                     String amiId,
                                                                     String instanceType,
@@ -75,27 +72,45 @@ public record AwsEnvironmentConfig(AwsConfig awsConfig,
                                                 Option.empty()));
     }
 
-    /// Return a copy with discovery enabled for the specified cluster name.
-    @SuppressWarnings("JBCT-VO-02") // Copy-with-change builder — direct constructor is intentional
-    public AwsEnvironmentConfig withDiscovery(String clusterLabel) {
-        return new AwsEnvironmentConfig(awsConfig, amiId, instanceType, keyName, securityGroupIds,
-                                        subnetId, userData, loadBalancer, some(clusterLabel),
-                                        discoveryPollIntervalMs, certificateSecretPrefix);
+    @SuppressWarnings("JBCT-VO-02") public AwsEnvironmentConfig withDiscovery(String clusterLabel) {
+        return new AwsEnvironmentConfig(awsConfig,
+                                        amiId,
+                                        instanceType,
+                                        keyName,
+                                        securityGroupIds,
+                                        subnetId,
+                                        userData,
+                                        loadBalancer,
+                                        some(clusterLabel),
+                                        discoveryPollIntervalMs,
+                                        certificateSecretPrefix);
     }
 
-    /// Return a copy with the discovery poll interval set.
-    @SuppressWarnings("JBCT-VO-02") // Copy-with-change builder — direct constructor is intentional
-    public AwsEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
-        return new AwsEnvironmentConfig(awsConfig, amiId, instanceType, keyName, securityGroupIds,
-                                        subnetId, userData, loadBalancer, clusterName,
-                                        intervalMs, certificateSecretPrefix);
+    @SuppressWarnings("JBCT-VO-02") public AwsEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
+        return new AwsEnvironmentConfig(awsConfig,
+                                        amiId,
+                                        instanceType,
+                                        keyName,
+                                        securityGroupIds,
+                                        subnetId,
+                                        userData,
+                                        loadBalancer,
+                                        clusterName,
+                                        intervalMs,
+                                        certificateSecretPrefix);
     }
 
-    /// Return a copy with certificate secret prefix set for cloud-backed mTLS.
-    @SuppressWarnings("JBCT-VO-02") // Copy-with-change builder — direct constructor is intentional
-    public AwsEnvironmentConfig withCertificateSecretPrefix(String prefix) {
-        return new AwsEnvironmentConfig(awsConfig, amiId, instanceType, keyName, securityGroupIds,
-                                        subnetId, userData, loadBalancer, clusterName,
-                                        discoveryPollIntervalMs, some(prefix));
+    @SuppressWarnings("JBCT-VO-02") public AwsEnvironmentConfig withCertificateSecretPrefix(String prefix) {
+        return new AwsEnvironmentConfig(awsConfig,
+                                        amiId,
+                                        instanceType,
+                                        keyName,
+                                        securityGroupIds,
+                                        subnetId,
+                                        userData,
+                                        loadBalancer,
+                                        clusterName,
+                                        discoveryPollIntervalMs,
+                                        some(prefix));
     }
 }

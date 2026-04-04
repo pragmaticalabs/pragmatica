@@ -18,13 +18,14 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
@@ -118,7 +119,7 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     }
 
     private static Option<String> zoneFromHint(PlacementHint hint) {
-        return switch (hint) {
+        return switch (hint){
             case PlacementHint.ZoneHint zone -> Option.some(zone.zoneName());
             case PlacementHint.HostGroupHint ignored -> logUnsupported("HostGroupHint");
             case PlacementHint.AffinityHint ignored -> logUnsupported("AffinityHint");

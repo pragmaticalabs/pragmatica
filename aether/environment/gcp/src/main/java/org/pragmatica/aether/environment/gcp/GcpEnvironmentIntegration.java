@@ -94,8 +94,7 @@ public record GcpEnvironmentIntegration(GcpComputeProvider computeProvider,
     private static Option<CertificateProvider> resolveCertificateProvider(GcpClient client,
                                                                           GcpEnvironmentConfig config) {
         return config.certificateSecretPrefix()
-                     .flatMap(prefix -> gcpCertificateProvider(client, prefix)
-                                            .map(CertificateProvider.class::cast)
-                                            .option());
+                                             .flatMap(prefix -> gcpCertificateProvider(client, prefix).map(CertificateProvider.class::cast)
+                                                                                      .option());
     }
 }

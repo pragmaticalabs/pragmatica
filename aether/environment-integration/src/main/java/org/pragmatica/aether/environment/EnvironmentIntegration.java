@@ -29,14 +29,10 @@ public interface EnvironmentIntegration {
         return empty();
     }
 
-    /// Certificate provider for mTLS and gossip key management.
-    /// Cloud implementations fetch certificate material from their respective secrets/certificate services.
     default Option<CertificateProvider> certificateProvider() {
         return empty();
     }
 
-    /// DNS provider for record management during cross-environment migration.
-    /// Cloud implementations delegate to Route53, Cloud DNS, Azure DNS, etc.
     default Option<DnsProvider> dns() {
         return empty();
     }
@@ -72,7 +68,8 @@ public interface EnvironmentIntegration {
                                                          Option<DiscoveryProvider> discovery,
                                                          Option<CertificateProvider> certificateProvider,
                                                          Option<DnsProvider> dns) {
-        return FacetedEnvironment.facetedEnvironment(compute, secrets, loadBalancer, discovery, certificateProvider, dns).unwrap();
+        return FacetedEnvironment.facetedEnvironment(compute, secrets, loadBalancer, discovery, certificateProvider, dns)
+                                                    .unwrap();
     }
 
     record FacetedEnvironment(Option<ComputeProvider> compute,

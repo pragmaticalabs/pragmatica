@@ -27,7 +27,9 @@ public final class RetentionEnforcer implements AutoCloseable {
     private final StorageInstance storage;
     private final SegmentIndex index;
     private final long retentionMs;
+
     private final AtomicBoolean closed = new AtomicBoolean(false);
+
     private volatile ScheduledFuture<?> scheduledFuture;
 
     private RetentionEnforcer(StorageInstance storage, SegmentIndex index, long retentionMs) {
@@ -50,7 +52,7 @@ public final class RetentionEnforcer implements AutoCloseable {
         log.info("RetentionEnforcer started with interval={}ms, retentionMs={}", interval.millis(), retentionMs);
     }
 
-    @Contract @Override public void close() {
+    @Contract@Override public void close() {
         if (closed.compareAndSet(false, true)) {
             var f = scheduledFuture;
             if (f != null) {f.cancel(false);}
@@ -58,15 +60,15 @@ public final class RetentionEnforcer implements AutoCloseable {
         }
     }
 
-    /// Run a single enforcement pass. Package-private for direct testing.
     @Contract void enforce() {
         if (closed.get()) {return;}
         var now = System.currentTimeMillis();
         var cutoff = now - retentionMs;
         var partitionKeys = index.listPartitionKeys();
-        var totalRemoved = partitionKeys.stream()
-                                        .mapToInt(key -> enforcePartition(key.streamName(), key.partition(), cutoff))
-                                        .sum();
+        var totalRemoved = partitionKeys.stream().mapToInt(key -> enforcePartition(key.streamName(),
+                                                                                   key.partition(),
+                                                                                   cutoff))
+                                               .sum();
         if (totalRemoved > 0) {log.info("Retention enforcement removed {} expired segment(s)", totalRemoved);}
     }
 
@@ -77,19 +79,21 @@ public final class RetentionEnforcer implements AutoCloseable {
     }
 
     private List<SegmentIndex.SegmentRef> findExpiredSegments(String streamName, int partition, long cutoff) {
-        return index.listSegments(streamName, partition)
-                    .stream()
-                    .filter(ref -> ref.maxTimestamp() > 0 && ref.maxTimestamp() < cutoff)
-                    .toList();
+        return index.listSegments(streamName, partition).stream()
+                                 .filter(ref -> ref.maxTimestamp() > 0 && ref.maxTimestamp() <cutoff)
+                                 .toList();
     }
 
     private void removeSegment(String streamName, int partition, SegmentIndex.SegmentRef ref) {
         var refName = SegmentIndex.buildRefName(streamName, partition, ref);
-        storage.resolveRef(refName)
-               .onPresent(blockId -> deleteBlockAndRef(refName, blockId));
+        storage.resolveRef(refName).onPresent(blockId -> deleteBlockAndRef(refName, blockId));
         index.removeSegment(streamName, partition, ref.startOffset());
         log.debug("Removed expired segment {}/{}:[{}-{}] maxTimestamp={}",
-                  streamName, partition, ref.startOffset(), ref.endOffset(), ref.maxTimestamp());
+                  streamName,
+                  partition,
+                  ref.startOffset(),
+                  ref.endOffset(),
+                  ref.maxTimestamp());
     }
 
     private void deleteBlockAndRef(String refName, BlockId blockId) {

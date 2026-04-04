@@ -67,18 +67,13 @@ public final class ManagementRouter {
     }
 
     private static org.pragmatica.http.HttpStatus resolveHttpStatus(org.pragmatica.lang.Cause cause) {
-        if (cause instanceof org.pragmatica.http.routing.HttpError httpError) {
-            return findByCode(httpError.status().code());
-        }
+        if (cause instanceof org.pragmatica.http.routing.HttpError httpError) {return findByCode(httpError.status()
+                                                                                                                 .code());}
         return org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR;
     }
 
     private static org.pragmatica.http.HttpStatus findByCode(int code) {
-        for (var status : org.pragmatica.http.HttpStatus.values()) {
-            if (status.code() == code) {
-                return status;
-            }
-        }
+        for (var status : org.pragmatica.http.HttpStatus.values()) {if (status.code() == code) {return status;}}
         return org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR;
     }
 

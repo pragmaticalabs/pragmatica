@@ -92,8 +92,7 @@ public record AwsEnvironmentIntegration(AwsComputeProvider computeProvider,
     private static Option<CertificateProvider> resolveCertificateProvider(AwsClient client,
                                                                           AwsEnvironmentConfig config) {
         return config.certificateSecretPrefix()
-                     .flatMap(prefix -> awsCertificateProvider(client, prefix)
-                                            .map(CertificateProvider.class::cast)
-                                            .option());
+                                             .flatMap(prefix -> awsCertificateProvider(client, prefix).map(CertificateProvider.class::cast)
+                                                                                      .option());
     }
 }
