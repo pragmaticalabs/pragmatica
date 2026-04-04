@@ -1,6 +1,7 @@
 package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.StreamAccess;
+import org.pragmatica.aether.stream.segment.CursorStore;
 import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -42,6 +43,7 @@ import static org.pragmatica.lang.Result.allOf;
     private final Option<Function<T, Object>> partitionKeyExtractor;
     private final CursorCheckpointWriter cursorWriter;
     private final Option<SegmentReader> segmentReader;
+    private final Option<CursorStore> cursorStore;
     private final AtomicLong roundRobinCounter;
     private final ConcurrentHashMap<ConsumerPartitionKey, Long> committedOffsets;
 
@@ -52,7 +54,8 @@ import static org.pragmatica.lang.Result.allOf;
                              int partitionCount,
                              Option<Function<T, Object>> partitionKeyExtractor,
                              CursorCheckpointWriter cursorWriter,
-                             Option<SegmentReader> segmentReader) {
+                             Option<SegmentReader> segmentReader,
+                             Option<CursorStore> cursorStore) {
         this.partitionManager = partitionManager;
         this.serializer = serializer;
         this.deserializer = deserializer;
@@ -61,6 +64,7 @@ import static org.pragmatica.lang.Result.allOf;
         this.partitionKeyExtractor = partitionKeyExtractor;
         this.cursorWriter = cursorWriter;
         this.segmentReader = segmentReader;
+        this.cursorStore = cursorStore;
         this.roundRobinCounter = new AtomicLong(0);
         this.committedOffsets = new ConcurrentHashMap<>();
     }
@@ -78,6 +82,7 @@ import static org.pragmatica.lang.Result.allOf;
                                       partitionCount,
                                       partitionKeyExtractor,
                                       NOOP_WRITER,
+                                      Option.none(),
                                       Option.none());
     }
 
@@ -95,6 +100,7 @@ import static org.pragmatica.lang.Result.allOf;
                                       partitionCount,
                                       partitionKeyExtractor,
                                       cursorWriter,
+                                      Option.none(),
                                       Option.none());
     }
 
@@ -113,7 +119,28 @@ import static org.pragmatica.lang.Result.allOf;
                                       partitionCount,
                                       partitionKeyExtractor,
                                       cursorWriter,
-                                      Option.some(segmentReader));
+                                      Option.some(segmentReader),
+                                      Option.none());
+    }
+
+    public static <T> StreamAccessImpl<T> streamAccess(StreamPartitionManager partitionManager,
+                                                       Serializer serializer,
+                                                       Deserializer deserializer,
+                                                       String streamName,
+                                                       int partitionCount,
+                                                       Option<Function<T, Object>> partitionKeyExtractor,
+                                                       CursorCheckpointWriter cursorWriter,
+                                                       SegmentReader segmentReader,
+                                                       CursorStore cursorStore) {
+        return new StreamAccessImpl<>(partitionManager,
+                                      serializer,
+                                      deserializer,
+                                      streamName,
+                                      partitionCount,
+                                      partitionKeyExtractor,
+                                      cursorWriter,
+                                      Option.some(segmentReader),
+                                      Option.some(cursorStore));
     }
 
     @Override public Promise<Long> publish(T event) {
@@ -136,7 +163,14 @@ import static org.pragmatica.lang.Result.allOf;
     }
 
     @Override public Promise<Option<Long>> committedOffset(String consumerGroup, int partition) {
-        return Promise.success(option(committedOffsets.get(new ConsumerPartitionKey(consumerGroup, partition))));
+        var inMemory = option(committedOffsets.get(new ConsumerPartitionKey(consumerGroup, partition)));
+        return Promise.success(inMemory.isPresent()
+                              ? inMemory
+                              : fetchFromCursorStore(consumerGroup, partition));
+    }
+
+    private Option<Long> fetchFromCursorStore(String consumerGroup, int partition) {
+        return cursorStore.flatMap(store -> store.fetch(consumerGroup, streamName, partition));
     }
 
     @Override public Promise<StreamMetadata> metadata() {

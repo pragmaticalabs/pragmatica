@@ -7,6 +7,7 @@ import org.pragmatica.storage.MetadataStore;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 
@@ -18,9 +19,14 @@ import static org.pragmatica.lang.Option.option;
 public final class SegmentIndex {
     private final ConcurrentHashMap<PartitionKey, ConcurrentSkipListMap<Long, SegmentRef>> partitions = new ConcurrentHashMap<>();
 
-    public record SegmentRef(long startOffset, long endOffset) {
+    public record SegmentRef(long startOffset, long endOffset, long maxTimestamp) {
+        public static SegmentRef segmentRef(long startOffset, long endOffset, long maxTimestamp) {
+            return new SegmentRef(startOffset, endOffset, maxTimestamp);
+        }
+
+        /// Backward-compatible factory for rebuilds where timestamp is unknown.
         public static SegmentRef segmentRef(long startOffset, long endOffset) {
-            return new SegmentRef(startOffset, endOffset);
+            return new SegmentRef(startOffset, endOffset, 0L);
         }
 
         boolean containsOffset(long offset) {
@@ -28,10 +34,29 @@ public final class SegmentIndex {
         }
     }
 
-    @Contract public void addSegment(String streamName, int partition, long startOffset, long endOffset) {
+    @Contract public void addSegment(String streamName, int partition, long startOffset, long endOffset, long maxTimestamp) {
         var key = PartitionKey.partitionKey(streamName, partition);
         var map = partitions.computeIfAbsent(key, _ -> new ConcurrentSkipListMap<>());
-        map.put(startOffset, SegmentRef.segmentRef(startOffset, endOffset));
+        map.put(startOffset, SegmentRef.segmentRef(startOffset, endOffset, maxTimestamp));
+    }
+
+    @Contract public void addSegment(String streamName, int partition, long startOffset, long endOffset) {
+        addSegment(streamName, partition, startOffset, endOffset, 0L);
+    }
+
+    @Contract public void removeSegment(String streamName, int partition, long startOffset) {
+        var key = PartitionKey.partitionKey(streamName, partition);
+        option(partitions.get(key)).onPresent(map -> map.remove(startOffset));
+    }
+
+    public List<SegmentRef> listSegments(String streamName, int partition) {
+        return option(partitions.get(PartitionKey.partitionKey(streamName, partition)))
+                     .map(map -> List.copyOf(map.values()))
+                     .or(List.of());
+    }
+
+    public Set<PartitionKey> listPartitionKeys() {
+        return Set.copyOf(partitions.keySet());
     }
 
     public Option<SegmentRef> findSegment(String streamName, int partition, long offset) {
@@ -75,7 +100,7 @@ public final class SegmentIndex {
 
     private void parseOffsetRange(String streamName, int partition, String range) {
         var dash = range.indexOf('-');
-        if (dash <0) {return;}
+        if (dash < 0) {return;}
         Number.parseLong(range.substring(0, dash))
                         .onSuccess(start -> Number.parseLong(range.substring(dash + 1))
                                                             .onSuccess(end -> addSegment(streamName,
@@ -84,10 +109,14 @@ public final class SegmentIndex {
                                                                                          end)));
     }
 
+    static String buildRefName(String streamName, int partition, SegmentRef ref) {
+        return STREAMS_PREFIX + streamName + "/" + partition + "/" + ref.startOffset() + "-" + ref.endOffset();
+    }
+
     private static final String STREAMS_PREFIX = "streams/";
 
-    private record PartitionKey(String streamName, int partition) {
-        static PartitionKey partitionKey(String streamName, int partition) {
+    public record PartitionKey(String streamName, int partition) {
+        public static PartitionKey partitionKey(String streamName, int partition) {
             return new PartitionKey(streamName, partition);
         }
     }
