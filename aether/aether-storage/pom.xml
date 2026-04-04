@@ -41,6 +41,12 @@
             <artifactId>slice</artifactId>
         </dependency>
 
+        <!-- Aether Resource API (ResourceFactory SPI, ResourceQualifier) -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-api</artifactId>
+        </dependency>
+
         <!-- Testing -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
