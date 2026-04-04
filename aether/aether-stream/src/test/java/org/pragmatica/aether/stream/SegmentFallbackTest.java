@@ -10,9 +10,9 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
-import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.aether.stream.segment.SegmentSealer;
 import org.pragmatica.aether.stream.segment.StorageSegmentSink;
+import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -25,9 +25,9 @@ import java.util.function.Function;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.StreamAccessImpl.streamAccess;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
-import static org.pragmatica.aether.stream.segment.SegmentReader.segmentReader;
 import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
+import static org.pragmatica.aether.stream.segment.TieredStreamReader.tieredStreamReader;
 
 /// Tests the read-through fallback from ring buffer to sealed segments.
 /// When events are evicted from the ring buffer and sealed to storage,
@@ -46,7 +46,7 @@ class SegmentFallbackTest {
     private StorageInstance storage;
     private SegmentIndex index;
     private StorageSegmentSink sink;
-    private SegmentReader reader;
+    private TieredStreamReader tieredReader;
     private SegmentSealer sealer;
     private StreamPartitionManager partitionManager;
     private StreamAccessImpl<byte[]> access;
@@ -56,7 +56,7 @@ class SegmentFallbackTest {
         storage = StorageInstance.storageInstance("test", List.of(MemoryTier.memoryTier(ONE_GB)));
         index = new SegmentIndex();
         sink = storageSegmentSink(storage, index);
-        reader = segmentReader(storage, index);
+        tieredReader = tieredStreamReader(index, storage);
         sealer = segmentSealer(sink);
 
         // Wire SegmentSealer as the eviction listener so evicted events get sealed
@@ -67,7 +67,7 @@ class SegmentFallbackTest {
         StreamAccessImpl.CursorCheckpointWriter noopWriter = (_, _, _, _) -> org.pragmatica.lang.Promise.unitPromise();
         access = streamAccess(partitionManager, identitySerializer(), identityDeserializer(),
                               STREAM, PARTITION_COUNT, Option.<Function<byte[], Object>>none(),
-                              noopWriter, reader);
+                              noopWriter, tieredReader);
     }
 
     @AfterEach

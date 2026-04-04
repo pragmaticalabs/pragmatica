@@ -2,7 +2,7 @@ package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.StreamAccess;
 import org.pragmatica.aether.stream.segment.CursorStore;
-import org.pragmatica.aether.stream.segment.SegmentReader;
+import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -42,7 +42,7 @@ import static org.pragmatica.lang.Result.allOf;
     private final int partitionCount;
     private final Option<Function<T, Object>> partitionKeyExtractor;
     private final CursorCheckpointWriter cursorWriter;
-    private final Option<SegmentReader> segmentReader;
+    private final Option<TieredStreamReader> tieredReader;
     private final Option<CursorStore> cursorStore;
     private final AtomicLong roundRobinCounter;
     private final ConcurrentHashMap<ConsumerPartitionKey, Long> committedOffsets;
@@ -54,7 +54,7 @@ import static org.pragmatica.lang.Result.allOf;
                              int partitionCount,
                              Option<Function<T, Object>> partitionKeyExtractor,
                              CursorCheckpointWriter cursorWriter,
-                             Option<SegmentReader> segmentReader,
+                             Option<TieredStreamReader> tieredReader,
                              Option<CursorStore> cursorStore) {
         this.partitionManager = partitionManager;
         this.serializer = serializer;
@@ -63,7 +63,7 @@ import static org.pragmatica.lang.Result.allOf;
         this.partitionCount = partitionCount;
         this.partitionKeyExtractor = partitionKeyExtractor;
         this.cursorWriter = cursorWriter;
-        this.segmentReader = segmentReader;
+        this.tieredReader = tieredReader;
         this.cursorStore = cursorStore;
         this.roundRobinCounter = new AtomicLong(0);
         this.committedOffsets = new ConcurrentHashMap<>();
@@ -111,7 +111,7 @@ import static org.pragmatica.lang.Result.allOf;
                                                        int partitionCount,
                                                        Option<Function<T, Object>> partitionKeyExtractor,
                                                        CursorCheckpointWriter cursorWriter,
-                                                       SegmentReader segmentReader) {
+                                                       TieredStreamReader tieredReader) {
         return new StreamAccessImpl<>(partitionManager,
                                       serializer,
                                       deserializer,
@@ -119,7 +119,7 @@ import static org.pragmatica.lang.Result.allOf;
                                       partitionCount,
                                       partitionKeyExtractor,
                                       cursorWriter,
-                                      Option.some(segmentReader),
+                                      Option.some(tieredReader),
                                       Option.none());
     }
 
@@ -130,7 +130,7 @@ import static org.pragmatica.lang.Result.allOf;
                                                        int partitionCount,
                                                        Option<Function<T, Object>> partitionKeyExtractor,
                                                        CursorCheckpointWriter cursorWriter,
-                                                       SegmentReader segmentReader,
+                                                       TieredStreamReader tieredReader,
                                                        CursorStore cursorStore) {
         return new StreamAccessImpl<>(partitionManager,
                                       serializer,
@@ -139,7 +139,7 @@ import static org.pragmatica.lang.Result.allOf;
                                       partitionCount,
                                       partitionKeyExtractor,
                                       cursorWriter,
-                                      Option.some(segmentReader),
+                                      Option.some(tieredReader),
                                       Option.some(cursorStore));
     }
 
@@ -219,18 +219,18 @@ import static org.pragmatica.lang.Result.allOf;
                                                                  long fromOffset,
                                                                  int maxEvents,
                                                                  long expiredOffset) {
-        return segmentReader.map(reader -> readFromSegmentThenBuffer(reader, partition, fromOffset, maxEvents))
+        return tieredReader.map(reader -> readFromTieredReader(reader, partition, fromOffset, maxEvents))
                                 .or(() -> new StreamError.CursorExpired(expiredOffset,
                                                                         partitionManager.partitionInfo(streamName,
                                                                                                        partition).map(StreamPartitionManager.PartitionInfo::tailOffset)
                                                                                                       .or(0L)).result());
     }
 
-    private Result<List<StreamEvent<T>>> readFromSegmentThenBuffer(SegmentReader reader,
-                                                                   int partition,
-                                                                   long fromOffset,
-                                                                   int maxEvents) {
-        var segmentEvents = reader.readEvents(streamName, partition, fromOffset, maxEvents).await();
+    private Result<List<StreamEvent<T>>> readFromTieredReader(TieredStreamReader reader,
+                                                               int partition,
+                                                               long fromOffset,
+                                                               int maxEvents) {
+        var segmentEvents = reader.read(streamName, partition, fromOffset, maxEvents).await();
         return segmentEvents.map(sealedEvents -> combineWithBufferEvents(sealedEvents, partition, fromOffset, maxEvents));
     }
 
