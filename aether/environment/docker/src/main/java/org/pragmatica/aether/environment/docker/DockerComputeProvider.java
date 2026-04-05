@@ -90,7 +90,8 @@ import static org.pragmatica.lang.Result.success;
 
     private String buildContainerName(ProvisionSpec spec, int nodeIndex) {
         var pool = spec.pool();
-        return "aether-" + pool + "-node-" + nodeIndex;
+        var suffix = Long.toHexString(System.nanoTime()).substring(4);
+        return "aether-" + pool + "-node-" + nodeIndex + "-" + suffix;
     }
 
     private List<String> buildRunCommand(ProvisionSpec spec, String containerName, int nodeIndex) {

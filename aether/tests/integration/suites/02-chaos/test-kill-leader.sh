@@ -67,8 +67,8 @@ test_auto_heal() {
 cleanup() {
     log_info "Restoring all containers for clean state..."
     restart_all_nodes
-    sleep 15
-    wait_for_cluster 60 || true
+    wait_for_node_count 5 120 || true
+    wait_for_leader 60 || true
 }
 
 run_test "Initial 5 nodes" test_initial_state
