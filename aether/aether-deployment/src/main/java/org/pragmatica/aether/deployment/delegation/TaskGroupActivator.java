@@ -71,7 +71,7 @@ public sealed interface TaskGroupActivator {
         }
 
         private boolean isAssignedToSelf(TaskAssignmentValue assignment) {
-            return self.equals(assignment.assignedTo()) && assignment.status() == AssignmentStatus.ASSIGNED;
+            return self.equals(assignment.assignedTo());
         }
 
         private void handleLocalAssignment(TaskGroup taskGroup, List<DelegatedComponent> groupComponents) {
