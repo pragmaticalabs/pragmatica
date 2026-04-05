@@ -203,6 +203,7 @@ public interface AetherNode {
     ClusterEventAggregator eventAggregator();
     BackupService backupService();
     StreamPartitionManager streamPartitionManager();
+    TaskAssignmentCoordinator taskAssignmentCoordinator();
     Map<String, StorageFactory.StorageSetup> storageSetups();
     Option<CertificateRenewalScheduler> certRenewalScheduler();
     int connectedNodeCount();
@@ -378,6 +379,7 @@ public interface AetherNode {
                           ClusterEventAggregator eventAggregator,
                           BackupService backupService,
                           StreamPartitionManager streamPartitionManager,
+                          TaskAssignmentCoordinator taskAssignmentCoordinator,
                           Map<String, StorageFactory.StorageSetup> storageSetups,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
@@ -961,6 +963,7 @@ public interface AetherNode {
                                   eventAggregator,
                                   BackupService.disabled(),
                                   streamPartitionManager,
+                                  taskAssignmentCoordinator,
                                   storageSetups,
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
@@ -1035,6 +1038,7 @@ public interface AetherNode {
                                                                               eventAggregator,
                                                                               BackupService.disabled(),
                                                                               streamPartitionManager,
+                                                                              taskAssignmentCoordinator,
                                                                               storageSetups,
                                                                               eventLoopMetricsCollector,
                                                                               swimHealthDetector,
