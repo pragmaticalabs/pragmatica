@@ -410,11 +410,32 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private void provisionSingleNode() {
-        var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", Map.of()).unwrap();
+        var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
+                                                   "default",
+                                                   "core",
+                                                   buildProvisionTags())
+        .unwrap();
         var spec = computePlacementHint().map(baseSpec::withPlacement).or(baseSpec);
         lifecycleManager.provisionNode(spec).onSuccess(_ -> log.info("CTM: Node provisioning succeeded"))
                                       .onFailure(cause -> log.warn("CTM: Node provisioning failed: {}",
                                                                    cause.message()));
+    }
+
+    private Map<String, String> buildProvisionTags() {
+        var peers = observer.topology().stream()
+                                     .flatMap(nodeId -> observer.get(nodeId).stream())
+                                     .map(ClusterTopologyManagerRecord::formatPeerEntry)
+                                     .collect(Collectors.joining(","));
+        return Map.of("aether.peers",
+                      peers,
+                      "aether.core-max",
+                      String.valueOf(configuredSizeRef.get()));
+    }
+
+    private static String formatPeerEntry(NodeInfo info) {
+        var hostname = info.labels().getOrDefault(LABEL_HOSTNAME,
+                                                  info.id().id());
+        return info.id().id() + ":" + hostname + ":" + info.address().port();
     }
 
     private Option<PlacementHint> computePlacementHint() {

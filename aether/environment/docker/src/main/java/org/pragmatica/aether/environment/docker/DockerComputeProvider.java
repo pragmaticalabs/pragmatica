@@ -101,7 +101,7 @@ import static org.pragmatica.lang.Result.success;
         var nodeId = spec.tags().getOrDefault("aether.node-id", containerName);
         var peers = spec.tags().getOrDefault("aether.peers", "");
         var coreMax = spec.tags().getOrDefault("aether.core-max", "3");
-        var apiKey = spec.tags().getOrDefault("aether.api-key", "");
+        var apiKey = config.apiKey();
         var command = new ArrayList<>(List.of("docker",
                                               "run",
                                               "-d",
