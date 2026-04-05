@@ -6,9 +6,13 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Unit.unit;
 
 /// Default implementation of PromotionManager.
 /// Scans blocks in cold tiers (REMOTE, LOCAL_DISK) and promotes frequently-accessed
@@ -33,13 +37,15 @@ final class DefaultPromotionManager implements PromotionManager {
     }
 
     @Override
-    public void activate() {
+    public Result<Unit> activate() {
         active = true;
+        return Result.success(unit());
     }
 
     @Override
-    public void deactivate() {
+    public Result<Unit> deactivate() {
         active = false;
+        return Result.success(unit());
     }
 
     @Override

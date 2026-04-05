@@ -503,9 +503,14 @@ public interface NodeDeploymentManager {
 
             private record ScheduledTaskManifestEntry(String configSection, MethodName methodName){}
 
-            private record ReactiveManifestEntry(String category, String method, String config,
-                                                  Properties manifest, String prefix) {
-                String getProperty(String key) { return manifest.getProperty(prefix + key, ""); }
+            private record ReactiveManifestEntry(String category,
+                                                 String method,
+                                                 String config,
+                                                 Properties manifest,
+                                                 String prefix) {
+                String getProperty(String key) {
+                    return manifest.getProperty(prefix + key, "");
+                }
             }
 
             @SuppressWarnings("JBCT-EX-01") private List<ReactiveManifestEntry> readReactiveBindingsFromManifest(Slice slice) {
@@ -520,14 +525,14 @@ public interface NodeDeploymentManager {
             }
 
             @SuppressWarnings("JBCT-EX-01") private void readReactiveEntriesFromManifest(ClassLoader classLoader,
-                                                                                          String manifestPath,
-                                                                                          List<ReactiveManifestEntry> result) {
+                                                                                         String manifestPath,
+                                                                                         List<ReactiveManifestEntry> result) {
                 try (var is = classLoader.getResourceAsStream(manifestPath)) {
                     if (is == null) {return;}
                     var props = new Properties();
                     props.load(is);
                     var count = Integer.parseInt(props.getProperty("reactive.count", "0"));
-                    for (int i = 0; i < count; i++) {
+                    for (int i = 0;i <count;i++) {
                         var prefix = "reactive." + i + ".";
                         var category = props.getProperty(prefix + "category", "");
                         var method = props.getProperty(prefix + "method", "");
@@ -542,15 +547,11 @@ public interface NodeDeploymentManager {
             @SuppressWarnings("JBCT-EX-01") private List<SubscriptionManifestEntry> readSubscriptionsFromManifest(Slice slice) {
                 var reactive = readReactiveBindingsFromManifest(slice);
                 var result = new ArrayList<SubscriptionManifestEntry>();
-                for (var entry : reactive) {
-                    if ("subscription".equals(entry.category())) {
-                        resolveTopicName(entry.config())
-                            .flatMap(topicName -> MethodName.methodName(entry.method())
-                                                                        .map(method -> new SubscriptionManifestEntry(topicName, method)))
-                            .option()
-                            .onPresent(result::add);
-                    }
-                }
+                for (var entry : reactive) {if ("subscription".equals(entry.category())) {resolveTopicName(entry.config()).flatMap(topicName -> MethodName.methodName(entry.method())
+                                                                                                                                                                     .map(method -> new SubscriptionManifestEntry(topicName,
+                                                                                                                                                                                                                  method)))
+                                                                                                          .option()
+                                                                                                          .onPresent(result::add);}}
                 return result;
             }
 
@@ -673,7 +674,7 @@ public interface NodeDeploymentManager {
                     var factoryClassName = props.getProperty("slice.factory", "");
                     if (factoryClassName.isEmpty()) {return;}
                     var count = Integer.parseInt(props.getProperty("reactive.count", "0"));
-                    for (int i = 0; i < count; i++) {
+                    for (int i = 0;i <count;i++) {
                         var prefix = "reactive." + i + ".";
                         var category = props.getProperty(prefix + "category", "");
                         if ("config-update".equals(category)) {
@@ -695,14 +696,10 @@ public interface NodeDeploymentManager {
             @SuppressWarnings("JBCT-EX-01") private List<ScheduledTaskManifestEntry> readScheduledTasksFromManifest(Slice slice) {
                 var reactive = readReactiveBindingsFromManifest(slice);
                 var result = new ArrayList<ScheduledTaskManifestEntry>();
-                for (var entry : reactive) {
-                    if ("scheduled".equals(entry.category())) {
-                        MethodName.methodName(entry.method())
-                                  .map(method -> new ScheduledTaskManifestEntry(entry.config(), method))
-                                  .option()
-                                  .onPresent(result::add);
-                    }
-                }
+                for (var entry : reactive) {if ("scheduled".equals(entry.category())) {MethodName.methodName(entry.method()).map(method -> new ScheduledTaskManifestEntry(entry.config(),
+                                                                                                                                                                          method))
+                                                                                                            .option()
+                                                                                                            .onPresent(result::add);}}
                 return result;
             }
 
@@ -789,21 +786,18 @@ public interface NodeDeploymentManager {
             @SuppressWarnings("JBCT-EX-01") private List<StreamSubscriptionManifestEntry> readStreamSubscriptionsFromManifest(Slice slice) {
                 var reactive = readReactiveBindingsFromManifest(slice);
                 var result = new ArrayList<StreamSubscriptionManifestEntry>();
-                for (var entry : reactive) {
-                    if ("stream".equals(entry.category())) {
-                        var batchMode = Boolean.parseBoolean(entry.getProperty("batch"));
-                        var eventType = entry.getProperty("eventType");
-                        resolveStreamName(entry.config())
-                            .flatMap(streamName -> MethodName.methodName(entry.method())
-                                                                        .map(method -> new StreamSubscriptionManifestEntry(streamName,
-                                                                                                                           entry.config(),
-                                                                                                                           method,
-                                                                                                                           batchMode,
-                                                                                                                           eventType)))
-                            .option()
-                            .onPresent(result::add);
-                    }
-                }
+                for (var entry : reactive) {if ("stream".equals(entry.category())) {
+                    var batchMode = Boolean.parseBoolean(entry.getProperty("batch"));
+                    var eventType = entry.getProperty("eventType");
+                    resolveStreamName(entry.config()).flatMap(streamName -> MethodName.methodName(entry.method())
+                                                                                                 .map(method -> new StreamSubscriptionManifestEntry(streamName,
+                                                                                                                                                    entry.config(),
+                                                                                                                                                    method,
+                                                                                                                                                    batchMode,
+                                                                                                                                                    eventType)))
+                                     .option()
+                                     .onPresent(result::add);
+                }}
                 return result;
             }
 

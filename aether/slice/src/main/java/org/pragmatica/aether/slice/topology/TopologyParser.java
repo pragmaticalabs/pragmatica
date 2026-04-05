@@ -163,7 +163,7 @@ import org.slf4j.LoggerFactory;
     private static List<SliceTopology.TopicSub> parseSubscriptions(Properties props) {
         var count = intProp(props, "reactive.count");
         var subs = new ArrayList<SliceTopology.TopicSub>();
-        for (int i = 0; i < count; i++) {
+        for (int i = 0;i <count;i++) {
             var prefix = "reactive." + i + ".";
             var category = props.getProperty(prefix + "category", "");
             if ("subscription".equals(category)) {

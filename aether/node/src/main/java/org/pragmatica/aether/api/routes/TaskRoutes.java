@@ -60,9 +60,9 @@ public final class TaskRoutes implements RouteSource {
     private TaskAssignmentsResponse listAssignments() {
         var infos = new ArrayList<TaskAssignmentInfo>();
         nodeSupplier.get().kvStore()
-                         .forEach(AetherKey.TaskAssignmentKey.class,
-                                  TaskAssignmentValue.class,
-                                  (key, value) -> infos.add(toAssignmentInfo(key, value)));
+                        .forEach(AetherKey.TaskAssignmentKey.class,
+                                 TaskAssignmentValue.class,
+                                 (key, value) -> infos.add(toAssignmentInfo(key, value)));
         return new TaskAssignmentsResponse(List.copyOf(infos));
     }
 

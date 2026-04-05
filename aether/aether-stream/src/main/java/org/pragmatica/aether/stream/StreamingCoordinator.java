@@ -39,9 +39,6 @@ public final class StreamingCoordinator implements DelegatedComponent {
         return new StreamingCoordinator(failoverHandler, retentionEnforcer);
     }
 
-    /// Creates a no-op coordinator for environments where streaming subsystem components
-    /// are not configured. Registers with the TaskGroupActivator so STREAMING group
-    /// transitions to ACTIVE without requiring real GovernorFailoverHandler/RetentionEnforcer.
     public static DelegatedComponent noOp() {
         return new NoOpStreamingComponent();
     }

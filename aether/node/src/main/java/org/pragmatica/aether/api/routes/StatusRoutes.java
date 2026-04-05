@@ -156,8 +156,14 @@ public final class StatusRoutes implements RouteSource {
         var status = !ready || !hasQuorum
                     ? "unhealthy"
                     : "healthy";
-        return new HealthResponse(status, ready, hasQuorum, totalNodes, connectedNodeCount, metricsNodeCount, sliceCount,
-                                   BuildInfo.buildInfo().buildTimestamp());
+        return new HealthResponse(status,
+                                  ready,
+                                  hasQuorum,
+                                  totalNodes,
+                                  connectedNodeCount,
+                                  metricsNodeCount,
+                                  sliceCount,
+                                  BuildInfo.buildInfo().buildTimestamp());
     }
 
     public LivenessResponse buildLivenessResponse() {

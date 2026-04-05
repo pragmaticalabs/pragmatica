@@ -182,10 +182,9 @@ public sealed interface TaskAssignmentCoordinator {
                     assignmentMap.put(group, value);
                     commands.add(new KVCommand.Put<>(key, value));
                 }
-                if (!commands.isEmpty()) {
-                    clusterNode.apply(commands)
-                               .onFailure(cause -> log.error("Consensus proposal failed for task assignments: {}", cause.message()));
-                }
+                if (!commands.isEmpty()) {clusterNode.apply(commands)
+                                                           .onFailure(cause -> log.error("Consensus proposal failed for task assignments: {}",
+                                                                                         cause.message()));}
             }
 
             private Option<NodeId> selectLeastLoadedNode(TaskGroup group, List<NodeId> healthyNodes) {
@@ -230,9 +229,9 @@ public sealed interface TaskAssignmentCoordinator {
                 assignmentMap.put(group, value);
                 var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
                 clusterNode.apply(List.of(command))
-                           .onFailure(cause -> log.error("Consensus proposal failed for task group {} assignment: {}",
-                                                          group,
-                                                          cause.message()));
+                                 .onFailure(cause -> log.error("Consensus proposal failed for task group {} assignment: {}",
+                                                               group,
+                                                               cause.message()));
                 return Result.unitResult();
             }
         }

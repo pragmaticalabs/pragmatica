@@ -2,6 +2,11 @@ package org.pragmatica.storage;
 
 import java.util.List;
 
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
+import static org.pragmatica.lang.Unit.unit;
+
 /// Manages cross-node block prefetching via SWIM piggyback hints.
 ///
 /// Nodes record local block access frequencies. When gossip rounds occur,
@@ -23,10 +28,10 @@ public interface PrefetchManager {
     void processHints(List<PrefetchHint> hints);
 
     /// Activate the prefetch manager, allowing hint collection and prefetch.
-    void activate();
+    Result<Unit> activate();
 
     /// Deactivate the prefetch manager. All operations become no-ops.
-    void deactivate();
+    Result<Unit> deactivate();
 
     /// Whether the prefetch manager is currently active.
     boolean isActive();
@@ -58,13 +63,13 @@ final class NoOpPrefetchManager implements PrefetchManager {
     }
 
     @Override
-    public void activate() {
-        // no-op
+    public Result<Unit> activate() {
+        return Result.success(unit());
     }
 
     @Override
-    public void deactivate() {
-        // no-op
+    public Result<Unit> deactivate() {
+        return Result.success(unit());
     }
 
     @Override

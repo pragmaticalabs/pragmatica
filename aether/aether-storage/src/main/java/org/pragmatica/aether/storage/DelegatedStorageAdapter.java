@@ -3,6 +3,7 @@ package org.pragmatica.aether.storage;
 import org.pragmatica.aether.slice.delegation.DelegatedComponent;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.DemotionManager;
 import org.pragmatica.storage.StorageGarbageCollector;
@@ -39,30 +40,55 @@ public final class DelegatedStorageAdapter implements DelegatedComponent {
         return new DelegatedStorageAdapter(demotionManager, garbageCollector);
     }
 
-    /// Creates a no-op adapter for environments where storage subsystem components
-    /// are not configured. Registers with the TaskGroupActivator so STORAGE group
-    /// transitions to ACTIVE without requiring real DemotionManager/GarbageCollector.
     public static DelegatedStorageAdapter noOp() {
         return new DelegatedStorageAdapter(noOpDemotionManager(), noOpGarbageCollector());
     }
 
     private static DemotionManager noOpDemotionManager() {
         return new DemotionManager() {
-            @Override public int demote() { return 0; }
-            @Override public DemotionStats stats() { return new DemotionStats(0, 0, 0); }
-            @Override public void activate() {}
-            @Override public void deactivate() {}
-            @Override public boolean isActive() { return false; }
+            @Override public int demote() {
+                return 0;
+            }
+
+            @Override public DemotionStats stats() {
+                return new DemotionStats(0, 0, 0);
+            }
+
+            @Override public Result<Unit> activate() {
+                return Result.success(unit());
+            }
+
+            @Override public Result<Unit> deactivate() {
+                return Result.success(unit());
+            }
+
+            @Override public boolean isActive() {
+                return false;
+            }
         };
     }
 
     private static StorageGarbageCollector noOpGarbageCollector() {
         return new StorageGarbageCollector() {
-            @Override public int collectGarbage() { return 0; }
-            @Override public GCStats stats() { return new GCStats(0, 0); }
-            @Override public void activate() {}
-            @Override public void deactivate() {}
-            @Override public boolean isActive() { return false; }
+            @Override public int collectGarbage() {
+                return 0;
+            }
+
+            @Override public GCStats stats() {
+                return new GCStats(0, 0);
+            }
+
+            @Override public Result<Unit> activate() {
+                return Result.success(unit());
+            }
+
+            @Override public Result<Unit> deactivate() {
+                return Result.success(unit());
+            }
+
+            @Override public boolean isActive() {
+                return false;
+            }
         };
     }
 
