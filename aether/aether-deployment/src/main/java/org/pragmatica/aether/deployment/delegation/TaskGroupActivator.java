@@ -57,6 +57,10 @@ public sealed interface TaskGroupActivator {
                 log.debug("No components registered for task group {}, ignoring assignment", taskGroup);
                 return;
             }
+            if (assignment.status() == AssignmentStatus.ACTIVE || assignment.status() == AssignmentStatus.FAILED) {
+                log.debug("Task group {} already in terminal state {}, ignoring", taskGroup, assignment.status());
+                return;
+            }
             if (isAssignedToSelf(assignment)) {handleLocalAssignment(taskGroup, groupComponents);} else {handleRemoteAssignment(taskGroup,
                                                                                                                                 groupComponents);}
         }
