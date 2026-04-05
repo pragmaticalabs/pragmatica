@@ -503,39 +503,55 @@ public interface NodeDeploymentManager {
 
             private record ScheduledTaskManifestEntry(String configSection, MethodName methodName){}
 
-            @SuppressWarnings("JBCT-EX-01") private List<SubscriptionManifestEntry> readSubscriptionsFromManifest(Slice slice) {
-                var result = new ArrayList<SubscriptionManifestEntry>();
+            private record ReactiveManifestEntry(String category, String method, String config,
+                                                  Properties manifest, String prefix) {
+                String getProperty(String key) { return manifest.getProperty(prefix + key, ""); }
+            }
+
+            @SuppressWarnings("JBCT-EX-01") private List<ReactiveManifestEntry> readReactiveBindingsFromManifest(Slice slice) {
+                var result = new ArrayList<ReactiveManifestEntry>();
                 var classLoader = slice.getClass().getClassLoader();
                 for (var iface : slice.getClass().getInterfaces()) {
                     if (iface == Slice.class) {continue;}
                     var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
-                    readSubscriptionEntriesFromManifest(classLoader, manifestPath, result);
+                    readReactiveEntriesFromManifest(classLoader, manifestPath, result);
                 }
                 return result;
             }
 
-            @SuppressWarnings("JBCT-EX-01") private void readSubscriptionEntriesFromManifest(ClassLoader classLoader,
-                                                                                             String manifestPath,
-                                                                                             List<SubscriptionManifestEntry> result) {
+            @SuppressWarnings("JBCT-EX-01") private void readReactiveEntriesFromManifest(ClassLoader classLoader,
+                                                                                          String manifestPath,
+                                                                                          List<ReactiveManifestEntry> result) {
                 try (var is = classLoader.getResourceAsStream(manifestPath)) {
                     if (is == null) {return;}
                     var props = new Properties();
                     props.load(is);
-                    var count = Integer.parseInt(props.getProperty("topic.subscriptions.count", "0"));
-                    for (int i = 0;i <count;i++) {readSubscriptionEntry(props, i).onPresent(result::add);}
+                    var count = Integer.parseInt(props.getProperty("reactive.count", "0"));
+                    for (int i = 0; i < count; i++) {
+                        var prefix = "reactive." + i + ".";
+                        var category = props.getProperty(prefix + "category", "");
+                        var method = props.getProperty(prefix + "method", "");
+                        var config = props.getProperty(prefix + "config", "");
+                        result.add(new ReactiveManifestEntry(category, method, config, props, prefix));
+                    }
                 } catch (Exception e) {
-                    log.debug("Could not read subscription manifest {}: {}", manifestPath, e.getMessage());
+                    log.debug("Could not read reactive manifest {}: {}", manifestPath, e.getMessage());
                 }
             }
 
-            private Option<SubscriptionManifestEntry> readSubscriptionEntry(Properties props, int index) {
-                var configSection = props.getProperty("topic.subscription." + index + ".config");
-                var methodNameStr = props.getProperty("topic.subscription." + index + ".method");
-                if (configSection == null || methodNameStr == null) {return Option.none();}
-                return resolveTopicName(configSection).flatMap(topicName -> MethodName.methodName(methodNameStr)
-                                                                                                 .map(method -> new SubscriptionManifestEntry(topicName,
-                                                                                                                                              method)))
-                                       .option();
+            @SuppressWarnings("JBCT-EX-01") private List<SubscriptionManifestEntry> readSubscriptionsFromManifest(Slice slice) {
+                var reactive = readReactiveBindingsFromManifest(slice);
+                var result = new ArrayList<SubscriptionManifestEntry>();
+                for (var entry : reactive) {
+                    if ("subscription".equals(entry.category())) {
+                        resolveTopicName(entry.config())
+                            .flatMap(topicName -> MethodName.methodName(entry.method())
+                                                                        .map(method -> new SubscriptionManifestEntry(topicName, method)))
+                            .option()
+                            .onPresent(result::add);
+                    }
+                }
+                return result;
             }
 
             private Result<String> resolveTopicName(String configSection) {
@@ -656,11 +672,15 @@ public interface NodeDeploymentManager {
                     props.load(is);
                     var factoryClassName = props.getProperty("slice.factory", "");
                     if (factoryClassName.isEmpty()) {return;}
-                    var count = Integer.parseInt(props.getProperty("config.updates.count", "0"));
-                    for (int i = 0;i <count;i++) {
-                        var configSection = props.getProperty("config.update." + i + ".config");
-                        if (configSection != null) {result.add(new ConfigUpdateManifestEntry(configSection,
-                                                                                             factoryClassName));}
+                    var count = Integer.parseInt(props.getProperty("reactive.count", "0"));
+                    for (int i = 0; i < count; i++) {
+                        var prefix = "reactive." + i + ".";
+                        var category = props.getProperty(prefix + "category", "");
+                        if ("config-update".equals(category)) {
+                            var configSection = props.getProperty(prefix + "config");
+                            if (configSection != null) {result.add(new ConfigUpdateManifestEntry(configSection,
+                                                                                                 factoryClassName));}
+                        }
                     }
                 } catch (Exception e) {
                     log.debug("Could not read config update manifest {}: {}", manifestPath, e.getMessage());
@@ -673,37 +693,17 @@ public interface NodeDeploymentManager {
             }
 
             @SuppressWarnings("JBCT-EX-01") private List<ScheduledTaskManifestEntry> readScheduledTasksFromManifest(Slice slice) {
+                var reactive = readReactiveBindingsFromManifest(slice);
                 var result = new ArrayList<ScheduledTaskManifestEntry>();
-                var classLoader = slice.getClass().getClassLoader();
-                for (var iface : slice.getClass().getInterfaces()) {
-                    if (iface == Slice.class) {continue;}
-                    var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
-                    readScheduledTaskEntriesFromManifest(classLoader, manifestPath, result);
+                for (var entry : reactive) {
+                    if ("scheduled".equals(entry.category())) {
+                        MethodName.methodName(entry.method())
+                                  .map(method -> new ScheduledTaskManifestEntry(entry.config(), method))
+                                  .option()
+                                  .onPresent(result::add);
+                    }
                 }
                 return result;
-            }
-
-            @SuppressWarnings("JBCT-EX-01") private void readScheduledTaskEntriesFromManifest(ClassLoader classLoader,
-                                                                                              String manifestPath,
-                                                                                              List<ScheduledTaskManifestEntry> result) {
-                try (var is = classLoader.getResourceAsStream(manifestPath)) {
-                    if (is == null) {return;}
-                    var props = new Properties();
-                    props.load(is);
-                    var count = Integer.parseInt(props.getProperty("scheduled.tasks.count", "0"));
-                    for (int i = 0;i <count;i++) {readScheduledTaskEntry(props, i).onPresent(result::add);}
-                } catch (Exception e) {
-                    log.debug("Could not read scheduled task manifest {}: {}", manifestPath, e.getMessage());
-                }
-            }
-
-            private Option<ScheduledTaskManifestEntry> readScheduledTaskEntry(Properties props, int index) {
-                var configSection = props.getProperty("scheduled.task." + index + ".config");
-                var methodNameStr = props.getProperty("scheduled.task." + index + ".method");
-                if (configSection == null || methodNameStr == null) {return Option.none();}
-                return MethodName.methodName(methodNameStr).map(method -> new ScheduledTaskManifestEntry(configSection,
-                                                                                                         method))
-                                            .option();
             }
 
             private Option<ScheduleConfig> resolveScheduleConfig(String configSection) {
@@ -787,44 +787,24 @@ public interface NodeDeploymentManager {
                                                            String eventType){}
 
             @SuppressWarnings("JBCT-EX-01") private List<StreamSubscriptionManifestEntry> readStreamSubscriptionsFromManifest(Slice slice) {
+                var reactive = readReactiveBindingsFromManifest(slice);
                 var result = new ArrayList<StreamSubscriptionManifestEntry>();
-                var classLoader = slice.getClass().getClassLoader();
-                for (var iface : slice.getClass().getInterfaces()) {
-                    if (iface == Slice.class) {continue;}
-                    var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
-                    readStreamSubscriptionEntriesFromManifest(classLoader, manifestPath, result);
+                for (var entry : reactive) {
+                    if ("stream".equals(entry.category())) {
+                        var batchMode = Boolean.parseBoolean(entry.getProperty("batch"));
+                        var eventType = entry.getProperty("eventType");
+                        resolveStreamName(entry.config())
+                            .flatMap(streamName -> MethodName.methodName(entry.method())
+                                                                        .map(method -> new StreamSubscriptionManifestEntry(streamName,
+                                                                                                                           entry.config(),
+                                                                                                                           method,
+                                                                                                                           batchMode,
+                                                                                                                           eventType)))
+                            .option()
+                            .onPresent(result::add);
+                    }
                 }
                 return result;
-            }
-
-            @SuppressWarnings("JBCT-EX-01") private void readStreamSubscriptionEntriesFromManifest(ClassLoader classLoader,
-                                                                                                   String manifestPath,
-                                                                                                   List<StreamSubscriptionManifestEntry> result) {
-                try (var is = classLoader.getResourceAsStream(manifestPath)) {
-                    if (is == null) {return;}
-                    var props = new Properties();
-                    props.load(is);
-                    var count = Integer.parseInt(props.getProperty("stream.subscriptions.count", "0"));
-                    for (int i = 0;i <count;i++) {readStreamSubscriptionEntry(props, i).onPresent(result::add);}
-                } catch (Exception e) {
-                    log.debug("Could not read stream subscription manifest {}: {}", manifestPath, e.getMessage());
-                }
-            }
-
-            private Option<StreamSubscriptionManifestEntry> readStreamSubscriptionEntry(Properties props, int index) {
-                var configSection = props.getProperty("stream.subscription." + index + ".config");
-                var methodNameStr = props.getProperty("stream.subscription." + index + ".method");
-                if (configSection == null || methodNameStr == null) {return Option.none();}
-                var batchMode = Boolean.parseBoolean(props.getProperty("stream.subscription." + index + ".batch",
-                                                                       "false"));
-                var eventType = props.getProperty("stream.subscription." + index + ".eventType", "");
-                return resolveStreamName(configSection).flatMap(streamName -> MethodName.methodName(methodNameStr)
-                                                                                                   .map(method -> new StreamSubscriptionManifestEntry(streamName,
-                                                                                                                                                      configSection,
-                                                                                                                                                      method,
-                                                                                                                                                      batchMode,
-                                                                                                                                                      eventType)))
-                                        .option();
             }
 
             private Result<String> resolveStreamName(String configSection) {

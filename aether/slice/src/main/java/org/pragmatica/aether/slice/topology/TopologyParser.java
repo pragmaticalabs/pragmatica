@@ -161,14 +161,17 @@ import org.slf4j.LoggerFactory;
     }
 
     private static List<SliceTopology.TopicSub> parseSubscriptions(Properties props) {
-        var count = intProp(props, "topic.subscriptions.count");
+        var count = intProp(props, "reactive.count");
         var subs = new ArrayList<SliceTopology.TopicSub>();
-        for (int i = 0;i <count;i++) {
-            var prefix = "topic.subscription." + i + ".";
-            var config = props.getProperty(prefix + "config", "");
-            var method = props.getProperty(prefix + "method", "");
-            var messageType = props.getProperty(prefix + "messageType", "");
-            subs.add(new SliceTopology.TopicSub(config, method, messageType));
+        for (int i = 0; i < count; i++) {
+            var prefix = "reactive." + i + ".";
+            var category = props.getProperty(prefix + "category", "");
+            if ("subscription".equals(category)) {
+                var config = props.getProperty(prefix + "config", "");
+                var method = props.getProperty(prefix + "method", "");
+                var messageType = props.getProperty(prefix + "messageType", "");
+                subs.add(new SliceTopology.TopicSub(config, method, messageType));
+            }
         }
         return subs;
     }

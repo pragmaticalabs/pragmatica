@@ -4,6 +4,7 @@ import org.pragmatica.jbct.slice.model.DependencyModel;
 import org.pragmatica.jbct.slice.model.KeyExtractorInfo;
 import org.pragmatica.jbct.slice.model.MethodModel;
 import org.pragmatica.jbct.slice.model.MethodModel.MethodParameterInfo;
+import org.pragmatica.jbct.slice.model.PlainInterfaceModel;
 import org.pragmatica.jbct.slice.model.ResourceQualifierModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
 import org.pragmatica.lang.Option;
@@ -865,44 +866,48 @@ public class FactoryClassGenerator {
         var methodName = lowercaseFirst(sliceName);
         var sliceRecordName = methodName + "Slice";
         var sliceArtifactCoordinate = computeSliceArtifactCoordinate(sliceName);
+        var hasTransitive = model.hasTransitiveAnnotatedMethods();
+        // Collect plain interfaces with annotated methods for step field generation
+        var transitiveSteps = hasTransitive
+                              ? model.plainInterfaceModels().stream()
+                                     .filter(PlainInterfaceModel::hasAnnotatedMethods)
+                                     .toList()
+                              : List.<PlainInterfaceModel>of();
         out.println("    public static Promise<Slice> " + methodName + "Slice(Aspect<" + sliceName + "> aspect,");
         out.println("                                              SliceCreationContext ctx) {");
-        // Generate local adapter record
-        out.println("        record " + sliceRecordName + "(" + sliceName + " delegate, ResourceProviderFacade resources) implements Slice, " + sliceName
+        // Generate local adapter record — add step fields when transitive methods exist
+        var recordComponents = sliceName + " delegate, ResourceProviderFacade resources";
+        for (var step : transitiveSteps) {
+            var stepDep = findDependencyByParamName(model, step.parameterName());
+            if (stepDep != null) {
+                var stepType = importTracker.use(stepDep.interfaceQualifiedName());
+                recordComponents += ", " + stepType + " " + step.parameterName();
+            }
+        }
+        out.println("        record " + sliceRecordName + "(" + recordComponents + ") implements Slice, " + sliceName
                     + " {");
         out.println("            @Override");
         out.println("            public List<SliceMethod<?, ?>> methods() {");
         out.println("                return List.of(");
-        // Generate SliceMethod entries for each method
+        // Generate SliceMethod entries for each direct method
         var methods = model.methods();
+        var totalEntries = methods.size() + countTransitiveMethods(transitiveSteps);
+        var entryIndex = 0;
         for (int i = 0; i < methods.size(); i++) {
             var method = methods.get(i);
-            var comma = (i < methods.size() - 1)
-                        ? ","
-                        : "";
-            var escapedMethodName = escapeJavaString(method.name());
-            var responseType = importTracker.use(method.responseType().toString());
-            out.println("                    new SliceMethod<>(");
-            out.println("                        MethodName.methodName(\"" + escapedMethodName + "\").unwrap(),");
-            if (method.hasNoParams()) {
-                out.println("                        _unit -> delegate." + method.name() + "(),");
-                out.println("                        new TypeToken<" + responseType + ">() {},");
-                out.println("                        new TypeToken<Unit>() {}");
-            } else if (method.hasSingleParam()) {
-                out.println("                        delegate::" + method.name() + ",");
-                out.println("                        new TypeToken<" + responseType + ">() {},");
-                out.println("                        new TypeToken<" + importTracker.use(method.parameters().getFirst().type().toString()) + ">() {}");
-            } else {
-                var requestRecordName = capitalize(method.name()) + "Request";
-                var argList = method.parameters()
-                                    .stream()
-                                    .map(p -> "request." + p.name() + "()")
-                                    .collect(Collectors.joining(", "));
-                out.println("                        request -> delegate." + method.name() + "(" + argList + "),");
-                out.println("                        new TypeToken<" + responseType + ">() {},");
-                out.println("                        new TypeToken<" + requestRecordName + ">() {}");
-            }
+            entryIndex++;
+            var comma = (entryIndex < totalEntries) ? "," : "";
+            generateSliceMethodEntry(out, method, "delegate", null, importTracker);
             out.println("                    )" + comma);
+        }
+        // Generate SliceMethod entries for transitive methods
+        for (var step : transitiveSteps) {
+            for (var method : step.annotatedMethods()) {
+                entryIndex++;
+                var comma = (entryIndex < totalEntries) ? "," : "";
+                generateSliceMethodEntry(out, method, step.parameterName(), step.parameterName(), importTracker);
+                out.println("                    )" + comma);
+            }
         }
         out.println("                );");
         out.println("            }");
@@ -944,9 +949,150 @@ public class FactoryClassGenerator {
         out.println("        }");
         out.println();
         out.println("        var resources = ctx.resources();");
-        out.println("        return " + methodName + "(aspect, ctx)");
-        out.println("                   .map(impl -> new " + sliceRecordName + "(impl, resources));");
+        if (hasTransitive) {
+            // Construct plain interface steps independently for transitive method exposure.
+            // Steps with resource params need those resources provisioned first.
+            var stepResourceEntries = new ArrayList<AllEntry>();
+            var stepResourceParams = new LinkedHashMap<String, List<PlainInterfaceFactoryParam>>();
+            for (var step : transitiveSteps) {
+                var stepDep = findDependencyByParamName(model, step.parameterName());
+                if (stepDep != null) {
+                    var params = analyzePlainInterfaceResourceParams(stepDep);
+                    if (!params.isEmpty()) {
+                        stepResourceParams.put(step.parameterName(), params);
+                        for (var param : params) {
+                            stepResourceEntries.add(new AllEntry(param.varName(),
+                                "ctx.resources().provide(" + importTracker.use(param.qualifiedResourceTypeName())
+                                + ".class, \"" + escapeJavaString(param.qualifier().configSection()) + "\")"));
+                        }
+                    }
+                }
+            }
+            if (stepResourceEntries.isEmpty()) {
+                // No async provisioning needed for steps — construct them synchronously in map closure
+                generateTransitiveMapClosure(out, model, methodName, sliceRecordName, transitiveSteps,
+                                             stepResourceParams, importTracker);
+            } else {
+                // Need to provision step resources in parallel with create()
+                generateTransitiveWithResources(out, model, methodName, sliceRecordName, transitiveSteps,
+                                                stepResourceEntries, stepResourceParams, importTracker);
+            }
+        } else {
+            out.println("        return " + methodName + "(aspect, ctx)");
+            out.println("                   .map(impl -> new " + sliceRecordName + "(impl, resources));");
+        }
         out.println("    }");
+    }
+
+    private void generateTransitiveMapClosure(PrintWriter out, SliceModel model, String methodName,
+                                               String sliceRecordName, List<PlainInterfaceModel> transitiveSteps,
+                                               Map<String, List<PlainInterfaceFactoryParam>> stepResourceParams,
+                                               ImportTracker importTracker) {
+        out.println("        return " + methodName + "(aspect, ctx)");
+        out.println("                   .map(impl -> {");
+        for (var step : transitiveSteps) {
+            var stepDep = findDependencyByParamName(model, step.parameterName());
+            if (stepDep != null) {
+                var factoryMethodName = lowercaseFirst(stepDep.interfaceSimpleName());
+                var params = stepResourceParams.getOrDefault(step.parameterName(), List.of());
+                var argList = params.stream()
+                                    .map(PlainInterfaceFactoryParam::varName)
+                                    .collect(Collectors.joining(", "));
+                out.println("                       var " + step.parameterName() + " = "
+                            + importTracker.use(stepDep.interfaceQualifiedName()) + "." + factoryMethodName
+                            + "(" + argList + ");");
+            }
+        }
+        var ctorArgs = "impl, resources";
+        for (var step : transitiveSteps) {
+            ctorArgs += ", " + step.parameterName();
+        }
+        out.println("                       return new " + sliceRecordName + "(" + ctorArgs + ");");
+        out.println("                   });");
+    }
+
+    private void generateTransitiveWithResources(PrintWriter out, SliceModel model, String methodName,
+                                                  String sliceRecordName, List<PlainInterfaceModel> transitiveSteps,
+                                                  List<AllEntry> stepResourceEntries,
+                                                  Map<String, List<PlainInterfaceFactoryParam>> stepResourceParams,
+                                                  ImportTracker importTracker) {
+        // Use Promise.all to provision step resources in parallel with create()
+        out.println("        return Promise.all(");
+        out.println("            " + methodName + "(aspect, ctx),");
+        for (int i = 0; i < stepResourceEntries.size(); i++) {
+            var entry = stepResourceEntries.get(i);
+            var comma = (i < stepResourceEntries.size() - 1) ? "," : "";
+            out.println("            " + entry.promiseExpression() + comma);
+        }
+        out.println("        )");
+        var varNames = new ArrayList<String>();
+        varNames.add("impl");
+        stepResourceEntries.forEach(e -> varNames.add(e.varName()));
+        out.println("        .map((" + String.join(", ", varNames) + ") -> {");
+        for (var step : transitiveSteps) {
+            var stepDep = findDependencyByParamName(model, step.parameterName());
+            if (stepDep != null) {
+                var factoryMethodName = lowercaseFirst(stepDep.interfaceSimpleName());
+                var params = stepResourceParams.getOrDefault(step.parameterName(), List.of());
+                var argList = params.stream()
+                                    .map(PlainInterfaceFactoryParam::varName)
+                                    .collect(Collectors.joining(", "));
+                out.println("            var " + step.parameterName() + " = "
+                            + importTracker.use(stepDep.interfaceQualifiedName()) + "." + factoryMethodName
+                            + "(" + argList + ");");
+            }
+        }
+        var ctorArgs = "impl, resources";
+        for (var step : transitiveSteps) {
+            ctorArgs += ", " + step.parameterName();
+        }
+        out.println("            return new " + sliceRecordName + "(" + ctorArgs + ");");
+        out.println("        });");
+    }
+
+    /// Generate a single SliceMethod entry for the methods() list.
+    /// When stepPrefix is non-null, the method name is qualified with the step parameter name.
+    private void generateSliceMethodEntry(PrintWriter out, MethodModel method,
+                                           String delegateExpr, String stepPrefix,
+                                           ImportTracker importTracker) {
+        var qualifiedName = (stepPrefix != null)
+                            ? stepPrefix + capitalize(method.name())
+                            : method.name();
+        var escapedMethodName = escapeJavaString(qualifiedName);
+        var responseType = importTracker.use(method.responseType().toString());
+        out.println("                    new SliceMethod<>(");
+        out.println("                        MethodName.methodName(\"" + escapedMethodName + "\").unwrap(),");
+        if (method.hasNoParams()) {
+            out.println("                        _unit -> " + delegateExpr + "." + method.name() + "(),");
+            out.println("                        new TypeToken<" + responseType + ">() {},");
+            out.println("                        new TypeToken<Unit>() {}");
+        } else if (method.hasSingleParam()) {
+            out.println("                        " + delegateExpr + "::" + method.name() + ",");
+            out.println("                        new TypeToken<" + responseType + ">() {},");
+            out.println("                        new TypeToken<" + importTracker.use(method.parameters().getFirst().type().toString()) + ">() {}");
+        } else {
+            var requestRecordName = capitalize(method.name()) + "Request";
+            var argList = method.parameters()
+                                .stream()
+                                .map(p -> "request." + p.name() + "()")
+                                .collect(Collectors.joining(", "));
+            out.println("                        request -> " + delegateExpr + "." + method.name() + "(" + argList + "),");
+            out.println("                        new TypeToken<" + responseType + ">() {},");
+            out.println("                        new TypeToken<" + requestRecordName + ">() {}");
+        }
+    }
+
+    private int countTransitiveMethods(List<PlainInterfaceModel> transitiveSteps) {
+        return transitiveSteps.stream()
+                              .mapToInt(step -> step.annotatedMethods().size())
+                              .sum();
+    }
+
+    private DependencyModel findDependencyByParamName(SliceModel model, String parameterName) {
+        return model.dependencies().stream()
+                    .filter(dep -> dep.parameterName().equals(parameterName))
+                    .findFirst()
+                    .orElse(null);
     }
 
     /// Returns the effective parameter type string for a method.
@@ -1603,8 +1749,8 @@ public class FactoryClassGenerator {
         out.println();
         out.println("    public static void notifyConfigUpdate(Object sliceInstance, String section, ConfigFacade config) {");
         for (var method : model.configUpdateMethods()) {
-            for (var configSub : method.configUpdateSubscriptions()) {
-                var configSection = escapeJavaString(configSub.configSection());
+            for (var configSub : method.reactiveOfCategory("config-update")) {
+                var configSection = escapeJavaString(configSub.qualifier().configSection());
                 generateConfigUpdateBranch(out, model, method, configSection, sliceName, importTracker);
             }
         }
