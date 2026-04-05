@@ -24,7 +24,6 @@ x-node-common: &node-common
     PEERS: "node-1:aether-node-1:6000,node-2:aether-node-2:6000,node-3:aether-node-3:6000,node-4:aether-node-4:6000,node-5:aether-node-5:6000"
     CORE_MAX: "5"
     DOCKER_GID: "${DOCKER_GID:-984}"
-    AETHER_NETWORK_NAME: "aether_aether-network"
     JAVA_OPTS: "-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
   healthcheck:
     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
@@ -117,6 +116,7 @@ services:
 
 networks:
   aether-network:
+    name: aether-network
     driver: bridge
 
 volumes:
