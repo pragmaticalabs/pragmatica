@@ -49,7 +49,7 @@ public sealed interface ClusterHttpClient {
     }
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) static Result<String> putToCluster(String path,
-                                                                                           String jsonBody) {
+                                                                                          String jsonBody) {
         return resolveEndpoint().flatMap(endpoint -> doPut(endpoint, path, jsonBody));
     }
 
@@ -67,8 +67,8 @@ public sealed interface ClusterHttpClient {
     }
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) private static Result<String> doPut(String endpoint,
-                                                                                            String path,
-                                                                                            String jsonBody) {
+                                                                                           String path,
+                                                                                           String jsonBody) {
         var uri = URI.create(endpoint + path);
         var apiKey = resolveApiKey();
         var builder = HttpRequest.newBuilder().uri(uri)

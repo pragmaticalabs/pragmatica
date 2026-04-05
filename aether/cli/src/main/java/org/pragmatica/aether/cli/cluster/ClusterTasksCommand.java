@@ -20,13 +20,18 @@ import picocli.CommandLine.Option;
 /// Default subcommand lists current assignments by calling `GET /api/cluster/tasks`.
 /// The `reassign` subcommand triggers manual reassignment via `PUT /api/cluster/tasks/{group}/reassign`.
 @Command(name = "tasks", description = "Task group assignment management", subcommands = {ClusterTasksCommand.ReassignCommand.class}) @SuppressWarnings("JBCT-RET-01") class ClusterTasksCommand implements Callable<Integer> {
-    private static final TableSpec TASKS_TABLE = new TableSpec("Task Group Assignments", List.of(new Column("GROUP", "group", 14), new Column("NODE", "assignedNode", 12), new Column("STATUS", "status", 36), new Column("SINCE", "since", 26)), "assignments");
+    private static final TableSpec TASKS_TABLE = new TableSpec("Task Group Assignments",
+                                                               List.of(new Column("GROUP", "group", 14),
+                                                                       new Column("NODE", "assignedNode", 12),
+                                                                       new Column("STATUS", "status", 36),
+                                                                       new Column("SINCE", "since", 26)),
+                                                               "assignments");
 
     @CommandLine.ParentCommand private ClusterCommand parent;
 
     @Override public Integer call() {
         return ClusterHttpClient.fetchFromCluster("/api/cluster/tasks")
-                                .fold(ClusterTasksCommand::onFailure, this::onSuccess);
+                                                 .fold(ClusterTasksCommand::onFailure, this::onSuccess);
     }
 
     private int onSuccess(String json) {
@@ -47,16 +52,12 @@ import picocli.CommandLine.Option;
 
         @Override public Integer call() {
             return validateInputs().flatMap(this::sendReassignRequest)
-                                   .fold(ReassignCommand::onFailure, this::onSuccess);
+                                 .fold(ReassignCommand::onFailure, this::onSuccess);
         }
 
         private Result<String> validateInputs() {
-            if (group == null || group.isBlank()) {
-                return new TasksError.MissingGroup().result();
-            }
-            if (targetNode == null || targetNode.isBlank()) {
-                return new TasksError.MissingTarget().result();
-            }
+            if (group == null || group.isBlank()) {return new TasksError.MissingGroup().result();}
+            if (targetNode == null || targetNode.isBlank()) {return new TasksError.MissingTarget().result();}
             return Result.success(group.toUpperCase());
         }
 
@@ -71,7 +72,9 @@ import picocli.CommandLine.Option;
         }
 
         private int onSuccess(String json) {
-            return OutputFormatter.printAction(json, parent.parent.outputOptions(), "Task group " + group.toUpperCase() + " reassigned to " + targetNode);
+            return OutputFormatter.printAction(json,
+                                               parent.parent.outputOptions(),
+                                               "Task group " + group.toUpperCase() + " reassigned to " + targetNode);
         }
 
         private static int onFailure(Cause cause) {

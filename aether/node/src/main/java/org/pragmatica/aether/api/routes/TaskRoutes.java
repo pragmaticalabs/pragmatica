@@ -35,11 +35,7 @@ public final class TaskRoutes implements RouteSource {
         return new TaskRoutes(nodeSupplier);
     }
 
-    record TaskAssignmentInfo(String group,
-                              String assignedTo,
-                              String assignedAt,
-                              String status,
-                              String failureReason){}
+    record TaskAssignmentInfo(String group, String assignedTo, String assignedAt, String status, String failureReason){}
 
     record TaskAssignmentsResponse(List<TaskAssignmentInfo> assignments){}
 
@@ -48,10 +44,10 @@ public final class TaskRoutes implements RouteSource {
     record ReassignResponse(String status){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<TaskAssignmentsResponse>get("/api/cluster/tasks")
-                              .toJson(this::listAssignments),
+        return Stream.of(Route.<TaskAssignmentsResponse>get("/api/cluster/tasks").toJson(this::listAssignments),
                          Route.<ReassignResponse>put("/api/cluster/tasks")
-                              .withPath(aString(), spacer("reassign"))
+                              .withPath(aString(),
+                                        spacer("reassign"))
                               .withBody(ReassignRequest.class)
                               .toResult(this::reassignTask)
                               .asJson());
@@ -80,7 +76,7 @@ public final class TaskRoutes implements RouteSource {
 
     private Result<ReassignResponse> reassignToNode(TaskGroup taskGroup, String targetNodeId) {
         return NodeId.nodeId(targetNodeId).flatMap(nodeId -> coordinator().reassign(taskGroup, nodeId))
-                                          .map(_ -> new ReassignResponse("reassigned"));
+                            .map(_ -> new ReassignResponse("reassigned"));
     }
 
     private static Result<TaskGroup> parseTaskGroup(String group) {
