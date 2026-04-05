@@ -25,7 +25,10 @@ import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
 import io.netty.buffer.Unpooled;
@@ -91,7 +94,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private final Map<NodeId, Map<StreamType, Queue<byte[]>>> outboundQueues = new ConcurrentHashMap<>();
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private final AtomicBoolean quorumEstablished = new AtomicBoolean(false);
+    private final AtomicReference<ScheduledFuture<?>> stabilizationTimer = new AtomicReference<>();
     private final QuicTransportMetrics quicMetrics = QuicTransportMetrics.quicTransportMetrics();
+
+    /// Topology stabilization window — quorum is deferred until peer count is stable for this duration.
+    /// Prevents premature activation when nodes connect at different speeds during cold start.
+    private static final long STABILIZATION_WINDOW_MS = 5_000;
 
     private volatile QuicClusterServer server;
     private volatile QuicClusterClient client;
@@ -586,12 +594,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         var viewChange = switch (operation) {
             case ADD -> {
-                if (currentlyHaveQuorum && quorumEstablished.compareAndSet(false, true)) {
-                    router.route(QuorumStateNotification.established());
+                if (currentlyHaveQuorum && !quorumEstablished.get()) {
+                    handleQuorumCandidate(activePeerCount, clusterSize);
                 }
                 yield TopologyChangeNotification.nodeAdded(peerId, currentView());
             }
             case REMOVE -> {
+                cancelStabilizationTimer();
                 if (!currentlyHaveQuorum && quorumEstablished.compareAndSet(true, false)) {
                     router.route(QuorumStateNotification.disappeared());
                 }
@@ -599,6 +608,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 yield TopologyChangeNotification.nodeRemoved(peerId, currentView());
             }
             case SHUTDOWN -> {
+                cancelStabilizationTimer();
                 quorumEstablished.set(false);
                 router.route(QuorumStateNotification.disappeared());
                 yield TopologyChangeNotification.nodeDown(peerId);
@@ -607,6 +617,48 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         log.info("Routing topology change: {}", viewChange);
         router.route(viewChange);
+    }
+
+    /// Decide whether to fire ESTABLISHED immediately (all peers connected) or defer (partial quorum).
+    private void handleQuorumCandidate(int activePeerCount, int clusterSize) {
+        var allPeersConnected = (activePeerCount + 1) >= clusterSize;
+        if (allPeersConnected) {
+            // All expected peers connected — proceed immediately, no need to wait
+            cancelStabilizationTimer();
+            if (quorumEstablished.compareAndSet(false, true)) {
+                log.info("All {} peers connected — establishing quorum immediately", activePeerCount);
+                router.route(QuorumStateNotification.established());
+            }
+        } else {
+            // Partial quorum — reset stabilization timer. Fire only after topology is stable.
+            resetStabilizationTimer();
+        }
+    }
+
+    private void resetStabilizationTimer() {
+        cancelStabilizationTimer();
+        var timer = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+            var t = new Thread(r, "quorum-stabilization");
+            t.setDaemon(true);
+            return t;
+        }).schedule(this::onStabilizationComplete, STABILIZATION_WINDOW_MS, TimeUnit.MILLISECONDS);
+        stabilizationTimer.set(timer);
+        log.info("Topology changed during formation — waiting {}ms for stabilization", STABILIZATION_WINDOW_MS);
+    }
+
+    private void onStabilizationComplete() {
+        var activePeerCount = peerLinks.size() - passivePeers.size();
+        var quorumSize = topologyManager.quorumSize();
+        var currentlyHaveQuorum = (activePeerCount + 1) >= quorumSize;
+        if (currentlyHaveQuorum && quorumEstablished.compareAndSet(false, true)) {
+            log.info("Topology stable for {}ms with {} peers — establishing quorum", STABILIZATION_WINDOW_MS, activePeerCount);
+            router.route(QuorumStateNotification.established());
+        }
+    }
+
+    private void cancelStabilizationTimer() {
+        var timer = stabilizationTimer.getAndSet(null);
+        if (timer != null) {timer.cancel(false);}
     }
 
     private List<NodeId> currentView() {
