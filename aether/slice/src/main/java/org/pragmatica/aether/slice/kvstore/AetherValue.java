@@ -457,29 +457,37 @@ import static org.pragmatica.lang.Option.none;
         SHUTTING_DOWN
     }
 
-    record NodeLifecycleValue(NodeLifecycleState state, long updatedAt, String host, int port) implements AetherValue {
+    record NodeLifecycleValue(NodeLifecycleState state, long updatedAt, String host, int port, int managementPort) implements AetherValue {
         public NodeLifecycleValue {
             if (host == null) {host = "";}
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state) {
-            return new NodeLifecycleValue(state, System.currentTimeMillis(), "", 0);
+            return new NodeLifecycleValue(state, System.currentTimeMillis(), "", 0, 0);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, long updatedAt) {
-            return new NodeLifecycleValue(state, updatedAt, "", 0);
+            return new NodeLifecycleValue(state, updatedAt, "", 0, 0);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, String host, int port) {
-            return new NodeLifecycleValue(state, System.currentTimeMillis(), host, port);
+            return new NodeLifecycleValue(state, System.currentTimeMillis(), host, port, 0);
+        }
+
+        public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, String host, int port, int managementPort) {
+            return new NodeLifecycleValue(state, System.currentTimeMillis(), host, port, managementPort);
         }
 
         public boolean hasAddress() {
             return ! host.isEmpty() && port > 0;
         }
 
+        public boolean hasManagementAddress() {
+            return hasAddress() && managementPort > 0;
+        }
+
         public NodeLifecycleValue withState(NodeLifecycleState newState) {
-            return new NodeLifecycleValue(newState, System.currentTimeMillis(), host, port);
+            return new NodeLifecycleValue(newState, System.currentTimeMillis(), host, port, managementPort);
         }
     }
 

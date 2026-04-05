@@ -67,6 +67,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
@@ -157,6 +158,7 @@ class ManagementServerImpl implements ManagementServer {
     private final Option<EventLoopGroup> workerGroup;
     private final WebSocketAuthenticator wsAuthenticator;
     private final HttpProtocol httpProtocol;
+    private final DelegationForwarder delegationForwarder;
 
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
 
@@ -196,6 +198,7 @@ class ManagementServerImpl implements ManagementServer {
         this.bossGroup = bossGroup;
         this.workerGroup = workerGroup;
         this.httpProtocol = httpProtocol;
+        this.delegationForwarder = DelegationForwarder.delegationForwarder(() -> nodeSupplier.get().kvStore());
         this.wsAuthenticator = WebSocketAuthenticator.webSocketAuthenticator(securityValidator, securityEnabled);
         this.metricsPublisher = DashboardMetricsPublisher.dashboardMetricsPublisher(nodeSupplier, alertManager);
         this.statusWsHandler = new StatusWebSocketHandler(wsAuthenticator);
@@ -561,6 +564,10 @@ class ManagementServerImpl implements ManagementServer {
             recordRequestMetrics(methodName, path, instrumented, startTime);
             return;
         }
+        if (tryDelegationForward(ctx, instrumented)) {
+            recordRequestMetrics(methodName, path, instrumented, startTime);
+            return;
+        }
         if (router.handle(ctx, instrumented)) {
             recordRequestMetrics(methodName, path, instrumented, startTime);
             return;
@@ -576,6 +583,19 @@ class ManagementServerImpl implements ManagementServer {
     private void recordRequestMetrics(String method, String path, InstrumentedResponseWriter writer, long startTime) {
         var durationNanos = System.nanoTime() - startTime;
         requestObserver.recordRequest(method, path, writer.statusCategory(), durationNanos);
+    }
+
+    private boolean tryDelegationForward(RequestContext ctx, ResponseWriter response) {
+        var headers = extractHeaderMap(ctx);
+        return delegationForwarder.tryForward(ctx.path(), ctx.method().name(), ctx.bodyAsString(), headers, response);
+    }
+
+    private static Map<String, String> extractHeaderMap(RequestContext ctx) {
+        return ctx.headers().asMap().entrySet()
+                  .stream()
+                  .filter(entry -> !entry.getValue().isEmpty())
+                  .collect(Collectors.toMap(Map.Entry::getKey,
+                                                              entry -> entry.getValue().getFirst()));
     }
 
     private static boolean isDashboardPath(String path) {

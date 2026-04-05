@@ -1198,6 +1198,7 @@ public interface NodeDeploymentManager {
                                                        InvocationHandler invocationHandler) {
         return nodeDeploymentManager(self,
                                      new NodeAddress("", 0),
+                                     0,
                                      router,
                                      sliceStore,
                                      cluster,
@@ -1213,6 +1214,7 @@ public interface NodeDeploymentManager {
 
     static NodeDeploymentManager nodeDeploymentManager(NodeId self,
                                                        NodeAddress selfAddress,
+                                                       int managementPort,
                                                        MessageRouter router,
                                                        SliceStore sliceStore,
                                                        ClusterNode<KVCommand<AetherKey>> cluster,
@@ -1224,6 +1226,7 @@ public interface NodeDeploymentManager {
                                                        Option<SliceInvokerFacade> sliceInvokerFacade) {
         return nodeDeploymentManager(self,
                                      selfAddress,
+                                     managementPort,
                                      router,
                                      sliceStore,
                                      cluster,
@@ -1239,6 +1242,7 @@ public interface NodeDeploymentManager {
 
     static NodeDeploymentManager nodeDeploymentManager(NodeId self,
                                                        NodeAddress selfAddress,
+                                                       int managementPort,
                                                        MessageRouter router,
                                                        SliceStore sliceStore,
                                                        ClusterNode<KVCommand<AetherKey>> cluster,
@@ -1252,6 +1256,7 @@ public interface NodeDeploymentManager {
                                                        TimeSpan transitionRetryDelay) {
         record deploymentManager(NodeId self,
                                  NodeAddress selfAddress,
+                                 int managementPort,
                                  SliceStore sliceStore,
                                  ClusterNode<KVCommand<AetherKey>> cluster,
                                  KVStore<AetherKey, AetherValue> kvStore,
@@ -1359,7 +1364,8 @@ public interface NodeDeploymentManager {
             private void writeLifecycleOnDuty(AetherKey.NodeLifecycleKey lifecycleKey, int attempt) {
                 var value = AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY,
                                                                               selfAddress().host(),
-                                                                              selfAddress().port());
+                                                                              selfAddress().port(),
+                                                                              managementPort());
                 cluster().apply(List.of(new KVCommand.Put<>(lifecycleKey, value)))
                        .onSuccess(_ -> log.info("Node {} registered lifecycle state: ON_DUTY",
                                                 self().id()))
@@ -1413,6 +1419,7 @@ public interface NodeDeploymentManager {
         }
         return new deploymentManager(self,
                                      selfAddress,
+                                     managementPort,
                                      sliceStore,
                                      cluster,
                                      kvStore,
