@@ -48,6 +48,11 @@ public sealed interface ClusterHttpClient {
         return resolveEndpoint().flatMap(endpoint -> doPost(endpoint, path, jsonBody));
     }
 
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) static Result<String> putToCluster(String path,
+                                                                                           String jsonBody) {
+        return resolveEndpoint().flatMap(endpoint -> doPut(endpoint, path, jsonBody));
+    }
+
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) private static Result<String> doPost(String endpoint,
                                                                                             String path,
                                                                                             String jsonBody) {
@@ -56,6 +61,19 @@ public sealed interface ClusterHttpClient {
         var builder = HttpRequest.newBuilder().uri(uri)
                                             .header("Content-Type", "application/json")
                                             .POST(HttpRequest.BodyPublishers.ofString(jsonBody));
+        apiKey.onPresent(key -> builder.header("X-API-Key", key));
+        return HTTP_OPS.sendString(builder.build()).await()
+                                  .flatMap(ClusterHttpClient::extractBody);
+    }
+
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) private static Result<String> doPut(String endpoint,
+                                                                                            String path,
+                                                                                            String jsonBody) {
+        var uri = URI.create(endpoint + path);
+        var apiKey = resolveApiKey();
+        var builder = HttpRequest.newBuilder().uri(uri)
+                                            .header("Content-Type", "application/json")
+                                            .PUT(HttpRequest.BodyPublishers.ofString(jsonBody));
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
         return HTTP_OPS.sendString(builder.build()).await()
                                   .flatMap(ClusterHttpClient::extractBody);
