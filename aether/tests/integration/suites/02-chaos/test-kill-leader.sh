@@ -8,6 +8,7 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_initial_state() {
     wait_for_cluster 60
+    wait_for_leader 60
     local count
     count=$(cluster_node_count)
     assert_eq "$count" "5" "Initial: 5 nodes"
@@ -21,16 +22,16 @@ test_kill_leader_and_reelect() {
     log_info "Killing leader: ${old_leader}"
     kill_node "$old_leader"
 
-    # Wait for SWIM failure detection + re-election (~15-20s)
+    # Wait for failure detection
     log_info "Waiting for failure detection and re-election..."
-    sleep 20
+    wait_for_node_count 4 60
 
-    # Wait for a NEW leader (not the killed one)
+    # Wait for a NEW leader (not the killed one and not "none")
     local new_leader=""
     local elapsed=0
     while [ "$elapsed" -lt 60 ]; do
         new_leader=$(cluster_leader)
-        if [ -n "$new_leader" ] && [ "$new_leader" != "$old_leader" ]; then
+        if [ -n "$new_leader" ] && [ "$new_leader" != "$old_leader" ] && [ "$new_leader" != "none" ]; then
             break
         fi
         sleep 2
@@ -38,6 +39,7 @@ test_kill_leader_and_reelect() {
     done
 
     assert_ne "$new_leader" "" "New leader elected: ${new_leader}"
+    assert_ne "$new_leader" "none" "New leader is not 'none'"
     assert_ne "$new_leader" "$old_leader" "New leader differs from old leader"
 }
 

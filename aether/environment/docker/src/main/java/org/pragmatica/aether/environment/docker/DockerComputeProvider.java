@@ -135,6 +135,10 @@ import static org.pragmatica.lang.Result.success;
                                               "CORE_MAX=" + coreMax,
                                               "-e",
                                               "AETHER_API_KEY=" + apiKey));
+        if (!config.dockerGid().isEmpty()) {
+            command.add("--group-add");
+            command.add(config.dockerGid());
+        }
         addSpecLabels(command, spec.tags());
         addPlacementLabels(command, spec.placement());
         command.add(config.imageName());

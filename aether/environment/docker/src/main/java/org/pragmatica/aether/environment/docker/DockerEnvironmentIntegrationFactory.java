@@ -28,7 +28,8 @@ public record DockerEnvironmentIntegrationFactory() implements EnvironmentIntegr
                             parseIntOrDefault(compute.getOrDefault("app_port_base", ""), 8070),
                             parseIntOrDefault(compute.getOrDefault("cluster_port", ""), 6000),
                             compute.getOrDefault("socket_path", "/var/run/docker.sock"),
-                            compute.getOrDefault("api_key", ""));
+                            compute.getOrDefault("api_key", ""),
+                            compute.getOrDefault("docker_gid", ""));
     }
 
     private static int parseIntOrDefault(String value, int defaultValue) {

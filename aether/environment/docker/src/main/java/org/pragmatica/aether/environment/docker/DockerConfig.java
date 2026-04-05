@@ -13,7 +13,8 @@ public record DockerConfig(String imageName,
                            int appPortBase,
                            int clusterPort,
                            String socketPath,
-                           String apiKey) {
+                           String apiKey,
+                           String dockerGid) {
     private static final String DEFAULT_IMAGE_NAME = "aether-node:local";
 
     private static final String DEFAULT_NETWORK_NAME = "aether-network";
@@ -28,20 +29,24 @@ public record DockerConfig(String imageName,
 
     private static final String DEFAULT_API_KEY = "";
 
+    private static final String DEFAULT_DOCKER_GID = "";
+
     public static Result<DockerConfig> dockerConfig(String imageName,
                                                     String networkName,
                                                     int managementPortBase,
                                                     int appPortBase,
                                                     int clusterPort,
                                                     String socketPath,
-                                                    String apiKey) {
+                                                    String apiKey,
+                                                    String dockerGid) {
         return success(new DockerConfig(imageName,
                                         networkName,
                                         managementPortBase,
                                         appPortBase,
                                         clusterPort,
                                         socketPath,
-                                        apiKey));
+                                        apiKey,
+                                        dockerGid));
     }
 
     public static Result<DockerConfig> dockerConfig() {
@@ -51,6 +56,7 @@ public record DockerConfig(String imageName,
                             DEFAULT_APP_PORT_BASE,
                             DEFAULT_CLUSTER_PORT,
                             DEFAULT_SOCKET_PATH,
-                            DEFAULT_API_KEY);
+                            DEFAULT_API_KEY,
+                            DEFAULT_DOCKER_GID);
     }
 }

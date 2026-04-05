@@ -8,6 +8,7 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_initial_state() {
     wait_for_cluster 60
+    wait_for_leader 60
     local count
     count=$(cluster_node_count)
     assert_eq "$count" "5" "Initial: 5 nodes"
@@ -26,8 +27,7 @@ test_kill_non_leader() {
     kill_node "$victim"
 
     # Wait for failure detection
-    sleep 20
-
+    wait_for_node_count 4 60
     local count
     count=$(cluster_node_count)
     assert_eq "$count" "4" "Cluster detects node loss: 4 nodes"

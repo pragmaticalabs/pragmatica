@@ -29,6 +29,7 @@ network_name = "aether-network"
 management_port_base = "5160"
 app_port_base = "8080"
 api_key = "aether-integration-test-key"
+docker_gid = "${env:DOCKER_GID}"
 cluster_port = "6000"
 socket_path = "/var/run/docker.sock"
 

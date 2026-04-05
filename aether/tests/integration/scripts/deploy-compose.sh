@@ -18,6 +18,7 @@ ROOT_DIR="${SCRIPT_DIR}/.."
 REPO_ROOT="$(cd "${ROOT_DIR}/../../.." && pwd)"
 
 source "${ROOT_DIR}/lib/common.sh"
+source "${ROOT_DIR}/lib/cluster.sh"
 
 # ---------------------------------------------------------------------------
 # Configuration

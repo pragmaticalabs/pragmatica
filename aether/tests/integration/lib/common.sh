@@ -68,26 +68,50 @@ log_step()  { echo -e "${BLUE}[STEP]${NC}  $1"; }
 # ---------------------------------------------------------------------------
 api_get() {
     local path="$1"
-    curl -sf -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}${path}"
+    local base_port="${MGMT_PORT}"
+    for i in $(seq 0 $((NODE_COUNT - 1))); do
+        local port=$((base_port + i))
+        local result
+        result=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}${path}" 2>/dev/null) && { echo "$result"; return 0; }
+    done
+    return 1
 }
 
 api_post() {
     local path="$1"
     local body="${2:-"{}"}"
-    curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-        -d "$body" "${CLUSTER_ENDPOINT}${path}"
+    local base_port="${MGMT_PORT}"
+    for i in $(seq 0 $((NODE_COUNT - 1))); do
+        local port=$((base_port + i))
+        local result
+        result=$(curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+            -d "$body" "http://${TARGET_HOST}:${port}${path}" 2>/dev/null) && { echo "$result"; return 0; }
+    done
+    return 1
 }
 
 api_put() {
     local path="$1"
     local body="${2:-"{}"}"
-    curl -sf -X PUT -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-        -d "$body" "${CLUSTER_ENDPOINT}${path}"
+    local base_port="${MGMT_PORT}"
+    for i in $(seq 0 $((NODE_COUNT - 1))); do
+        local port=$((base_port + i))
+        local result
+        result=$(curl -sf -X PUT -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+            -d "$body" "http://${TARGET_HOST}:${port}${path}" 2>/dev/null) && { echo "$result"; return 0; }
+    done
+    return 1
 }
 
 api_delete() {
     local path="$1"
-    curl -sf -X DELETE -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}${path}"
+    local base_port="${MGMT_PORT}"
+    for i in $(seq 0 $((NODE_COUNT - 1))); do
+        local port=$((base_port + i))
+        local result
+        result=$(curl -sf -X DELETE -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}${path}" 2>/dev/null) && { echo "$result"; return 0; }
+    done
+    return 1
 }
 
 # HTTP helpers — app HTTP (port 8070)

@@ -13,6 +13,7 @@ MAX_ERROR_RATE="${MAX_ERROR_RATE:-10.0}"
 
 test_initial_state() {
     wait_for_cluster 60
+    wait_for_leader 60
     local count
     count=$(cluster_node_count)
     assert_eq "$count" "5" "Initial: 5 nodes"

@@ -101,7 +101,7 @@ wait_for_node_count() {
 }
 
 wait_for_leader() {
-    wait_for "leader elected" "[ -n \"\$(cluster_leader)\" ]" "${1:-60}"
+    wait_for "leader elected" "[ -n \"\$(cluster_leader)\" ] && [ \"\$(cluster_leader)\" != 'none' ]" "${1:-60}"
 }
 
 wait_for_slices_active() {
