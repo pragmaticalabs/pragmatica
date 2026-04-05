@@ -95,11 +95,21 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private final AtomicBoolean quorumEstablished = new AtomicBoolean(false);
     private final AtomicReference<ScheduledFuture<?>> stabilizationTimer = new AtomicReference<>();
+    private final AtomicReference<ScheduledFuture<?>> quorumLossTimer = new AtomicReference<>();
+    private final java.util.concurrent.ScheduledExecutorService quorumScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+        var t = new Thread(r, "quorum-lifecycle");
+        t.setDaemon(true);
+        return t;
+    });
     private final QuicTransportMetrics quicMetrics = QuicTransportMetrics.quicTransportMetrics();
 
     /// Topology stabilization window — quorum is deferred until peer count is stable for this duration.
     /// Prevents premature activation when nodes connect at different speeds during cold start.
     private static final long STABILIZATION_WINDOW_MS = 5_000;
+
+    /// Quorum loss hysteresis — don't fire DISAPPEARED until below quorum for this duration.
+    /// Prevents transient QUIC reconnections from killing quorum.
+    private static final long QUORUM_LOSS_HYSTERESIS_MS = 10_000;
 
     private volatile QuicClusterServer server;
     private volatile QuicClusterClient client;
@@ -594,6 +604,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         var viewChange = switch (operation) {
             case ADD -> {
+                cancelQuorumLossTimer();
                 if (currentlyHaveQuorum && !quorumEstablished.get()) {
                     handleQuorumCandidate(activePeerCount, clusterSize);
                 }
@@ -601,14 +612,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
             }
             case REMOVE -> {
                 cancelStabilizationTimer();
-                if (!currentlyHaveQuorum && quorumEstablished.compareAndSet(true, false)) {
-                    router.route(QuorumStateNotification.disappeared());
+                if (!currentlyHaveQuorum && quorumEstablished.get()) {
+                    handleQuorumLossCandidate();
                 }
                 router.route(new TopologyManagementMessage.RemoveNode(peerId));
                 yield TopologyChangeNotification.nodeRemoved(peerId, currentView());
             }
             case SHUTDOWN -> {
                 cancelStabilizationTimer();
+                cancelQuorumLossTimer();
                 quorumEstablished.set(false);
                 router.route(QuorumStateNotification.disappeared());
                 yield TopologyChangeNotification.nodeDown(peerId);
@@ -637,11 +649,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private void resetStabilizationTimer() {
         cancelStabilizationTimer();
-        var timer = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
-            var t = new Thread(r, "quorum-stabilization");
-            t.setDaemon(true);
-            return t;
-        }).schedule(this::onStabilizationComplete, STABILIZATION_WINDOW_MS, TimeUnit.MILLISECONDS);
+        var timer = quorumScheduler.schedule(this::onStabilizationComplete, STABILIZATION_WINDOW_MS, TimeUnit.MILLISECONDS);
         stabilizationTimer.set(timer);
         log.info("Topology changed during formation — waiting {}ms for stabilization", STABILIZATION_WINDOW_MS);
     }
@@ -658,6 +666,32 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private void cancelStabilizationTimer() {
         var timer = stabilizationTimer.getAndSet(null);
+        if (timer != null) {timer.cancel(false);}
+    }
+
+    /// Defer quorum loss — start hysteresis timer. If quorum is restored within the window, cancel.
+    private void handleQuorumLossCandidate() {
+        cancelQuorumLossTimer();
+        var timer = quorumScheduler.schedule(this::onQuorumLossConfirmed, QUORUM_LOSS_HYSTERESIS_MS, TimeUnit.MILLISECONDS);
+        quorumLossTimer.set(timer);
+        log.info("Quorum lost — waiting {}ms before confirming (transient reconnection grace period)", QUORUM_LOSS_HYSTERESIS_MS);
+    }
+
+    private void onQuorumLossConfirmed() {
+        var activePeerCount = peerLinks.size() - passivePeers.size();
+        var quorumSize = topologyManager.quorumSize();
+        var currentlyHaveQuorum = (activePeerCount + 1) >= quorumSize;
+        if (!currentlyHaveQuorum && quorumEstablished.compareAndSet(true, false)) {
+            log.warn("Quorum loss confirmed after {}ms hysteresis — firing DISAPPEARED ({} active peers, need {})",
+                     QUORUM_LOSS_HYSTERESIS_MS, activePeerCount, quorumSize);
+            router.route(QuorumStateNotification.disappeared());
+        } else {
+            log.info("Quorum restored during hysteresis window — loss cancelled ({} active peers)", activePeerCount);
+        }
+    }
+
+    private void cancelQuorumLossTimer() {
+        var timer = quorumLossTimer.getAndSet(null);
         if (timer != null) {timer.cancel(false);}
     }
 
