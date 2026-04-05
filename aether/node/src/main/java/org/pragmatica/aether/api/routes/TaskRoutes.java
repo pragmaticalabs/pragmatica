@@ -8,6 +8,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
@@ -44,7 +45,9 @@ public final class TaskRoutes implements RouteSource {
     record ReassignResponse(String status){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<TaskAssignmentsResponse>get("/api/cluster/tasks").toJson(this::listAssignments),
+        return Stream.of(Route.<TaskAssignmentsResponse>get("/api/cluster/tasks")
+                              .to(_ -> Promise.success(listAssignments()))
+                              .asJson(),
                          Route.<ReassignResponse>put("/api/cluster/tasks")
                               .withPath(aString(),
                                         spacer("reassign"))

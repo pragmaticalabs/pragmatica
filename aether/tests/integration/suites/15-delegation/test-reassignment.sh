@@ -13,8 +13,11 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 # ---------------------------------------------------------------------------
 test_prerequisite() {
     wait_for_cluster 120
-    wait_for_all_tasks_active 60
-    log_pass "All task groups active — ready for reassignment tests"
+    # Wait for 4 wired groups to be ACTIVE (STORAGE/STREAMING adapters not yet wired)
+    wait_for "wired task groups ACTIVE" \
+        "[ \$(cluster_tasks | python3 -c \"import sys,json; data=json.load(sys.stdin); print(sum(1 for a in data.get('assignments',[]) if a.get('status')=='ACTIVE'))\" 2>/dev/null) -ge 4 ]" \
+        60
+    log_pass "Wired task groups active — ready for reassignment tests"
 }
 
 # ---------------------------------------------------------------------------

@@ -173,12 +173,18 @@ public sealed interface TaskAssignmentCoordinator {
             }
 
             private void assignGroups(List<TaskGroup> groups, List<NodeId> healthyNodes) {
+                var commands = new ArrayList<KVCommand<AetherKey>>();
                 for (var group : groups) {
                     var target = selectLeastLoadedNode(group, healthyNodes).or(self);
                     log.info("Assigning task group {} to node {}", group, target);
-                    writeAssignment(group, target).onFailure(cause -> log.error("Failed to assign task group {}: {}",
-                                                                                group,
-                                                                                cause.message()));
+                    var key = TaskAssignmentKey.taskAssignmentKey(group);
+                    var value = TaskAssignmentValue.taskAssignmentValue(target);
+                    assignmentMap.put(group, value);
+                    commands.add(new KVCommand.Put<>(key, value));
+                }
+                if (!commands.isEmpty()) {
+                    clusterNode.apply(commands)
+                               .onFailure(cause -> log.error("Consensus proposal failed for task assignments: {}", cause.message()));
                 }
             }
 
@@ -223,11 +229,11 @@ public sealed interface TaskAssignmentCoordinator {
                 var value = TaskAssignmentValue.taskAssignmentValue(target);
                 assignmentMap.put(group, value);
                 var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
-                return clusterNode.apply(List.of(command)).await()
-                                        .map(_ -> Unit.unit())
-                                        .onFailure(cause -> log.error("Consensus proposal failed for task group {} assignment: {}",
-                                                                      group,
-                                                                      cause.message()));
+                clusterNode.apply(List.of(command))
+                           .onFailure(cause -> log.error("Consensus proposal failed for task group {} assignment: {}",
+                                                          group,
+                                                          cause.message()));
+                return Result.unitResult();
             }
         }
     }
