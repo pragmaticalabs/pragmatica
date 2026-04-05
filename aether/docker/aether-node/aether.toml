@@ -25,7 +25,7 @@ provider = "docker"
 
 [cloud.compute]
 image_name = "aether-node:local"
-network_name = "aether-network"
+network_name = "${env:AETHER_NETWORK_NAME:aether-network}"
 management_port_base = "5160"
 app_port_base = "8080"
 api_key = "aether-integration-test-key"
