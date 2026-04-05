@@ -765,7 +765,6 @@ public interface AetherNode {
         var selfAddress = findSelfAddress(config);
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManager(config.self(),
                                                                                 selfAddress,
-                                                                                config.managementPort(),
                                                                                 delegateRouter,
                                                                                 sliceStore,
                                                                                 clusterNode,
