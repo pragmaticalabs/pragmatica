@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc1] - Unreleased
 
 ### Added
+- **CTM auto-provisioning tags** — `ClusterTopologyManagerRecord.buildProvisionTags()` builds 3-part PEERS string and CORE_MAX from live topology, enabling DockerComputeProvider to provision replacement nodes that join the cluster automatically
+- **DockerConfig API key** — `api_key` field in `[cloud.compute]` config (aether.toml), eliminating tag-based API key passing. Config-driven approach for production Docker deployments
+- **Chaos integration tests (02-chaos)** — 4 test scripts: kill non-leader, kill leader (re-election), kill multiple (quorum safety), kill under load (error rate). Each verifies auto-heal restores cluster to target size
+- **Scaling integration tests (03-scaling)** — 3 test scripts: scale-up 3→7 under load, scale-down 7→5 under load, quorum safety rejection (below min, above max). Cluster config seeding via `/api/cluster/config`
 - **Application config provisioning** — `@ResourceQualifier(type = ConfigurationSection.class)` pattern for typed config. Compile-time parser generation via `Result.all()`. Three-source merge (bundled `META-INF/config.toml` + `aether.toml` `[app.*]` + KV-Store). Runtime notification via single-threaded executor with record diff. ACTIVATE integration ensures config before routes
 - **Config value object support** — Primitives, `Option<T>` variants, `List<String>`, core value objects (`TimeSpan`, `Url`, `Email`, `Uuid`, `NonBlankString`, `IsoDateTime`), and any user-defined type with `TypeName.typeName(String) → Result<T>` factory
 - **Node metadata labels** — `NodeInfo.labels` (hostname, zone, instance-type, pool) propagated via Hello handshake, bootstrap from environment variables
