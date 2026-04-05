@@ -1,5 +1,6 @@
 package org.pragmatica.aether.api.routes;
 
+import org.pragmatica.aether.api.BuildInfo;
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ManagementApiResponses.CertificateStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterInfo;
@@ -102,7 +103,9 @@ public final class StatusRoutes implements RouteSource {
                                   node.self().id(),
                                   "running",
                                   node.isLeader(),
-                                  leaderId);
+                                  leaderId,
+                                  BuildInfo.buildInfo().buildTimestamp(),
+                                  BuildInfo.buildInfo().buildVersion());
     }
 
     private NodesResponse buildNodesResponse() {
@@ -153,7 +156,8 @@ public final class StatusRoutes implements RouteSource {
         var status = !ready || !hasQuorum
                     ? "unhealthy"
                     : "healthy";
-        return new HealthResponse(status, ready, hasQuorum, totalNodes, connectedNodeCount, metricsNodeCount, sliceCount);
+        return new HealthResponse(status, ready, hasQuorum, totalNodes, connectedNodeCount, metricsNodeCount, sliceCount,
+                                   BuildInfo.buildInfo().buildTimestamp());
     }
 
     public LivenessResponse buildLivenessResponse() {

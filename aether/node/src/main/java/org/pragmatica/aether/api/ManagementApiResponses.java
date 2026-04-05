@@ -21,7 +21,9 @@ public sealed interface ManagementApiResponses {
                           String nodeId,
                           String status,
                           boolean isLeader,
-                          String leader){}
+                          String leader,
+                          String buildTimestamp,
+                          String buildVersion){}
 
     record ClusterInfo(int nodeCount, String leaderId, List<NodeInfo> nodes){}
 
@@ -39,7 +41,8 @@ public sealed interface ManagementApiResponses {
                           int nodeCount,
                           int connectedPeers,
                           int metricsNodeCount,
-                          int sliceCount){}
+                          int sliceCount,
+                          String buildTimestamp){}
 
     record LivenessResponse(String status, String nodeId){}
 
