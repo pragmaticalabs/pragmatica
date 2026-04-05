@@ -43,7 +43,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamMetadataValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue;
-import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
+import org.pragmatica.aether.slice.delegation.DelegatedComponent;
+import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -109,8 +110,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///
 @SuppressWarnings("JBCT-RET-01")
 // MessageReceiver callbacks — void required by messaging framework
-public interface ClusterDeploymentManager {
-    @MessageReceiver void onLeaderChange(LeaderChange leaderChange);
+public interface ClusterDeploymentManager extends DelegatedComponent {
     @MessageReceiver void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut);
     @MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
     @MessageReceiver void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut);
@@ -1758,51 +1758,60 @@ public interface ClusterDeploymentManager {
                                         AtomicReference<List<NodeId>> topologyRef) implements ClusterDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(clusterDeploymentManager.class);
 
-            @Override public void onLeaderChange(LeaderChange leaderChange) {
-                if (leaderChange.localNodeIsLeader()) {
-                    deactivateCurrentState();
-                    var activeNodes = new AtomicReference<>(topologyRef.get());
-                    var activeState = new ClusterDeploymentState.Active(self,
-                                                                        cluster,
-                                                                        kvStore,
-                                                                        router,
-                                                                        topologyManager,
-                                                                        schemaOrchestrator,
-                                                                        new ConcurrentHashMap<>(),
-                                                                        new ConcurrentHashMap<>(),
-                                                                        new ConcurrentHashMap<>(),
-                                                                        ConcurrentHashMap.newKeySet(),
-                                                                        activeNodes,
-                                                                        new AtomicInteger(0),
-                                                                        new AtomicBoolean(false),
-                                                                        ConcurrentHashMap.newKeySet(),
-                                                                        new ConcurrentHashMap<>(),
-                                                                        new ConcurrentHashMap<>(),
-                                                                        ConcurrentHashMap.newKeySet(),
-                                                                        ConcurrentHashMap.newKeySet(),
-                                                                        atomicity,
-                                                                        coreMax,
-                                                                        seedNodes,
-                                                                        ConcurrentHashMap.newKeySet(),
-                                                                        new ConcurrentHashMap<>(),
-                                                                        new ConcurrentHashMap<>(),
-                                                                        reconcileInterval,
-                                                                        CancellableTask.cancellableTask());
-                    state.set(activeState);
-                    activeNodes.set(topologyRef.get());
-                    log.info("Node {} became leader, activating cluster deployment manager with {} known nodes",
-                             self,
-                             activeNodes.get().size());
-                    activeState.rebuildStateFromKVStore();
-                    activeState.reconcile();
-                    activeState.startReconcileTimer();
-                    SharedScheduler.schedule(() -> deferredTopologyRecheck(activeState, activeNodes),
-                                             timeSpan(2).seconds());
-                } else {
-                    log.info("Node {} is not leader, deactivating cluster deployment manager", self);
-                    deactivateCurrentState();
-                    state.set(new ClusterDeploymentState.Dormant());
-                }
+            @Override public Promise<Unit> activate() {
+                deactivateCurrentState();
+                var activeNodes = new AtomicReference<>(topologyRef.get());
+                var activeState = new ClusterDeploymentState.Active(self,
+                                                                    cluster,
+                                                                    kvStore,
+                                                                    router,
+                                                                    topologyManager,
+                                                                    schemaOrchestrator,
+                                                                    new ConcurrentHashMap<>(),
+                                                                    new ConcurrentHashMap<>(),
+                                                                    new ConcurrentHashMap<>(),
+                                                                    ConcurrentHashMap.newKeySet(),
+                                                                    activeNodes,
+                                                                    new AtomicInteger(0),
+                                                                    new AtomicBoolean(false),
+                                                                    ConcurrentHashMap.newKeySet(),
+                                                                    new ConcurrentHashMap<>(),
+                                                                    new ConcurrentHashMap<>(),
+                                                                    ConcurrentHashMap.newKeySet(),
+                                                                    ConcurrentHashMap.newKeySet(),
+                                                                    atomicity,
+                                                                    coreMax,
+                                                                    seedNodes,
+                                                                    ConcurrentHashMap.newKeySet(),
+                                                                    new ConcurrentHashMap<>(),
+                                                                    new ConcurrentHashMap<>(),
+                                                                    reconcileInterval,
+                                                                    CancellableTask.cancellableTask());
+                state.set(activeState);
+                activeNodes.set(topologyRef.get());
+                log.info("Node {} became leader, activating cluster deployment manager with {} known nodes",
+                         self,
+                         activeNodes.get().size());
+                activeState.rebuildStateFromKVStore();
+                activeState.reconcile();
+                activeState.startReconcileTimer();
+                SharedScheduler.schedule(() -> deferredTopologyRecheck(activeState, activeNodes), timeSpan(2).seconds());
+                return Promise.unitPromise();
+            }
+
+            @Override public Promise<Unit> deactivate() {
+                log.info("Node {} is not leader, deactivating cluster deployment manager", self);
+                deactivateCurrentState();
+                state.set(new ClusterDeploymentState.Dormant());
+                return Promise.unitPromise();
+            }
+
+            @Override public TaskGroup taskGroup() {
+                return TaskGroup.DEPLOYMENT;
+            }
+
+            @Override public boolean isActive() {
+                return state.get() instanceof ClusterDeploymentState.Active;
             }
 
             private void deferredTopologyRecheck(ClusterDeploymentState.Active activeState,

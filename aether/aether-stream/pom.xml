@@ -25,6 +25,10 @@
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>slice</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-api</artifactId>
         </dependency>
         <dependency>

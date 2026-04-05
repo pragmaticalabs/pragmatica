@@ -4,6 +4,8 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.slice.delegation.DelegatedComponent;
+import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AbTestKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -13,7 +15,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
-import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -26,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
@@ -43,7 +45,7 @@ import org.slf4j.LoggerFactory;
 ///
 /// A/B test state is stored in the KV-Store for persistence and visibility.
 /// Only the leader node can create, conclude, or rollback tests.
-public interface AbTestManager {
+public interface AbTestManager extends DelegatedComponent {
     Promise<AbTestDeployment> createTest(ArtifactBase artifactBase,
                                          Map<String, Version> variantVersions,
                                          SplitRule splitRule);
@@ -54,7 +56,6 @@ public interface AbTestManager {
     List<AbTestDeployment> activeTests();
     List<AbTestDeployment> allTests();
     AbTestMetrics getMetrics(String testId);
-    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onLeaderChange(LeaderChange leaderChange);
     @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onDeploymentFailed(DeploymentEvent.DeploymentFailed event);
 
     TimeSpan DEFAULT_KV_OPERATION_TIMEOUT = TimeSpan.timeSpan(30).seconds();
@@ -81,14 +82,29 @@ public interface AbTestManager {
                              InvocationMetricsCollector metricsCollector,
                              TimeSpan kvOperationTimeout,
                              long terminalRetentionMs,
-                             Map<String, AbTestDeployment> tests) implements AbTestManager {
+                             Map<String, AbTestDeployment> tests,
+                             AtomicBoolean active) implements AbTestManager {
             private static final Logger log = LoggerFactory.getLogger(AbTestManager.class);
 
-            @Override@SuppressWarnings("JBCT-RET-01") public void onLeaderChange(LeaderChange leaderChange) {
-                if (leaderChange.localNodeIsLeader()) {
-                    log.info("A/B test manager active (leader)");
-                    restoreState();
-                } else {log.info("A/B test manager passive (follower)");}
+            @Override public Promise<Unit> activate() {
+                log.info("A/B test manager active (leader)");
+                active.set(true);
+                restoreState();
+                return Promise.success(Unit.unit());
+            }
+
+            @Override public Promise<Unit> deactivate() {
+                log.info("A/B test manager passive (follower)");
+                active.set(false);
+                return Promise.success(Unit.unit());
+            }
+
+            @Override public TaskGroup taskGroup() {
+                return TaskGroup.STRATEGIES;
+            }
+
+            @Override public boolean isActive() {
+                return active.get();
             }
 
             @Override@SuppressWarnings("JBCT-RET-01") public void onDeploymentFailed(DeploymentEvent.DeploymentFailed event) {
@@ -409,7 +425,8 @@ public interface AbTestManager {
                                  metricsCollector,
                                  kvOperationTimeout,
                                  terminalRetentionMs,
-                                 new ConcurrentHashMap<>());
+                                 new ConcurrentHashMap<>(),
+                                 new AtomicBoolean(false));
     }
 
     private static long[] accumulateSnapshot(long[] acc, InvocationMetricsCollector.MethodSnapshot snapshot) {

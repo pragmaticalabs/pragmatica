@@ -1,8 +1,11 @@
 package org.pragmatica.aether.metrics.deployment;
 
-import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
+import org.pragmatica.aether.slice.delegation.DelegatedComponent;
+import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsPing;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
@@ -15,6 +18,7 @@ import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.lang.concurrent.CancellableTask;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -27,10 +31,9 @@ import org.slf4j.LoggerFactory;
 ///
 /// When this node is the leader, periodically sends DeploymentMetricsPing to all nodes.
 /// Each node responds with DeploymentMetricsPong containing their deployment metrics.
-public interface DeploymentMetricsScheduler {
+public interface DeploymentMetricsScheduler extends DelegatedComponent {
     TimeSpan DEFAULT_INTERVAL = TimeSpan.timeSpan(5).seconds();
 
-    @MessageReceiver@Contract void onLeaderChange(LeaderChange leaderChange);
     @MessageReceiver@Contract void onTopologyChange(TopologyChangeNotification topologyChange);
     @MessageReceiver@Contract void onQuorumStateChange(QuorumStateNotification notification);
     @Contract void stop();
@@ -63,6 +66,8 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
 
     private final AtomicLong quorumSequence = new AtomicLong();
 
+    private final AtomicBoolean active = new AtomicBoolean(false);
+
     DeploymentMetricsSchedulerImpl(NodeId self,
                                    ClusterNetwork network,
                                    DeploymentMetricsCollector collector,
@@ -73,14 +78,26 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
         this.interval = interval;
     }
 
-    @Override@Contract public void onLeaderChange(LeaderChange leaderChange) {
-        if (leaderChange.localNodeIsLeader()) {
-            log.info("Node {} became leader, starting deployment metrics scheduler", self);
-            startPinging();
-        } else {
-            log.info("Node {} is no longer leader, stopping deployment metrics scheduler", self);
-            stopPinging();
-        }
+    @Override public Promise<Unit> activate() {
+        log.info("Node {} activating deployment metrics scheduler", self);
+        active.set(true);
+        startPinging();
+        return Promise.unitPromise();
+    }
+
+    @Override public Promise<Unit> deactivate() {
+        log.info("Node {} deactivating deployment metrics scheduler", self);
+        active.set(false);
+        stopPinging();
+        return Promise.unitPromise();
+    }
+
+    @Override public TaskGroup taskGroup() {
+        return TaskGroup.METRICS;
+    }
+
+    @Override public boolean isActive() {
+        return active.get();
     }
 
     @Override@Contract public void onTopologyChange(TopologyChangeNotification topologyChange) {

@@ -4,6 +4,7 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
+import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentKey;
@@ -17,8 +18,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
-import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.KSUID;
@@ -62,16 +63,26 @@ final class DeploymentManagerImpl implements DeploymentManager {
         this.kvStore = kvStore;
     }
 
-    @Override@SuppressWarnings("JBCT-RET-01") public void onLeaderChange(LeaderChange leaderChange) {
-        if (leaderChange.localNodeIsLeader()) {
-            log.info("Deployment manager active (leader)");
-            leader = true;
-            restoreState();
-        } else {
-            log.info("Deployment manager passive (follower)");
-            leader = false;
-            activeDeployments.clear();
-        }
+    @Override public Promise<Unit> activate() {
+        log.info("Deployment manager active (leader)");
+        leader = true;
+        restoreState();
+        return Promise.success(Unit.unit());
+    }
+
+    @Override public Promise<Unit> deactivate() {
+        log.info("Deployment manager passive (follower)");
+        leader = false;
+        activeDeployments.clear();
+        return Promise.success(Unit.unit());
+    }
+
+    @Override public TaskGroup taskGroup() {
+        return TaskGroup.STRATEGIES;
+    }
+
+    @Override public boolean isActive() {
+        return leader;
     }
 
     @Override public Result<Deployment> start(String blueprintId,

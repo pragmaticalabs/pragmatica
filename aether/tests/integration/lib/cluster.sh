@@ -276,6 +276,84 @@ stream_publish() {
 }
 
 # ---------------------------------------------------------------------------
+# Task Delegation
+# ---------------------------------------------------------------------------
+cluster_tasks() {
+    api_get "/api/cluster/tasks"
+}
+
+task_assignment_count() {
+    local tasks
+    tasks=$(cluster_tasks)
+    echo "$tasks" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(len(data.get('assignments', [])))
+except:
+    print(0)
+" 2>/dev/null
+}
+
+task_group_status() {
+    local group="$1"
+    local tasks
+    tasks=$(cluster_tasks)
+    echo "$tasks" | python3 -c "
+import sys, json
+result = 'ERROR'
+try:
+    data = json.load(sys.stdin)
+    result = 'UNASSIGNED'
+    for a in data.get('assignments', []):
+        if a.get('group') == '${group}':
+            result = a.get('status', 'UNKNOWN')
+            break
+except Exception:
+    pass
+print(result, end='')
+" 2>/dev/null
+}
+
+task_group_node() {
+    local group="$1"
+    local tasks
+    tasks=$(cluster_tasks)
+    echo "$tasks" | python3 -c "
+import sys, json
+result = ''
+try:
+    data = json.load(sys.stdin)
+    for a in data.get('assignments', []):
+        if a.get('group') == '${group}':
+            result = a.get('assignedTo', '')
+            break
+except Exception:
+    pass
+print(result, end='')
+" 2>/dev/null
+}
+
+reassign_task_group() {
+    local group="$1" target="$2"
+    api_put "/api/cluster/tasks/${group}/reassign" "{\"targetNode\":\"${target}\"}"
+}
+
+wait_for_all_tasks_active() {
+    local timeout="${1:-60}"
+    wait_for "all task groups ACTIVE" \
+        "[ \$(cluster_tasks | python3 -c \"import sys,json; data=json.load(sys.stdin); print(sum(1 for a in data.get('assignments',[]) if a.get('status')=='ACTIVE'))\" 2>/dev/null) -ge 6 ]" \
+        "$timeout"
+}
+
+wait_for_task_active() {
+    local group="$1" timeout="${2:-30}"
+    wait_for "task group ${group} ACTIVE" \
+        "[ \"\$(task_group_status ${group})\" = 'ACTIVE' ]" \
+        "$timeout"
+}
+
+# ---------------------------------------------------------------------------
 # Docker container helpers on target host
 # ---------------------------------------------------------------------------
 list_aether_containers() {

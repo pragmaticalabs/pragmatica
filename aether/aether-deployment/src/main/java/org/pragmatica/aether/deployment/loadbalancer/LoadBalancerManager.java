@@ -10,12 +10,15 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
+import org.pragmatica.aether.slice.delegation.DelegatedComponent;
+import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.ArrayList;
@@ -39,8 +42,7 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
 /// Only active on the leader node — follows the same Dormant/Active pattern as ClusterDeploymentManager.
 @SuppressWarnings("JBCT-RET-01")
 // MessageReceiver callbacks — void required by messaging framework
-public interface LoadBalancerManager {
-    @MessageReceiver void onLeaderChange(LeaderChange leaderChange);
+public interface LoadBalancerManager extends DelegatedComponent {
     @MessageReceiver void onTopologyChange(TopologyChangeNotification topologyChange);
     @MessageReceiver void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
     @MessageReceiver void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
@@ -221,21 +223,31 @@ public interface LoadBalancerManager {
                                    AtomicReference<LoadBalancerManagerState> state) implements LoadBalancerManager {
             private static final Logger log = LoggerFactory.getLogger(loadBalancerManager.class);
 
-            @Override public void onLeaderChange(LeaderChange leaderChange) {
-                if (leaderChange.localNodeIsLeader()) {
-                    log.info("Node {} became leader, activating load balancer manager", self);
-                    var activeState = new LoadBalancerManagerState.Active(provider,
-                                                                          topologyManager,
-                                                                          kvStore,
-                                                                          appHttpPort,
-                                                                          ConcurrentHashMap.newKeySet(),
-                                                                          new ConcurrentHashMap<>());
-                    state.set(activeState);
-                    activeState.reconcile();
-                } else {
-                    log.info("Node {} is not leader, deactivating load balancer manager", self);
-                    state.set(new LoadBalancerManagerState.Dormant());
-                }
+            @Override public Promise<Unit> activate() {
+                log.info("Node {} became leader, activating load balancer manager", self);
+                var activeState = new LoadBalancerManagerState.Active(provider,
+                                                                      topologyManager,
+                                                                      kvStore,
+                                                                      appHttpPort,
+                                                                      ConcurrentHashMap.newKeySet(),
+                                                                      new ConcurrentHashMap<>());
+                state.set(activeState);
+                activeState.reconcile();
+                return Promise.unitPromise();
+            }
+
+            @Override public Promise<Unit> deactivate() {
+                log.info("Node {} is not leader, deactivating load balancer manager", self);
+                state.set(new LoadBalancerManagerState.Dormant());
+                return Promise.unitPromise();
+            }
+
+            @Override public TaskGroup taskGroup() {
+                return TaskGroup.DEPLOYMENT;
+            }
+
+            @Override public boolean isActive() {
+                return state.get() instanceof LoadBalancerManagerState.Active;
             }
 
             @Override public void onTopologyChange(TopologyChangeNotification topologyChange) {

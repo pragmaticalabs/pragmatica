@@ -23,7 +23,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.cluster.state.kvstore.KVStore;
-import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.consensus.topology.NodeState;
 
 import java.net.SocketAddress;
@@ -92,7 +91,7 @@ class ClusterDeploymentManagerTest {
         @Test
         void completeDrain_writesDecommissionedState() throws InterruptedException {
             // Activate CDM as leader
-            cdm.onLeaderChange(new LeaderChange(Option.some(NODE_1), true));
+            cdm.activate().await();
 
             // Trigger drain for a node with no slices — drain completes immediately
             var drainingPut = new ValuePut<>(

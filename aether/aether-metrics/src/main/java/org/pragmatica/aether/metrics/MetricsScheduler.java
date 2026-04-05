@@ -1,8 +1,11 @@
 package org.pragmatica.aether.metrics;
 
-import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
+import org.pragmatica.aether.slice.delegation.DelegatedComponent;
+import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPing;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
@@ -15,6 +18,7 @@ import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.lang.concurrent.CancellableTask;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -27,8 +31,7 @@ import org.slf4j.LoggerFactory;
 ///
 /// When this node is the leader, periodically sends MetricsPing to all nodes.
 /// Each node responds with MetricsPong containing their metrics.
-public interface MetricsScheduler {
-    @MessageReceiver@Contract void onLeaderChange(LeaderChange leaderChange);
+public interface MetricsScheduler extends DelegatedComponent {
     @MessageReceiver@Contract void onTopologyChange(TopologyChangeNotification topologyChange);
     @MessageReceiver@Contract void onQuorumStateChange(QuorumStateNotification notification);
     @Contract void stop();
@@ -62,6 +65,8 @@ class MetricsSchedulerImpl implements MetricsScheduler {
 
     private final AtomicLong quorumSequence = new AtomicLong();
 
+    private final AtomicBoolean active = new AtomicBoolean(false);
+
     MetricsSchedulerImpl(NodeId self, ClusterNetwork network, MetricsCollector metricsCollector, TimeSpan interval) {
         this.self = self;
         this.network = network;
@@ -69,14 +74,26 @@ class MetricsSchedulerImpl implements MetricsScheduler {
         this.interval = interval;
     }
 
-    @Override@Contract public void onLeaderChange(LeaderChange leaderChange) {
-        if (leaderChange.localNodeIsLeader()) {
-            log.debug("Node {} became leader, starting metrics scheduler", self);
-            startPinging();
-        } else {
-            log.info("Node {} is no longer leader, stopping metrics scheduler", self);
-            stopPinging();
-        }
+    @Override public Promise<Unit> activate() {
+        log.debug("Node {} activating metrics scheduler", self);
+        active.set(true);
+        startPinging();
+        return Promise.unitPromise();
+    }
+
+    @Override public Promise<Unit> deactivate() {
+        log.info("Node {} deactivating metrics scheduler", self);
+        active.set(false);
+        stopPinging();
+        return Promise.unitPromise();
+    }
+
+    @Override public TaskGroup taskGroup() {
+        return TaskGroup.METRICS;
+    }
+
+    @Override public boolean isActive() {
+        return active.get();
     }
 
     @Override@Contract public void onTopologyChange(TopologyChangeNotification topologyChange) {

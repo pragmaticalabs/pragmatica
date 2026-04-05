@@ -3,18 +3,18 @@ package org.pragmatica.aether.ttm;
 import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.metrics.MinuteAggregator;
+import org.pragmatica.aether.slice.delegation.DelegatedComponent;
+import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.ttm.error.TTMError;
 import org.pragmatica.aether.ttm.model.ScalingRecommendation;
 import org.pragmatica.aether.ttm.model.TTMForecast;
 import org.pragmatica.aether.ttm.model.TTMPredictor;
-import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.SharedScheduler;
-import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.lang.concurrent.CancellableTask;
 
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -33,9 +33,8 @@ import org.slf4j.LoggerFactory;
 /// Only runs inference on the leader node. Followers receive state updates
 /// via Rabia replication (through the DecisionTreeController threshold adjustments).
 @SuppressWarnings("JBCT-RET-01")
-// MessageReceiver callbacks and registration methods — void is intentional
-public interface TTMManager {
-    @MessageReceiver void onLeaderChange(LeaderChange leaderChange);
+// Registration methods — void is intentional
+public interface TTMManager extends DelegatedComponent {
     Option<TTMForecast> currentForecast();
     TTMState state();
     void onForecast(Consumer<TTMForecast> callback);
@@ -75,7 +74,21 @@ public interface TTMManager {
     }
 
     record NoOpTTMManager(TtmConfig config) implements TTMManager {
-        @Override public void onLeaderChange(LeaderChange leaderChange) {}
+        @Override public Promise<Unit> activate() {
+            return Promise.unitPromise();
+        }
+
+        @Override public Promise<Unit> deactivate() {
+            return Promise.unitPromise();
+        }
+
+        @Override public TaskGroup taskGroup() {
+            return TaskGroup.SCALING;
+        }
+
+        @Override public boolean isActive() {
+            return false;
+        }
 
         @Override public Option<TTMForecast> currentForecast() {
             return Option.empty();
@@ -117,14 +130,24 @@ public interface TTMManager {
 
         private static final Counter HOLD_COUNTER = Metrics.counter("ttm.recommendations", "type", "hold");
 
-        @Override public void onLeaderChange(LeaderChange leaderChange) {
-            if (leaderChange.localNodeIsLeader()) {
-                log.info("Node became leader, starting TTM evaluation");
-                startEvaluation();
-            } else {
-                log.info("Node is no longer leader, stopping TTM evaluation");
-                stopEvaluation();
-            }
+        @Override public Promise<Unit> activate() {
+            log.info("Activating TTM evaluation");
+            startEvaluation();
+            return Promise.unitPromise();
+        }
+
+        @Override public Promise<Unit> deactivate() {
+            log.info("Deactivating TTM evaluation");
+            stopEvaluation();
+            return Promise.unitPromise();
+        }
+
+        @Override public TaskGroup taskGroup() {
+            return TaskGroup.SCALING;
+        }
+
+        @Override public boolean isActive() {
+            return stateRef.get() == TTMState.RUNNING;
         }
 
         @Override public Option<TTMForecast> currentForecast() {

@@ -25,7 +25,6 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Cause;
@@ -186,7 +185,7 @@ class ClusterDeploymentManagerTest {
         var emptyTopologyManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, kvStore, router, List.of(),
             clusterNode.topologyManager(), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
-        emptyTopologyManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+        emptyTopologyManager.activate();
         clusterNode.appliedCommands.clear();
 
         var artifact = createTestArtifact();
@@ -648,7 +647,7 @@ class ClusterDeploymentManagerTest {
             ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
 
         // Become leader triggers rebuildStateFromKVStore
-        restoredManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+        restoredManager.activate();
 
         // Clear tracking from restoration
         clusterNode.appliedCommands.clear();
@@ -720,15 +719,15 @@ class ClusterDeploymentManagerTest {
     }
 
     private void becomeLeader() {
-        manager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+        manager.activate();
     }
 
     private void becomeLeader(ClusterDeploymentManager mgr) {
-        mgr.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+        mgr.activate();
     }
 
     private void loseLeadership() {
-        manager.onLeaderChange(LeaderNotification.leaderChange(Option.option(node2), false));
+        manager.deactivate();
     }
 
     private void addTopology(NodeId... nodes) {
