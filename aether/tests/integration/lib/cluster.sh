@@ -8,9 +8,9 @@ source "${LIB_DIR}/common.sh"
 # Cluster queries (CLI-based)
 # ---------------------------------------------------------------------------
 cluster_node_count() {
-    # Use health endpoint (QUIC peer count) — reliable immediately.
-    # /api/status nodeCount comes from metrics aggregation which lags on startup.
-    api_get "/api/health" | python3 -c "import sys,json; print(json.load(sys.stdin).get('nodeCount',0))" 2>/dev/null
+    # Use connectedPeers + 1 (self) from health endpoint — reflects actual QUIC topology.
+    # nodeCount/metricsNodeCount come from metrics aggregation which lags on startup.
+    api_get "/api/health" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('connectedPeers',0)+1)" 2>/dev/null
 }
 
 cluster_leader() {
