@@ -72,82 +72,83 @@ public record SliceModel(String packageName,
         }
     }
 
+    /// Check if any plain interface has annotated methods at all.
+    public boolean hasTransitiveReactive() {
+        return plainInterfaceModels.stream()
+                                   .anyMatch(PlainInterfaceModel::hasAnnotatedMethods);
+    }
+
+    /// Get all transitive reactive methods with qualified names.
+    public List<TransitiveMethod> transitiveReactiveMethods() {
+        return plainInterfaceModels.stream()
+            .filter(PlainInterfaceModel::hasAnnotatedMethods)
+            .flatMap(step -> step.annotatedMethods().stream()
+                .filter(MethodModel::hasAnyReactive)
+                .map(m -> new TransitiveMethod(step.parameterName(), m)))
+            .toList();
+    }
+
+    /// Get all transitive methods matching a specific reactive category.
+    public List<TransitiveMethod> transitiveMethodsOfCategory(String category) {
+        return transitiveReactiveMethods().stream()
+            .filter(tm -> tm.method().hasReactiveOfCategory(category))
+            .toList();
+    }
+
     /// Check if any plain interface dependency has transitive subscription methods.
     public boolean hasTransitiveSubscriptions() {
-        return plainInterfaceModels.stream()
-                                   .flatMap(pi -> pi.annotatedMethods().stream())
-                                   .anyMatch(MethodModel::hasSubscriptions);
+        return !transitiveMethodsOfCategory("subscription").isEmpty();
     }
 
     /// Get all transitive subscription methods with qualified names.
     public List<TransitiveMethod> transitiveSubscriptionMethods() {
-        return collectTransitiveMethods(MethodModel::hasSubscriptions);
+        return transitiveMethodsOfCategory("subscription");
     }
 
     /// Check if any plain interface dependency has transitive scheduled methods.
     public boolean hasTransitiveScheduled() {
-        return plainInterfaceModels.stream()
-                                   .flatMap(pi -> pi.annotatedMethods().stream())
-                                   .anyMatch(MethodModel::hasScheduled);
+        return !transitiveMethodsOfCategory("scheduled").isEmpty();
     }
 
     /// Get all transitive scheduled methods with qualified names.
     public List<TransitiveMethod> transitiveScheduledMethods() {
-        return collectTransitiveMethods(MethodModel::hasScheduled);
+        return transitiveMethodsOfCategory("scheduled");
     }
 
     /// Check if any plain interface dependency has transitive stream subscription methods.
     public boolean hasTransitiveStreamSubscriptions() {
-        return plainInterfaceModels.stream()
-                                   .flatMap(pi -> pi.annotatedMethods().stream())
-                                   .anyMatch(MethodModel::hasStreamSubscriptions);
+        return !transitiveMethodsOfCategory("stream").isEmpty();
     }
 
     /// Get all transitive stream subscription methods with qualified names.
     public List<TransitiveMethod> transitiveStreamSubscriptionMethods() {
-        return collectTransitiveMethods(MethodModel::hasStreamSubscriptions);
+        return transitiveMethodsOfCategory("stream");
     }
 
     /// Check if any plain interface dependency has transitive pg-notification subscription methods.
     public boolean hasTransitivePgNotificationSubscriptions() {
-        return plainInterfaceModels.stream()
-                                   .flatMap(pi -> pi.annotatedMethods().stream())
-                                   .anyMatch(MethodModel::hasPgNotificationSubscriptions);
+        return !transitiveMethodsOfCategory("pg-notification").isEmpty();
     }
 
     /// Get all transitive pg-notification subscription methods with qualified names.
     public List<TransitiveMethod> transitivePgNotificationSubscriptionMethods() {
-        return collectTransitiveMethods(MethodModel::hasPgNotificationSubscriptions);
+        return transitiveMethodsOfCategory("pg-notification");
     }
 
     /// Check if any plain interface dependency has transitive config update subscription methods.
     public boolean hasTransitiveConfigUpdateSubscriptions() {
-        return plainInterfaceModels.stream()
-                                   .flatMap(pi -> pi.annotatedMethods().stream())
-                                   .anyMatch(MethodModel::hasConfigUpdateSubscriptions);
+        return !transitiveMethodsOfCategory("config-update").isEmpty();
     }
 
     /// Get all transitive config update subscription methods with qualified names.
     public List<TransitiveMethod> transitiveConfigUpdateMethods() {
-        return collectTransitiveMethods(MethodModel::hasConfigUpdateSubscriptions);
+        return transitiveMethodsOfCategory("config-update");
     }
 
     /// Check if any plain interface has annotated methods at all.
     public boolean hasTransitiveAnnotatedMethods() {
         return plainInterfaceModels.stream()
                                    .anyMatch(PlainInterfaceModel::hasAnnotatedMethods);
-    }
-
-    private List<TransitiveMethod> collectTransitiveMethods(java.util.function.Predicate<MethodModel> filter) {
-        var result = new ArrayList<TransitiveMethod>();
-        for (var pi : plainInterfaceModels) {
-            for (var method : pi.annotatedMethods()) {
-                if (filter.test(method)) {
-                    result.add(new TransitiveMethod(pi.parameterName(), method));
-                }
-            }
-        }
-        return result;
     }
 
     /// Build PlainInterfaceModel instances for plain interface dependencies,

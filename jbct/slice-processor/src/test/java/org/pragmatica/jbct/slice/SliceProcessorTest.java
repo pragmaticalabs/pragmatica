@@ -2347,20 +2347,21 @@ class SliceProcessorTest {
         assertThat(manifestFile.isPresent()).isTrue();
         var manifestContent = manifestFile.get().getCharContent(false).toString();
 
-        // Verify envelope version was bumped to 8
-        assertThat(manifestContent).contains("envelope.version=8");
+        // Verify envelope version was bumped to 1000
+        assertThat(manifestContent).contains("envelope.version=1000");
 
         // Verify stream publisher metadata
         assertThat(manifestContent).contains("stream.publishers.count=1");
         assertThat(manifestContent).contains("stream.publisher.0.config=streams.order-events");
         assertThat(manifestContent).contains("stream.publisher.0.eventType=test.dto.OrderEvent");
 
-        // Verify stream subscription metadata
-        assertThat(manifestContent).contains("stream.subscriptions.count=1");
-        assertThat(manifestContent).contains("stream.subscription.0.config=streams.order-events");
-        assertThat(manifestContent).contains("stream.subscription.0.method=processOrder");
-        assertThat(manifestContent).contains("stream.subscription.0.eventType=test.dto.OrderEvent");
-        assertThat(manifestContent).contains("stream.subscription.0.batch=false");
+        // Verify stream subscription via reactive bindings
+        assertThat(manifestContent).contains("reactive.count=1");
+        assertThat(manifestContent).contains("reactive.0.category=stream");
+        assertThat(manifestContent).contains("reactive.0.config=streams.order-events");
+        assertThat(manifestContent).contains("reactive.0.method=processOrder");
+        assertThat(manifestContent).contains("reactive.0.eventType=test.dto.OrderEvent");
+        assertThat(manifestContent).contains("reactive.0.batch=false");
 
         // Verify stream event classes
         assertThat(manifestContent).contains("stream.event.classes=test.dto.OrderEvent");
@@ -2866,10 +2867,11 @@ class SliceProcessorTest {
         var manifestFile = compilation.generatedFile(StandardLocation.CLASS_OUTPUT, "META-INF/slice/OrderService.manifest");
         assertThat(manifestFile.isPresent()).isTrue();
         var manifestContent = manifestFile.get().getCharContent(false).toString();
-        assertThat(manifestContent).contains("topic.subscriptions.count=1");
-        assertThat(manifestContent).contains("topic.subscription.0.config=messaging.order-events");
-        assertThat(manifestContent).contains("topic.subscription.0.method=listenerOnOrderPlaced");
-        assertThat(manifestContent).contains("topic.subscription.0.messageType=test.dto.OrderEvent");
+        assertThat(manifestContent).contains("reactive.count=1");
+        assertThat(manifestContent).contains("reactive.0.category=subscription");
+        assertThat(manifestContent).contains("reactive.0.config=messaging.order-events");
+        assertThat(manifestContent).contains("reactive.0.method=listenerOnOrderPlaced");
+        assertThat(manifestContent).contains("reactive.0.messageType=test.dto.OrderEvent");
     }
 
     @Test
@@ -3018,11 +3020,13 @@ class SliceProcessorTest {
         var manifestFile = compilation.generatedFile(StandardLocation.CLASS_OUTPUT, "META-INF/slice/PaymentService.manifest");
         assertThat(manifestFile.isPresent()).isTrue();
         var manifestContent = manifestFile.get().getCharContent(false).toString();
-        assertThat(manifestContent).contains("topic.subscriptions.count=2");
-        assertThat(manifestContent).contains("topic.subscription.0.method=onPaymentReceived");
-        assertThat(manifestContent).contains("topic.subscription.0.config=messaging.payment-events");
-        assertThat(manifestContent).contains("topic.subscription.1.method=listenerOnOrderPlaced");
-        assertThat(manifestContent).contains("topic.subscription.1.config=messaging.order-events");
+        assertThat(manifestContent).contains("reactive.count=2");
+        assertThat(manifestContent).contains("reactive.0.category=subscription");
+        assertThat(manifestContent).contains("reactive.0.method=onPaymentReceived");
+        assertThat(manifestContent).contains("reactive.0.config=messaging.payment-events");
+        assertThat(manifestContent).contains("reactive.1.category=subscription");
+        assertThat(manifestContent).contains("reactive.1.method=listenerOnOrderPlaced");
+        assertThat(manifestContent).contains("reactive.1.config=messaging.order-events");
 
         // Verify methods() list has BOTH entries
         var factoryContent = compilation.generatedSourceFile("test.PaymentServiceFactory")

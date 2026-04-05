@@ -1749,8 +1749,8 @@ public class FactoryClassGenerator {
         out.println();
         out.println("    public static void notifyConfigUpdate(Object sliceInstance, String section, ConfigFacade config) {");
         for (var method : model.configUpdateMethods()) {
-            for (var configSub : method.configUpdateSubscriptions()) {
-                var configSection = escapeJavaString(configSub.configSection());
+            for (var configSub : method.reactiveOfCategory("config-update")) {
+                var configSection = escapeJavaString(configSub.qualifier().configSection());
                 generateConfigUpdateBranch(out, model, method, configSection, sliceName, importTracker);
             }
         }

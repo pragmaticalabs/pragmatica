@@ -2,6 +2,7 @@ package org.pragmatica.jbct.slice.generator;
 
 import org.pragmatica.jbct.slice.model.DependencyModel;
 import org.pragmatica.jbct.slice.model.MethodModel;
+import org.pragmatica.jbct.slice.model.MethodModel.ReactiveMethodBinding;
 import org.pragmatica.jbct.slice.model.ResourceQualifierModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
 import org.pragmatica.jbct.slice.model.SliceModel.TransitiveMethod;
@@ -18,13 +19,14 @@ import javax.tools.StandardLocation;
 import java.io.OutputStreamWriter;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.stream.Collectors;
 
 public class ManifestGenerator {
-    static final int ENVELOPE_FORMAT_VERSION = 8;
+    static final int ENVELOPE_FORMAT_VERSION = 1000;
 
     private final Filer filer;
     private final DependencyVersionResolver versionResolver;
@@ -123,61 +125,14 @@ public class ManifestGenerator {
             routeConfig.onPresent(config -> writeRouteProperties(props, config));
             // Slice config file path (for blueprint generator to read)
             props.setProperty("config.file", "slices/" + sliceName + ".toml");
-            // Topic subscription metadata (direct + transitive)
-            var subscriptionMethods = model.subscriptionMethods();
-            int subIndex = 0;
-            for (var method : subscriptionMethods) {
-                for (var subscription : method.subscriptions()) {
-                    var subPrefix = "topic.subscription." + subIndex + ".";
-                    props.setProperty(subPrefix + "config", subscription.configSection());
-                    props.setProperty(subPrefix + "method", method.name());
-                    if (method.hasSingleParam()) {
-                        props.setProperty(subPrefix + "messageType",
-                                          getQualifiedTypeName(method.parameters().getFirst().type()));
-                    }
-                    subIndex++;
-                }
-            }
-            // Transitive subscription methods from plain interface dependencies
-            for (var tm : model.transitiveSubscriptionMethods()) {
-                for (var subscription : tm.method().subscriptions()) {
-                    var subPrefix = "topic.subscription." + subIndex + ".";
-                    props.setProperty(subPrefix + "config", subscription.configSection());
-                    props.setProperty(subPrefix + "method", tm.qualifiedMethodName());
-                    if (tm.method().hasSingleParam()) {
-                        props.setProperty(subPrefix + "messageType",
-                                          getQualifiedTypeName(tm.method().parameters().getFirst().type()));
-                    }
-                    subIndex++;
-                }
-            }
-            props.setProperty("topic.subscriptions.count", String.valueOf(subIndex));
-            // Scheduled task metadata (direct + transitive)
-            var scheduledMethods = model.scheduledMethods();
-            int schedIndex = 0;
-            for (var method : scheduledMethods) {
-                for (var schedule : method.scheduled()) {
-                    var schedPrefix = "scheduled.task." + schedIndex + ".";
-                    props.setProperty(schedPrefix + "config", schedule.configSection());
-                    props.setProperty(schedPrefix + "method", method.name());
-                    schedIndex++;
-                }
-            }
-            for (var tm : model.transitiveScheduledMethods()) {
-                for (var schedule : tm.method().scheduled()) {
-                    var schedPrefix = "scheduled.task." + schedIndex + ".";
-                    props.setProperty(schedPrefix + "config", schedule.configSection());
-                    props.setProperty(schedPrefix + "method", tm.qualifiedMethodName());
-                    schedIndex++;
-                }
-            }
-            props.setProperty("scheduled.tasks.count", String.valueOf(schedIndex));
+            // Reactive bindings (unified format for all reactive annotations)
+            writeReactiveBindings(props, model);
             // Publisher message types (for serializer registration)
             var publishMessageTypes = model.dependencies()
                                            .stream()
                                            .filter(dep -> dep.isPublisher())
                                            .flatMap(dep -> dep.publisherMessageType().stream())
-                                           .filter(name -> !isStandardType(name))
+                                           .filter(name2 -> !isStandardType(name2))
                                            .distinct()
                                            .collect(Collectors.toList());
             if (!publishMessageTypes.isEmpty()) {
@@ -212,32 +167,6 @@ public class ManifestGenerator {
                 sp.streamEventType()
                   .onPresent(et -> props.setProperty(spPrefix + "eventType", et));
             }
-            // Stream subscription metadata (direct + transitive)
-            var streamSubMethods = model.streamSubscriptionMethods();
-            int streamSubIndex = 0;
-            for (var method : streamSubMethods) {
-                for (var streamSub : method.streamSubscriptions()) {
-                    var ssPrefix = "stream.subscription." + streamSubIndex + ".";
-                    props.setProperty(ssPrefix + "config", streamSub.configSection());
-                    props.setProperty(ssPrefix + "method", method.name());
-                    method.streamConsumerEventType()
-                          .onPresent(et -> props.setProperty(ssPrefix + "eventType", et));
-                    props.setProperty(ssPrefix + "batch", String.valueOf(method.isBatchStreamConsumer()));
-                    streamSubIndex++;
-                }
-            }
-            for (var tm : model.transitiveStreamSubscriptionMethods()) {
-                for (var streamSub : tm.method().streamSubscriptions()) {
-                    var ssPrefix = "stream.subscription." + streamSubIndex + ".";
-                    props.setProperty(ssPrefix + "config", streamSub.configSection());
-                    props.setProperty(ssPrefix + "method", tm.qualifiedMethodName());
-                    tm.method().streamConsumerEventType()
-                      .onPresent(et -> props.setProperty(ssPrefix + "eventType", et));
-                    props.setProperty(ssPrefix + "batch", String.valueOf(tm.method().isBatchStreamConsumer()));
-                    streamSubIndex++;
-                }
-            }
-            props.setProperty("stream.subscriptions.count", String.valueOf(streamSubIndex));
             // Stream access metadata
             var streamAccessDeps = model.dependencies()
                                         .stream()
@@ -252,54 +181,6 @@ public class ManifestGenerator {
                 sa.streamEventType()
                   .onPresent(et -> props.setProperty(saPrefix + "eventType", et));
             }
-            // PG notification subscription metadata (direct + transitive)
-            var pgNotifMethods = model.pgNotificationSubscriptionMethods();
-            int pgNotifIndex = 0;
-            for (var method : pgNotifMethods) {
-                for (var pgNotifSub : method.pgNotificationSubscriptions()) {
-                    var pnPrefix = "pg.notification." + pgNotifIndex + ".";
-                    props.setProperty(pnPrefix + "config", pgNotifSub.configSection());
-                    props.setProperty(pnPrefix + "method", method.name());
-                    pgNotifIndex++;
-                }
-            }
-            for (var tm : model.transitivePgNotificationSubscriptionMethods()) {
-                for (var pgNotifSub : tm.method().pgNotificationSubscriptions()) {
-                    var pnPrefix = "pg.notification." + pgNotifIndex + ".";
-                    props.setProperty(pnPrefix + "config", pgNotifSub.configSection());
-                    props.setProperty(pnPrefix + "method", tm.qualifiedMethodName());
-                    pgNotifIndex++;
-                }
-            }
-            props.setProperty("pg.notifications.count", String.valueOf(pgNotifIndex));
-            // Config update subscription metadata (direct + transitive)
-            var configUpdateMethods = model.configUpdateMethods();
-            int configUpdateIndex = 0;
-            for (var method : configUpdateMethods) {
-                for (var configSub : method.configUpdateSubscriptions()) {
-                    var cuPrefix = "config.update." + configUpdateIndex + ".";
-                    props.setProperty(cuPrefix + "config", configSub.configSection());
-                    props.setProperty(cuPrefix + "method", method.name());
-                    if (method.hasSingleParam()) {
-                        props.setProperty(cuPrefix + "paramType",
-                                          getQualifiedTypeName(method.parameters().getFirst().type()));
-                    }
-                    configUpdateIndex++;
-                }
-            }
-            for (var tm : model.transitiveConfigUpdateMethods()) {
-                for (var configSub : tm.method().configUpdateSubscriptions()) {
-                    var cuPrefix = "config.update." + configUpdateIndex + ".";
-                    props.setProperty(cuPrefix + "config", configSub.configSection());
-                    props.setProperty(cuPrefix + "method", tm.qualifiedMethodName());
-                    if (tm.method().hasSingleParam()) {
-                        props.setProperty(cuPrefix + "paramType",
-                                          getQualifiedTypeName(tm.method().parameters().getFirst().type()));
-                    }
-                    configUpdateIndex++;
-                }
-            }
-            props.setProperty("config.updates.count", String.valueOf(configUpdateIndex));
             // Stream event codec classes (union of all stream event types)
             var streamEventTypes = collectStreamEventTypes(model);
             if (!streamEventTypes.isEmpty()) {
@@ -322,6 +203,67 @@ public class ManifestGenerator {
                                                                          .getSimpleName() + ": " + e.getMessage())
                          .result();
         }
+    }
+
+    private record ReactiveEntry(String category, String methodName, String config, Map<String, String> metadata) {}
+
+    private void writeReactiveBindings(Properties props, SliceModel model) {
+        var allReactive = new ArrayList<ReactiveEntry>();
+
+        // Direct methods
+        for (var method : model.methods()) {
+            for (var binding : method.reactive()) {
+                allReactive.add(new ReactiveEntry(binding.category(), method.name(),
+                                                   binding.qualifier().configSection(),
+                                                   extractMetadata(method, binding)));
+            }
+        }
+
+        // Transitive methods
+        for (var tm : model.transitiveReactiveMethods()) {
+            for (var binding : tm.method().reactive()) {
+                allReactive.add(new ReactiveEntry(binding.category(), tm.qualifiedMethodName(),
+                                                   binding.qualifier().configSection(),
+                                                   extractMetadata(tm.method(), binding)));
+            }
+        }
+
+        // Write properties
+        props.setProperty("reactive.count", String.valueOf(allReactive.size()));
+        for (int i = 0; i < allReactive.size(); i++) {
+            var entry = allReactive.get(i);
+            var prefix = "reactive." + i + ".";
+            props.setProperty(prefix + "category", entry.category());
+            props.setProperty(prefix + "method", entry.methodName());
+            props.setProperty(prefix + "config", entry.config());
+            // Category-specific metadata
+            entry.metadata().forEach((k, v) -> props.setProperty(prefix + k, v));
+        }
+    }
+
+    private Map<String, String> extractMetadata(MethodModel method, ReactiveMethodBinding binding) {
+        var metadata = new LinkedHashMap<String, String>();
+        switch (binding.category()) {
+            case "subscription" -> {
+                if (method.hasSingleParam()) {
+                    metadata.put("messageType", getQualifiedTypeName(method.parameters().getFirst().type()));
+                }
+            }
+            case "stream" -> {
+                method.streamConsumerEventType()
+                      .onPresent(et -> metadata.put("eventType", et));
+                metadata.put("batch", String.valueOf(method.isBatchStreamConsumer()));
+            }
+            case "config-update" -> {
+                if (method.hasSingleParam()) {
+                    metadata.put("paramType", getQualifiedTypeName(method.parameters().getFirst().type()));
+                }
+            }
+            default -> {
+                // scheduled, pg-notification, and custom categories have no extra metadata
+            }
+        }
+        return metadata;
     }
 
     private List<String> collectImplClasses(SliceModel model, Option<String> routesClass) {
