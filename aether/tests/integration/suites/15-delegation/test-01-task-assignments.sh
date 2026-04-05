@@ -39,25 +39,16 @@ test_all_groups_assigned() {
 # ---------------------------------------------------------------------------
 # Test: All task groups reach ACTIVE status
 # ---------------------------------------------------------------------------
-test_wired_groups_active() {
-    # STORAGE and STREAMING adapters are not yet wired in AetherNode — they stay ASSIGNED
-    # Test only the 4 fully-wired groups
+test_all_groups_active() {
     local timeout=60
-    wait_for "wired task groups ACTIVE" \
-        "[ \$(cluster_tasks | python3 -c \"import sys,json; data=json.load(sys.stdin); print(sum(1 for a in data.get('assignments',[]) if a.get('status')=='ACTIVE'))\" 2>/dev/null) -ge 4 ]" \
+    wait_for "all task groups ACTIVE" \
+        "[ \$(cluster_tasks | python3 -c \"import sys,json; data=json.load(sys.stdin); print(sum(1 for a in data.get('assignments',[]) if a.get('status')=='ACTIVE'))\" 2>/dev/null) -ge 6 ]" \
         "$timeout"
 
-    for group in METRICS SCALING STRATEGIES DEPLOYMENT; do
+    for group in METRICS SCALING STRATEGIES DEPLOYMENT STORAGE STREAMING; do
         local status
         status=$(task_group_status "$group")
         assert_eq "$status" "ACTIVE" "Task group ${group} is ACTIVE"
-    done
-
-    # STORAGE and STREAMING should be ASSIGNED (not ACTIVE) since adapters aren't wired yet
-    for group in STORAGE STREAMING; do
-        local status
-        status=$(task_group_status "$group")
-        assert_eq "$status" "ASSIGNED" "Task group ${group} is ASSIGNED (adapter not yet wired)"
     done
 }
 
@@ -136,7 +127,7 @@ test_metrics_group_functional() {
 run_test "Cluster ready" test_cluster_ready
 run_test "Tasks API returns data" test_tasks_api_returns_data
 run_test "All groups assigned" test_all_groups_assigned
-run_test "Wired groups active" test_wired_groups_active
+run_test "All groups active" test_all_groups_active
 run_test "Tasks distributed" test_tasks_distributed
 run_test "Assignments point to valid nodes" test_assignments_point_to_valid_nodes
 run_test "DEPLOYMENT group functional" test_deployment_group_functional

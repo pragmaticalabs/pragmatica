@@ -39,6 +39,13 @@ public final class StreamingCoordinator implements DelegatedComponent {
         return new StreamingCoordinator(failoverHandler, retentionEnforcer);
     }
 
+    /// Creates a no-op coordinator for environments where streaming subsystem components
+    /// are not configured. Registers with the TaskGroupActivator so STREAMING group
+    /// transitions to ACTIVE without requiring real GovernorFailoverHandler/RetentionEnforcer.
+    public static DelegatedComponent noOp() {
+        return new NoOpStreamingComponent();
+    }
+
     @Override public Promise<Unit> activate() {
         if (active.compareAndSet(false, true)) {
             retentionEnforcer.start();
@@ -65,5 +72,27 @@ public final class StreamingCoordinator implements DelegatedComponent {
 
     public GovernorFailoverHandler failoverHandler() {
         return failoverHandler;
+    }
+}
+
+final class NoOpStreamingComponent implements DelegatedComponent {
+    private final AtomicBoolean active = new AtomicBoolean(false);
+
+    @Override public Promise<Unit> activate() {
+        active.set(true);
+        return Promise.success(unit());
+    }
+
+    @Override public Promise<Unit> deactivate() {
+        active.set(false);
+        return Promise.success(unit());
+    }
+
+    @Override public TaskGroup taskGroup() {
+        return TaskGroup.STREAMING;
+    }
+
+    @Override public boolean isActive() {
+        return active.get();
     }
 }

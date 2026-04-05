@@ -1,5 +1,5 @@
 #!/bin/bash
-# test-reassignment.sh — Verify task reassignment on node failure and operator override
+# test-02-reassignment.sh — Verify task reassignment on node failure and operator override
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -9,15 +9,34 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 : "${AETHER_SSH_USER:=aether}"
 
 # ---------------------------------------------------------------------------
+# Helper: get a cluster node different from the given node ID
+# Queries the actual cluster status instead of hardcoded node names.
+# ---------------------------------------------------------------------------
+get_different_node() {
+    local exclude="$1"
+    cluster_tasks | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for a in data.get('assignments', []):
+        node = a.get('assignedTo', '')
+        if node and node != '${exclude}':
+            print(node)
+            sys.exit(0)
+except:
+    pass
+" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
 # Prerequisite: cluster healthy, all tasks active
 # ---------------------------------------------------------------------------
 test_prerequisite() {
     wait_for_cluster 120
-    # Wait for 4 wired groups to be ACTIVE (STORAGE/STREAMING adapters not yet wired)
-    wait_for "wired task groups ACTIVE" \
-        "[ \$(cluster_tasks | python3 -c \"import sys,json; data=json.load(sys.stdin); print(sum(1 for a in data.get('assignments',[]) if a.get('status')=='ACTIVE'))\" 2>/dev/null) -ge 4 ]" \
+    wait_for "all task groups ACTIVE" \
+        "[ \$(cluster_tasks | python3 -c \"import sys,json; data=json.load(sys.stdin); print(sum(1 for a in data.get('assignments',[]) if a.get('status')=='ACTIVE'))\" 2>/dev/null) -ge 6 ]" \
         60
-    log_pass "Wired task groups active — ready for reassignment tests"
+    log_pass "All task groups active — ready for reassignment tests"
 }
 
 # ---------------------------------------------------------------------------
@@ -30,9 +49,9 @@ test_operator_reassign() {
     current_node=$(task_group_node "METRICS")
     log_info "METRICS currently on: ${current_node}"
 
-    # Pick a different node
+    # Pick a different node from the actual cluster
     local target
-    target=$(pick_non_leader "$current_node" 1)
+    target=$(get_different_node "$current_node")
     if [ -z "$target" ]; then
         target="$leader"
     fi
@@ -62,7 +81,7 @@ test_reassignment_status_active() {
 # Test: All other groups unaffected by METRICS reassignment
 # ---------------------------------------------------------------------------
 test_other_groups_unaffected() {
-    for group in SCALING STRATEGIES DEPLOYMENT; do
+    for group in SCALING STRATEGIES DEPLOYMENT STORAGE STREAMING; do
         local status
         status=$(task_group_status "$group")
         assert_eq "$status" "ACTIVE" "${group} still ACTIVE after METRICS reassignment"
@@ -90,7 +109,7 @@ test_node_failure_reassignment() {
     if [ "$scaling_node" = "$leader" ]; then
         log_info "SCALING is on leader — reassigning to non-leader first"
         local alt_node
-        alt_node=$(pick_non_leader "$leader" 1)
+        alt_node=$(get_different_node "$leader")
         reassign_task_group "SCALING" "$alt_node"
         wait_for_task_active "SCALING" 30
         scaling_node="$alt_node"

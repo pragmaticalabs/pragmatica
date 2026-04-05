@@ -68,7 +68,9 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
 import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.slice.*;
+import org.pragmatica.aether.storage.DelegatedStorageAdapter;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.StreamingCoordinator;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -801,6 +803,8 @@ public interface AetherNode {
         taskGroupActivator.register(abTestManager);
         taskGroupActivator.register(clusterDeploymentManager);
         loadBalancerManager.onPresent(taskGroupActivator::register);
+        taskGroupActivator.register(DelegatedStorageAdapter.noOp());
+        taskGroupActivator.register(StreamingCoordinator.noOp());
         var aetherEntries = collectRouteEntries(kvStore,
                                                 nodeDeploymentManager,
                                                 clusterDeploymentManager,

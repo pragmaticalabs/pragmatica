@@ -3,6 +3,7 @@ package org.pragmatica.aether.api.routes;
 import org.pragmatica.aether.deployment.delegation.TaskAssignmentCoordinator;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TaskAssignmentValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.Route;
@@ -13,8 +14,8 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -57,16 +58,16 @@ public final class TaskRoutes implements RouteSource {
     }
 
     private TaskAssignmentsResponse listAssignments() {
-        var assignments = coordinator().assignments();
-        var infos = assignments.entrySet().stream()
-                                        .map(TaskRoutes::toAssignmentInfo)
-                                        .toList();
-        return new TaskAssignmentsResponse(infos);
+        var infos = new ArrayList<TaskAssignmentInfo>();
+        nodeSupplier.get().kvStore()
+                         .forEach(AetherKey.TaskAssignmentKey.class,
+                                  TaskAssignmentValue.class,
+                                  (key, value) -> infos.add(toAssignmentInfo(key, value)));
+        return new TaskAssignmentsResponse(List.copyOf(infos));
     }
 
-    private static TaskAssignmentInfo toAssignmentInfo(Map.Entry<TaskGroup, TaskAssignmentValue> entry) {
-        var value = entry.getValue();
-        return new TaskAssignmentInfo(entry.getKey().name(),
+    private static TaskAssignmentInfo toAssignmentInfo(AetherKey.TaskAssignmentKey key, TaskAssignmentValue value) {
+        return new TaskAssignmentInfo(key.taskGroup().name(),
                                       value.assignedTo().id(),
                                       Instant.ofEpochMilli(value.assignedAtMs()).toString(),
                                       value.status().name(),
