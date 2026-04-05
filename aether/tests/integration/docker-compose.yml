@@ -20,7 +20,7 @@ x-node-common: &node-common
     CLUSTER_PORT: "6000"
     MANAGEMENT_PORT: "8080"
     PEERS: "node-1:aether-node-1:6000,node-2:aether-node-2:6000,node-3:aether-node-3:6000,node-4:aether-node-4:6000,node-5:aether-node-5:6000"
-    CORE_MAX: "5"
+    CORE_MAX: "15"
     JAVA_OPTS: "-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
   healthcheck:
     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]

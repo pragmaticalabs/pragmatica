@@ -11,8 +11,12 @@ LOAD_RPS="${LOAD_RPS:-5}"
 LOAD_DURATION="${LOAD_DURATION:-180}"
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-2.0}"
 
-test_scale_api_available() {
+test_seed_config() {
     wait_for_cluster 60
+    seed_cluster_config
+}
+
+test_scale_api_available() {
     local status
     status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/scale" \
         -X POST \
@@ -74,6 +78,7 @@ test_restore_to_5() {
     assert_eq "$count" "5" "Restored to 5 nodes"
 }
 
+run_test "Seed cluster config" test_seed_config
 run_test "Scale API available" test_scale_api_available
 run_test "Scale down to 3" test_scale_down_to_3
 run_test "Scale up 3 -> 7 under load" test_scale_up_under_load

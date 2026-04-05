@@ -3,8 +3,13 @@
 
 [cluster]
 name = "integration-test"
+version = "1.0.0-rc1"
 environment = "docker"
-nodes = 5
+
+[cluster.core]
+count = 5
+min = 3
+max = 15
 
 [cluster.ports]
 management = 5150

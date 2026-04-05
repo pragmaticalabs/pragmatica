@@ -45,6 +45,14 @@ test_health_with_4_nodes() {
     assert_eq "$health" "healthy" "Cluster healthy with 4 nodes"
 }
 
+test_auto_heal() {
+    log_info "Waiting for CTM auto-heal to restore cluster to 5 nodes..."
+    wait_for_node_count 5 180
+    local count
+    count=$(cluster_node_count)
+    assert_eq "$count" "5" "Auto-heal restored cluster to 5 nodes"
+}
+
 cleanup() {
     log_info "Restoring all containers for clean state..."
     restart_all_nodes
@@ -56,5 +64,6 @@ run_test "Initial 5 nodes" test_initial_state
 run_test "Kill non-leader node" test_kill_non_leader
 run_test "Leader unchanged" test_leader_unchanged
 run_test "Health with 4 nodes" test_health_with_4_nodes
+run_test "Auto-heal restores to 5" test_auto_heal
 cleanup
 print_summary

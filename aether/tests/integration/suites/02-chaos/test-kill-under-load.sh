@@ -50,6 +50,14 @@ test_cluster_survives() {
     assert_eq "$health" "healthy" "Cluster healthy after kill-under-load"
 }
 
+test_auto_heal() {
+    log_info "Waiting for CTM auto-heal to restore cluster to 5 nodes..."
+    wait_for_node_count 5 180
+    local count
+    count=$(cluster_node_count)
+    assert_eq "$count" "5" "Auto-heal restored cluster to 5 nodes"
+}
+
 cleanup() {
     log_info "Restoring all containers for clean state..."
     restart_all_nodes
@@ -60,5 +68,6 @@ cleanup() {
 run_test "Initial 5 nodes" test_initial_state
 run_test "Kill node during active load" test_kill_during_load
 run_test "Cluster survives" test_cluster_survives
+run_test "Auto-heal restores to 5" test_auto_heal
 cleanup
 print_summary

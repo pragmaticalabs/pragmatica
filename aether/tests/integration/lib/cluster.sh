@@ -47,7 +47,7 @@ pick_non_leader() {
     local count="${2:-1}"
     local found=0
     for i in 1 2 3 4 5; do
-        local candidate="integration-test-$i"
+        local candidate="node-$i"
         if [ "$candidate" != "$leader" ]; then
             echo "$candidate"
             found=$((found + 1))
@@ -181,7 +181,7 @@ start_node() {
 # Restart all containers for clean cluster formation
 restart_all_nodes() {
     log_info "Restarting all cluster containers..."
-    remote_exec "docker ps -a --filter 'name=aether-integration-test' -q | xargs -r docker restart" 2>/dev/null
+    remote_exec "docker ps -a --filter 'name=aether-node-' -q | xargs -r docker restart" 2>/dev/null
 }
 
 drain_node() {
@@ -219,6 +219,26 @@ activate_node() {
 # ---------------------------------------------------------------------------
 # Scaling
 # ---------------------------------------------------------------------------
+
+# Seed cluster config into KV-Store if not already present.
+# Required before scale operations — the scale API reads ClusterConfigValue from KV-Store.
+seed_cluster_config() {
+    local config_file="${1:-${LIB_DIR}/../cluster-config.toml}"
+    local status
+    status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/config" \
+        -H "X-API-Key: ${API_KEY}")
+    if [ "$status" = "200" ]; then
+        log_info "Cluster config already present"
+        return 0
+    fi
+    log_info "Seeding cluster config from ${config_file}"
+    local toml_content
+    toml_content=$(cat "$config_file")
+    local json_body
+    json_body=$(python3 -c "import sys,json; print(json.dumps({'tomlContent': sys.stdin.read(), 'expectedVersion': 0}))" <<< "$toml_content")
+    api_post "/api/cluster/config" "$json_body"
+}
+
 scale_cluster() {
     local target="$1"
     log_info "Scaling cluster to ${target} nodes" >&2

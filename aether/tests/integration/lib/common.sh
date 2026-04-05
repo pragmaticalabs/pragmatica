@@ -235,7 +235,7 @@ collect_node_metrics() {
     echo "=== Node Metrics: ${label} (${timestamp}) ===" > "$outfile"
 
     for i in $(seq 1 "$NODE_COUNT"); do
-        local container="aether-integration-test-$i"
+        local container="aether-node-$i"
         echo "" >> "$outfile"
         echo "--- ${container} ---" >> "$outfile"
 

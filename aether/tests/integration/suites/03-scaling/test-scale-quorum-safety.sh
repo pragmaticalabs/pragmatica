@@ -6,8 +6,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
-test_scale_api_available() {
+test_seed_config() {
     wait_for_cluster 60
+    seed_cluster_config
+}
+
+test_scale_api_available() {
     local status
     status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/scale" \
         -X POST \
@@ -86,6 +90,7 @@ test_cluster_unchanged() {
     assert_cluster_healthy "Cluster still healthy"
 }
 
+run_test "Seed cluster config" test_seed_config
 run_test "Scale API available" test_scale_api_available
 run_test "Initial state" test_initial_state
 run_test "Reject scale to 1" test_reject_scale_to_1
