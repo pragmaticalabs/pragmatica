@@ -4,6 +4,7 @@ import org.pragmatica.jbct.slice.model.DependencyModel;
 import org.pragmatica.jbct.slice.model.MethodModel;
 import org.pragmatica.jbct.slice.model.ResourceQualifierModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
+import org.pragmatica.jbct.slice.model.SliceModel.TransitiveMethod;
 import org.pragmatica.jbct.slice.routing.RouteConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -122,16 +123,14 @@ public class ManifestGenerator {
             routeConfig.onPresent(config -> writeRouteProperties(props, config));
             // Slice config file path (for blueprint generator to read)
             props.setProperty("config.file", "slices/" + sliceName + ".toml");
-            // Topic subscription metadata
+            // Topic subscription metadata (direct + transitive)
             var subscriptionMethods = model.subscriptionMethods();
-            props.setProperty("topic.subscriptions.count", String.valueOf(subscriptionMethods.size()));
             int subIndex = 0;
             for (var method : subscriptionMethods) {
                 for (var subscription : method.subscriptions()) {
                     var subPrefix = "topic.subscription." + subIndex + ".";
                     props.setProperty(subPrefix + "config", subscription.configSection());
                     props.setProperty(subPrefix + "method", method.name());
-                    // Message type from the single parameter
                     if (method.hasSingleParam()) {
                         props.setProperty(subPrefix + "messageType",
                                           getQualifiedTypeName(method.parameters().getFirst().type()));
@@ -139,9 +138,21 @@ public class ManifestGenerator {
                     subIndex++;
                 }
             }
-            // Update count to actual number of subscription entries
+            // Transitive subscription methods from plain interface dependencies
+            for (var tm : model.transitiveSubscriptionMethods()) {
+                for (var subscription : tm.method().subscriptions()) {
+                    var subPrefix = "topic.subscription." + subIndex + ".";
+                    props.setProperty(subPrefix + "config", subscription.configSection());
+                    props.setProperty(subPrefix + "method", tm.qualifiedMethodName());
+                    if (tm.method().hasSingleParam()) {
+                        props.setProperty(subPrefix + "messageType",
+                                          getQualifiedTypeName(tm.method().parameters().getFirst().type()));
+                    }
+                    subIndex++;
+                }
+            }
             props.setProperty("topic.subscriptions.count", String.valueOf(subIndex));
-            // Scheduled task metadata
+            // Scheduled task metadata (direct + transitive)
             var scheduledMethods = model.scheduledMethods();
             int schedIndex = 0;
             for (var method : scheduledMethods) {
@@ -149,6 +160,14 @@ public class ManifestGenerator {
                     var schedPrefix = "scheduled.task." + schedIndex + ".";
                     props.setProperty(schedPrefix + "config", schedule.configSection());
                     props.setProperty(schedPrefix + "method", method.name());
+                    schedIndex++;
+                }
+            }
+            for (var tm : model.transitiveScheduledMethods()) {
+                for (var schedule : tm.method().scheduled()) {
+                    var schedPrefix = "scheduled.task." + schedIndex + ".";
+                    props.setProperty(schedPrefix + "config", schedule.configSection());
+                    props.setProperty(schedPrefix + "method", tm.qualifiedMethodName());
                     schedIndex++;
                 }
             }
@@ -193,7 +212,7 @@ public class ManifestGenerator {
                 sp.streamEventType()
                   .onPresent(et -> props.setProperty(spPrefix + "eventType", et));
             }
-            // Stream subscription metadata
+            // Stream subscription metadata (direct + transitive)
             var streamSubMethods = model.streamSubscriptionMethods();
             int streamSubIndex = 0;
             for (var method : streamSubMethods) {
@@ -204,6 +223,17 @@ public class ManifestGenerator {
                     method.streamConsumerEventType()
                           .onPresent(et -> props.setProperty(ssPrefix + "eventType", et));
                     props.setProperty(ssPrefix + "batch", String.valueOf(method.isBatchStreamConsumer()));
+                    streamSubIndex++;
+                }
+            }
+            for (var tm : model.transitiveStreamSubscriptionMethods()) {
+                for (var streamSub : tm.method().streamSubscriptions()) {
+                    var ssPrefix = "stream.subscription." + streamSubIndex + ".";
+                    props.setProperty(ssPrefix + "config", streamSub.configSection());
+                    props.setProperty(ssPrefix + "method", tm.qualifiedMethodName());
+                    tm.method().streamConsumerEventType()
+                      .onPresent(et -> props.setProperty(ssPrefix + "eventType", et));
+                    props.setProperty(ssPrefix + "batch", String.valueOf(tm.method().isBatchStreamConsumer()));
                     streamSubIndex++;
                 }
             }
@@ -222,7 +252,7 @@ public class ManifestGenerator {
                 sa.streamEventType()
                   .onPresent(et -> props.setProperty(saPrefix + "eventType", et));
             }
-            // PG notification subscription metadata
+            // PG notification subscription metadata (direct + transitive)
             var pgNotifMethods = model.pgNotificationSubscriptionMethods();
             int pgNotifIndex = 0;
             for (var method : pgNotifMethods) {
@@ -233,8 +263,16 @@ public class ManifestGenerator {
                     pgNotifIndex++;
                 }
             }
+            for (var tm : model.transitivePgNotificationSubscriptionMethods()) {
+                for (var pgNotifSub : tm.method().pgNotificationSubscriptions()) {
+                    var pnPrefix = "pg.notification." + pgNotifIndex + ".";
+                    props.setProperty(pnPrefix + "config", pgNotifSub.configSection());
+                    props.setProperty(pnPrefix + "method", tm.qualifiedMethodName());
+                    pgNotifIndex++;
+                }
+            }
             props.setProperty("pg.notifications.count", String.valueOf(pgNotifIndex));
-            // Config update subscription metadata
+            // Config update subscription metadata (direct + transitive)
             var configUpdateMethods = model.configUpdateMethods();
             int configUpdateIndex = 0;
             for (var method : configUpdateMethods) {
@@ -245,6 +283,18 @@ public class ManifestGenerator {
                     if (method.hasSingleParam()) {
                         props.setProperty(cuPrefix + "paramType",
                                           getQualifiedTypeName(method.parameters().getFirst().type()));
+                    }
+                    configUpdateIndex++;
+                }
+            }
+            for (var tm : model.transitiveConfigUpdateMethods()) {
+                for (var configSub : tm.method().configUpdateSubscriptions()) {
+                    var cuPrefix = "config.update." + configUpdateIndex + ".";
+                    props.setProperty(cuPrefix + "config", configSub.configSection());
+                    props.setProperty(cuPrefix + "method", tm.qualifiedMethodName());
+                    if (tm.method().hasSingleParam()) {
+                        props.setProperty(cuPrefix + "paramType",
+                                          getQualifiedTypeName(tm.method().parameters().getFirst().type()));
                     }
                     configUpdateIndex++;
                 }

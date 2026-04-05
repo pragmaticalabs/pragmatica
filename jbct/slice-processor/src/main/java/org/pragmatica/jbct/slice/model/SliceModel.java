@@ -10,6 +10,7 @@ import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.DeclaredType;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -20,12 +21,14 @@ public record SliceModel(String packageName,
                           List<MethodModel> methods,
                           List<DependencyModel> dependencies,
                           ExecutableElement factoryMethod,
-                          FactoryReturnKind factoryReturnKind) {
+                          FactoryReturnKind factoryReturnKind,
+                          List<PlainInterfaceModel> plainInterfaceModels) {
     public enum FactoryReturnKind { DIRECT, RESULT, OPTION, PROMISE }
 
     public SliceModel {
         methods = List.copyOf(methods);
         dependencies = List.copyOf(dependencies);
+        plainInterfaceModels = List.copyOf(plainInterfaceModels);
     }
 
     public static Result<SliceModel> sliceModel(TypeElement element, ProcessingEnvironment env) {
@@ -43,8 +46,151 @@ public record SliceModel(String packageName,
         .flatMap(factoryMethod -> validateReturnType(factoryMethod, qualifiedName)
         .flatMap(_2 -> extractDependencies(factoryMethod, env)
         .flatMap(dependencies -> validateNoDuplicateResources(dependencies)
-        .map(_3 -> new SliceModel(packageName, simpleName, qualifiedName, methods, dependencies, factoryMethod,
-                                  detectReturnKind(factoryMethod))))))));
+        .map(_3 -> assembleSliceModel(packageName, simpleName, qualifiedName, methods, dependencies,
+                                      factoryMethod, env)))))));
+    }
+
+    private static SliceModel assembleSliceModel(String packageName, String simpleName, String qualifiedName,
+                                                  List<MethodModel> methods, List<DependencyModel> dependencies,
+                                                  ExecutableElement factoryMethod, ProcessingEnvironment env) {
+        var plainModels = buildPlainInterfaceModels(dependencies, env);
+        return new SliceModel(packageName, simpleName, qualifiedName, methods, dependencies, factoryMethod,
+                              detectReturnKind(factoryMethod), plainModels);
+    }
+
+    /// Pair of step parameter name and its annotated method.
+    public record TransitiveMethod(String stepParamName, MethodModel method) {
+        public String qualifiedMethodName() {
+            return stepParamName + capitalize(method.name());
+        }
+
+        private static String capitalize(String name) {
+            if (name == null || name.isEmpty()) {
+                return "";
+            }
+            return Character.toUpperCase(name.charAt(0)) + name.substring(1);
+        }
+    }
+
+    /// Check if any plain interface dependency has transitive subscription methods.
+    public boolean hasTransitiveSubscriptions() {
+        return plainInterfaceModels.stream()
+                                   .flatMap(pi -> pi.annotatedMethods().stream())
+                                   .anyMatch(MethodModel::hasSubscriptions);
+    }
+
+    /// Get all transitive subscription methods with qualified names.
+    public List<TransitiveMethod> transitiveSubscriptionMethods() {
+        return collectTransitiveMethods(MethodModel::hasSubscriptions);
+    }
+
+    /// Check if any plain interface dependency has transitive scheduled methods.
+    public boolean hasTransitiveScheduled() {
+        return plainInterfaceModels.stream()
+                                   .flatMap(pi -> pi.annotatedMethods().stream())
+                                   .anyMatch(MethodModel::hasScheduled);
+    }
+
+    /// Get all transitive scheduled methods with qualified names.
+    public List<TransitiveMethod> transitiveScheduledMethods() {
+        return collectTransitiveMethods(MethodModel::hasScheduled);
+    }
+
+    /// Check if any plain interface dependency has transitive stream subscription methods.
+    public boolean hasTransitiveStreamSubscriptions() {
+        return plainInterfaceModels.stream()
+                                   .flatMap(pi -> pi.annotatedMethods().stream())
+                                   .anyMatch(MethodModel::hasStreamSubscriptions);
+    }
+
+    /// Get all transitive stream subscription methods with qualified names.
+    public List<TransitiveMethod> transitiveStreamSubscriptionMethods() {
+        return collectTransitiveMethods(MethodModel::hasStreamSubscriptions);
+    }
+
+    /// Check if any plain interface dependency has transitive pg-notification subscription methods.
+    public boolean hasTransitivePgNotificationSubscriptions() {
+        return plainInterfaceModels.stream()
+                                   .flatMap(pi -> pi.annotatedMethods().stream())
+                                   .anyMatch(MethodModel::hasPgNotificationSubscriptions);
+    }
+
+    /// Get all transitive pg-notification subscription methods with qualified names.
+    public List<TransitiveMethod> transitivePgNotificationSubscriptionMethods() {
+        return collectTransitiveMethods(MethodModel::hasPgNotificationSubscriptions);
+    }
+
+    /// Check if any plain interface dependency has transitive config update subscription methods.
+    public boolean hasTransitiveConfigUpdateSubscriptions() {
+        return plainInterfaceModels.stream()
+                                   .flatMap(pi -> pi.annotatedMethods().stream())
+                                   .anyMatch(MethodModel::hasConfigUpdateSubscriptions);
+    }
+
+    /// Get all transitive config update subscription methods with qualified names.
+    public List<TransitiveMethod> transitiveConfigUpdateMethods() {
+        return collectTransitiveMethods(MethodModel::hasConfigUpdateSubscriptions);
+    }
+
+    /// Check if any plain interface has annotated methods at all.
+    public boolean hasTransitiveAnnotatedMethods() {
+        return plainInterfaceModels.stream()
+                                   .anyMatch(PlainInterfaceModel::hasAnnotatedMethods);
+    }
+
+    private List<TransitiveMethod> collectTransitiveMethods(java.util.function.Predicate<MethodModel> filter) {
+        var result = new ArrayList<TransitiveMethod>();
+        for (var pi : plainInterfaceModels) {
+            for (var method : pi.annotatedMethods()) {
+                if (filter.test(method)) {
+                    result.add(new TransitiveMethod(pi.parameterName(), method));
+                }
+            }
+        }
+        return result;
+    }
+
+    /// Build PlainInterfaceModel instances for plain interface dependencies,
+    /// scanning their methods for reactive annotations (subscriptions, scheduled, etc.).
+    private static List<PlainInterfaceModel> buildPlainInterfaceModels(List<DependencyModel> dependencies,
+                                                                        ProcessingEnvironment env) {
+        var result = new ArrayList<PlainInterfaceModel>();
+        for (var dep : dependencies) {
+            if (!dep.isPlainInterface()) {
+                continue;
+            }
+            var annotatedMethods = scanPlainInterfaceAnnotatedMethods(dep, env);
+            var factoryMethodName = Character.toLowerCase(dep.interfaceSimpleName().charAt(0))
+                                   + dep.interfaceSimpleName().substring(1);
+            result.add(new PlainInterfaceModel(dep.interfaceLocalName(), factoryMethodName,
+                                               dep.parameterName(), List.of(), annotatedMethods));
+        }
+        return result;
+    }
+
+    /// Scan a plain interface's non-static, non-default methods for reactive annotations.
+    private static List<MethodModel> scanPlainInterfaceAnnotatedMethods(DependencyModel dep,
+                                                                         ProcessingEnvironment env) {
+        var typeElement = env.getElementUtils().getTypeElement(dep.interfaceQualifiedName());
+        if (typeElement == null) {
+            return List.of();
+        }
+        var annotated = new ArrayList<MethodModel>();
+        for (var enclosed : typeElement.getEnclosedElements()) {
+            if (enclosed.getKind() != ElementKind.METHOD) {
+                continue;
+            }
+            var method = (ExecutableElement) enclosed;
+            if (method.getModifiers().contains(Modifier.STATIC) || method.getModifiers().contains(Modifier.DEFAULT)) {
+                continue;
+            }
+            var annotations = MethodModel.extractMethodAnnotations(method, env);
+            if (MethodModel.hasReactiveAnnotations(annotations)) {
+                MethodModel.methodModel(method, env)
+                           .onSuccess(annotated::add);
+            }
+        }
+        return annotated;
     }
 
     private static Result<List<MethodModel>> extractMethods(TypeElement element, ProcessingEnvironment env) {

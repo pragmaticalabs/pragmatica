@@ -356,17 +356,27 @@ public record MethodModel(String name,
         return Result.unitResult();
     }
 
-    private record MethodAnnotations(List<ResourceQualifierModel> interceptors,
+    record MethodAnnotations(List<ResourceQualifierModel> interceptors,
                                       List<ResourceQualifierModel> subscriptions,
                                       List<ResourceQualifierModel> scheduled,
                                       List<ResourceQualifierModel> streamSubscriptions,
                                       List<ResourceQualifierModel> pgNotificationSubscriptions,
                                       List<ResourceQualifierModel> configUpdateSubscriptions) {}
 
+    /// Check if a MethodAnnotations result has any subscription-like annotations
+    /// (subscriptions, scheduled, stream, pg-notification, config update).
+    static boolean hasReactiveAnnotations(MethodAnnotations annotations) {
+        return !annotations.subscriptions().isEmpty()
+               || !annotations.scheduled().isEmpty()
+               || !annotations.streamSubscriptions().isEmpty()
+               || !annotations.pgNotificationSubscriptions().isEmpty()
+               || !annotations.configUpdateSubscriptions().isEmpty();
+    }
+
     /// Extract method-level annotations with @ResourceQualifier meta-annotation.
     /// Splits them into interceptors, subscriptions, scheduled, and stream subscriptions based on resource type.
-    private static MethodAnnotations extractMethodAnnotations(ExecutableElement method,
-                                                               ProcessingEnvironment env) {
+    static MethodAnnotations extractMethodAnnotations(ExecutableElement method,
+                                                      ProcessingEnvironment env) {
         var interceptors = new ArrayList<ResourceQualifierModel>();
         var subscriptions = new ArrayList<ResourceQualifierModel>();
         var scheduled = new ArrayList<ResourceQualifierModel>();
