@@ -301,15 +301,17 @@ task_group_status() {
     tasks=$(cluster_tasks)
     echo "$tasks" | python3 -c "
 import sys, json
+result = 'ERROR'
 try:
     data = json.load(sys.stdin)
+    result = 'UNASSIGNED'
     for a in data.get('assignments', []):
         if a.get('group') == '${group}':
-            print(a.get('status', 'UNKNOWN'), end='')
-            sys.exit(0)
-    print('UNASSIGNED', end='')
-except:
-    print('ERROR', end='')
+            result = a.get('status', 'UNKNOWN')
+            break
+except Exception:
+    pass
+print(result, end='')
 " 2>/dev/null
 }
 
@@ -319,15 +321,16 @@ task_group_node() {
     tasks=$(cluster_tasks)
     echo "$tasks" | python3 -c "
 import sys, json
+result = ''
 try:
     data = json.load(sys.stdin)
     for a in data.get('assignments', []):
         if a.get('group') == '${group}':
-            print(a.get('assignedTo', ''), end='')
-            sys.exit(0)
-    print('', end='')
-except:
-    print('', end='')
+            result = a.get('assignedTo', '')
+            break
+except Exception:
+    pass
+print(result, end='')
 " 2>/dev/null
 }
 
