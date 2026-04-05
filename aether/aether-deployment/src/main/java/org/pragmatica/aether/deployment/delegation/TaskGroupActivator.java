@@ -75,15 +75,15 @@ public sealed interface TaskGroupActivator {
         }
 
         private void handleLocalAssignment(TaskGroup taskGroup, List<DelegatedComponent> groupComponents) {
-            log.info("Task group {} assigned to this node {}, activating {} components",
-                     taskGroup,
-                     self,
-                     groupComponents.size());
-            var activations = groupComponents.stream().map(component -> activateComponent(taskGroup, component))
-                                                    .toList();
+            var inactive = groupComponents.stream().filter(c -> !c.isActive()).toList();
+            if (inactive.isEmpty()) {
+                log.debug("Task group {} already active on node {}, ignoring duplicate assignment", taskGroup, self);
+                return;
+            }
+            log.info("Task group {} assigned to this node {}, activating {} components", taskGroup, self, inactive.size());
+            var activations = inactive.stream().map(component -> activateComponent(taskGroup, component)).toList();
             Promise.allOf(activations).onSuccess(_ -> reportActivationSuccess(taskGroup))
-                         .onFailure(cause -> reportActivationFailure(taskGroup,
-                                                                     cause.message()));
+                         .onFailure(cause -> reportActivationFailure(taskGroup, cause.message()));
         }
 
         private void handleRemoteAssignment(TaskGroup taskGroup, List<DelegatedComponent> groupComponents) {
