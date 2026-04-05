@@ -305,11 +305,11 @@ try:
     data = json.load(sys.stdin)
     for a in data.get('assignments', []):
         if a.get('group') == '${group}':
-            print(a.get('status', 'UNKNOWN'))
+            print(a.get('status', 'UNKNOWN'), end='')
             sys.exit(0)
-    print('UNASSIGNED')
+    print('UNASSIGNED', end='')
 except:
-    print('ERROR')
+    print('ERROR', end='')
 " 2>/dev/null
 }
 
@@ -323,11 +323,11 @@ try:
     data = json.load(sys.stdin)
     for a in data.get('assignments', []):
         if a.get('group') == '${group}':
-            print(a.get('assignedTo', ''))
+            print(a.get('assignedTo', ''), end='')
             sys.exit(0)
-    print('')
+    print('', end='')
 except:
-    print('')
+    print('', end='')
 " 2>/dev/null
 }
 
