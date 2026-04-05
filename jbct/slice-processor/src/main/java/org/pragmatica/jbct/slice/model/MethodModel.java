@@ -24,15 +24,15 @@ public record MethodModel(String name,
                            List<MethodParameterInfo> parameters,
                            boolean deprecated,
                            List<ResourceQualifierModel> interceptors,
-                           List<ReactiveMethodBinding> reactive,
+                           List<ResourceQualifierModel> subscriptions,
+                           List<ResourceQualifierModel> scheduled,
+                           List<ResourceQualifierModel> streamSubscriptions,
+                           List<ResourceQualifierModel> pgNotificationSubscriptions,
+                           List<ResourceQualifierModel> configUpdateSubscriptions,
                            Option<KeyExtractorInfo> keyExtractor,
                            Option<MethodParameterInfo> multiParamKeyParam) {
 
     public record MethodParameterInfo(String name, TypeMirror type, boolean isKey) {}
-
-    /// Generic binding for any method-level @ResourceQualifier annotation that is NOT an interceptor.
-    /// The category is derived from the resource type's simple name, lowercased and hyphenated.
-    public record ReactiveMethodBinding(ResourceQualifierModel qualifier, String category) {}
 
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("^[a-z][a-zA-Z0-9]*$");
     private static final String KEY_ANNOTATION = "org.pragmatica.aether.resource.aspect.Key";
@@ -48,7 +48,11 @@ public record MethodModel(String name,
 
     public MethodModel {
         interceptors = List.copyOf(interceptors);
-        reactive = List.copyOf(reactive);
+        subscriptions = List.copyOf(subscriptions);
+        scheduled = List.copyOf(scheduled);
+        streamSubscriptions = List.copyOf(streamSubscriptions);
+        pgNotificationSubscriptions = List.copyOf(pgNotificationSubscriptions);
+        configUpdateSubscriptions = List.copyOf(configUpdateSubscriptions);
         parameters = List.copyOf(parameters);
     }
 
@@ -71,44 +75,29 @@ public record MethodModel(String name,
         return !interceptors.isEmpty();
     }
 
-    /// Check if this method has any reactive bindings of the given category.
-    public boolean hasReactiveOfCategory(String category) {
-        return reactive.stream().anyMatch(r -> r.category().equals(category));
-    }
-
-    /// Get all reactive bindings of the given category.
-    public List<ReactiveMethodBinding> reactiveOfCategory(String category) {
-        return reactive.stream().filter(r -> r.category().equals(category)).toList();
-    }
-
-    /// Check if this method has any reactive bindings.
-    public boolean hasAnyReactive() {
-        return !reactive.isEmpty();
-    }
-
     /// Check if this method has any topic subscriptions.
     public boolean hasSubscriptions() {
-        return hasReactiveOfCategory("subscription");
+        return !subscriptions.isEmpty();
     }
 
     /// Check if this method has any scheduled invocations.
     public boolean hasScheduled() {
-        return hasReactiveOfCategory("scheduled");
+        return !scheduled.isEmpty();
     }
 
     /// Check if this method has any stream subscriptions.
     public boolean hasStreamSubscriptions() {
-        return hasReactiveOfCategory("stream");
+        return !streamSubscriptions.isEmpty();
     }
 
     /// Check if this method has any PostgreSQL notification subscriptions.
     public boolean hasPgNotificationSubscriptions() {
-        return hasReactiveOfCategory("pg-notification");
+        return !pgNotificationSubscriptions.isEmpty();
     }
 
     /// Check if this method has any config update subscriptions.
     public boolean hasConfigUpdateSubscriptions() {
-        return hasReactiveOfCategory("config-update");
+        return !configUpdateSubscriptions.isEmpty();
     }
 
     /// Check if a parameter is a security injection type (Principal or SecurityContext).
@@ -149,7 +138,7 @@ public record MethodModel(String name,
 
     /// Returns true if the method parameter is List<T> (batch stream consumer).
     public boolean isBatchStreamConsumer() {
-        if (!hasStreamSubscriptions() || parameters.size() != 1) {
+        if (streamSubscriptions.isEmpty() || parameters.size() != 1) {
             return false;
         }
         var paramType = parameters.getFirst().type();
@@ -161,7 +150,7 @@ public record MethodModel(String name,
     /// For single: parameter type T.
     /// For batch: element type T from List<T>.
     public Option<String> streamConsumerEventType() {
-        if (!hasStreamSubscriptions() || parameters.size() != 1) {
+        if (streamSubscriptions.isEmpty() || parameters.size() != 1) {
             return Option.none();
         }
         var paramType = parameters.getFirst().type();
@@ -229,55 +218,39 @@ public record MethodModel(String name,
         var deprecated = method.getAnnotation(Deprecated.class) != null;
         var methodAnnotations = extractMethodAnnotations(method, env);
         var methodInterceptors = methodAnnotations.interceptors();
-        var methodReactive = methodAnnotations.reactive();
+        var methodSubscriptions = methodAnnotations.subscriptions();
+        var methodScheduled = methodAnnotations.scheduled();
+        var methodStreamSubscriptions = methodAnnotations.streamSubscriptions();
+        var methodPgNotificationSubscriptions = methodAnnotations.pgNotificationSubscriptions();
+        var methodConfigUpdateSubscriptions = methodAnnotations.configUpdateSubscriptions();
         var paramInfos = buildParameterInfos(params, env);
 
         // Validate subscription methods
-        var subscriptionBindings = methodReactive.stream()
-            .filter(r -> r.category().equals("subscription"))
-            .map(ReactiveMethodBinding::qualifier)
-            .toList();
-        var subscriptionValidation = validateSubscriptions(subscriptionBindings, paramInfos, name, returnType);
+        var subscriptionValidation = validateSubscriptions(methodSubscriptions, paramInfos, name, returnType);
         if (subscriptionValidation.isFailure()) {
             return subscriptionValidation.flatMap(_ -> Result.success(null)); // propagate error
         }
 
         // Validate scheduled methods
-        var scheduledBindings = methodReactive.stream()
-            .filter(r -> r.category().equals("scheduled"))
-            .map(ReactiveMethodBinding::qualifier)
-            .toList();
-        var scheduledValidation = validateScheduled(scheduledBindings, paramInfos, name, returnType);
+        var scheduledValidation = validateScheduled(methodScheduled, paramInfos, name, returnType);
         if (scheduledValidation.isFailure()) {
             return scheduledValidation.flatMap(_ -> Result.success(null)); // propagate error
         }
 
         // Validate stream subscription methods
-        var streamBindings = methodReactive.stream()
-            .filter(r -> r.category().equals("stream"))
-            .map(ReactiveMethodBinding::qualifier)
-            .toList();
-        var streamSubValidation = validateStreamSubscriptions(streamBindings, paramInfos, name, returnType);
+        var streamSubValidation = validateStreamSubscriptions(methodStreamSubscriptions, paramInfos, name, returnType);
         if (streamSubValidation.isFailure()) {
             return streamSubValidation.flatMap(_ -> Result.success(null)); // propagate error
         }
 
         // Validate pg-notification subscription methods
-        var pgNotifBindings = methodReactive.stream()
-            .filter(r -> r.category().equals("pg-notification"))
-            .map(ReactiveMethodBinding::qualifier)
-            .toList();
-        var pgNotifValidation = validatePgNotificationSubscriptions(pgNotifBindings, paramInfos, name, returnType);
+        var pgNotifValidation = validatePgNotificationSubscriptions(methodPgNotificationSubscriptions, paramInfos, name, returnType);
         if (pgNotifValidation.isFailure()) {
             return pgNotifValidation.flatMap(_ -> Result.success(null)); // propagate error
         }
 
         // Validate config update subscription methods
-        var configBindings = methodReactive.stream()
-            .filter(r -> r.category().equals("config-update"))
-            .map(ReactiveMethodBinding::qualifier)
-            .toList();
-        var configUpdateValidation = validateConfigUpdateSubscriptions(configBindings, paramInfos, name, returnType);
+        var configUpdateValidation = validateConfigUpdateSubscriptions(methodConfigUpdateSubscriptions, paramInfos, name, returnType);
         if (configUpdateValidation.isFailure()) {
             return configUpdateValidation.flatMap(_ -> Result.success(null)); // propagate error
         }
@@ -290,7 +263,11 @@ public record MethodModel(String name,
                                            paramInfos,
                                            deprecated,
                                            methodInterceptors,
-                                           methodReactive,
+                                           methodSubscriptions,
+                                           methodScheduled,
+                                           methodStreamSubscriptions,
+                                           methodPgNotificationSubscriptions,
+                                           methodConfigUpdateSubscriptions,
                                            keyResult.keyExtractor(),
                                            keyResult.multiParamKeyParam()));
     }
@@ -379,48 +356,53 @@ public record MethodModel(String name,
         return Result.unitResult();
     }
 
-    record MethodAnnotations(List<ResourceQualifierModel> interceptors,
-                                      List<ReactiveMethodBinding> reactive) {}
-
-    /// Check if a MethodAnnotations result has any reactive annotations.
-    static boolean hasReactiveAnnotations(MethodAnnotations annotations) {
-        return !annotations.reactive().isEmpty();
-    }
+    private record MethodAnnotations(List<ResourceQualifierModel> interceptors,
+                                      List<ResourceQualifierModel> subscriptions,
+                                      List<ResourceQualifierModel> scheduled,
+                                      List<ResourceQualifierModel> streamSubscriptions,
+                                      List<ResourceQualifierModel> pgNotificationSubscriptions,
+                                      List<ResourceQualifierModel> configUpdateSubscriptions) {}
 
     /// Extract method-level annotations with @ResourceQualifier meta-annotation.
-    /// Splits them into interceptors and reactive bindings based on resource type.
-    static MethodAnnotations extractMethodAnnotations(ExecutableElement method,
-                                                      ProcessingEnvironment env) {
+    /// Splits them into interceptors, subscriptions, scheduled, and stream subscriptions based on resource type.
+    private static MethodAnnotations extractMethodAnnotations(ExecutableElement method,
+                                                               ProcessingEnvironment env) {
         var interceptors = new ArrayList<ResourceQualifierModel>();
-        var reactive = new ArrayList<ReactiveMethodBinding>();
+        var subscriptions = new ArrayList<ResourceQualifierModel>();
+        var scheduled = new ArrayList<ResourceQualifierModel>();
+        var streamSubscriptions = new ArrayList<ResourceQualifierModel>();
+        var pgNotificationSubscriptions = new ArrayList<ResourceQualifierModel>();
+        var configUpdateSubscriptions = new ArrayList<ResourceQualifierModel>();
         for (var annotation : method.getAnnotationMirrors()) {
             ResourceQualifierModel.fromAnnotationMirror(annotation, env)
-                                  .onPresent(model -> classifyAnnotation(model, interceptors, reactive));
+                                  .onPresent(model -> classifyAnnotation(model, interceptors, subscriptions, scheduled,
+                                                                         streamSubscriptions, pgNotificationSubscriptions,
+                                                                         configUpdateSubscriptions));
         }
-        return new MethodAnnotations(interceptors, reactive);
+        return new MethodAnnotations(interceptors, subscriptions, scheduled, streamSubscriptions,
+                                     pgNotificationSubscriptions, configUpdateSubscriptions);
     }
 
     private static void classifyAnnotation(ResourceQualifierModel model,
                                             List<ResourceQualifierModel> interceptors,
-                                            List<ReactiveMethodBinding> reactive) {
-        var resourceType = model.resourceType().toString();
-        var category = reactiveCategory(resourceType);
-        if (category != null) {
-            reactive.add(new ReactiveMethodBinding(model, category));
+                                            List<ResourceQualifierModel> subscriptions,
+                                            List<ResourceQualifierModel> scheduled,
+                                            List<ResourceQualifierModel> streamSubscriptions,
+                                            List<ResourceQualifierModel> pgNotificationSubscriptions,
+                                            List<ResourceQualifierModel> configUpdateSubscriptions) {
+        if (SUBSCRIBER_TYPE.equals(model.resourceType().toString())) {
+            subscriptions.add(model);
+        } else if (SCHEDULED_TYPE.equals(model.resourceType().toString())) {
+            scheduled.add(model);
+        } else if (STREAM_SUBSCRIBER_TYPE.equals(model.resourceType().toString())) {
+            streamSubscriptions.add(model);
+        } else if (PG_NOTIFICATION_SUBSCRIBER_TYPE.equals(model.resourceType().toString())) {
+            pgNotificationSubscriptions.add(model);
+        } else if (CONFIGURATION_SECTION_TYPE.equals(model.resourceType().toString())) {
+            configUpdateSubscriptions.add(model);
         } else {
             interceptors.add(model);
         }
-    }
-
-    private static String reactiveCategory(String resourceType) {
-        return switch (resourceType) {
-            case SUBSCRIBER_TYPE -> "subscription";
-            case SCHEDULED_TYPE -> "scheduled";
-            case STREAM_SUBSCRIBER_TYPE -> "stream";
-            case PG_NOTIFICATION_SUBSCRIBER_TYPE -> "pg-notification";
-            case CONFIGURATION_SECTION_TYPE -> "config-update";
-            default -> null;  // Not reactive — it's an interceptor
-        };
     }
 
     private static Result<Unit> validateSubscriptions(List<ResourceQualifierModel> subscriptions,

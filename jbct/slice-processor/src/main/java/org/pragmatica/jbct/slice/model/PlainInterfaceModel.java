@@ -12,14 +12,8 @@ import java.util.List;
 public record PlainInterfaceModel(String interfaceLocalName,
                                    String factoryMethodName,
                                    String parameterName,
-                                   List<DependencyModel> dependencies,
-                                   List<MethodModel> annotatedMethods) {
+                                   List<DependencyModel> dependencies) {
     public PlainInterfaceModel {
         dependencies = List.copyOf(dependencies);
-        annotatedMethods = List.copyOf(annotatedMethods);
-    }
-
-    public boolean hasAnnotatedMethods() {
-        return !annotatedMethods.isEmpty();
     }
 }

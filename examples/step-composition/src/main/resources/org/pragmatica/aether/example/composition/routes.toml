@@ -1,9 +1,0 @@
-prefix = "/api/v1/orders"
-
-[routes]
-processOrder = "POST /"
-
-[errors]
-default = 500
-HTTP_400 = ["*ValidationFailed*", "*InvalidAmount*"]
-HTTP_500 = ["*PersistenceFailed*"]
