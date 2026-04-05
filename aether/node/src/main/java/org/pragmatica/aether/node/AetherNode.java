@@ -27,6 +27,8 @@ import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.deployment.schema.SchemaPolicy;
 import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
+import org.pragmatica.aether.deployment.delegation.TaskAssignmentCoordinator;
+import org.pragmatica.aether.deployment.delegation.TaskGroupActivator;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.dht.AetherMaps;
@@ -66,7 +68,6 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
 import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.slice.*;
-import org.pragmatica.aether.slice.delegation.DelegatedComponent;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -669,6 +670,11 @@ public interface AetherNode {
                                                                                                              provider,
                                                                                                              config.appHttp()
                                                                                                                            .port()));
+        var taskGroupActivator = TaskGroupActivator.taskGroupActivator(config.self(), clusterNode);
+        var taskAssignmentCoordinator = TaskAssignmentCoordinator.taskAssignmentCoordinator(config.self(),
+                                                                                            clusterNode,
+                                                                                            kvStore,
+                                                                                            clusterNode.topologyManager());
         var discoveryProvider = config.environment().flatMap(EnvironmentIntegration::discovery);
         var endpointRegistry = EndpointRegistry.endpointRegistry();
         var topicSubscriptionRegistry = TopicSubscriptionRegistry.topicSubscriptionRegistry();
@@ -784,6 +790,15 @@ public interface AetherNode {
                                                         serverBossGroup,
                                                         serverWorkerGroup,
                                                         Option.some(deploymentManager));
+        taskGroupActivator.register(metricsScheduler);
+        taskGroupActivator.register(deploymentMetricsScheduler);
+        taskGroupActivator.register(controlLoop);
+        taskGroupActivator.register(ttmManager);
+        taskGroupActivator.register(rollbackManager);
+        taskGroupActivator.register(deploymentManager);
+        taskGroupActivator.register(abTestManager);
+        taskGroupActivator.register(clusterDeploymentManager);
+        loadBalancerManager.onPresent(taskGroupActivator::register);
         var aetherEntries = collectRouteEntries(kvStore,
                                                 nodeDeploymentManager,
                                                 clusterDeploymentManager,
@@ -816,7 +831,9 @@ public interface AetherNode {
                                                 appHttpServer,
                                                 loadBalancerManager,
                                                 (TopologyObserver) clusterNode.topologyManager(),
-                                                clusterTopologyManager);
+                                                clusterTopologyManager,
+                                                taskGroupActivator,
+                                                taskAssignmentCoordinator);
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetRequest.class,
                                                     request -> dhtNode.handleGetRequest(request,
                                                                                         response -> dhtNetwork.send(request.sender(),
@@ -1059,14 +1076,9 @@ public interface AetherNode {
                               .orElse(new NodeAddress("", 0));
     }
 
-    @SuppressWarnings("JBCT-RET-01") private static void handleCtmLeaderChange(LeaderNotification.LeaderChange change,
-                                                                               ClusterTopologyManager ctm) {
+    @SuppressWarnings("JBCT-RET-01") private static void activateOnLeaderChange(LeaderNotification.LeaderChange change,
+                                                                                ClusterTopologyManager ctm) {
         if (change.localNodeIsLeader()) {ctm.activate();} else {ctm.deactivate();}
-    }
-
-    @SuppressWarnings("JBCT-RET-01") private static void handleDelegatedLeaderChange(LeaderNotification.LeaderChange change,
-                                                                                     DelegatedComponent component) {
-        if (change.localNodeIsLeader()) {component.activate();} else {component.deactivate();}
     }
 
     private static void startSwimOnQuorum(QuorumStateNotification notification,
@@ -1358,7 +1370,9 @@ public interface AetherNode {
                                                                     AppHttpServer appHttpServer,
                                                                     Option<LoadBalancerManager> loadBalancerManager,
                                                                     TopologyObserver topologyManager,
-                                                                    ClusterTopologyManager clusterTopologyManager) {
+                                                                    ClusterTopologyManager clusterTopologyManager,
+                                                                    TaskGroupActivator taskGroupActivator,
+                                                                    TaskAssignmentCoordinator taskAssignmentCoordinator) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
         var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
                                                   .onPut(AetherKey.AppBlueprintKey.class,
@@ -1464,6 +1478,8 @@ public interface AetherNode {
                                                                                                                           dcm::onConfigRemove)
                                                                    .onPut(AetherKey.BlueprintResourcesKey.class,
                                                                           dcm::onBlueprintResourcesPut));
+        kvRouterBuilder.onPut(AetherKey.TaskAssignmentKey.class, taskGroupActivator::onTaskAssignmentPut);
+        kvRouterBuilder.onRemove(AetherKey.TaskAssignmentKey.class, taskGroupActivator::onTaskAssignmentRemove);
         entries.addAll(kvRouterBuilder.build().asRouteEntries());
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, controlLoop::onQuorumStateChange));
@@ -1473,23 +1489,13 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, scheduledTaskManager::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, appHttpServer::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              change -> handleCtmLeaderChange(change, clusterTopologyManager)));
+                                              taskAssignmentCoordinator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              change -> handleDelegatedLeaderChange(change, metricsScheduler)));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              change -> handleDelegatedLeaderChange(change, controlLoop)));
+                                              change -> activateOnLeaderChange(change, clusterTopologyManager)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> rabiaMetricsCollector.updateRole(change.localNodeIsLeader(),
                                                                                          change.leaderId()
                                                                                                         .map(NodeId::id))));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              change -> handleDelegatedLeaderChange(change, ttmManager)));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              change -> handleDelegatedLeaderChange(change, deploymentManager)));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              change -> handleDelegatedLeaderChange(change, abTestManager)));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              change -> handleDelegatedLeaderChange(change, rollbackManager)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               scheduledTaskManager::onLeaderChange));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
@@ -1506,6 +1512,12 @@ public interface AetherNode {
                                               clusterTopologyManager::onTopologyChange));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
                                               clusterTopologyManager::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
+                                              taskAssignmentCoordinator::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
+                                              taskAssignmentCoordinator::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
+                                              taskAssignmentCoordinator::onTopologyChange));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
                                               metricsScheduler::onTopologyChange));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
@@ -1540,8 +1552,6 @@ public interface AetherNode {
                                               deploymentMetricsCollector::onDeploymentCompleted));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
                                               deploymentMetricsCollector::onDeploymentFailed));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              change -> handleDelegatedLeaderChange(change, deploymentMetricsScheduler)));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
                                               deploymentMetricsScheduler::onTopologyChange));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
