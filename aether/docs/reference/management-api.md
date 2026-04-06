@@ -1522,17 +1522,36 @@ Complete the deployment (finalize new version, decommission old). Requires leade
 
 ### GET /api/cluster/topology
 
-Get cluster topology summary with core/worker node counts.
+Get live cluster topology with per-node details. Returns core/passive/worker counts from the actual connected topology (not static boot-time config).
 
 **Response:**
 ```json
 {
   "coreCount": 5,
-  "coreMax": 5,
-  "coreMin": 5,
-  "workerCount": 7,
-  "clusterSize": 12,
-  "coreNodes": ["node-1", "node-2", "node-3", "node-4", "node-5"]
+  "coreMax": 15,
+  "coreMin": 3,
+  "workerCount": 0,
+  "clusterSize": 5,
+  "coreNodes": ["node-1", "node-2", "node-3", "node-4", "node-5"],
+  "connectedPeerCount": 5,
+  "nodeDetails": [
+    {
+      "nodeId": "node-1",
+      "role": "ACTIVE",
+      "health": "HEALTHY",
+      "hostname": "aether-node-1",
+      "zone": "",
+      "address": "aether-node-1:6000"
+    },
+    {
+      "nodeId": "lb-passive",
+      "role": "PASSIVE",
+      "health": "HEALTHY",
+      "hostname": "aether-lb",
+      "zone": "",
+      "address": "0.0.0.0:7000"
+    }
+  ]
 }
 ```
 

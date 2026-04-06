@@ -7,10 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc1] - Unreleased
 
 ### Added
-- **CTM auto-provisioning tags** — `ClusterTopologyManagerRecord.buildProvisionTags()` builds 3-part PEERS string and CORE_MAX from live topology, enabling DockerComputeProvider to provision replacement nodes that join the cluster automatically
-- **DockerConfig API key** — `api_key` field in `[cloud.compute]` config (aether.toml), eliminating tag-based API key passing. Config-driven approach for production Docker deployments
-- **Chaos integration tests (02-chaos)** — 4 test scripts: kill non-leader, kill leader (re-election), kill multiple (quorum safety), kill under load (error rate). Each verifies auto-heal restores cluster to target size
-- **Scaling integration tests (03-scaling)** — 3 test scripts: scale-up 3→7 under load, scale-down 7→5 under load, quorum safety rejection (below min, above max). Cluster config seeding via `/api/cluster/config`
+- **ManageableNode interface** — Extracted management API surface from AetherNode (~35 methods). `AetherNode extends ManageableNode`. All route sources + ManagementServer use `Supplier<ManageableNode>`. Enables passive nodes to serve management API
+- **Passive LB ManagementServer** — `PassiveLBNode implements ManageableNode` with real KV-Store/topology/apply, no-ops for slice hosting. ManagementServer serves `/api/*` locally from LB's own synced state. `NoOpComponents` sealed interface with 13 stub implementations
+- **PassiveNode.apply()** — Passive nodes can submit consensus proposals. Creates `Batch`, sends `NewBatch` to core nodes only (no traffic to other passive/worker nodes). Decision correlation resolves original promises
+- **CTM auto-provisioning tags** — `buildProvisionTags()` builds 3-part PEERS from live topology using `NodeAddress.host()`. DockerComputeProvider provisions replacement containers with correct hostnames, API key, docker GID, unique names
+- **DockerConfig enhancements** — `api_key`, `docker_gid` fields in `[cloud.compute]` config. Config-driven approach for production Docker deployments
+- **Enriched `/api/cluster/topology`** — Returns live coreCount, connectedPeerCount, per-node details (nodeId, role, health, hostname, zone, address). Replaces stale `initialTopology()` with live `TopologyManager` data
+- **`aether cluster topology` CLI** — Table output: NODE, ROLE, HEALTH, HOSTNAME, ZONE, ADDRESS columns
+- **Chaos integration tests (02-chaos)** — 4 tests (19 assertions): kill non-leader, kill leader (re-election), kill multiple (quorum safety), kill under load (0% error rate through LB). Each verifies auto-heal restores cluster to target size
+- **Scaling integration tests (03-scaling)** — 3 tests (16 assertions): quorum safety rejection, scale-up 5→7 (2s convergence), scale-down 7→5 under load (34s, 0% error rate). Cluster config seeding with initial-create fallback
+- **Passive LB in docker-compose** — `aether-lb:local` Docker image built and deployed alongside cluster. All test traffic routes through LB. `deploy-compose.sh` builds both images
+- **Initial cluster config seeding** — `POST /api/cluster/config` creates config when none exists (`.orElse()` fallback in `handleApplyConfig`)
 - **Application config provisioning** — `@ResourceQualifier(type = ConfigurationSection.class)` pattern for typed config. Compile-time parser generation via `Result.all()`. Three-source merge (bundled `META-INF/config.toml` + `aether.toml` `[app.*]` + KV-Store). Runtime notification via single-threaded executor with record diff. ACTIVATE integration ensures config before routes
 - **Config value object support** — Primitives, `Option<T>` variants, `List<String>`, core value objects (`TimeSpan`, `Url`, `Email`, `Uuid`, `NonBlankString`, `IsoDateTime`), and any user-defined type with `TypeName.typeName(String) → Result<T>` factory
 - **Node metadata labels** — `NodeInfo.labels` (hostname, zone, instance-type, pool) propagated via Hello handshake, bootstrap from environment variables
@@ -41,6 +48,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Composition** — Replaced 4x `fold(() → default, id)` with `.or(default)` in CTM; simplified nested fold in `GovernorFailoverHandler`
 - **Factory methods** — Added JBCT-compliant factories for `MigrationStep`, `MigrationError`, `PgStreamError`, `CloudCertificateProviderError` subtypes
 - **Test assertions** — Fixed assertion-free drain test; replaced silent-pass `assertThat(cause).isNull()` pattern in 4 provider test files
+- **TaskGroupActivator infinite loop** — Skip ACTIVE/FAILED terminal states in `onTaskAssignmentPut` to prevent activation write-back triggering re-activation
+- **Docker socket permissions** — `group_add` for host Docker GID in compose + `--group-add` in DockerComputeProvider for provisioned containers
+- **Docker network name** — Explicit `name: aether-network` in compose avoids project prefix; provisioned containers join the correct network
+- **Container name collisions** — Nano-time suffix on provisioned container names prevents conflicts across test runs
+- **NODE_ID_TAG mismatch** — `NodeLifecycleManager` used hyphens (`aether-node-id`) but Docker labels use dots (`aether.node-id`), preventing container termination during scale-down
+- **ClusterConfigApplier not wired** — ManagementServer used `unused()` no-op applier; scale operations stored config but CTM never called `setDesiredSize()`. Now wires real applier via `ManageableNode.clusterTopologyManager()`
+- **LB phantom topology nodes** — 3-part PEERS parsing in LB Main.java eliminates random NodeId generation that polluted cluster topology
 
 ## [1.0.0-alpha] - 2026-04-04
 

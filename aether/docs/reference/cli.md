@@ -1175,6 +1175,29 @@ Scaling down displays a warning:
 Warning: scaling down from 7 to 5 nodes. Excess nodes will be drained.
 ```
 
+### `aether cluster topology`
+
+Show cluster topology with per-node details including role, health, hostname, and zone.
+
+```bash
+aether cluster topology
+```
+
+| Option | Description |
+|--------|-------------|
+| `--format` | Output format: `table` (default), `json`, `value`, `csv` |
+
+Example:
+```bash
+aether cluster topology
+
+# Output (table):
+# NODE              ROLE        HEALTH        HOSTNAME              ZONE            ADDRESS
+# node-1            ACTIVE      HEALTHY       aether-node-1                         aether-node-1:6000
+# node-2            ACTIVE      HEALTHY       aether-node-2                         aether-node-2:6000
+# lb-passive        PASSIVE     HEALTHY       aether-lb                             0.0.0.0:7000
+```
+
 ### `aether cluster upgrade`
 
 Initiate a cluster version upgrade.
