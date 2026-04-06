@@ -1,5 +1,6 @@
 #!/bin/bash
-# test-scale-quorum-safety.sh — Verify rejection of unsafe scale operations
+# test-01-quorum-safety.sh — Verify rejection of unsafe scale operations
+# Runs first: no actual scaling, just validates rejection of invalid requests
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -12,31 +13,35 @@ test_seed_config() {
     seed_cluster_config
 }
 
-test_scale_api_available() {
-    local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/config" -H "X-API-Key: ${API_KEY}")
-    if [ "$status" = "000" ] || [ "$status" = "" ]; then
-        skip_test "Scale API" "Cluster config endpoint not available"
-        print_summary
-        exit 0
-    fi
-    log_pass "Cluster config available (status: ${status})"
-}
-
 test_initial_state() {
     local count
     count=$(cluster_node_count)
     assert_ge "$count" "3" "Initial: at least 3 nodes"
 }
 
+# Scale rejection tests use direct core node for proper 4xx error codes
+direct_scale_status() {
+    local body="$1"
+    local base_port="${MGMT_PORT}"
+    for i in $(seq 0 $((NODE_COUNT - 1))); do
+        local port=$((base_port + i))
+        local status
+        status=$(http_status "http://${TARGET_HOST}:${port}/api/cluster/scale" \
+            -X POST \
+            -H "X-API-Key: ${API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$body")
+        if [ "$status" != "000" ] && [ -n "$status" ]; then
+            echo "$status"
+            return 0
+        fi
+    done
+    echo "000"
+}
+
 test_reject_scale_to_1() {
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/scale" \
-        -X POST \
-        -H "X-API-Key: ${API_KEY}" \
-        -H "Content-Type: application/json" \
-        -d '{"coreCount":1,"expectedVersion":0}')
-
+    status=$(direct_scale_status '{"coreCount":1,"expectedVersion":0}')
     if [ "$status" -ge 400 ] && [ "$status" -lt 500 ] 2>/dev/null; then
         log_pass "Scale to 1 rejected (status: ${status})"
         return 0
@@ -47,12 +52,7 @@ test_reject_scale_to_1() {
 
 test_reject_scale_to_2() {
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/scale" \
-        -X POST \
-        -H "X-API-Key: ${API_KEY}" \
-        -H "Content-Type: application/json" \
-        -d '{"coreCount":2,"expectedVersion":0}')
-
+    status=$(direct_scale_status '{"coreCount":2,"expectedVersion":0}')
     if [ "$status" -ge 400 ] && [ "$status" -lt 500 ] 2>/dev/null; then
         log_pass "Scale to 2 rejected (status: ${status})"
         return 0
@@ -63,12 +63,7 @@ test_reject_scale_to_2() {
 
 test_reject_scale_above_max() {
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/scale" \
-        -X POST \
-        -H "X-API-Key: ${API_KEY}" \
-        -H "Content-Type: application/json" \
-        -d '{"coreCount":20,"expectedVersion":0}')
-
+    status=$(direct_scale_status '{"coreCount":20,"expectedVersion":0}')
     if [ "$status" -ge 400 ] && [ "$status" -lt 500 ] 2>/dev/null; then
         log_pass "Scale to 20 rejected (status: ${status})"
         return 0
@@ -85,7 +80,6 @@ test_cluster_unchanged() {
 }
 
 run_test "Seed cluster config" test_seed_config
-run_test "Scale API available" test_scale_api_available
 run_test "Initial state" test_initial_state
 run_test "Reject scale to 1" test_reject_scale_to_1
 run_test "Reject scale to 2" test_reject_scale_to_2

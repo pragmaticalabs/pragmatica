@@ -1,5 +1,6 @@
 #!/bin/bash
-# test-scale-down.sh — Scale 7 -> 5 under load
+# test-03-scale-down.sh — Scale 7 -> 5 under load
+# Runs after scale-up (cluster restored to 5 nodes)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -17,17 +18,6 @@ test_seed_config() {
     seed_cluster_config
 }
 
-test_scale_api_available() {
-    local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/config" -H "X-API-Key: ${API_KEY}")
-    if [ "$status" = "000" ] || [ "$status" = "" ]; then
-        skip_test "Scale API" "Cluster config endpoint not available"
-        print_summary
-        exit 0
-    fi
-    log_pass "Cluster config available (status: ${status})"
-}
-
 test_scale_up_to_7() {
     log_info "Scaling up to 7 nodes first"
     scale_cluster 7
@@ -38,7 +28,7 @@ test_scale_up_to_7() {
 }
 
 test_scale_down_under_load() {
-    # Start load
+    # Start load through LB
     start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/api/health"
     sleep 5
 
@@ -67,14 +57,12 @@ test_5_nodes_healthy() {
 }
 
 test_no_data_loss() {
-    # Verify cluster events show graceful drain
     local events
     events=$(cluster_events)
     assert_ne "$events" "" "Events available after scale-down"
 }
 
 run_test "Seed cluster config" test_seed_config
-run_test "Scale API available" test_scale_api_available
 run_test "Scale up to 7" test_scale_up_to_7
 run_test "Scale down 7 -> 5 under load" test_scale_down_under_load
 run_test "5 nodes healthy" test_5_nodes_healthy
