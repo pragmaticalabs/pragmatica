@@ -32,6 +32,8 @@ IMAGE_TAG="aether-node:local"
 NODE_JAR="${REPO_ROOT}/aether/node/target/aether-node.jar"
 DOCKERFILE="${REPO_ROOT}/aether/docker/aether-node/Dockerfile"
 AETHER_TOML="${REPO_ROOT}/aether/docker/aether-node/aether.toml"
+LB_JAR="${REPO_ROOT}/aether/lb/target/aether-lb.jar"
+LB_DOCKERFILE="${REPO_ROOT}/aether/docker/aether-lb/Dockerfile"
 COMPOSE_FILE="${ROOT_DIR}/docker-compose.yml"
 
 SKIP_BUILD=false
@@ -82,12 +84,14 @@ log_info "JAR checksum: $LOCAL_MD5"
 # ---------------------------------------------------------------------------
 log_step "Transferring artifacts to ${HOST}"
 
-ssh_exec "mkdir -p ${REMOTE_DIR}/node/target ${REMOTE_DIR}/docker/aether-node"
+ssh_exec "mkdir -p ${REMOTE_DIR}/node/target ${REMOTE_DIR}/lb/target ${REMOTE_DIR}/docker/aether-node ${REMOTE_DIR}/docker/aether-lb"
 
-scp_file "$NODE_JAR"      "${REMOTE_DIR}/node/target/aether-node.jar"
-scp_file "$DOCKERFILE"    "${REMOTE_DIR}/Dockerfile"
-scp_file "$AETHER_TOML"   "${REMOTE_DIR}/docker/aether-node/aether.toml"
-scp_file "$COMPOSE_FILE"  "${REMOTE_DIR}/docker-compose.yml"
+scp_file "$NODE_JAR"       "${REMOTE_DIR}/node/target/aether-node.jar"
+scp_file "$DOCKERFILE"     "${REMOTE_DIR}/Dockerfile"
+scp_file "$AETHER_TOML"    "${REMOTE_DIR}/docker/aether-node/aether.toml"
+scp_file "$LB_JAR"         "${REMOTE_DIR}/lb/target/aether-lb.jar"
+scp_file "$LB_DOCKERFILE"  "${REMOTE_DIR}/Dockerfile.lb"
+scp_file "$COMPOSE_FILE"   "${REMOTE_DIR}/docker-compose.yml"
 
 # Verify checksum on remote
 REMOTE_MD5=$(ssh_exec "md5sum ${REMOTE_DIR}/node/target/aether-node.jar | cut -d' ' -f1")
@@ -104,24 +108,31 @@ log_step "Building Docker image on ${HOST}"
 
 if [ "$CLEAN" = true ]; then
     log_info "Cleaning old containers and images..."
-    ssh_exec "cd ${REMOTE_DIR} && docker compose down --remove-orphans 2>/dev/null; docker rmi ${IMAGE_TAG} 2>/dev/null" || true
+    ssh_exec "cd ${REMOTE_DIR} && docker compose down --remove-orphans 2>/dev/null; docker rmi ${IMAGE_TAG} aether-lb:local 2>/dev/null" || true
 fi
 
 ssh_exec "cd ${REMOTE_DIR} && docker build --no-cache -t ${IMAGE_TAG} -f Dockerfile . 2>&1 | tail -3"
 log_pass "Docker image built: ${IMAGE_TAG}"
 
+ssh_exec "cd ${REMOTE_DIR} && docker build --no-cache -t aether-lb:local -f Dockerfile.lb . 2>&1 | tail -3"
+log_pass "Docker image built: aether-lb:local"
+
 # ---------------------------------------------------------------------------
 # Step 4: Start cluster
 # ---------------------------------------------------------------------------
-log_step "Starting 5-node cluster"
+log_step "Starting 5-node cluster + passive LB"
 
 ssh_exec "cd ${REMOTE_DIR} && docker compose down --remove-orphans 2>/dev/null; docker compose up -d 2>&1 | tail -5"
 
 # ---------------------------------------------------------------------------
-# Step 5: Wait for cluster health
+# Step 5: Wait for cluster + LB health
 # ---------------------------------------------------------------------------
 log_step "Waiting for cluster to form"
-wait_for_cluster 120
+# Wait for at least one core node to be healthy (direct access)
+wait_for_cluster_direct 120
+
+log_step "Waiting for passive LB"
+wait_for "LB healthy" "curl -sf http://${HOST}:${LB_PORT}/health >/dev/null 2>&1" 60
 
 LEADER=$(cluster_leader 2>/dev/null || echo "pending")
 COUNT=$(cluster_node_count 2>/dev/null || echo "?")

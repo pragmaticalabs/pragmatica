@@ -305,7 +305,11 @@ public sealed interface ManagementApiResponses {
                                          int coreMin,
                                          int workerCount,
                                          int clusterSize,
-                                         List<String> coreNodes){}
+                                         List<String> coreNodes,
+                                         int connectedPeerCount,
+                                         List<TopologyNodeDetail> nodeDetails){}
+
+    record TopologyNodeDetail(String nodeId, String role, String health, String hostname, String zone, String address){}
 
     record GovernorsResponse(List<GovernorInfo> governors){}
 

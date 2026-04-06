@@ -95,6 +95,13 @@ wait_for_cluster() {
     wait_for "cluster healthy" "is_cluster_ready" "${1:-120}"
 }
 
+# Wait for cluster using direct node access (before LB is available)
+wait_for_cluster_direct() {
+    wait_for "cluster healthy (direct)" \
+        "curl -sf -H 'X-API-Key: ${API_KEY}' http://${TARGET_HOST}:${MGMT_PORT}/api/health 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); exit(0 if d.get(\"connectedPeers\",0)+1 >= 3 else 1)' 2>/dev/null" \
+        "${1:-120}"
+}
+
 wait_for_node_count() {
     local expected="$1" timeout="${2:-120}"
     wait_for "${expected} nodes" "[ \$(cluster_node_count) -eq ${expected} ]" "$timeout"

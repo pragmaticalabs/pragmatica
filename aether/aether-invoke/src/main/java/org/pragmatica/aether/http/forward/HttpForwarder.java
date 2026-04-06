@@ -43,6 +43,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                       String httpMethod,
                                       String pathPrefix,
                                       String requestId);
+    Promise<HttpResponseData> forwardToAnyNode(HttpRequestContext requestContext, String requestId);
     @MessageReceiver void onHttpForwardResponse(HttpForwardResponse response);
     @MessageReceiver void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved);
     @MessageReceiver void onNodeDown(TopologyChangeNotification.NodeDown nodeDown);
@@ -109,6 +110,26 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                     return resultPromise;
                 }
                 var routeIdentity = httpMethod + ":" + pathPrefix;
+                forwardWithRetry(requestContext,
+                                 resultPromise,
+                                 connectedNodes,
+                                 Set.of(),
+                                 routeIdentity,
+                                 requestId,
+                                 Math.min(connectedNodes.size() - 1, maxForwardRetries));
+                return resultPromise;
+            }
+
+            @Override public Promise<HttpResponseData> forwardToAnyNode(HttpRequestContext requestContext,
+                                                                        String requestId) {
+                var resultPromise = Promise.<HttpResponseData>promise();
+                var connectedNodes = List.copyOf(clusterNetwork.connectedPeers());
+                if (connectedNodes.isEmpty()) {
+                    log.warn("No connected nodes available for fallback forward [{}]", requestId);
+                    resultPromise.fail(Causes.cause("No connected nodes available"));
+                    return resultPromise;
+                }
+                var routeIdentity = "FALLBACK:*";
                 forwardWithRetry(requestContext,
                                  resultPromise,
                                  connectedNodes,

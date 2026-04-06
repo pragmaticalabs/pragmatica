@@ -9,9 +9,12 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC
 MGMT_PORT="${MGMT_PORT:-5150}"
 APP_PORT="${APP_PORT:-8070}"
 LB_PORT="${LB_PORT:-9090}"
-CLUSTER_ENDPOINT="${CLUSTER_ENDPOINT:-http://${TARGET_HOST}:${MGMT_PORT}}"
-APP_ENDPOINT="${APP_ENDPOINT:-http://${TARGET_HOST}:${APP_PORT}}"
+# All test traffic routes through the passive LB by default
+CLUSTER_ENDPOINT="${CLUSTER_ENDPOINT:-http://${TARGET_HOST}:${LB_PORT}}"
+APP_ENDPOINT="${APP_ENDPOINT:-http://${TARGET_HOST}:${LB_PORT}}"
 LB_ENDPOINT="${LB_ENDPOINT:-http://${TARGET_HOST}:${LB_PORT}}"
+# Direct node access (for node-specific queries and CLI failover)
+DIRECT_ENDPOINT="http://${TARGET_HOST}:${MGMT_PORT}"
 API_KEY="${AETHER_API_KEY:-aether-integration-test-key}"
 ADMIN_API_KEY="${AETHER_ADMIN_API_KEY:-${API_KEY}}"
 VIEWER_API_KEY="${AETHER_VIEWER_API_KEY:-}"
@@ -21,7 +24,7 @@ export AETHER_API_KEY="${API_KEY}"
 # ---------------------------------------------------------------------------
 # Aether CLI
 # ---------------------------------------------------------------------------
-AETHER_CLI="aether -c ${TARGET_HOST}:${MGMT_PORT}"
+AETHER_CLI="aether -c ${TARGET_HOST}:${LB_PORT}"
 NODE_COUNT="${NODE_COUNT:-5}"
 
 # Try CLI command against available nodes (failover on connection failure)
@@ -68,50 +71,32 @@ log_step()  { echo -e "${BLUE}[STEP]${NC}  $1"; }
 # ---------------------------------------------------------------------------
 api_get() {
     local path="$1"
-    local base_port="${MGMT_PORT}"
-    for i in $(seq 0 $((NODE_COUNT - 1))); do
-        local port=$((base_port + i))
-        local result
-        result=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}${path}" 2>/dev/null) && { echo "$result"; return 0; }
-    done
-    return 1
+    curl -sf -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}${path}"
 }
 
 api_post() {
     local path="$1"
     local body="${2:-"{}"}"
-    local base_port="${MGMT_PORT}"
-    for i in $(seq 0 $((NODE_COUNT - 1))); do
-        local port=$((base_port + i))
-        local result
-        result=$(curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-            -d "$body" "http://${TARGET_HOST}:${port}${path}" 2>/dev/null) && { echo "$result"; return 0; }
-    done
-    return 1
+    curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+        -d "$body" "${CLUSTER_ENDPOINT}${path}"
 }
 
 api_put() {
     local path="$1"
     local body="${2:-"{}"}"
-    local base_port="${MGMT_PORT}"
-    for i in $(seq 0 $((NODE_COUNT - 1))); do
-        local port=$((base_port + i))
-        local result
-        result=$(curl -sf -X PUT -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-            -d "$body" "http://${TARGET_HOST}:${port}${path}" 2>/dev/null) && { echo "$result"; return 0; }
-    done
-    return 1
+    curl -sf -X PUT -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+        -d "$body" "${CLUSTER_ENDPOINT}${path}"
 }
 
 api_delete() {
     local path="$1"
-    local base_port="${MGMT_PORT}"
-    for i in $(seq 0 $((NODE_COUNT - 1))); do
-        local port=$((base_port + i))
-        local result
-        result=$(curl -sf -X DELETE -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}${path}" 2>/dev/null) && { echo "$result"; return 0; }
-    done
-    return 1
+    curl -sf -X DELETE -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}${path}"
+}
+
+# Direct node access (bypasses LB — for node-specific operations like kill_node)
+direct_api_get() {
+    local node_port="$1" path="$2"
+    curl -sf -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${node_port}${path}"
 }
 
 # HTTP helpers — app HTTP (port 8070)

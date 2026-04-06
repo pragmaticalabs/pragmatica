@@ -145,30 +145,33 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
                   method,
                   path,
                   routeRegistry.allRoutes().size());
-        var routeOpt = routeRegistry.findRoute(method, path);
-        if (routeOpt.isEmpty()) {
-            log.warn("No route found for {} {} — available routes: {}",
-                     method,
-                     path,
-                     routeRegistry.allRoutes().stream()
-                                            .map(r -> r.httpMethod() + " " + r.pathPrefix() + " -> " + r.nodes())
-                                            .toList());
-            response.error(HttpStatus.NOT_FOUND, "No route found for " + method + " " + path);
-            return;
-        }
-        var route = routeOpt.unwrap();
         var context = HttpRequestContext.httpRequestContext(path,
                                                             method,
                                                             request.queryParams().asMap(),
                                                             request.headers().asMap(),
                                                             request.body(),
                                                             requestId);
+        var routeOpt = routeRegistry.findRoute(method, path);
+        if (routeOpt.isEmpty()) {
+            log.debug("No route found for {} {}, forwarding to any connected node [{}]", method, path, requestId);
+            forwardFallback(context, requestId, response);
+            return;
+        }
+        var route = routeOpt.unwrap();
         httpForwarder.forward(context,
                               route.httpMethod(),
                               route.pathPrefix(),
                               requestId).onSuccess(responseData -> sendResponse(response, responseData, requestId))
                              .onFailure(cause -> response.error(HttpStatus.BAD_GATEWAY,
                                                                 cause.message()));
+    }
+
+    private void forwardFallback(HttpRequestContext context, String requestId, ResponseWriter response) {
+        httpForwarder.forwardToAnyNode(context, requestId).onSuccess(responseData -> sendResponse(response,
+                                                                                                  responseData,
+                                                                                                  requestId))
+                                      .onFailure(cause -> response.error(HttpStatus.BAD_GATEWAY,
+                                                                         cause.message()));
     }
 
     private static boolean isHealthEndpoint(String path) {

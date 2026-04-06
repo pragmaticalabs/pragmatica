@@ -2,12 +2,17 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorsResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.TopologyNodeDetail;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.topology.NodeState;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.lang.Option;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -58,17 +63,40 @@ public final class ClusterTopologyRoutes implements RouteSource {
     private ClusterTopologyStatusResponse buildTopologyStatus() {
         var node = nodeSupplier.get();
         var topologyConfig = node.topologyConfig();
-        var coreNodeIds = node.initialTopology().stream()
-                                              .map(NodeId::id)
-                                              .toList();
-        var connectedCount = node.connectedNodeCount();
+        var topologyManager = node.topologyManager();
+        var connectedPeers = node.connectedPeerIds();
+        var allNodeIds = topologyManager.topology();
+        var coreNodeIds = allNodeIds.stream().filter(id -> !topologyManager.isPassive(id))
+                                           .map(NodeId::id)
+                                           .toList();
         var coreCount = coreNodeIds.size();
-        var workerCount = Math.max(0, connectedCount - coreCount);
+        var workerCount = Math.max(0, connectedPeers.size() - coreCount);
+        var nodeDetails = allNodeIds.stream().map(id -> buildNodeDetail(topologyManager,
+                                                                        id,
+                                                                        connectedPeers.contains(id)))
+                                           .toList();
         return new ClusterTopologyStatusResponse(coreCount,
                                                  topologyConfig.coreMax(),
                                                  topologyConfig.coreMin(),
                                                  workerCount,
                                                  topologyConfig.clusterSize(),
-                                                 coreNodeIds);
+                                                 coreNodeIds,
+                                                 connectedPeers.size(),
+                                                 nodeDetails);
+    }
+
+    private static TopologyNodeDetail buildNodeDetail(TopologyManager tm, NodeId nodeId, boolean connected) {
+        var info = tm.get(nodeId);
+        var state = tm.getState(nodeId);
+        var role = info.map(NodeInfo::role).map(Enum::name)
+                           .or("UNKNOWN");
+        var health = state.map(NodeState::health).map(Enum::name)
+                              .or(connected
+                                  ? "CONNECTED"
+                                  : "UNKNOWN");
+        var hostname = info.flatMap(i -> Option.option(i.labels().get(NodeInfo.LABEL_HOSTNAME))).or("");
+        var zone = info.flatMap(i -> Option.option(i.labels().get(NodeInfo.LABEL_ZONE))).or("");
+        var address = info.map(i -> i.address().asString()).or("");
+        return new TopologyNodeDetail(nodeId.id(), role, health, hostname, zone, address);
     }
 }
