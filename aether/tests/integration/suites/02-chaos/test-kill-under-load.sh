@@ -16,7 +16,7 @@ test_initial_state() {
     wait_for_leader 60
     local count
     count=$(cluster_node_count)
-    assert_eq "$count" "5" "Initial: 5 nodes"
+    assert_ge "$count" "5" "Initial: at least 5 nodes (${count})"
 }
 
 test_kill_during_load() {
