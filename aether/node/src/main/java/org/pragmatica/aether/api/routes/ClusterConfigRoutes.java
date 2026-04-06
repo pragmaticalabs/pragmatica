@@ -171,7 +171,30 @@ import org.slf4j.LoggerFactory;
         return parseAndValidateConfig(request.tomlContent()).async()
                                      .flatMap(desired -> lookupClusterConfig().flatMap(stored -> processApply(stored,
                                                                                                               desired,
-                                                                                                              request)));
+                                                                                                              request))
+                                                                            .orElse(() -> storeInitialConfig(desired,
+                                                                                                             request.tomlContent())));
+    }
+
+    @SuppressWarnings("unchecked") private Promise<Object> storeInitialConfig(ClusterManagementConfig desired,
+                                                                              String tomlContent) {
+        var cluster = desired.cluster();
+        var configValue = new ClusterConfigValue(tomlContent,
+                                                 cluster.name(),
+                                                 cluster.version(),
+                                                 cluster.core().count(),
+                                                 cluster.core().min(),
+                                                 cluster.core().max(),
+                                                 desired.deployment().type()
+                                                                   .value(),
+                                                 1,
+                                                 System.currentTimeMillis());
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ClusterConfigKey.CURRENT, configValue);
+        return nodeSupplier.get().<Object>apply(List.of(command))
+                               .map(_ -> (Object) new ApplyConfigResponse(1,
+                                                                          cluster.name(),
+                                                                          cluster.core().count(),
+                                                                          configValue.updatedAt()));
     }
 
     private Promise<Object> processApply(ClusterConfigValue stored,
