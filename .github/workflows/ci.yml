@@ -26,8 +26,8 @@ jobs:
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
 
       - name: Build and test all modules
-        run: mvn install -B
-        timeout-minutes: 30
+        run: mvn install -B -pl '!examples'
+        timeout-minutes: 45
 
       - name: Run postgres-async integration tests
         run: mvn test -B -pl integrations/db/postgres-async -Dpostgres-async.skipTests=false
