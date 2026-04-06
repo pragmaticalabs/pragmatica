@@ -52,7 +52,7 @@ public interface NodeLifecycleManager {
 record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) implements NodeLifecycleManager {
     private static final Logger log = LoggerFactory.getLogger(NodeLifecycleManagerRecord.class);
 
-    private static final String NODE_ID_TAG = "aether-node-id";
+    private static final String NODE_ID_TAG = "aether.node-id";
 
     @Override public Promise<ActionResult> executeAction(NodeAction action) {
         return switch (action){
