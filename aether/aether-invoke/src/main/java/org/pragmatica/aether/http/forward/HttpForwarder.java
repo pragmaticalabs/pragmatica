@@ -3,6 +3,7 @@ package org.pragmatica.aether.http.forward;
 import org.pragmatica.aether.http.HttpRouteRegistry;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
+import org.pragmatica.aether.http.forward.HttpForwardMessage.Pipeline;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.consensus.NodeId;
@@ -27,6 +28,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,6 +46,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                       String pathPrefix,
                                       String requestId);
     Promise<HttpResponseData> forwardToAnyNode(HttpRequestContext requestContext, String requestId);
+    Promise<HttpResponseData> forwardManagement(HttpRequestContext requestContext, String requestId);
     @MessageReceiver void onHttpForwardResponse(HttpForwardResponse response);
     @MessageReceiver void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved);
     @MessageReceiver void onNodeDown(TopologyChangeNotification.NodeDown nodeDown);
@@ -61,7 +64,26 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                              deserializer,
                              forwardTimeout,
                              DEFAULT_RETRY_DELAY_MS,
-                             DEFAULT_MAX_FORWARD_RETRIES);
+                             DEFAULT_MAX_FORWARD_RETRIES,
+                             Set::of);
+    }
+
+    static HttpForwarder httpForwarder(NodeId selfNodeId,
+                                       HttpRouteRegistry routeRegistry,
+                                       ClusterNetwork clusterNetwork,
+                                       Serializer serializer,
+                                       Deserializer deserializer,
+                                       TimeSpan forwardTimeout,
+                                       Supplier<Set<NodeId>> coreNodeSupplier) {
+        return httpForwarder(selfNodeId,
+                             routeRegistry,
+                             clusterNetwork,
+                             serializer,
+                             deserializer,
+                             forwardTimeout,
+                             DEFAULT_RETRY_DELAY_MS,
+                             DEFAULT_MAX_FORWARD_RETRIES,
+                             coreNodeSupplier);
     }
 
     long DEFAULT_RETRY_DELAY_MS = 200;
@@ -75,7 +97,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                        Deserializer deserializer,
                                        TimeSpan forwardTimeout,
                                        long retryDelayMs,
-                                       int maxForwardRetries) {
+                                       int maxForwardRetries,
+                                       Supplier<Set<NodeId>> coreNodeSupplier) {
         @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) record httpForwarder(NodeId selfNodeId,
                                                                                HttpRouteRegistry routeRegistry,
                                                                                ClusterNetwork clusterNetwork,
@@ -86,7 +109,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                                                                int maxForwardRetries,
                                                                                Map<String, PendingForward> pendingForwards,
                                                                                Map<NodeId, Set<String>> pendingForwardsByNode,
-                                                                               Map<String, AtomicInteger> roundRobinCounters) implements HttpForwarder {
+                                                                               Map<String, AtomicInteger> roundRobinCounters,
+                                                                               Supplier<Set<NodeId>> coreNodeSupplier) implements HttpForwarder {
             private static final Logger log = LoggerFactory.getLogger(HttpForwarder.class);
 
             private static final int MAX_PENDING_FORWARDS = 10_000;
@@ -116,7 +140,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                  Set.of(),
                                  routeIdentity,
                                  requestId,
-                                 Math.min(connectedNodes.size() - 1, maxForwardRetries));
+                                 Math.min(connectedNodes.size() - 1, maxForwardRetries),
+                                 Pipeline.APP);
                 return resultPromise;
             }
 
@@ -136,8 +161,37 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                  Set.of(),
                                  routeIdentity,
                                  requestId,
-                                 Math.min(connectedNodes.size() - 1, maxForwardRetries));
+                                 Math.min(connectedNodes.size() - 1, maxForwardRetries),
+                                 Pipeline.APP);
                 return resultPromise;
+            }
+
+            @Override public Promise<HttpResponseData> forwardManagement(HttpRequestContext requestContext,
+                                                                         String requestId) {
+                var resultPromise = Promise.<HttpResponseData>promise();
+                var connectedCoreNodes = connectedCoreNodes();
+                if (connectedCoreNodes.isEmpty()) {
+                    log.warn("No connected core nodes available for management forward [{}]", requestId);
+                    resultPromise.fail(Causes.cause("No core nodes available for management API"));
+                    return resultPromise;
+                }
+                var routeIdentity = "MANAGEMENT:*";
+                forwardWithRetry(requestContext,
+                                 resultPromise,
+                                 connectedCoreNodes,
+                                 Set.of(),
+                                 routeIdentity,
+                                 requestId,
+                                 Math.min(connectedCoreNodes.size() - 1, maxForwardRetries),
+                                 Pipeline.MANAGEMENT);
+                return resultPromise;
+            }
+
+            private List<NodeId> connectedCoreNodes() {
+                var connected = clusterNetwork.connectedPeers();
+                return coreNodeSupplier.get().stream()
+                                           .filter(connected::contains)
+                                           .toList();
             }
 
             @Override public void onHttpForwardResponse(HttpForwardResponse response) {
@@ -165,7 +219,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                    .toList();
             }
 
-            private List<NodeId> freshCandidatesForRoute(String routeIdentity) {
+            private List<NodeId> freshCandidatesForRoute(String routeIdentity, Pipeline pipeline) {
+                if (pipeline == Pipeline.MANAGEMENT) {return connectedCoreNodes();}
                 var colonIdx = routeIdentity.indexOf(':');
                 if (colonIdx == - 1) {return List.of();}
                 var method = routeIdentity.substring(0, colonIdx);
@@ -186,11 +241,17 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                           Set<NodeId> triedNodes,
                                           String routeIdentity,
                                           String requestId,
-                                          int retriesRemaining) {
+                                          int retriesRemaining,
+                                          Pipeline pipeline) {
                 var candidates = availableNodes.stream().filter(n -> !triedNodes.contains(n))
                                                       .toList();
                 if (candidates.isEmpty()) {
-                    handleNoCandidates(requestContext, resultPromise, routeIdentity, requestId, retriesRemaining);
+                    handleNoCandidates(requestContext,
+                                       resultPromise,
+                                       routeIdentity,
+                                       requestId,
+                                       retriesRemaining,
+                                       pipeline);
                     return;
                 }
                 var targetNode = selectNodeFromCandidates(routeIdentity, candidates);
@@ -200,19 +261,22 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                               resultPromise,
                               targetNode,
                               requestId,
+                              pipeline,
                               () -> handleRetryOrExhausted(requestContext,
                                                            resultPromise,
                                                            newTriedNodes,
                                                            routeIdentity,
                                                            requestId,
-                                                           retriesRemaining));
+                                                           retriesRemaining,
+                                                           pipeline));
             }
 
             private void handleNoCandidates(HttpRequestContext requestContext,
                                             Promise<HttpResponseData> resultPromise,
                                             String routeIdentity,
                                             String requestId,
-                                            int retriesRemaining) {
+                                            int retriesRemaining,
+                                            Pipeline pipeline) {
                 if (retriesRemaining > 0) {
                     log.debug("No candidates for {} [{}], waiting {}ms before re-query ({} retries remaining)",
                               routeIdentity,
@@ -225,7 +289,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                                           resultPromise,
                                                           routeIdentity,
                                                           requestId,
-                                                          retriesRemaining));
+                                                          retriesRemaining,
+                                                          pipeline));
                     return;
                 }
                 log.error("No more nodes to try for {} [{}] after all retries exhausted", routeIdentity, requestId);
@@ -236,15 +301,17 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                          Promise<HttpResponseData> resultPromise,
                                          String routeIdentity,
                                          String requestId,
-                                         int retriesRemaining) {
-                var freshNodes = freshCandidatesForRoute(routeIdentity);
+                                         int retriesRemaining,
+                                         Pipeline pipeline) {
+                var freshNodes = freshCandidatesForRoute(routeIdentity, pipeline);
                 forwardWithRetry(requestContext,
                                  resultPromise,
                                  freshNodes,
                                  Set.of(),
                                  routeIdentity,
                                  requestId,
-                                 retriesRemaining - 1);
+                                 retriesRemaining - 1,
+                                 pipeline);
             }
 
             private void handleRetryOrExhausted(HttpRequestContext requestContext,
@@ -252,19 +319,21 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                                 Set<NodeId> triedNodes,
                                                 String routeIdentity,
                                                 String requestId,
-                                                int retriesRemaining) {
+                                                int retriesRemaining,
+                                                Pipeline pipeline) {
                 if (retriesRemaining > 0) {
                     log.debug("Retrying request [{}], {} retries remaining, re-querying route",
                               requestId,
                               retriesRemaining);
-                    var freshNodes = freshCandidatesForRoute(routeIdentity);
+                    var freshNodes = freshCandidatesForRoute(routeIdentity, pipeline);
                     forwardWithRetry(requestContext,
                                      resultPromise,
                                      freshNodes,
                                      triedNodes,
                                      routeIdentity,
                                      requestId,
-                                     retriesRemaining - 1);
+                                     retriesRemaining - 1,
+                                     pipeline);
                 } else {
                     log.error("All retries exhausted for [{}]", requestId);
                     resultPromise.fail(Causes.cause("Request failed after all retries"));
@@ -275,6 +344,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                        Promise<HttpResponseData> resultPromise,
                                        NodeId targetNode,
                                        String requestId,
+                                       Pipeline pipeline,
                                        Runnable onFailure) {
                 if (!clusterNetwork.connectedPeers().contains(targetNode)) {
                     log.debug("Target node {} already disconnected, immediate retry [{}]", targetNode, requestId);
@@ -306,7 +376,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                 pendingForwards.put(correlationId, pending);
                 pendingForwardsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet()).add(correlationId);
                 internalPromise.timeout(forwardTimeout);
-                var forwardRequest = new HttpForwardRequest(selfNodeId, correlationId, requestId, requestData);
+                var forwardRequest = new HttpForwardRequest(selfNodeId, correlationId, requestId, requestData, pipeline);
                 clusterNetwork.send(targetNode, forwardRequest);
                 log.trace("Forwarded request to {} [{}] correlationId={}", targetNode, requestId, correlationId);
                 internalPromise.onSuccess(resultPromise::succeed)
@@ -404,6 +474,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                  maxForwardRetries,
                                  new ConcurrentHashMap<>(),
                                  new ConcurrentHashMap<>(),
-                                 new ConcurrentHashMap<>());
+                                 new ConcurrentHashMap<>(),
+                                 coreNodeSupplier);
     }
 }

@@ -21,7 +21,21 @@ import org.pragmatica.serialization.Codec;
 ///   - Node A returns response to original HTTP client
 /// </ol>
 @Codec public sealed interface HttpForwardMessage extends ProtocolMessage {
-    record HttpForwardRequest(NodeId sender, String correlationId, String requestId, byte[] requestData) implements HttpForwardMessage{}
+    @Codec enum Pipeline {
+        APP,
+        MANAGEMENT
+    }
 
-    record HttpForwardResponse(NodeId sender, String correlationId, String requestId, boolean success, byte[] payload) implements HttpForwardMessage{}
+    record HttpForwardRequest(NodeId sender,
+                              String correlationId,
+                              String requestId,
+                              byte[] requestData,
+                              Pipeline pipeline) implements HttpForwardMessage{}
+
+    record HttpForwardResponse(NodeId sender,
+                               String correlationId,
+                               String requestId,
+                               boolean success,
+                               byte[] payload,
+                               Pipeline pipeline) implements HttpForwardMessage{}
 }

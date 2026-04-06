@@ -28,6 +28,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 
 import java.net.SocketAddress;
 import java.util.List;
+import java.util.Set;
 
 /// Representation of our knowledge about the cluster structure: known nodes and cluster/quorum size.
 /// Note that this is not a representation of the actual cluster topology.
@@ -114,6 +115,12 @@ public interface TopologyManager {
 
     /// Mark a node as departed (lifecycle removed or node dead).
     default void markDeparted(NodeId nodeId) {}
+
+    /// Returns the set of core (non-passive) node IDs in the topology.
+    /// Used by the passive LB to select forwarding targets for management API requests.
+    default Set<NodeId> coreNodes() {
+        return Set.copyOf(topology().stream().filter(id -> !isPassive(id)).toList());
+    }
 
     /// Returns the count of nodes that have reached ON_DUTY state.
     /// More authoritative than activeNodeCount() for detecting dynamically provisioned nodes

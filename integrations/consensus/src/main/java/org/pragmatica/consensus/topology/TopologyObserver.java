@@ -20,9 +20,11 @@ import org.pragmatica.net.tcp.TlsConfig;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -90,7 +92,8 @@ public interface TopologyObserver extends TopologyManager {
                        TimeSource timeSource,
                        AtomicBoolean active,
                        AtomicInteger effectiveClusterSize,
-                       java.util.Set<NodeId> readyNodes) implements TopologyObserver {
+                       java.util.Set<NodeId> readyNodes,
+                       Set<NodeId> coreNodeIds) implements TopologyObserver {
             private static final Logger log = LoggerFactory.getLogger(TopologyObserver.class);
 
             Manager(Map<NodeId, NodeState> nodeStatesById,
@@ -100,7 +103,8 @@ public interface TopologyObserver extends TopologyManager {
                     TimeSource timeSource,
                     AtomicBoolean active,
                     AtomicInteger effectiveClusterSize,
-                    java.util.Set<NodeId> readyNodes) {
+                    java.util.Set<NodeId> readyNodes,
+                    Set<NodeId> coreNodeIds) {
                 this.config = config;
                 this.router = router;
                 this.nodeStatesById = nodeStatesById;
@@ -109,6 +113,7 @@ public interface TopologyObserver extends TopologyManager {
                 this.active = active;
                 this.effectiveClusterSize = effectiveClusterSize;
                 this.readyNodes = readyNodes;
+                this.coreNodeIds = coreNodeIds;
                 this.effectiveClusterSize.set(config.clusterSize());
                 config().coreNodes()
                       .forEach(this::addNode);
@@ -226,6 +231,9 @@ public interface TopologyObserver extends TopologyManager {
                       .onEmpty(() -> {
                                    nodeIdsByAddress().putIfAbsent(nodeInfo.address(),
                                                                   nodeInfo.id());
+                                   if (nodeInfo.role() != org.pragmatica.consensus.net.NodeRole.PASSIVE) {
+                                       coreNodeIds.add(nodeInfo.id());
+                                   }
                                    // Only request connection if topology observer is active (router is ready)
                 if (active().get()) {
                                        requestConnection(nodeInfo.id());
@@ -243,8 +251,9 @@ public interface TopologyObserver extends TopologyManager {
                     log.warn("Ignoring removal of self node {}", nodeId);
                     return;
                 }
-                // Remove from ready set — node is no longer operational
+                // Remove from ready set and core node set — node is no longer operational
                 readyNodes.remove(nodeId);
+                coreNodeIds.remove(nodeId);
                 // To avoid reliance on the networking layer behavior, removing is done
                 // atomically and command to drop the connection is sent only once.
                 Option.option(nodeStatesById().remove(nodeId))
@@ -264,6 +273,11 @@ public interface TopologyObserver extends TopologyManager {
             @Override
             public Option<NodeState> getState(NodeId id) {
                 return Option.option(nodeStatesById.get(id));
+            }
+
+            @Override
+            public Set<NodeId> coreNodes() {
+                return Collections.unmodifiableSet(coreNodeIds);
             }
 
             @Override
@@ -411,6 +425,7 @@ public interface TopologyObserver extends TopologyManager {
                                           timeSource,
                                           new AtomicBoolean(false),
                                           new AtomicInteger(config.clusterSize()),
+                                          ConcurrentHashMap.newKeySet(),
                                           ConcurrentHashMap.newKeySet()));
     }
 }

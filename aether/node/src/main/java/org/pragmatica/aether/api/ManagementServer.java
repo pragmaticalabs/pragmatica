@@ -26,7 +26,14 @@ import org.pragmatica.aether.api.routes.StatusRoutes;
 import org.pragmatica.aether.api.routes.StorageRoutes;
 import org.pragmatica.aether.api.routes.StreamRoutes;
 import org.pragmatica.aether.api.routes.TaskRoutes;
+import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
+import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
+import org.pragmatica.aether.http.forward.HttpForwardMessage.Pipeline;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
+import org.pragmatica.aether.http.handler.HttpResponseData;
+import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 import org.pragmatica.aether.http.handler.security.RoleEnforcer;
 import org.pragmatica.aether.http.handler.security.RoutePermission;
 import org.pragmatica.aether.http.handler.security.RoutePermissionRegistry;
@@ -63,6 +70,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.TlsConfig;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -95,6 +103,7 @@ public interface ManagementServer {
     Promise<Unit> start();
     Promise<Unit> stop();
     Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle);
+    @SuppressWarnings("JBCT-RET-01") void onHttpForwardRequest(HttpForwardRequest request);
 
     static ManagementServer managementServer(int port,
                                              Supplier<ManageableNode> nodeSupplier,
@@ -113,6 +122,48 @@ public interface ManagementServer {
                                              Option<EventLoopGroup> bossGroup,
                                              Option<EventLoopGroup> workerGroup,
                                              HttpProtocol httpProtocol) {
+        return managementServer(port,
+                                nodeSupplier,
+                                alertManager,
+                                depthRegistry,
+                                traceStore,
+                                logLevelRegistry,
+                                dynamicConfigManager,
+                                scheduledTaskRegistry,
+                                scheduledTaskManager,
+                                sliceInvoker,
+                                scheduledTaskStateRegistry,
+                                tls,
+                                securityValidator,
+                                securityEnabled,
+                                bossGroup,
+                                workerGroup,
+                                httpProtocol,
+                                Option.empty(),
+                                Option.empty(),
+                                Option.empty());
+    }
+
+    static ManagementServer managementServer(int port,
+                                             Supplier<ManageableNode> nodeSupplier,
+                                             AlertManager alertManager,
+                                             ObservabilityDepthRegistry depthRegistry,
+                                             InvocationTraceStore traceStore,
+                                             LogLevelRegistry logLevelRegistry,
+                                             Option<DynamicConfigManager> dynamicConfigManager,
+                                             ScheduledTaskRegistry scheduledTaskRegistry,
+                                             ScheduledTaskManager scheduledTaskManager,
+                                             SliceInvoker sliceInvoker,
+                                             ScheduledTaskStateRegistry scheduledTaskStateRegistry,
+                                             Option<TlsConfig> tls,
+                                             SecurityValidator securityValidator,
+                                             boolean securityEnabled,
+                                             Option<EventLoopGroup> bossGroup,
+                                             Option<EventLoopGroup> workerGroup,
+                                             HttpProtocol httpProtocol,
+                                             Option<ClusterNetwork> clusterNetwork,
+                                             Option<Serializer> serializer,
+                                             Option<Deserializer> deserializer) {
         return new ManagementServerImpl(port,
                                         nodeSupplier,
                                         alertManager,
@@ -129,7 +180,10 @@ public interface ManagementServer {
                                         securityEnabled,
                                         bossGroup,
                                         workerGroup,
-                                        httpProtocol);
+                                        httpProtocol,
+                                        clusterNetwork,
+                                        serializer,
+                                        deserializer);
     }
 }
 
@@ -158,6 +212,9 @@ class ManagementServerImpl implements ManagementServer {
     private final Option<EventLoopGroup> workerGroup;
     private final WebSocketAuthenticator wsAuthenticator;
     private final HttpProtocol httpProtocol;
+    private final Option<ClusterNetwork> clusterNetwork;
+    private final Option<Serializer> forwardSerializer;
+    private final Option<Deserializer> forwardDeserializer;
 
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
 
@@ -185,7 +242,10 @@ class ManagementServerImpl implements ManagementServer {
                          boolean securityEnabled,
                          Option<EventLoopGroup> bossGroup,
                          Option<EventLoopGroup> workerGroup,
-                         HttpProtocol httpProtocol) {
+                         HttpProtocol httpProtocol,
+                         Option<org.pragmatica.consensus.net.ClusterNetwork> clusterNetwork,
+                         Option<org.pragmatica.serialization.Serializer> serializer,
+                         Option<org.pragmatica.serialization.Deserializer> deserializer) {
         this.port = port;
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
@@ -197,6 +257,9 @@ class ManagementServerImpl implements ManagementServer {
         this.bossGroup = bossGroup;
         this.workerGroup = workerGroup;
         this.httpProtocol = httpProtocol;
+        this.clusterNetwork = clusterNetwork;
+        this.forwardSerializer = serializer;
+        this.forwardDeserializer = deserializer;
         this.wsAuthenticator = WebSocketAuthenticator.webSocketAuthenticator(securityValidator, securityEnabled);
         this.metricsPublisher = DashboardMetricsPublisher.dashboardMetricsPublisher(nodeSupplier, alertManager);
         this.statusWsHandler = new StatusWebSocketHandler(wsAuthenticator);
@@ -580,6 +643,90 @@ class ManagementServerImpl implements ManagementServer {
     private void recordRequestMetrics(String method, String path, InstrumentedResponseWriter writer, long startTime) {
         var durationNanos = System.nanoTime() - startTime;
         requestObserver.recordRequest(method, path, writer.statusCategory(), durationNanos);
+    }
+
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01"}) @Override public void onHttpForwardRequest(HttpForwardRequest request) {
+        log.trace("Received management HttpForwardRequest [{}] correlationId={}",
+                  request.requestId(),
+                  request.correlationId());
+        if (forwardDeserializer.isEmpty() || forwardSerializer.isEmpty() || clusterNetwork.isEmpty()) {
+            log.error("[{}] Cannot handle management forward request - missing dependencies", request.requestId());
+            return;
+        }
+        var des = forwardDeserializer.unwrap();
+        var ser = forwardSerializer.unwrap();
+        var network = clusterNetwork.unwrap();
+        Result.<HttpRequestContext, byte[]>lift1(des::decode,
+                                                 request.requestData())
+              .onFailure(cause -> sendManagementForwardError(network,
+                                                             request,
+                                                             "Deserialization failed: " + cause.message()))
+              .onSuccess(context -> dispatchManagementForward(context, request, network, ser));
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") private void dispatchManagementForward(HttpRequestContext context,
+                                                                            HttpForwardRequest request,
+                                                                            ClusterNetwork network,
+                                                                            Serializer ser) {
+        var serverCtx = ForwardedRequestContext.forwardedRequestContext(context);
+        var responseCapture = ForwardedResponseWriter.forwardedResponseWriter();
+        if (router.handle(serverCtx, responseCapture)) {
+            responseCapture.completion().onSuccess(responseData -> sendManagementForwardSuccess(network,
+                                                                                                request,
+                                                                                                ser,
+                                                                                                responseData))
+                                      .onFailure(cause -> sendManagementForwardError(network,
+                                                                                     request,
+                                                                                     cause.message()));
+            return;
+        }
+        for (var handler : legacyRoutes) {if (handler.handle(serverCtx, responseCapture)) {
+            responseCapture.completion().onSuccess(responseData -> sendManagementForwardSuccess(network,
+                                                                                                request,
+                                                                                                ser,
+                                                                                                responseData))
+                                      .onFailure(cause -> sendManagementForwardError(network,
+                                                                                     request,
+                                                                                     cause.message()));
+            return;
+        }}
+        sendManagementForwardError(network,
+                                   request,
+                                   "No route found for " + context.method() + " " + context.path());
+    }
+
+    private void sendManagementForwardSuccess(ClusterNetwork network,
+                                              HttpForwardRequest request,
+                                              Serializer ser,
+                                              HttpResponseData responseData) {
+        Result.lift1(ser::encode, responseData).onSuccess(payload -> sendManagementForwardPayload(network,
+                                                                                                  request,
+                                                                                                  payload))
+                    .onFailure(cause -> sendManagementForwardError(network,
+                                                                   request,
+                                                                   "Response serialization failed: " + cause.message()));
+    }
+
+    private void sendManagementForwardPayload(ClusterNetwork network, HttpForwardRequest request, byte[] payload) {
+        var forwardResponse = new HttpForwardResponse(nodeSupplier.get().self(),
+                                                      request.correlationId(),
+                                                      request.requestId(),
+                                                      true,
+                                                      payload,
+                                                      Pipeline.MANAGEMENT);
+        network.send(request.sender(), forwardResponse);
+        log.trace("Sent management forward success response [{}]", request.requestId());
+    }
+
+    private void sendManagementForwardError(ClusterNetwork network, HttpForwardRequest request, String errorMessage) {
+        log.warn("Management forward error [{}]: {}", request.requestId(), errorMessage);
+        var forwardResponse = new HttpForwardResponse(nodeSupplier.get().self(),
+                                                      request.correlationId(),
+                                                      request.requestId(),
+                                                      false,
+                                                      errorMessage.getBytes(StandardCharsets.UTF_8),
+                                                      Pipeline.MANAGEMENT);
+        network.send(request.sender(), forwardResponse);
     }
 
     private static boolean isDashboardPath(String path) {

@@ -22,9 +22,6 @@ import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
 import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
 import org.pragmatica.consensus.net.quic.QuicTlsProvider;
-import org.pragmatica.consensus.rabia.Batch;
-import org.pragmatica.consensus.rabia.CorrelationId;
-import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.NewBatch;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyConfig;
@@ -44,8 +41,6 @@ import org.pragmatica.serialization.Serializer;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.netty.handler.codec.quic.QuicSslContext;
@@ -69,8 +64,6 @@ public interface PassiveNode<K extends StructuredKey, V> {
     TopologyObserver topologyManager();
 
     List<Entry<?>> routeEntries();
-
-    <R> Promise<List<R>> apply(List<KVCommand<K>> commands);
 
     Promise<Unit> start();
 
@@ -142,11 +135,8 @@ public interface PassiveNode<K extends StructuredKey, V> {
                                                        route(Send.class, network::handleSend),
                                                        route(Broadcast.class, network::handleBroadcast));
 
-        @SuppressWarnings("rawtypes")
-        var correlationMap = new ConcurrentHashMap<CorrelationId, Promise>();
-
         Entry decisionRoute = route(Decision.class,
-                                    (Decision decision) -> applyDecision(kvStore, correlationMap, decision));
+                                    (Decision decision) -> applyDecision(kvStore, decision));
 
         var allEntries = new ArrayList<Entry<?>>();
         allEntries.add(topologyMgmtRoutes);
@@ -159,23 +149,8 @@ public interface PassiveNode<K extends StructuredKey, V> {
             TopologyObserver topologyManager,
             ClusterNetwork network,
             KVStore<K, V> kvStore,
-            List<Entry<?>> routeEntries,
-            NodeId selfId,
-            @SuppressWarnings("rawtypes") Map<CorrelationId, Promise> correlationMap
+            List<Entry<?>> routeEntries
         ) implements PassiveNode<K, V> {
-
-            @Override
-            public <R> Promise<List<R>> apply(List<KVCommand<K>> commands) {
-                if (commands.isEmpty()) {
-                    return Promise.success(List.of());
-                }
-
-                var batch = Batch.batch(commands);
-                var promise = Promise.<List<R>>promise();
-                correlationMap.put(batch.correlationIds().getFirst(), promise);
-                sendBatchToCoreNodes(batch);
-                return promise;
-            }
 
             @Override
             public Promise<Unit> start() {
@@ -188,19 +163,9 @@ public interface PassiveNode<K extends StructuredKey, V> {
                 topologyManager().stop();
                 return network().stop();
             }
-
-            private void sendBatchToCoreNodes(Batch<?> batch) {
-                var newBatch = new NewBatch<>(selfId, batch);
-
-                topologyManager.topology()
-                               .stream()
-                               .filter(id -> !topologyManager.isPassive(id))
-                               .forEach(nodeId -> delegateRouter.route(new Send(nodeId, newBatch)));
-            }
         }
 
-        return new passiveNode<>(delegateRouter, topologyManager, network, kvStore, List.copyOf(allEntries),
-                                 selfId, correlationMap);
+        return new passiveNode<>(delegateRouter, topologyManager, network, kvStore, List.copyOf(allEntries));
     }
 
     private static void handleConnectionWithSnapshotRequest(TopologyObserver topologyManager,
@@ -223,19 +188,11 @@ public interface PassiveNode<K extends StructuredKey, V> {
                .onFailure(cause -> log.error("Failed to restore KV snapshot: {}", cause));
     }
 
-    @SuppressWarnings({"rawtypes", "unchecked", "JBCT-RET-01"}) // void required by Consumer<Decision> contract
+    @SuppressWarnings({"unchecked", "JBCT-RET-01"}) // void required by Consumer<Decision> contract
     private static <K extends StructuredKey, V> void applyDecision(KVStore<K, V> kvStore,
-                                                                       Map<CorrelationId, Promise> correlationMap,
-                                                                       Decision<?> decision) {
-        var results = new ArrayList<>();
-
+                                                                    Decision<?> decision) {
         for (var command : decision.value().commands()) {
-            results.add(kvStore.process((KVCommand) command));
-        }
-
-        for (var correlationId : decision.value().correlationIds()) {
-            Option.option(correlationMap.remove(correlationId))
-                  .onPresent(promise -> promise.succeed(results));
+            kvStore.process((KVCommand) command);
         }
     }
 }

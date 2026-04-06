@@ -37,6 +37,7 @@ import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.http.HttpRouteRegistry;
+import org.pragmatica.aether.http.forward.HttpForwardMessage;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.resource.SpiResourceProvider;
@@ -810,6 +811,7 @@ public interface AetherNode extends ManageableNode {
         loadBalancerManager.onPresent(taskGroupActivator::register);
         taskGroupActivator.register(DelegatedStorageAdapter.noOp());
         taskGroupActivator.register(StreamingCoordinator.noOp());
+        var managementServerRef = new java.util.concurrent.atomic.AtomicReference<Option<ManagementServer>>(Option.empty());
         var aetherEntries = collectRouteEntries(kvStore,
                                                 nodeDeploymentManager,
                                                 clusterDeploymentManager,
@@ -844,7 +846,8 @@ public interface AetherNode extends ManageableNode {
                                                 (TopologyObserver) clusterNode.topologyManager(),
                                                 clusterTopologyManager,
                                                 taskGroupActivator,
-                                                taskAssignmentCoordinator);
+                                                taskAssignmentCoordinator,
+                                                managementServerRef);
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetRequest.class,
                                                     request -> dhtNode.handleGetRequest(request,
                                                                                         response -> dhtNetwork.send(request.sender(),
@@ -926,7 +929,6 @@ public interface AetherNode extends ManageableNode {
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> swimHealthDetector.onNodeConnected(connection.nodeId())));
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager();
-        var managementServerRef = new java.util.concurrent.atomic.AtomicReference<Option<ManagementServer>>(Option.empty());
         var certRenewalScheduler = createCertRenewalScheduler(config,
                                                               clusterNode,
                                                               appHttpServer,
@@ -1006,7 +1008,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                  mgmtSecurityEnabled,
                                                                                                                  serverBossGroup,
                                                                                                                  serverWorkerGroup,
-                                                                                                                 config.managementHttpProtocol());
+                                                                                                                 config.managementHttpProtocol(),
+                                                                                                                 Option.some(clusterNode.network()),
+                                                                                                                 Option.some(serializer),
+                                                                                                                 Option.some(deserializer));
                                                         managementServerRef.set(Option.some(managementServer));
                                                         return new aetherNode(config,
                                                                               delegateRouter,
@@ -1387,7 +1392,8 @@ public interface AetherNode extends ManageableNode {
                                                                     TopologyObserver topologyManager,
                                                                     ClusterTopologyManager clusterTopologyManager,
                                                                     TaskGroupActivator taskGroupActivator,
-                                                                    TaskAssignmentCoordinator taskAssignmentCoordinator) {
+                                                                    TaskAssignmentCoordinator taskAssignmentCoordinator,
+                                                                    java.util.concurrent.atomic.AtomicReference<Option<ManagementServer>> managementServerRef) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
         var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
                                                   .onPut(AetherKey.AppBlueprintKey.class,
@@ -1613,7 +1619,9 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));
         entries.add(MessageRouter.Entry.route(org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest.class,
-                                              appHttpServer::onHttpForwardRequest));
+                                              request -> demuxHttpForwardRequest(request,
+                                                                                 appHttpServer,
+                                                                                 managementServerRef.get())));
         entries.add(MessageRouter.Entry.route(org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse.class,
                                               appHttpServer::onHttpForwardResponse));
         entries.add(MessageRouter.Entry.route(KVStoreLocalIO.Request.Find.class, kvStore::find));
@@ -1628,6 +1636,12 @@ public interface AetherNode extends ManageableNode {
                                                                                 lbm::onTopologyChange));
                                       });
         return entries;
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") private static void demuxHttpForwardRequest(HttpForwardMessage.HttpForwardRequest request,
+                                                                                 AppHttpServer appHttpServer,
+                                                                                 Option<ManagementServer> managementServer) {
+        if (request.pipeline() == HttpForwardMessage.Pipeline.MANAGEMENT) {managementServer.onPresent(ms -> ms.onHttpForwardRequest(request));} else {appHttpServer.onHttpForwardRequest(request);}
     }
 
     private static void handleLeaderCommit(KVStoreNotification.ValuePut<?, ?> notification,

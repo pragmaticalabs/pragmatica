@@ -955,7 +955,8 @@ import static org.pragmatica.lang.Unit.unit;
                                                       request.correlationId(),
                                                       request.requestId(),
                                                       true,
-                                                      payload);
+                                                      payload,
+                                                      request.pipeline());
         network.send(request.sender(), forwardResponse);
         log.trace("Sent forward success response [{}]", request.requestId());
     }
@@ -965,7 +966,8 @@ import static org.pragmatica.lang.Unit.unit;
                                                       request.correlationId(),
                                                       request.requestId(),
                                                       false,
-                                                      errorMessage.getBytes(StandardCharsets.UTF_8));
+                                                      errorMessage.getBytes(StandardCharsets.UTF_8),
+                                                      request.pipeline());
         network.send(request.sender(), forwardResponse);
         log.trace("Sent forward error response [{}]: {}", request.requestId(), errorMessage);
     }
