@@ -35,6 +35,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Promise.allOrCancel()** — Cancels remaining promises on first failure; fixed instance `all()` from sequential to parallel
 
 ### Changed
+- **Management API forwarding** — LB forwards all management API requests to core nodes via QUIC binary protocol (Pipeline.MANAGEMENT). Eliminates NoOp stubs, PassiveLBNode, and local handling. Endpoints that previously returned 500 or hung (artifacts, schema, drain, storage) now work correctly through the LB
+- **TopologyManager.coreNodes()** — Maintained `Set<NodeId>` of non-passive nodes for O(1) core node lookup. Used by HttpForwarder for management pipeline node selection
+- **PassiveNode simplified** — Removed `apply()` method and correlation map. KV-Store sync via decisions continues; consensus proposals no longer needed from passive nodes
 - **Dashboard** — Fixed empty panels (strategies store endpoints, template fields). Added 10s secondary polling for topology/governors/strategies/streams/observability. Fixed success rate display
 - **StreamAccessImpl → PartitionedStreamAccess** — JBCT naming compliance, removed Impl suffix
 - **Example scripts** — `run-forge.sh` scripts now extract version from POM dynamically instead of hardcoding
@@ -55,6 +58,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **NODE_ID_TAG mismatch** — `NodeLifecycleManager` used hyphens (`aether-node-id`) but Docker labels use dots (`aether.node-id`), preventing container termination during scale-down
 - **ClusterConfigApplier not wired** — ManagementServer used `unused()` no-op applier; scale operations stored config but CTM never called `setDesiredSize()`. Now wires real applier via `ManageableNode.clusterTopologyManager()`
 - **LB phantom topology nodes** — 3-part PEERS parsing in LB Main.java eliminates random NodeId generation that polluted cluster topology
+- **Consensus sync cancelled under load** — `advancePhase()` unconditionally set engine state to Idle, cancelling sync tasks when Decisions arrived during synchronization. Now only transitions InPhase→Idle, preserving Syncing state. Root cause of provisioned node 180s+ activation delay under HTTP load
 
 ## [1.0.0-alpha] - 2026-04-04
 
