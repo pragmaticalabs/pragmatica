@@ -1009,9 +1009,13 @@ public class RabiaEngine<C extends Command> {
             advancePhaseAsObserver(nextPhase);
             return;
         }
-        // Transition InPhase -> Idle, cancel stall detector
-        var oldState = engineState.getAndSet(new EngineState.Idle());
-        exitState(oldState);
+        // Only transition InPhase → Idle. Preserve Syncing/Stopped states so that
+        // live Decisions received during synchronization don't cancel the sync task.
+        var oldState = engineState.get();
+        if (oldState instanceof EngineState.InPhase) {
+            engineState.set(new EngineState.Idle());
+            exitState(oldState);
+        }
         // Lock policy: always lock V1 (critical for liveness), always lock carry-forward (spec),
         // lock V0 only when no pending batches (prevents self-reinforcing deadlock).
         if (forceLock || value == StateValue.V1 || pendingBatches.isEmpty()) {
