@@ -1,4 +1,4 @@
-# Pragmatica Lite
+# Pragmatica Core
 
 ![License](https://img.shields.io/badge/license-Apache%202-blue.svg)
 ![Java](https://img.shields.io/badge/Java-25-orange.svg)
@@ -6,9 +6,9 @@
 
 ## Modern Functional Programming for Java 25
 
-Pragmatica Lite brings the power of functional programming to Java with monadic types that eliminate null pointer exceptions, unchecked exceptions, and callback hell. Built on Java 25's latest features including sealed interfaces and pattern matching.
+Pragmatica Core brings the power of functional programming to Java with monadic types that eliminate null pointer exceptions, unchecked exceptions, and callback hell. Built on Java 25's latest features including sealed interfaces and pattern matching.
 
-## Why Pragmatica Lite?
+## Why Pragmatica Core?
 
 **Without Pragmatica:**
 ```java
@@ -79,7 +79,7 @@ Result<List<User>> allUsers = Result.allOf(userResults);
 
 ## Built for Java 25
 
-Pragmatica Lite targets Java 25 and leverages modern language features:
+Pragmatica Core targets Java 25 and leverages modern language features:
 
 - **Sealed Interfaces** (JDK 17): Type-safe Result and Option hierarchies
 - **Records** (JDK 16): Immutable data structures throughout
@@ -87,7 +87,7 @@ Pragmatica Lite targets Java 25 and leverages modern language features:
 
 ### Maven Configuration
 
-Pragmatica Lite is available on Maven Central. Simply add the dependency to your `pom.xml`:
+Pragmatica Core is available on Maven Central. Simply add the dependency to your `pom.xml`:
 
 ```xml
 <dependency>

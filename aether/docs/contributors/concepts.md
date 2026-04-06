@@ -1,4 +1,4 @@
-# Pragmatica Aether: Distributed Runtime Without the Complexity
+# Pragmatica Aether: Unified Application Runtime
 
 ## The Problem
 

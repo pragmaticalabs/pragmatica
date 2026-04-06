@@ -1,6 +1,6 @@
 # Slice Runtime
 
-How slices execute in the Aether distributed runtime.
+How slices execute in the Aether Unified Application Runtime.
 
 ## Runtime Architecture
 

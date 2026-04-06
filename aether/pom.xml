@@ -13,8 +13,8 @@
     <groupId>org.pragmatica-lite.aether</groupId>
     <artifactId>aether</artifactId>
     <packaging>pom</packaging>
-    <name>Pragmatica Aether Distributed Runtime</name>
-    <description>AI-driven distributed runtime environment for Java applications</description>
+    <name>Aether Unified Application Runtime</name>
+    <description>Unified Application Runtime for Java</description>
 
     <url>https://github.com/siy/aether</url>
 

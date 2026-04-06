@@ -1,6 +1,6 @@
-# Pragmatica Aether
+# Aether — Unified Application Runtime
 
-Distributed runtime for Java -- scale horizontally without microservices complexity.
+Unified Application Runtime for Java -- scale horizontally without microservices complexity.
 
 ## Overview
 

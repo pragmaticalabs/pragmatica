@@ -15,7 +15,7 @@ leader is elected or changed.
 
 ## Architecture
 
-The Pragmatica Lite Cluster module provides a robust implementation of the Rabia consensus algorithm with the following
+The Pragmatica Core Cluster module provides a robust implementation of the Rabia consensus algorithm with the following
 key components:
 
 ### Core Components

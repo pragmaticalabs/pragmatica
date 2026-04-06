@@ -29,7 +29,7 @@
 
 ### 1.1 Purpose
 
-This specification defines four SPI contracts that cloud providers must implement to integrate with the Aether distributed runtime. The SPIs cover compute provisioning, load balancer management, peer discovery, and secret resolution. Together they enable Aether to manage its own infrastructure across multiple cloud providers.
+This specification defines four SPI contracts that cloud providers must implement to integrate with the Aether runtime. The SPIs cover compute provisioning, load balancer management, peer discovery, and secret resolution. Together they enable Aether to manage its own infrastructure across multiple cloud providers.
 
 ### 1.2 Goals
 

@@ -1,6 +1,6 @@
 # Aether Architecture Diagrams
 
-Visual diagrams for understanding Aether's distributed runtime architecture.
+Visual diagrams for understanding Aether's Unified Application Runtime architecture.
 
 ---
 
