@@ -108,9 +108,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private static final long STABILIZATION_WINDOW_MS = 5_000;
 
     /// Quorum loss hysteresis — don't fire DISAPPEARED until below quorum for this duration.
-    /// Prevents transient QUIC reconnections from killing quorum. Kept short to minimize
-    /// stale quorum perception — Rabia naturally stalls without enough voters.
-    private static final long QUORUM_LOSS_HYSTERESIS_MS = 3_000;
+    /// Prevents transient QUIC reconnections from killing quorum during restarts/reconnections.
+    /// 5s balances detection speed (real failures) vs stability (transient reconnections).
+    /// Rabia naturally stalls without enough voters, so brief stale quorum is safe.
+    private static final long QUORUM_LOSS_HYSTERESIS_MS = 5_000;
 
     private volatile QuicClusterServer server;
     private volatile QuicClusterClient client;
