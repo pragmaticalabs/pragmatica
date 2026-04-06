@@ -383,6 +383,7 @@ public interface AetherNode extends ManageableNode {
                           StreamPartitionManager streamPartitionManager,
                           TaskAssignmentCoordinator taskAssignmentCoordinator,
                           Map<String, StorageFactory.StorageSetup> storageSetups,
+                          ClusterTopologyManager clusterTopologyManagerInstance,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
                           Option<ManagementServer> managementServer,
@@ -568,6 +569,10 @@ public interface AetherNode extends ManageableNode {
 
             @Override public Map<String, Number> transportMetrics() {
                 return clusterNode.network().transportMetrics();
+            }
+
+            @Override public Option<ClusterTopologyManager> clusterTopologyManager() {
+                return Option.some(clusterTopologyManagerInstance);
             }
 
             @Override public Set<NodeId> connectedPeerIds() {
@@ -969,6 +974,7 @@ public interface AetherNode extends ManageableNode {
                                   streamPartitionManager,
                                   taskAssignmentCoordinator,
                                   storageSetups,
+                                  clusterTopologyManager,
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
                                   Option.empty(),
@@ -1044,6 +1050,7 @@ public interface AetherNode extends ManageableNode {
                                                                               streamPartitionManager,
                                                                               taskAssignmentCoordinator,
                                                                               storageSetups,
+                                                                              clusterTopologyManager,
                                                                               eventLoopMetricsCollector,
                                                                               swimHealthDetector,
                                                                               Option.some(managementServer),

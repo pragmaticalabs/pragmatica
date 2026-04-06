@@ -176,6 +176,10 @@ import java.util.Set;
         return httpRouteRegistry;
     }
 
+    @Override public Option<org.pragmatica.aether.deployment.cluster.ClusterTopologyManager> clusterTopologyManager() {
+        return Option.empty();
+    }
+
     @Override public Map<String, StorageFactory.StorageSetup> storageSetups() {
         return Map.of();
     }

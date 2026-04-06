@@ -252,11 +252,8 @@ seed_cluster_config() {
 scale_cluster() {
     local target="$1"
     log_info "Scaling cluster to ${target} nodes" >&2
-    # Get current cluster config version for optimistic concurrency
-    local version
-    version=$(direct_api_get "/api/cluster/config" | python3 -c "import sys,json; print(json.load(sys.stdin).get('configVersion',0))" 2>/dev/null || echo "0")
-    # Use direct core node — CTM.setDesiredSize() must run on a node with real CTM
-    direct_api_post "/api/cluster/scale" "{\"coreCount\":${target},\"expectedVersion\":${version}}"
+    # expectedVersion=0 means "skip version check" in the scale API
+    direct_api_post "/api/cluster/scale" "{\"coreCount\":${target},\"expectedVersion\":0}"
 }
 
 # ---------------------------------------------------------------------------
