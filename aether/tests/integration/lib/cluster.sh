@@ -8,9 +8,9 @@ source "${LIB_DIR}/common.sh"
 # Cluster queries (CLI-based)
 # ---------------------------------------------------------------------------
 cluster_node_count() {
-    # Use topology endpoint coreCount — excludes passive nodes (LB).
-    # Falls back to connectedPeers+1 via direct core node if topology unavailable.
-    api_get "/api/cluster/topology" \
+    # Query core node topology directly — LB's topology may not see provisioned nodes.
+    # Uses coreCount which excludes passive nodes (LB).
+    direct_api_get "/api/cluster/topology" \
         | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('coreCount',0))" 2>/dev/null \
         || echo "0"
 }

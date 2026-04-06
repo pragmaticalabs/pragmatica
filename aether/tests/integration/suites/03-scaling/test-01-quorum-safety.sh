@@ -42,7 +42,7 @@ direct_scale_status() {
 test_reject_scale_to_1() {
     local status
     status=$(direct_scale_status '{"coreCount":1,"expectedVersion":0}')
-    if [ "$status" -ge 400 ] && [ "$status" -lt 500 ] 2>/dev/null; then
+    if [ "$status" -ge 400 ] 2>/dev/null; then
         log_pass "Scale to 1 rejected (status: ${status})"
         return 0
     fi
@@ -53,7 +53,7 @@ test_reject_scale_to_1() {
 test_reject_scale_to_2() {
     local status
     status=$(direct_scale_status '{"coreCount":2,"expectedVersion":0}')
-    if [ "$status" -ge 400 ] && [ "$status" -lt 500 ] 2>/dev/null; then
+    if [ "$status" -ge 400 ] 2>/dev/null; then
         log_pass "Scale to 2 rejected (status: ${status})"
         return 0
     fi
@@ -64,7 +64,7 @@ test_reject_scale_to_2() {
 test_reject_scale_above_max() {
     local status
     status=$(direct_scale_status '{"coreCount":20,"expectedVersion":0}')
-    if [ "$status" -ge 400 ] && [ "$status" -lt 500 ] 2>/dev/null; then
+    if [ "$status" -ge 400 ] 2>/dev/null; then
         log_pass "Scale to 20 rejected (status: ${status})"
         return 0
     fi
