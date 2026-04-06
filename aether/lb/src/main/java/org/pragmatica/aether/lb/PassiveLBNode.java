@@ -7,6 +7,7 @@ import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
+import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.delegation.TaskAssignmentCoordinator;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRouteRegistry;
@@ -176,7 +177,7 @@ import java.util.Set;
         return httpRouteRegistry;
     }
 
-    @Override public Option<org.pragmatica.aether.deployment.cluster.ClusterTopologyManager> clusterTopologyManager() {
+    @Override public Option<ClusterTopologyManager> clusterTopologyManager() {
         return Option.empty();
     }
 
