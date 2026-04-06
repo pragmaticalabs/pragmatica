@@ -433,8 +433,7 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private static String formatPeerEntry(NodeInfo info) {
-        var hostname = info.labels().getOrDefault(LABEL_HOSTNAME,
-                                                  info.id().id());
+        var hostname = info.address().host();
         return info.id().id() + ":" + hostname + ":" + info.address().port();
     }
 
