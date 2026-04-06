@@ -16,7 +16,7 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.http.security.AuditLog;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
@@ -44,13 +44,13 @@ public final class SchemaRoutes implements RouteSource {
 
     private static final Cause SCHEMA_NOT_FAILED = Causes.cause("Schema is not in FAILED state — retry only applies to failed migrations");
 
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
 
-    private SchemaRoutes(Supplier<AetherNode> nodeSupplier) {
+    private SchemaRoutes(Supplier<ManageableNode> nodeSupplier) {
         this.nodeSupplier = nodeSupplier;
     }
 
-    public static SchemaRoutes schemaRoutes(Supplier<AetherNode> nodeSupplier) {
+    public static SchemaRoutes schemaRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new SchemaRoutes(nodeSupplier);
     }
 

@@ -1,6 +1,6 @@
 package org.pragmatica.aether.api.routes;
 
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
@@ -33,13 +33,13 @@ public final class StreamRoutes implements RouteSource {
 
     private static final int DEFAULT_PARTITIONS = 4;
 
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
 
-    private StreamRoutes(Supplier<AetherNode> nodeSupplier) {
+    private StreamRoutes(Supplier<ManageableNode> nodeSupplier) {
         this.nodeSupplier = nodeSupplier;
     }
 
-    public static StreamRoutes streamRoutes(Supplier<AetherNode> nodeSupplier) {
+    public static StreamRoutes streamRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new StreamRoutes(nodeSupplier);
     }
 

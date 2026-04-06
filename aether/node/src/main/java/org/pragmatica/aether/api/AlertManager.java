@@ -60,6 +60,12 @@ import org.slf4j.LoggerFactory;
         return manager;
     }
 
+    public static AlertManager readOnly(KVStore<AetherKey, AetherValue> kvStore) {
+        var manager = new AlertManager(null, kvStore);
+        manager.loadThresholdsFromKvStore();
+        return manager;
+    }
+
     private void loadThresholdsFromKvStore() {
         kvStore.forEach(AlertThresholdKey.class, AlertThresholdValue.class, this::loadThreshold);
         log.info("Loaded {} thresholds from KV-Store", thresholds.size());

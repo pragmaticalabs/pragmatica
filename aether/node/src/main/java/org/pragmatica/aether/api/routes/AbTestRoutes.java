@@ -2,7 +2,7 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.update.AbTestDeployment;
 import org.pragmatica.aether.update.AbTestMetrics;
 import org.pragmatica.aether.update.SplitRule;
@@ -39,13 +39,13 @@ public final class AbTestRoutes implements RouteSource {
 
     private static final Cause TEST_NOT_FOUND = Causes.cause("A/B test not found");
 
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
 
-    private AbTestRoutes(Supplier<AetherNode> nodeSupplier) {
+    private AbTestRoutes(Supplier<ManageableNode> nodeSupplier) {
         this.nodeSupplier = nodeSupplier;
     }
 
-    public static AbTestRoutes abTestRoutes(Supplier<AetherNode> nodeSupplier) {
+    public static AbTestRoutes abTestRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new AbTestRoutes(nodeSupplier);
     }
 

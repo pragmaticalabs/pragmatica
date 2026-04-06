@@ -3,7 +3,7 @@ package org.pragmatica.aether.api.routes;
 import org.pragmatica.aether.api.DynamicConfigManager;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.http.security.AuditLog;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.api.ManagementApiResponses.ConfigRemovedResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ConfigSetResponse;
 import org.pragmatica.consensus.NodeId;
@@ -23,14 +23,14 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 /// Routes for dynamic configuration management: get, set, remove config overrides.
 public final class ConfigRoutes implements RouteSource {
     private final DynamicConfigManager configManager;
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
 
-    private ConfigRoutes(DynamicConfigManager configManager, Supplier<AetherNode> nodeSupplier) {
+    private ConfigRoutes(DynamicConfigManager configManager, Supplier<ManageableNode> nodeSupplier) {
         this.configManager = configManager;
         this.nodeSupplier = nodeSupplier;
     }
 
-    public static ConfigRoutes configRoutes(DynamicConfigManager configManager, Supplier<AetherNode> nodeSupplier) {
+    public static ConfigRoutes configRoutes(DynamicConfigManager configManager, Supplier<ManageableNode> nodeSupplier) {
         return new ConfigRoutes(configManager, nodeSupplier);
     }
 

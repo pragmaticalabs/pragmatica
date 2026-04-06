@@ -48,6 +48,12 @@ import org.slf4j.LoggerFactory;
         return registry;
     }
 
+    public static LogLevelRegistry readOnly(KVStore<AetherKey, AetherValue> kvStore) {
+        var registry = new LogLevelRegistry(null, kvStore);
+        registry.loadFromKvStore();
+        return registry;
+    }
+
     private void loadFromKvStore() {
         kvStore.forEach(LogLevelKey.class, LogLevelValue.class, this::loadLevel);
         log.info("Loaded {} log level overrides from KV-Store", registry.size());

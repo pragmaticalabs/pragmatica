@@ -19,7 +19,7 @@ import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.aether.backup.BackupService.BackupInfo;
 import org.pragmatica.aether.http.security.AuditLog;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Promise;
@@ -32,15 +32,15 @@ import java.util.stream.Stream;
 /// Routes for cluster backup management: trigger, list, restore.
 public final class BackupRoutes implements RouteSource {
     private final Supplier<BackupService> backupServiceSupplier;
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
 
-    private BackupRoutes(Supplier<BackupService> backupServiceSupplier, Supplier<AetherNode> nodeSupplier) {
+    private BackupRoutes(Supplier<BackupService> backupServiceSupplier, Supplier<ManageableNode> nodeSupplier) {
         this.backupServiceSupplier = backupServiceSupplier;
         this.nodeSupplier = nodeSupplier;
     }
 
     public static BackupRoutes backupRoutes(Supplier<BackupService> backupServiceSupplier,
-                                            Supplier<AetherNode> nodeSupplier) {
+                                            Supplier<ManageableNode> nodeSupplier) {
         return new BackupRoutes(backupServiceSupplier, nodeSupplier);
     }
 

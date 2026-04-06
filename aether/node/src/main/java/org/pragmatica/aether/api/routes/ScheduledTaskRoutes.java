@@ -7,7 +7,7 @@ import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
@@ -34,13 +34,13 @@ public final class ScheduledTaskRoutes implements RouteSource {
 
     private final ScheduledTaskRegistry registry;
     private final ScheduledTaskManager manager;
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
     private final SliceInvoker invoker;
     private final ScheduledTaskStateRegistry stateRegistry;
 
     private ScheduledTaskRoutes(ScheduledTaskRegistry registry,
                                 ScheduledTaskManager manager,
-                                Supplier<AetherNode> nodeSupplier,
+                                Supplier<ManageableNode> nodeSupplier,
                                 SliceInvoker invoker,
                                 ScheduledTaskStateRegistry stateRegistry) {
         this.registry = registry;
@@ -52,7 +52,7 @@ public final class ScheduledTaskRoutes implements RouteSource {
 
     public static ScheduledTaskRoutes scheduledTaskRoutes(ScheduledTaskRegistry registry,
                                                           ScheduledTaskManager manager,
-                                                          Supplier<AetherNode> nodeSupplier,
+                                                          Supplier<ManageableNode> nodeSupplier,
                                                           SliceInvoker invoker,
                                                           ScheduledTaskStateRegistry stateRegistry) {
         return new ScheduledTaskRoutes(registry, manager, nodeSupplier, invoker, stateRegistry);

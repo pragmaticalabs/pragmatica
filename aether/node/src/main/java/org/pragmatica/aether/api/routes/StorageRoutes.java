@@ -1,6 +1,6 @@
 package org.pragmatica.aether.api.routes;
 
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.StorageFactory.StorageSetup;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StorageStatusKey;
@@ -34,13 +34,13 @@ import java.util.stream.Stream;
 
     private static final Cause CLUSTER_INSTANCE_NOT_FOUND = Causes.cause("Storage instance not found in cluster");
 
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
 
-    private StorageRoutes(Supplier<AetherNode> nodeSupplier) {
+    private StorageRoutes(Supplier<ManageableNode> nodeSupplier) {
         this.nodeSupplier = nodeSupplier;
     }
 
-    public static StorageRoutes storageRoutes(Supplier<AetherNode> nodeSupplier) {
+    public static StorageRoutes storageRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new StorageRoutes(nodeSupplier);
     }
 
@@ -138,7 +138,7 @@ import java.util.stream.Stream;
         return node.<Object>apply(commands).flatMap(_ -> buildClusterDetailResponse(node, name));
     }
 
-    @SuppressWarnings("unchecked") private static List<KVCommand<AetherKey>> buildPublishCommands(AetherNode node) {
+    @SuppressWarnings("unchecked") private static List<KVCommand<AetherKey>> buildPublishCommands(ManageableNode node) {
         var nodeId = node.self();
         return node.storageSetups().entrySet()
                                  .stream()
@@ -169,7 +169,7 @@ import java.util.stream.Stream;
                                      info.maxBytes());
     }
 
-    private static ClusterStorageListResponse collectClusterListResponse(AetherNode node) {
+    private static ClusterStorageListResponse collectClusterListResponse(ManageableNode node) {
         var grouped = collectStatusesByInstance(node);
         var instances = grouped.entrySet().stream()
                                         .map(StorageRoutes::toClusterInstanceSummary)
@@ -215,7 +215,7 @@ import java.util.stream.Stream;
                                       readiness);
     }
 
-    private static Promise<ClusterStorageDetailResponse> buildClusterDetailResponse(AetherNode node, String name) {
+    private static Promise<ClusterStorageDetailResponse> buildClusterDetailResponse(ManageableNode node, String name) {
         var grouped = collectStatusesByInstance(node);
         return Option.option(grouped.get(name)).filter(entries -> !entries.isEmpty())
                             .map(entries -> assembleClusterDetail(name, entries))
@@ -248,7 +248,7 @@ import java.util.stream.Stream;
                                      readiness);
     }
 
-    private static Map<String, List<Map.Entry<StorageStatusKey, StorageStatusValue>>> collectStatusesByInstance(AetherNode node) {
+    private static Map<String, List<Map.Entry<StorageStatusKey, StorageStatusValue>>> collectStatusesByInstance(ManageableNode node) {
         var grouped = new LinkedHashMap<String, List<Map.Entry<StorageStatusKey, StorageStatusValue>>>();
         node.kvStore()
                     .forEach(StorageStatusKey.class,

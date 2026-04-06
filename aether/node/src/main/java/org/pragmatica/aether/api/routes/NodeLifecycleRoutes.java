@@ -2,7 +2,7 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.http.security.AuditLog;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -31,13 +31,13 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 public final class NodeLifecycleRoutes implements RouteSource {
     private static final Cause LIFECYCLE_NOT_FOUND = Causes.cause("Node lifecycle not found");
 
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
 
-    private NodeLifecycleRoutes(Supplier<AetherNode> nodeSupplier) {
+    private NodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier) {
         this.nodeSupplier = nodeSupplier;
     }
 
-    public static NodeLifecycleRoutes nodeLifecycleRoutes(Supplier<AetherNode> nodeSupplier) {
+    public static NodeLifecycleRoutes nodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new NodeLifecycleRoutes(nodeSupplier);
     }
 

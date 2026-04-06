@@ -1,7 +1,7 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.artifact.Version;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.update.CanaryAnalysisConfig;
 import org.pragmatica.aether.update.CanaryStage;
 import org.pragmatica.aether.update.CleanupPolicy;
@@ -41,13 +41,13 @@ public final class DeployRoutes implements RouteSource {
 
     private static final Cause MISSING_CANARY_STAGES = Causes.cause("Canary strategy requires at least one stage");
 
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
 
-    private DeployRoutes(Supplier<AetherNode> nodeSupplier) {
+    private DeployRoutes(Supplier<ManageableNode> nodeSupplier) {
         this.nodeSupplier = nodeSupplier;
     }
 
-    public static DeployRoutes deployRoutes(Supplier<AetherNode> nodeSupplier) {
+    public static DeployRoutes deployRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new DeployRoutes(nodeSupplier);
     }
 

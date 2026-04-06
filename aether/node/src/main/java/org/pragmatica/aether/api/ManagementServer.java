@@ -43,7 +43,7 @@ import org.pragmatica.aether.deployment.DeploymentMap.SliceDeploymentInfo;
 import org.pragmatica.aether.deployment.DeploymentMap.SliceInstanceInfo;
 import org.pragmatica.aether.metrics.observability.HttpRequestObserver;
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
@@ -96,7 +96,7 @@ public interface ManagementServer {
     Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle);
 
     static ManagementServer managementServer(int port,
-                                             Supplier<AetherNode> nodeSupplier,
+                                             Supplier<ManageableNode> nodeSupplier,
                                              AlertManager alertManager,
                                              ObservabilityDepthRegistry depthRegistry,
                                              InvocationTraceStore traceStore,
@@ -138,7 +138,7 @@ class ManagementServerImpl implements ManagementServer {
     private static final int MAX_CONTENT_LENGTH = 64 * 1024 * 1024;
 
     private final int port;
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
     private final AlertManager alertManager;
     private final ObservabilityDepthRegistry depthRegistry;
     private final InvocationTraceStore traceStore;
@@ -169,7 +169,7 @@ class ManagementServerImpl implements ManagementServer {
     private final List<RouteHandler> legacyRoutes;
 
     ManagementServerImpl(int port,
-                         Supplier<AetherNode> nodeSupplier,
+                         Supplier<ManageableNode> nodeSupplier,
                          AlertManager alertManager,
                          ObservabilityDepthRegistry depthRegistry,
                          InvocationTraceStore traceStore,
@@ -403,7 +403,7 @@ class ManagementServerImpl implements ManagementServer {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static String buildStatusJson(Supplier<AetherNode> nodeSupplier) {
+    @SuppressWarnings("JBCT-PAT-01") private static String buildStatusJson(Supplier<ManageableNode> nodeSupplier) {
         var node = nodeSupplier.get();
         var leaderId = node.leader().map(leader -> leader.id())
                                   .or("");

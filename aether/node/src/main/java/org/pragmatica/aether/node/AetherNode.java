@@ -168,7 +168,7 @@ import org.slf4j.LoggerFactory;
 
 /// Main entry point for an Aether cluster node.
 /// Assembles all components: consensus, KV-store, slice management, deployment managers.
-public interface AetherNode {
+public interface AetherNode extends ManageableNode {
     String VERSION = "1.0.0-alpha";
 
     NodeId self();

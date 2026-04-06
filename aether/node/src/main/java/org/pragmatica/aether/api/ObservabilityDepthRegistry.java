@@ -57,6 +57,12 @@ import org.slf4j.LoggerFactory;
         return registry;
     }
 
+    public static ObservabilityDepthRegistry readOnly(KVStore<AetherKey, AetherValue> kvStore) {
+        var registry = new ObservabilityDepthRegistry(null, kvStore, ObservabilityConfig.DEFAULT);
+        registry.loadFromKvStore();
+        return registry;
+    }
+
     private void loadFromKvStore() {
         kvStore.forEach(ObservabilityDepthKey.class, ObservabilityDepthValue.class, this::loadEntry);
         log.info("Loaded {} observability depth configs from KV-Store", registry.size());

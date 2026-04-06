@@ -4,7 +4,7 @@ import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.http.security.AuditLog;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.Blueprint;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -53,13 +53,13 @@ public final class SliceRoutes implements RouteSource {
 
     private static final Cause NOT_IN_BLUEPRINT = Causes.cause("Slice is not part of any active blueprint. Deploy via blueprint.");
 
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
 
-    private SliceRoutes(Supplier<AetherNode> nodeSupplier) {
+    private SliceRoutes(Supplier<ManageableNode> nodeSupplier) {
         this.nodeSupplier = nodeSupplier;
     }
 
-    public static SliceRoutes sliceRoutes(Supplier<AetherNode> nodeSupplier) {
+    public static SliceRoutes sliceRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new SliceRoutes(nodeSupplier);
     }
 
@@ -289,7 +289,7 @@ public final class SliceRoutes implements RouteSource {
                                            sliceStatuses);
     }
 
-    private BlueprintSliceStatus computeSliceStatus(AetherNode node, ResolvedSlice slice) {
+    private BlueprintSliceStatus computeSliceStatus(ManageableNode node, ResolvedSlice slice) {
         var artifact = slice.artifact();
         var targetInstances = slice.instances();
         var activeInstances = countActiveInstances(node, artifact);
@@ -297,7 +297,7 @@ public final class SliceRoutes implements RouteSource {
         return new BlueprintSliceStatus(artifact.asString(), targetInstances, activeInstances, status);
     }
 
-    private int countActiveInstances(AetherNode node, Artifact artifact) {
+    private int countActiveInstances(ManageableNode node, Artifact artifact) {
         return (int) node.deploymentMap().byArtifact(artifact)
                                        .values()
                                        .stream()
@@ -442,7 +442,7 @@ public final class SliceRoutes implements RouteSource {
         return new ClusterSlicesResponse(slices);
     }
 
-    private Map<String, SliceTargetValue> collectSliceTargets(AetherNode node) {
+    private Map<String, SliceTargetValue> collectSliceTargets(ManageableNode node) {
         var targets = new HashMap<String, SliceTargetValue>();
         node.kvStore()
                     .forEach(SliceTargetKey.class,

@@ -1,7 +1,7 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.deployment.delegation.TaskAssignmentCoordinator;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TaskAssignmentValue;
@@ -27,13 +27,13 @@ import static org.pragmatica.http.routing.PathParameter.spacer;
 public final class TaskRoutes implements RouteSource {
     private static final Cause UNKNOWN_TASK_GROUP = Causes.cause("Unknown task group");
 
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
 
-    private TaskRoutes(Supplier<AetherNode> nodeSupplier) {
+    private TaskRoutes(Supplier<ManageableNode> nodeSupplier) {
         this.nodeSupplier = nodeSupplier;
     }
 
-    public static TaskRoutes taskRoutes(Supplier<AetherNode> nodeSupplier) {
+    public static TaskRoutes taskRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new TaskRoutes(nodeSupplier);
     }
 

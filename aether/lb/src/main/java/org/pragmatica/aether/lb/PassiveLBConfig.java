@@ -19,8 +19,11 @@ public record PassiveLBConfig(int httpPort,
                               NodeInfo selfInfo,
                               List<NodeInfo> clusterNodes,
                               int clusterSize,
-                              TimeSpan forwardTimeout) {
+                              TimeSpan forwardTimeout,
+                              int managementPort) {
     public static final int DEFAULT_HTTP_PORT = 8080;
+
+    public static final int DEFAULT_MANAGEMENT_PORT = 8080;
 
     public static final TimeSpan DEFAULT_FORWARD_TIMEOUT = timeSpan(5).seconds();
 
@@ -28,6 +31,24 @@ public record PassiveLBConfig(int httpPort,
                                                   NodeInfo selfInfo,
                                                   List<NodeInfo> clusterNodes,
                                                   int clusterSize) {
-        return new PassiveLBConfig(httpPort, selfInfo, clusterNodes, clusterSize, DEFAULT_FORWARD_TIMEOUT);
+        return new PassiveLBConfig(httpPort,
+                                   selfInfo,
+                                   clusterNodes,
+                                   clusterSize,
+                                   DEFAULT_FORWARD_TIMEOUT,
+                                   DEFAULT_MANAGEMENT_PORT);
+    }
+
+    public static PassiveLBConfig passiveLBConfig(int httpPort,
+                                                  NodeInfo selfInfo,
+                                                  List<NodeInfo> clusterNodes,
+                                                  int clusterSize,
+                                                  int managementPort) {
+        return new PassiveLBConfig(httpPort,
+                                   selfInfo,
+                                   clusterNodes,
+                                   clusterSize,
+                                   DEFAULT_FORWARD_TIMEOUT,
+                                   managementPort);
     }
 }

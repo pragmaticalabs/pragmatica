@@ -6,7 +6,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.EvaluationTriggeredRespo
 import org.pragmatica.aether.api.ManagementApiResponses.TtmForecast;
 import org.pragmatica.aether.api.ManagementApiResponses.TtmStatusResponse;
 import org.pragmatica.aether.controller.ControllerConfig;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.ttm.model.TTMForecast;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -23,13 +23,13 @@ import static org.pragmatica.lang.Option.option;
 
 /// Routes for controller management: config, status, TTM status.
 public final class ControllerRoutes implements RouteSource {
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
 
-    private ControllerRoutes(Supplier<AetherNode> nodeSupplier) {
+    private ControllerRoutes(Supplier<ManageableNode> nodeSupplier) {
         this.nodeSupplier = nodeSupplier;
     }
 
-    public static ControllerRoutes controllerRoutes(Supplier<AetherNode> nodeSupplier) {
+    public static ControllerRoutes controllerRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new ControllerRoutes(nodeSupplier);
     }
 

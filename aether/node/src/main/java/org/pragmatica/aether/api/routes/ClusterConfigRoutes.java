@@ -19,6 +19,7 @@ import org.pragmatica.aether.config.cluster.ClusterConfigValidator;
 import org.pragmatica.aether.config.cluster.ClusterManagementConfig;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -46,20 +47,20 @@ import org.slf4j.LoggerFactory;
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-PAT-01"}) public final class ClusterConfigRoutes implements RouteSource {
     private static final Logger log = LoggerFactory.getLogger(ClusterConfigRoutes.class);
 
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
     private final ClusterConfigApplier applier;
 
-    private ClusterConfigRoutes(Supplier<AetherNode> nodeSupplier, ClusterConfigApplier applier) {
+    private ClusterConfigRoutes(Supplier<ManageableNode> nodeSupplier, ClusterConfigApplier applier) {
         this.nodeSupplier = nodeSupplier;
         this.applier = applier;
     }
 
-    public static ClusterConfigRoutes clusterConfigRoutes(Supplier<AetherNode> nodeSupplier,
+    public static ClusterConfigRoutes clusterConfigRoutes(Supplier<ManageableNode> nodeSupplier,
                                                           ClusterConfigApplier applier) {
         return new ClusterConfigRoutes(nodeSupplier, applier);
     }
 
-    public static ClusterConfigRoutes clusterConfigRoutes(Supplier<AetherNode> nodeSupplier) {
+    public static ClusterConfigRoutes clusterConfigRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new ClusterConfigRoutes(nodeSupplier, new ClusterConfigApplier.unused());
     }
 
@@ -102,7 +103,7 @@ import org.slf4j.LoggerFactory;
         return lookupClusterConfig().map(config -> assembleStatus(node, config));
     }
 
-    private ClusterStatusResponse assembleStatus(AetherNode node, ClusterConfigValue config) {
+    private ClusterStatusResponse assembleStatus(ManageableNode node, ClusterConfigValue config) {
         var leaderId = node.leader().map(NodeId::id)
                                   .or("none");
         var nodeInfos = buildNodeInfos(node, leaderId);
@@ -125,14 +126,14 @@ import org.slf4j.LoggerFactory;
                                          node.uptimeSeconds());
     }
 
-    private static int countSliceInstances(AetherNode node) {
+    private static int countSliceInstances(ManageableNode node) {
         return node.deploymentMap().allDeployments()
                                  .stream()
                                  .mapToInt(d -> d.instances().size())
                                  .sum();
     }
 
-    private static List<ClusterStatusNodeInfo> buildNodeInfos(AetherNode node, String leaderId) {
+    private static List<ClusterStatusNodeInfo> buildNodeInfos(ManageableNode node, String leaderId) {
         return node.metricsCollector().allMetrics()
                                     .keySet()
                                     .stream()
@@ -148,14 +149,14 @@ import org.slf4j.LoggerFactory;
                                          nid.id().equals(leaderId));
     }
 
-    private static String reconcilerStateName(AetherNode node) {
+    private static String reconcilerStateName(ManageableNode node) {
         var actualCount = node.connectedNodeCount() + 1;
         return actualCount >= node.topologyConfig().clusterSize()
               ? "CONVERGED"
               : "RECONCILING";
     }
 
-    private static Option<CertificateStatusResponse> buildCertificateExpiry(AetherNode node) {
+    private static Option<CertificateStatusResponse> buildCertificateExpiry(ManageableNode node) {
         return node.certRenewalScheduler().map(ClusterConfigRoutes::toCertStatus);
     }
 

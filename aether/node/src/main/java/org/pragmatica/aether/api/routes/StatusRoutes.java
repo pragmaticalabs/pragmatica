@@ -15,7 +15,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.ReadinessResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.StatusResponse;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 import org.pragmatica.aether.http.AppHttpServer;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
@@ -39,15 +39,15 @@ import java.util.stream.Stream;
 
 /// Routes for cluster status: health, status, nodes, events, liveness and readiness probes.
 public final class StatusRoutes implements RouteSource {
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
     private final Supplier<AppHttpServer> appHttpServerSupplier;
 
-    private StatusRoutes(Supplier<AetherNode> nodeSupplier, Supplier<AppHttpServer> appHttpServerSupplier) {
+    private StatusRoutes(Supplier<ManageableNode> nodeSupplier, Supplier<AppHttpServer> appHttpServerSupplier) {
         this.nodeSupplier = nodeSupplier;
         this.appHttpServerSupplier = appHttpServerSupplier;
     }
 
-    public static StatusRoutes statusRoutes(Supplier<AetherNode> nodeSupplier,
+    public static StatusRoutes statusRoutes(Supplier<ManageableNode> nodeSupplier,
                                             Supplier<AppHttpServer> appHttpServerSupplier) {
         return new StatusRoutes(nodeSupplier, appHttpServerSupplier);
     }
@@ -125,7 +125,7 @@ public final class StatusRoutes implements RouteSource {
         return new NodesResponse(enrichedNodes);
     }
 
-    private static Map<String, String> collectNodeRoles(AetherNode node) {
+    private static Map<String, String> collectNodeRoles(ManageableNode node) {
         var roleMap = new HashMap<String, String>();
         node.kvStore()
                     .forEach(ActivationDirectiveKey.class,
@@ -186,7 +186,7 @@ public final class StatusRoutes implements RouteSource {
         return new ReadinessResponse(status, nodeId, List.copyOf(components));
     }
 
-    private static ComponentHealth buildConsensusHealth(AetherNode node) {
+    private static ComponentHealth buildConsensusHealth(ManageableNode node) {
         var consensusReady = node.isReady();
         return new ComponentHealth("consensus",
                                    consensusReady
@@ -221,7 +221,7 @@ public final class StatusRoutes implements RouteSource {
                                              scheduler.renewalStatus().name());
     }
 
-    private static ComponentHealth buildQuorumHealth(AetherNode node) {
+    private static ComponentHealth buildQuorumHealth(ManageableNode node) {
         var connectedCount = node.connectedNodeCount();
         var hasQuorum = connectedCount + 1 >= 2;
         return new ComponentHealth("quorum", hasQuorum

@@ -3,7 +3,7 @@ package org.pragmatica.aether.api;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.DeploymentMap.SliceDeploymentInfo;
 import org.pragmatica.aether.deployment.DeploymentMap.SliceInstanceInfo;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
@@ -43,7 +43,7 @@ import org.slf4j.LoggerFactory;
     private static final double EMA_ALPHA = 0.2;
 
     private final long broadcastIntervalMs;
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
     private final AlertManager alertManager;
 
     private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
@@ -62,7 +62,7 @@ import org.slf4j.LoggerFactory;
         static final EmaState INITIAL = new EmaState(0, 0, 0, 0.0, 1.0, 0.0, 0.0);
     }
 
-    private DashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier,
+    private DashboardMetricsPublisher(Supplier<ManageableNode> nodeSupplier,
                                       AlertManager alertManager,
                                       long broadcastIntervalMs) {
         this.nodeSupplier = nodeSupplier;
@@ -70,12 +70,12 @@ import org.slf4j.LoggerFactory;
         this.broadcastIntervalMs = broadcastIntervalMs;
     }
 
-    public static DashboardMetricsPublisher dashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier,
+    public static DashboardMetricsPublisher dashboardMetricsPublisher(Supplier<ManageableNode> nodeSupplier,
                                                                       AlertManager alertManager) {
         return new DashboardMetricsPublisher(nodeSupplier, alertManager, DEFAULT_BROADCAST_INTERVAL_MS);
     }
 
-    public static DashboardMetricsPublisher dashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier,
+    public static DashboardMetricsPublisher dashboardMetricsPublisher(Supplier<ManageableNode> nodeSupplier,
                                                                       AlertManager alertManager,
                                                                       long broadcastIntervalMs) {
         return new DashboardMetricsPublisher(nodeSupplier, alertManager, broadcastIntervalMs);
@@ -373,7 +373,7 @@ import org.slf4j.LoggerFactory;
     }
 
     @SuppressWarnings("JBCT-PAT-01") private void appendNodeMetrics(StringBuilder sb,
-                                                                    AetherNode node,
+                                                                    ManageableNode node,
                                                                     Map<NodeId, Map<String, Double>> allMetrics,
                                                                     List<NodeId> sortedNodes,
                                                                     String leaderId,
@@ -431,7 +431,7 @@ import org.slf4j.LoggerFactory;
                  .append("}");
     }
 
-    private Map<String, PerNodeInvocationData> aggregateInvocationsByNode(AetherNode node) {
+    private Map<String, PerNodeInvocationData> aggregateInvocationsByNode(ManageableNode node) {
         var result = new java.util.HashMap<String, PerNodeInvocationData>();
         var deployments = node.deploymentMap().allDeployments();
         var snapshots = node.invocationMetrics().snapshot();
@@ -516,7 +516,7 @@ import org.slf4j.LoggerFactory;
         sb.append("]");
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private void appendTopology(StringBuilder sb, AetherNode node) {
+    @SuppressWarnings("JBCT-PAT-01") private void appendTopology(StringBuilder sb, ManageableNode node) {
         var loaded = node.sliceStore().loaded();
         log.debug("appendTopology: loaded slices count={}", loaded.size());
         var sliceTopologies = loaded.stream().flatMap(ls -> TopologyParser.parse(ls.slice(),
@@ -559,7 +559,7 @@ import org.slf4j.LoggerFactory;
         sb.append("]}");
     }
 
-    private void appendSchema(StringBuilder sb, AetherNode node) {
+    private void appendSchema(StringBuilder sb, ManageableNode node) {
         var entries = new ArrayList<SchemaVersionValue>();
         node.kvStore().forEach(SchemaVersionKey.class, SchemaVersionValue.class, (_, value) -> entries.add(value));
         sb.append("\"schema\":{\"datasources\":[");
@@ -581,7 +581,7 @@ import org.slf4j.LoggerFactory;
         sb.append("]}");
     }
 
-    private void appendGovernors(StringBuilder sb, AetherNode node) {
+    private void appendGovernors(StringBuilder sb, ManageableNode node) {
         sb.append("\"governors\":[");
         var governors = new ArrayList<String>();
         node.kvStore()
@@ -611,7 +611,7 @@ import org.slf4j.LoggerFactory;
         return sb.toString();
     }
 
-    private void appendClusterTopology(StringBuilder sb, AetherNode node) {
+    private void appendClusterTopology(StringBuilder sb, ManageableNode node) {
         var topologyConfig = node.topologyConfig();
         var coreNodeIds = node.initialTopology();
         var connectedCount = node.connectedNodeCount();
@@ -627,7 +627,7 @@ import org.slf4j.LoggerFactory;
                  .append("}");
     }
 
-    private void appendStrategies(StringBuilder sb, AetherNode node) {
+    private void appendStrategies(StringBuilder sb, ManageableNode node) {
         sb.append("\"strategies\":{");
         sb.append("\"deployments\":[");
         var deployments = node.deploymentManager().list();
@@ -673,7 +673,7 @@ import org.slf4j.LoggerFactory;
         sb.append("]}");
     }
 
-    private void appendStreams(StringBuilder sb, AetherNode node) {
+    private void appendStreams(StringBuilder sb, ManageableNode node) {
         sb.append("\"streams\":[");
         var streams = node.streamPartitionManager().listStreams();
         boolean first = true;
@@ -692,7 +692,7 @@ import org.slf4j.LoggerFactory;
         sb.append("]");
     }
 
-    private void appendRoutes(StringBuilder sb, AetherNode node) {
+    private void appendRoutes(StringBuilder sb, ManageableNode node) {
         sb.append("\"routes\":[");
         var routes = node.httpRouteRegistry().allRoutes();
         boolean first = true;

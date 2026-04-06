@@ -1,7 +1,7 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler.MavenResponse;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.http.ContentCategory;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.HttpStatus;
@@ -35,13 +35,13 @@ public final class MavenProtocolRoutes implements RouteHandler {
 
     private static final String REPOSITORY_INFO_PREFIX = "/repository/info/";
 
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
 
-    private MavenProtocolRoutes(Supplier<AetherNode> nodeSupplier) {
+    private MavenProtocolRoutes(Supplier<ManageableNode> nodeSupplier) {
         this.nodeSupplier = nodeSupplier;
     }
 
-    public static MavenProtocolRoutes mavenProtocolRoutes(Supplier<AetherNode> nodeSupplier) {
+    public static MavenProtocolRoutes mavenProtocolRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new MavenProtocolRoutes(nodeSupplier);
     }
 

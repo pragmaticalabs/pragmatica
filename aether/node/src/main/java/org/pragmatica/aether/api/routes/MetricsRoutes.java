@@ -16,7 +16,7 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.MetricsError;
 import org.pragmatica.aether.metrics.invocation.ThresholdStrategy;
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.http.routing.ContentCategory;
 import org.pragmatica.http.routing.ContentType;
 import org.pragmatica.http.routing.HttpError;
@@ -41,15 +41,16 @@ public final class MetricsRoutes implements RouteSource {
     private static final ContentType PROMETHEUS_CONTENT_TYPE = ContentType.contentType("text/plain; version=0.0.4; charset=utf-8",
                                                                                        ContentCategory.PLAIN_TEXT);
 
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
     private final ObservabilityRegistry observability;
 
-    private MetricsRoutes(Supplier<AetherNode> nodeSupplier, ObservabilityRegistry observability) {
+    private MetricsRoutes(Supplier<ManageableNode> nodeSupplier, ObservabilityRegistry observability) {
         this.nodeSupplier = nodeSupplier;
         this.observability = observability;
     }
 
-    public static MetricsRoutes metricsRoutes(Supplier<AetherNode> nodeSupplier, ObservabilityRegistry observability) {
+    public static MetricsRoutes metricsRoutes(Supplier<ManageableNode> nodeSupplier,
+                                              ObservabilityRegistry observability) {
         return new MetricsRoutes(nodeSupplier, observability);
     }
 
@@ -96,7 +97,7 @@ public final class MetricsRoutes implements RouteSource {
         return new MetricsFullResponse(buildLoadMetrics(node), buildDeploymentMetrics(node));
     }
 
-    private Map<String, Map<String, Double>> buildLoadMetrics(AetherNode node) {
+    private Map<String, Map<String, Double>> buildLoadMetrics(ManageableNode node) {
         Map<String, Map<String, Double>> load = new HashMap<>();
         for (var entry : node.metricsCollector().allMetrics()
                                               .entrySet()) {load.put(entry.getKey().id(),
@@ -104,7 +105,7 @@ public final class MetricsRoutes implements RouteSource {
         return load;
     }
 
-    private Map<String, List<DeploymentMetrics>> buildDeploymentMetrics(AetherNode node) {
+    private Map<String, List<DeploymentMetrics>> buildDeploymentMetrics(ManageableNode node) {
         Map<String, List<DeploymentMetrics>> deployments = new HashMap<>();
         for (var entry : node.deploymentMetricsCollector().allDeploymentMetrics()
                                                         .entrySet()) {

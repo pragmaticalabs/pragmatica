@@ -1,10 +1,20 @@
 package org.pragmatica.aether.lb;
 
+import org.pragmatica.aether.api.AlertManager;
+import org.pragmatica.aether.api.LogLevelRegistry;
+import org.pragmatica.aether.api.ManagementServer;
+import org.pragmatica.aether.api.ObservabilityDepthRegistry;
+import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.http.HttpRouteRegistry;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
 import org.pragmatica.aether.http.forward.HttpForwarder;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
+import org.pragmatica.aether.http.security.SecurityValidator;
+import org.pragmatica.aether.invoke.InvocationTraceStore;
+import org.pragmatica.aether.invoke.ScheduledTaskManager;
+import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
+import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
@@ -33,7 +43,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
-import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -62,17 +71,20 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
     private final PassiveNode<AetherKey, AetherValue> passiveNode;
     private final HttpRouteRegistry routeRegistry;
     private final HttpForwarder httpForwarder;
+    private final ManagementServer managementServer;
 
     private volatile Option<HttpServer> httpServer = Option.empty();
 
     private AetherPassiveLB(PassiveLBConfig config,
                             PassiveNode<AetherKey, AetherValue> passiveNode,
                             HttpRouteRegistry routeRegistry,
-                            HttpForwarder httpForwarder) {
+                            HttpForwarder httpForwarder,
+                            ManagementServer managementServer) {
         this.config = config;
         this.passiveNode = passiveNode;
         this.routeRegistry = routeRegistry;
         this.httpForwarder = httpForwarder;
+        this.managementServer = managementServer;
     }
 
     public static AetherPassiveLB aetherPassiveLB(PassiveLBConfig config) {
@@ -96,15 +108,53 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
                                                         deserializer,
                                                         config.forwardTimeout());
         wireRoutes(passiveNode, routeRegistry, httpForwarder);
-        return new AetherPassiveLB(config, passiveNode, routeRegistry, httpForwarder);
+        var passiveLBNode = PassiveLBNode.passiveLBNode(config, passiveNode, topologyConfig);
+        var mgmtServer = createManagementServer(config, passiveLBNode);
+        return new AetherPassiveLB(config, passiveNode, routeRegistry, httpForwarder, mgmtServer);
+    }
+
+    private static ManagementServer createManagementServer(PassiveLBConfig config, PassiveLBNode node) {
+        var kvStore = node.kvStore();
+        ScheduledTaskManager noOpTaskManager = new NoOpScheduledTaskManager();
+        return ManagementServer.managementServer(config.managementPort(),
+                                                 () -> node,
+                                                 AlertManager.readOnly(kvStore),
+                                                 ObservabilityDepthRegistry.readOnly(kvStore),
+                                                 InvocationTraceStore.invocationTraceStore(),
+                                                 LogLevelRegistry.readOnly(kvStore),
+                                                 Option.empty(),
+                                                 ScheduledTaskRegistry.scheduledTaskRegistry(),
+                                                 noOpTaskManager,
+                                                 null,
+                                                 ScheduledTaskStateRegistry.scheduledTaskStateRegistry(),
+                                                 Option.empty(),
+                                                 SecurityValidator.noOpValidator(),
+                                                 false,
+                                                 Option.empty(),
+                                                 Option.empty(),
+                                                 HttpProtocol.H1);
+    }
+
+    private static final class NoOpScheduledTaskManager implements ScheduledTaskManager {
+        @Override public void onLeaderChange(org.pragmatica.consensus.leader.LeaderNotification.LeaderChange lc) {}
+
+        @Override public void onQuorumStateChange(org.pragmatica.consensus.topology.QuorumStateNotification n) {}
+
+        @Override public int activeTimerCount() {
+            return 0;
+        }
+
+        @Override public void stop() {}
     }
 
     public Promise<Unit> start() {
-        log.info("Starting passive LB on HTTP port {}, cluster port {}",
+        log.info("Starting passive LB on HTTP port {}, management port {}, cluster port {}",
                  config.httpPort(),
+                 config.managementPort(),
                  config.selfInfo().address()
                                 .port());
-        return passiveNode.start().flatMap(_ -> startHttpServer())
+        return passiveNode.start().flatMap(_ -> managementServer.start())
+                                .flatMap(_ -> startHttpServer())
                                 .onSuccess(_ -> log.info("Passive LB started on port {}",
                                                          config.httpPort()))
                                 .onFailure(cause -> log.error("Failed to start passive LB: {}",
@@ -113,7 +163,9 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
 
     public Promise<Unit> stop() {
         log.info("Stopping passive LB");
-        return stopHttpServer().flatMap(_ -> passiveNode.stop()).onSuccess(_ -> log.info("Passive LB stopped"));
+        return stopHttpServer().flatMap(_ -> managementServer.stop())
+                             .flatMap(_ -> passiveNode.stop())
+                             .onSuccess(_ -> log.info("Passive LB stopped"));
     }
 
     public int port() {
@@ -153,8 +205,8 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
                                                             requestId);
         var routeOpt = routeRegistry.findRoute(method, path);
         if (routeOpt.isEmpty()) {
-            log.debug("No route found for {} {}, forwarding to any connected node [{}]", method, path, requestId);
-            forwardFallback(context, requestId, response);
+            log.debug("No route found for {} {} [{}]", method, path, requestId);
+            response.error(HttpStatus.NOT_FOUND, "No route found for " + method + " " + path);
             return;
         }
         var route = routeOpt.unwrap();
@@ -164,14 +216,6 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
                               requestId).onSuccess(responseData -> sendResponse(response, responseData, requestId))
                              .onFailure(cause -> response.error(HttpStatus.BAD_GATEWAY,
                                                                 cause.message()));
-    }
-
-    private void forwardFallback(HttpRequestContext context, String requestId, ResponseWriter response) {
-        httpForwarder.forwardToAnyNode(context, requestId).onSuccess(responseData -> sendResponse(response,
-                                                                                                  responseData,
-                                                                                                  requestId))
-                                      .onFailure(cause -> response.error(HttpStatus.BAD_GATEWAY,
-                                                                         cause.message()));
     }
 
     private static boolean isHealthEndpoint(String path) {

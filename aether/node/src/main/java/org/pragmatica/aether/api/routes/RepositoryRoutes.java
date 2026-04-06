@@ -5,7 +5,7 @@ import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -28,13 +28,13 @@ import static org.pragmatica.aether.api.ManagementApiResponses.ArtifactInfoRespo
 public final class RepositoryRoutes implements RouteSource {
     private static final Cause INVALID_PATH = Causes.cause("Invalid artifact path. Expected: /repository/info/{groupPath}/{artifactId}/{version}");
 
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
 
-    private RepositoryRoutes(Supplier<AetherNode> nodeSupplier) {
+    private RepositoryRoutes(Supplier<ManageableNode> nodeSupplier) {
         this.nodeSupplier = nodeSupplier;
     }
 
-    public static RepositoryRoutes repositoryRoutes(Supplier<AetherNode> nodeSupplier) {
+    public static RepositoryRoutes repositoryRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new RepositoryRoutes(nodeSupplier);
     }
 
@@ -67,7 +67,7 @@ public final class RepositoryRoutes implements RouteSource {
                                  .map(resolved -> buildResponse(node, artifact, resolved));
     }
 
-    private ArtifactInfoResponse buildResponse(AetherNode node,
+    private ArtifactInfoResponse buildResponse(ManageableNode node,
                                                Artifact artifact,
                                                ArtifactStore.ResolvedArtifact resolved) {
         var meta = resolved.metadata();

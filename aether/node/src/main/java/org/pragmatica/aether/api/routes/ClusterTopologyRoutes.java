@@ -3,7 +3,7 @@ package org.pragmatica.aether.api.routes;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.TopologyNodeDetail;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.consensus.NodeId;
@@ -24,13 +24,13 @@ import static org.pragmatica.aether.api.ManagementApiResponses.ClusterTopologySt
 
 /// Routes for cluster topology growth status: core count, limits, worker count.
 public final class ClusterTopologyRoutes implements RouteSource {
-    private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<ManageableNode> nodeSupplier;
 
-    private ClusterTopologyRoutes(Supplier<AetherNode> nodeSupplier) {
+    private ClusterTopologyRoutes(Supplier<ManageableNode> nodeSupplier) {
         this.nodeSupplier = nodeSupplier;
     }
 
-    public static ClusterTopologyRoutes clusterTopologyRoutes(Supplier<AetherNode> nodeSupplier) {
+    public static ClusterTopologyRoutes clusterTopologyRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new ClusterTopologyRoutes(nodeSupplier);
     }
 

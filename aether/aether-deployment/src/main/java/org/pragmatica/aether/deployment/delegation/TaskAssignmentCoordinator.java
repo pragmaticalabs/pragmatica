@@ -54,6 +54,24 @@ public sealed interface TaskAssignmentCoordinator {
     Map<TaskGroup, TaskAssignmentValue> assignments();
     Result<Unit> reassign(TaskGroup group, NodeId target);
 
+    static TaskAssignmentCoordinator noOp() {
+        return new NoOpCoordinator();
+    }
+
+    record NoOpCoordinator() implements TaskAssignmentCoordinator {
+        @Override public void onLeaderChange(LeaderChange leaderChange) {}
+
+        @Override public void onTopologyChange(TopologyChangeNotification notification) {}
+
+        @Override public Map<TaskGroup, TaskAssignmentValue> assignments() {
+            return Map.of();
+        }
+
+        @Override public Result<Unit> reassign(TaskGroup group, NodeId target) {
+            return Result.unitResult();
+        }
+    }
+
     static TaskAssignmentCoordinator taskAssignmentCoordinator(NodeId self,
                                                                ClusterNode<KVCommand<AetherKey>> clusterNode,
                                                                KVStore<AetherKey, AetherValue> kvStore,
