@@ -1,5 +1,5 @@
 #!/bin/bash
-# test-scale-quorum-safety.sh — Scale to 1, verify rejection
+# test-scale-quorum-safety.sh — Verify rejection of unsafe scale operations
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -14,17 +14,13 @@ test_seed_config() {
 
 test_scale_api_available() {
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/scale" \
-        -X POST \
-        -H "X-API-Key: ${API_KEY}" \
-        -H "Content-Type: application/json" \
-        -d '{"coreCount":5,"expectedVersion":0}')
+    status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/config" -H "X-API-Key: ${API_KEY}")
     if [ "$status" = "000" ] || [ "$status" = "" ]; then
-        skip_test "Scale API" "Scale API endpoint not available"
+        skip_test "Scale API" "Cluster config endpoint not available"
         print_summary
         exit 0
     fi
-    log_pass "Scale API endpoint responds (status: ${status})"
+    log_pass "Cluster config available (status: ${status})"
 }
 
 test_initial_state() {
@@ -34,7 +30,6 @@ test_initial_state() {
 }
 
 test_reject_scale_to_1() {
-    # Scaling below minimum (3) should be rejected
     local status
     status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/scale" \
         -X POST \
@@ -42,7 +37,6 @@ test_reject_scale_to_1() {
         -H "Content-Type: application/json" \
         -d '{"coreCount":1,"expectedVersion":0}')
 
-    # Expect 400 or 422 (rejected) — NOT 200
     if [ "$status" -ge 400 ] && [ "$status" -lt 500 ] 2>/dev/null; then
         log_pass "Scale to 1 rejected (status: ${status})"
         return 0
@@ -68,7 +62,6 @@ test_reject_scale_to_2() {
 }
 
 test_reject_scale_above_max() {
-    # Config max is 15
     local status
     status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/scale" \
         -X POST \

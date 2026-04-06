@@ -251,9 +251,13 @@ seed_cluster_config() {
 
 scale_cluster() {
     local target="$1"
-    log_info "Scaling cluster to ${target} nodes" >&2
+    local leader
+    leader=$(cluster_leader)
+    log_info "Scaling cluster to ${target} nodes (leader: ${leader})" >&2
     # Must hit the leader — CTM.setDesiredSize() only activates on leader
-    leader_api_post "/api/cluster/scale" "{\"coreCount\":${target},\"expectedVersion\":0}"
+    local result
+    result=$(leader_api_post "/api/cluster/scale" "{\"coreCount\":${target},\"expectedVersion\":0}")
+    log_info "Scale result: ${result}" >&2
 }
 
 # POST to the leader node — finds leader via CLI, targets its management port

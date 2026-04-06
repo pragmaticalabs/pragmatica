@@ -19,17 +19,13 @@ test_seed_config() {
 
 test_scale_api_available() {
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/scale" \
-        -X POST \
-        -H "X-API-Key: ${API_KEY}" \
-        -H "Content-Type: application/json" \
-        -d '{"coreCount":5,"expectedVersion":0}')
+    status=$(http_status "${CLUSTER_ENDPOINT}/api/cluster/config" -H "X-API-Key: ${API_KEY}")
     if [ "$status" = "000" ] || [ "$status" = "" ]; then
-        skip_test "Scale API" "Scale API endpoint not available"
+        skip_test "Scale API" "Cluster config endpoint not available"
         print_summary
         exit 0
     fi
-    log_pass "Scale API endpoint responds (status: ${status})"
+    log_pass "Cluster config available (status: ${status})"
 }
 
 test_scale_down_to_3() {
