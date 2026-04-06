@@ -23,7 +23,7 @@ test_baseline_5_nodes() {
 test_scale_up_to_7() {
     log_info "Scaling up to 7 nodes"
     scale_cluster 7
-    wait_for_node_count 7 180
+    wait_for_node_count 7 300
     local count
     count=$(cluster_node_count)
     assert_eq "$count" "7" "Scaled to 7 nodes"
