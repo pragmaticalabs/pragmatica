@@ -29,17 +29,17 @@ test_kill_two_nodes() {
     log_info "Killing node 2: ${victim2}"
     kill_node "$victim2"
 
-    # Wait for failure detection
-    wait_for_node_count 3 60
+    # Wait for failure detection (auto-heal may restore before we observe 3)
+    sleep 15
     local count
     count=$(cluster_node_count)
-    assert_eq "$count" "3" "Cluster survives with 3 nodes (quorum)"
+    assert_ge "$count" "3" "Cluster survives with quorum after 2 kills (${count} nodes)"
 }
 
 test_quorum_maintained() {
     local health
     health=$(aether_field health status)
-    assert_eq "$health" "healthy" "Cluster healthy with 3 nodes"
+    assert_eq "$health" "healthy" "Cluster healthy after 2 kills"
 }
 
 test_leader_still_active() {
