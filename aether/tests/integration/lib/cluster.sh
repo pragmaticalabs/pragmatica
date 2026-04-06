@@ -245,7 +245,8 @@ seed_cluster_config() {
     toml_content=$(cat "$config_file")
     local json_body
     json_body=$(python3 -c "import sys,json; print(json.dumps({'tomlContent': sys.stdin.read(), 'expectedVersion': 0}))" <<< "$toml_content")
-    api_post "/api/cluster/config" "$json_body"
+    # Use direct core node — ClusterConfigApplier needs real CTM
+    direct_api_post "/api/cluster/config" "$json_body"
 }
 
 scale_cluster() {
@@ -253,8 +254,9 @@ scale_cluster() {
     log_info "Scaling cluster to ${target} nodes" >&2
     # Get current cluster config version for optimistic concurrency
     local version
-    version=$(api_get "/api/cluster/config" | python3 -c "import sys,json; print(json.load(sys.stdin).get('version',0))" 2>/dev/null || echo "0")
-    api_post "/api/cluster/scale" "{\"coreCount\":${target},\"expectedVersion\":${version}}"
+    version=$(direct_api_get "/api/cluster/config" | python3 -c "import sys,json; print(json.load(sys.stdin).get('configVersion',0))" 2>/dev/null || echo "0")
+    # Use direct core node — CTM.setDesiredSize() must run on a node with real CTM
+    direct_api_post "/api/cluster/scale" "{\"coreCount\":${target},\"expectedVersion\":${version}}"
 }
 
 # ---------------------------------------------------------------------------

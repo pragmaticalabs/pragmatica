@@ -93,10 +93,30 @@ api_delete() {
     curl -sf -X DELETE -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}${path}"
 }
 
-# Direct node access (bypasses LB — for node-specific operations like kill_node)
+# Direct core node access (bypasses LB — for CTM-impacting writes and node-specific queries)
+# Tries ports MGMT_PORT through MGMT_PORT+NODE_COUNT-1 with failover
 direct_api_get() {
-    local node_port="$1" path="$2"
-    curl -sf -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${node_port}${path}"
+    local path="$1"
+    local base_port="${MGMT_PORT}"
+    for i in $(seq 0 $((NODE_COUNT - 1))); do
+        local port=$((base_port + i))
+        local result
+        result=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}${path}" 2>/dev/null) && { echo "$result"; return 0; }
+    done
+    return 1
+}
+
+direct_api_post() {
+    local path="$1"
+    local body="${2:-"{}"}"
+    local base_port="${MGMT_PORT}"
+    for i in $(seq 0 $((NODE_COUNT - 1))); do
+        local port=$((base_port + i))
+        local result
+        result=$(curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+            -d "$body" "http://${TARGET_HOST}:${port}${path}" 2>/dev/null) && { echo "$result"; return 0; }
+    done
+    return 1
 }
 
 # HTTP helpers — app HTTP (port 8070)
