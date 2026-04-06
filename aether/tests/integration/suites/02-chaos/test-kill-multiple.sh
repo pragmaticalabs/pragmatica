@@ -60,7 +60,7 @@ cleanup() {
     log_info "Restoring all containers for clean state..."
     restart_all_nodes
     wait_for_node_count 5 120 || true
-    wait_for_leader 60 || true
+    wait_for_leader 90 || true
 }
 
 run_test "Initial 5 nodes" test_initial_state
