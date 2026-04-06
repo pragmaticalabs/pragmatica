@@ -8,6 +8,7 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_seed_config() {
     wait_for_cluster 60
+    wait_for_leader 60
     seed_cluster_config
 }
 

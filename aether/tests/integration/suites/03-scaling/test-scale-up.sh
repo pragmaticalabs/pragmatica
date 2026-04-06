@@ -13,6 +13,7 @@ MAX_ERROR_RATE="${MAX_ERROR_RATE:-2.0}"
 
 test_seed_config() {
     wait_for_cluster 60
+    wait_for_leader 60
     seed_cluster_config
 }
 

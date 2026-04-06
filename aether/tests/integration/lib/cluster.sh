@@ -245,15 +245,34 @@ seed_cluster_config() {
     toml_content=$(cat "$config_file")
     local json_body
     json_body=$(python3 -c "import sys,json; print(json.dumps({'tomlContent': sys.stdin.read(), 'expectedVersion': 0}))" <<< "$toml_content")
-    # Use direct core node — ClusterConfigApplier needs real CTM
-    direct_api_post "/api/cluster/config" "$json_body"
+    # Must hit the leader — CTM only runs on leader
+    leader_api_post "/api/cluster/config" "$json_body"
 }
 
 scale_cluster() {
     local target="$1"
     log_info "Scaling cluster to ${target} nodes" >&2
-    # expectedVersion=0 means "skip version check" in the scale API
-    direct_api_post "/api/cluster/scale" "{\"coreCount\":${target},\"expectedVersion\":0}"
+    # Must hit the leader — CTM.setDesiredSize() only activates on leader
+    leader_api_post "/api/cluster/scale" "{\"coreCount\":${target},\"expectedVersion\":0}"
+}
+
+# POST to the leader node — finds leader via CLI, targets its management port
+leader_api_post() {
+    local path="$1"
+    local body="${2:-"{}"}"
+    local leader
+    leader=$(cluster_leader)
+    if [ -z "$leader" ] || [ "$leader" = "none" ]; then
+        log_warn "No leader available, falling back to direct_api_post" >&2
+        direct_api_post "$path" "$body"
+        return
+    fi
+    # Derive port from leader node ID (node-N → MGMT_PORT + N-1)
+    local node_num
+    node_num=$(echo "$leader" | sed 's/node-//')
+    local port=$((MGMT_PORT + node_num - 1))
+    curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+        -d "$body" "http://${TARGET_HOST}:${port}${path}"
 }
 
 # ---------------------------------------------------------------------------
