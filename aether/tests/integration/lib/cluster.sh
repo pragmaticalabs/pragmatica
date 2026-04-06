@@ -8,16 +8,11 @@ source "${LIB_DIR}/common.sh"
 # Cluster queries (CLI-based)
 # ---------------------------------------------------------------------------
 cluster_node_count() {
-    # Query a core node directly — the LB includes itself in peer count.
-    # Uses connectedPeers + 1 (self) from /api/health on a core node.
-    local base_port="${MGMT_PORT}"
-    for i in $(seq 0 $((NODE_COUNT - 1))); do
-        local port=$((base_port + i))
-        local result
-        result=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}/api/health" 2>/dev/null \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('connectedPeers',0)+1)" 2>/dev/null) && { echo "$result"; return 0; }
-    done
-    echo "0"
+    # Use topology endpoint coreCount — excludes passive nodes (LB).
+    # Falls back to connectedPeers+1 via direct core node if topology unavailable.
+    api_get "/api/cluster/topology" \
+        | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('coreCount',0))" 2>/dev/null \
+        || echo "0"
 }
 
 cluster_leader() {

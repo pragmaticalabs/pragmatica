@@ -69,16 +69,18 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
                             .toList();
     }
 
-    private Option<NodeInfo> parsePeerAddress(String hostPort) {
-        var parts = hostPort.split(":");
-        if (parts.length != 2) {
-            log.warn("Invalid peer address (expected host:port): {}", hostPort);
-            return Option.none();
-        }
-        return nodeAddress(parts[0],
-                           Integer.parseInt(parts[1])).map(addr -> NodeInfo.nodeInfo(NodeId.randomNodeId(),
-                                                                                     addr))
-                          .option();
+    private Option<NodeInfo> parsePeerAddress(String peerStr) {
+        var parts = peerStr.split(":");
+        if (parts.length == 3) {return NodeId.nodeId(parts[0]).flatMap(nodeId -> nodeAddress(parts[1],
+                                                                                             Integer.parseInt(parts[2])).map(addr -> NodeInfo.nodeInfo(nodeId,
+                                                                                                                                                       addr)))
+                                                    .option();}
+        if (parts.length == 2) {return nodeAddress(parts[0],
+                                                   Integer.parseInt(parts[1])).map(addr -> NodeInfo.nodeInfo(NodeId.randomNodeId(),
+                                                                                                             addr))
+                                                  .option();}
+        log.warn("Invalid peer address (expected nodeId:host:port or host:port): {}", peerStr);
+        return Option.none();
     }
 
     private Option<Integer> parseIntOption(String argPrefix, String envName) {
