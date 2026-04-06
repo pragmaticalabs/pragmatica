@@ -154,18 +154,16 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
                  config.selfInfo().address()
                                 .port());
         return passiveNode.start().flatMap(_ -> managementServer.start())
-                                .flatMap(_ -> startHttpServer())
                                 .onSuccess(_ -> log.info("Passive LB started on port {}",
-                                                         config.httpPort()))
+                                                         config.managementPort()))
                                 .onFailure(cause -> log.error("Failed to start passive LB: {}",
                                                               cause.message()));
     }
 
     public Promise<Unit> stop() {
         log.info("Stopping passive LB");
-        return stopHttpServer().flatMap(_ -> managementServer.stop())
-                             .flatMap(_ -> passiveNode.stop())
-                             .onSuccess(_ -> log.info("Passive LB stopped"));
+        return managementServer.stop().flatMap(_ -> passiveNode.stop())
+                                    .onSuccess(_ -> log.info("Passive LB stopped"));
     }
 
     public int port() {

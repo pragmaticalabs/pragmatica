@@ -132,7 +132,7 @@ log_step "Waiting for cluster to form"
 wait_for_cluster_direct 120
 
 log_step "Waiting for passive LB"
-wait_for "LB healthy" "curl -sf http://${HOST}:${LB_PORT}/health >/dev/null 2>&1" 60
+wait_for "LB healthy" "curl -sf http://${HOST}:${LB_PORT}/health/live >/dev/null 2>&1" 60
 
 LEADER=$(cluster_leader 2>/dev/null || echo "pending")
 COUNT=$(cluster_node_count 2>/dev/null || echo "?")
