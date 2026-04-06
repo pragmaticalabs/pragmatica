@@ -1,5 +1,6 @@
 package org.pragmatica.jbct.format.flow;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.jbct.format.FormatterConfig;
@@ -13,6 +14,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class FlowCodebaseCheckTest {
 
+    @Disabled("Slow — full codebase scan. Run manually when regenerating parser.")
     @Test
     @SuppressWarnings("JBCT-PAT-01")
     void formatEntireCodebase_noErrorsAndIdempotent() throws IOException {

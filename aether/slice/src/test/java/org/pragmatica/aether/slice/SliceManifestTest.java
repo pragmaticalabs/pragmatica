@@ -178,7 +178,7 @@ class SliceManifestTest {
 
         @Test
         void checkEnvelopeCompatibility_supportedVersion_succeeds() {
-            SliceManifest.checkEnvelopeCompatibility(Option.some("1"))
+            SliceManifest.checkEnvelopeCompatibility(Option.some("1000"))
                          .onFailure(cause -> fail("Expected success but got: " + cause.message()));
         }
 
@@ -195,8 +195,8 @@ class SliceManifestTest {
         }
 
         @Test
-        void checkEnvelopeCompatibility_currentEnvelopeVersion8_succeeds() {
-            SliceManifest.checkEnvelopeCompatibility(Option.some("8"))
+        void checkEnvelopeCompatibility_currentEnvelopeVersion1000_succeeds() {
+            SliceManifest.checkEnvelopeCompatibility(Option.some("1000"))
                          .onFailure(cause -> fail("Expected success but got: " + cause.message()));
         }
 
