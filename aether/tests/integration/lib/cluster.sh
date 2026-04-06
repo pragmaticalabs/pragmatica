@@ -8,9 +8,16 @@ source "${LIB_DIR}/common.sh"
 # Cluster queries (CLI-based)
 # ---------------------------------------------------------------------------
 cluster_node_count() {
-    # Use connectedPeers + 1 (self) from health endpoint — reflects actual QUIC topology.
-    # nodeCount/metricsNodeCount come from metrics aggregation which lags on startup.
-    api_get "/api/health" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('connectedPeers',0)+1)" 2>/dev/null
+    # Query a core node directly — the LB includes itself in peer count.
+    # Uses connectedPeers + 1 (self) from /api/health on a core node.
+    local base_port="${MGMT_PORT}"
+    for i in $(seq 0 $((NODE_COUNT - 1))); do
+        local port=$((base_port + i))
+        local result
+        result=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}/api/health" 2>/dev/null \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('connectedPeers',0)+1)" 2>/dev/null) && { echo "$result"; return 0; }
+    done
+    echo "0"
 }
 
 cluster_leader() {
