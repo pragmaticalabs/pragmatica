@@ -188,10 +188,11 @@ start_node() {
 }
 
 # Restart all containers for clean cluster formation
-# Also removes auto-provisioned containers to restore baseline topology
+# Stops everything first (prevents CTM re-provisioning during restart), removes auto-provisioned,
+# then starts compose containers fresh
 restart_all_nodes() {
-    log_info "Restarting all cluster containers..."
-    remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=aether-node-' -q | xargs -r docker restart" 2>/dev/null
+    log_info "Restoring cluster to baseline..."
+    remote_exec "docker ps -a --filter 'name=aether-node-' -q | xargs -r docker stop 2>/dev/null; docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=aether-node-' -q | xargs -r docker start" 2>/dev/null
 }
 
 drain_node() {
