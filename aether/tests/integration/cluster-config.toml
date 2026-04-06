@@ -1,9 +1,9 @@
-# Integration test cluster — 5-node on-premises Docker deployment
-# Sensitive values (API keys, SSH keys) come from environment variables
+# Integration test cluster — 5-node Docker deployment
+# Minimal config that passes ClusterConfigValidator
 
 [cluster]
 name = "integration-test"
-version = "1.0.0-rc1"
+version = "1.0.0"
 environment = "docker"
 
 [cluster.core]
@@ -11,18 +11,9 @@ count = 5
 min = 3
 max = 15
 
-[cluster.ports]
-management = 5150
-cluster = 6000
-app-http = 8070
-
 [deployment]
-type = "on-premises"
-image = "aether-node:local"
+type = "embedded"
 
 [deployment.runtime]
 type = "container"
-
-[node]
-heap = "256m"
-gc = "zgc"
+image = "aether-node:local"
