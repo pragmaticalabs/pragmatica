@@ -39,6 +39,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
     private void run() {
         var httpPort = parseIntOption("--http-port=", "LB_HTTP_PORT").or(DEFAULT_HTTP_PORT);
         var clusterPort = parseIntOption("--cluster-port=", "LB_CLUSTER_PORT").or(DEFAULT_CLUSTER_PORT);
+        var managementPort = parseIntOption("--management-port=", "LB_MANAGEMENT_PORT");
         var nodeId = parseNodeId();
         var peers = parsePeers();
         if (peers.isEmpty()) {
@@ -46,8 +47,8 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
             System.exit(1);
         }
         var selfInfo = NodeInfo.nodeInfo(nodeId, nodeAddress("0.0.0.0", clusterPort).unwrap(), NodeRole.PASSIVE);
-        var config = PassiveLBConfig.passiveLBConfig(httpPort, selfInfo, peers, peers.size());
-        logStartupInfo(httpPort, clusterPort, nodeId, peers);
+        var config = PassiveLBConfig.passiveLBConfig(httpPort, selfInfo, peers, peers.size(), managementPort);
+        logStartupInfo(httpPort, clusterPort, managementPort, nodeId, peers);
         var lb = AetherPassiveLB.aetherPassiveLB(config);
         registerShutdownHook(lb);
         startAndWait(lb);
@@ -97,12 +98,17 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
         return Option.option(System.getenv(name)).filter(s -> !s.isBlank());
     }
 
-    private static void logStartupInfo(int httpPort, int clusterPort, NodeId nodeId, List<NodeInfo> peers) {
+    private static void logStartupInfo(int httpPort,
+                                       int clusterPort,
+                                       Option<Integer> managementPort,
+                                       NodeId nodeId,
+                                       List<NodeInfo> peers) {
         log.info("Starting Aether Passive LB");
-        log.info("  HTTP port:    {}", httpPort);
-        log.info("  Cluster port: {}", clusterPort);
-        log.info("  Node ID:      {}", nodeId);
-        log.info("  Peers:        {}", peers.size());
+        log.info("  HTTP port:       {}", httpPort);
+        log.info("  Cluster port:    {}", clusterPort);
+        log.info("  Management port: {}", managementPort.map(String::valueOf).or("disabled"));
+        log.info("  Node ID:         {}", nodeId);
+        log.info("  Peers:           {}", peers.size());
     }
 
     private void registerShutdownHook(AetherPassiveLB lb) {

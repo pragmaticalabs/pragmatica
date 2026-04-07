@@ -104,51 +104,88 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
     }
 
     public Promise<Unit> start() {
+        var mgmtPortDescription = config.managementPort().map(String::valueOf).or("disabled");
         log.info("Starting passive LB on HTTP port {}, management port {}, cluster port {}",
                  config.httpPort(),
-                 config.managementPort(),
-                 config.selfInfo().address()
-                                .port());
-        return passiveNode.start().flatMap(_ -> startManagementHttpServer())
-                                .onSuccess(_ -> log.info("Passive LB started — management on port {}",
-                                                         config.managementPort()))
-                                .onFailure(cause -> log.error("Failed to start passive LB: {}",
-                                                              cause.message()));
+                 mgmtPortDescription,
+                 config.selfInfo().address().port());
+        if (config.managementPort().isEmpty()) {
+            log.warn("Management API forwarding DISABLED — LB_MANAGEMENT_PORT not set. "
+                    + "Set LB_MANAGEMENT_PORT to enable management API forwarding on a dedicated port.");
+        }
+        return passiveNode.start()
+                          .flatMap(_ -> startHttpServer())
+                          .flatMap(_ -> startManagementHttpServerIfEnabled())
+                          .onSuccess(_ -> log.info("Passive LB started on port {}", config.httpPort()))
+                          .onFailure(cause -> log.error("Failed to start passive LB: {}", cause.message()));
     }
 
     public Promise<Unit> stop() {
         log.info("Stopping passive LB");
-        return stopManagementHttpServer().flatMap(_ -> passiveNode.stop())
-                                       .onSuccess(_ -> log.info("Passive LB stopped"));
+        return stopManagementHttpServer().flatMap(_ -> stopHttpServer())
+                                         .flatMap(_ -> passiveNode.stop())
+                                         .onSuccess(_ -> log.info("Passive LB stopped"));
     }
 
     public int port() {
         return config.httpPort();
     }
 
-    private Promise<Unit> startManagementHttpServer() {
-        var serverConfig = HttpServerConfig.httpServerConfig("passive-lb-management",
-                                                             config.managementPort())
-        .withMaxContentLength(MAX_CONTENT_LENGTH);
-        return HttpServer.httpServer(serverConfig, this::handleManagementRequest).onSuccess(server -> managementHttpServer = Option.some(server))
-                                    .mapToUnit();
+    private Promise<Unit> startHttpServer() {
+        var serverConfig = HttpServerConfig.httpServerConfig("passive-lb", config.httpPort())
+                                           .withMaxContentLength(MAX_CONTENT_LENGTH);
+        return HttpServer.httpServer(serverConfig, this::handleAppRequest)
+                         .onSuccess(server -> httpServer = Option.some(server))
+                         .mapToUnit();
+    }
+
+    private Promise<Unit> stopHttpServer() {
+        return httpServer.map(HttpServer::stop).or(Promise.success(Unit.unit()));
+    }
+
+    private Promise<Unit> startManagementHttpServerIfEnabled() {
+        return config.managementPort()
+                     .map(this::startManagementHttpServer)
+                     .or(Promise.success(Unit.unit()));
+    }
+
+    private Promise<Unit> startManagementHttpServer(int managementPort) {
+        var serverConfig = HttpServerConfig.httpServerConfig("passive-lb-management", managementPort)
+                                           .withMaxContentLength(MAX_CONTENT_LENGTH);
+        return HttpServer.httpServer(serverConfig, this::handleManagementRequest)
+                         .onSuccess(server -> managementHttpServer = Option.some(server))
+                         .onSuccess(_ -> log.info("Management API forwarding enabled on port {}", managementPort))
+                         .mapToUnit();
     }
 
     private Promise<Unit> stopManagementHttpServer() {
         return managementHttpServer.map(HttpServer::stop).or(Promise.success(Unit.unit()));
     }
 
-    private Promise<Unit> startHttpServer() {
-        var serverConfig = HttpServerConfig.httpServerConfig("passive-lb",
-                                                             config.httpPort())
-        .withMaxContentLength(MAX_CONTENT_LENGTH);
-        var serverPromise = Option.some(HttpServer.httpServer(serverConfig, this::handleRequest))
-                                       .or(HttpServer.httpServer(serverConfig, this::handleRequest));
-        return serverPromise.onSuccess(server -> httpServer = Option.some(server)).mapToUnit();
-    }
-
-    private Promise<Unit> stopHttpServer() {
-        return httpServer.map(HttpServer::stop).or(Promise.success(Unit.unit()));
+    private void handleAppRequest(RequestContext request, ResponseWriter response) {
+        var method = request.method().name();
+        var path = request.path();
+        var requestId = request.requestId();
+        if (isHealthEndpoint(path)) {
+            sendHealthResponse(response, requestId);
+            return;
+        }
+        var context = HttpRequestContext.httpRequestContext(path,
+                                                            method,
+                                                            request.queryParams().asMap(),
+                                                            request.headers().asMap(),
+                                                            request.body(),
+                                                            requestId);
+        var routeOpt = routeRegistry.findRoute(method, path);
+        if (routeOpt.isEmpty()) {
+            log.debug("No route found for {} {} [{}]", method, path, requestId);
+            response.error(HttpStatus.NOT_FOUND, "No route found for " + method + " " + path);
+            return;
+        }
+        var route = routeOpt.unwrap();
+        httpForwarder.forward(context, route.httpMethod(), route.pathPrefix(), requestId)
+                     .onSuccess(responseData -> sendResponse(response, responseData, requestId))
+                     .onFailure(cause -> response.error(HttpStatus.BAD_GATEWAY, cause.message()));
     }
 
     private void handleManagementRequest(RequestContext request, ResponseWriter response) {
@@ -165,44 +202,9 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
                                                             request.headers().asMap(),
                                                             request.body(),
                                                             requestId);
-        httpForwarder.forwardManagement(context, requestId).onSuccess(responseData -> sendResponse(response,
-                                                                                                   responseData,
-                                                                                                   requestId))
-                                       .onFailure(cause -> response.error(HttpStatus.BAD_GATEWAY,
-                                                                          cause.message()));
-    }
-
-    private void handleRequest(RequestContext request, ResponseWriter response) {
-        var method = request.method().name();
-        var path = request.path();
-        var requestId = request.requestId();
-        if (isHealthEndpoint(path)) {
-            sendHealthResponse(response, requestId);
-            return;
-        }
-        log.debug("Route lookup: {} {} — registry has {} routes",
-                  method,
-                  path,
-                  routeRegistry.allRoutes().size());
-        var context = HttpRequestContext.httpRequestContext(path,
-                                                            method,
-                                                            request.queryParams().asMap(),
-                                                            request.headers().asMap(),
-                                                            request.body(),
-                                                            requestId);
-        var routeOpt = routeRegistry.findRoute(method, path);
-        if (routeOpt.isEmpty()) {
-            log.debug("No route found for {} {} [{}]", method, path, requestId);
-            response.error(HttpStatus.NOT_FOUND, "No route found for " + method + " " + path);
-            return;
-        }
-        var route = routeOpt.unwrap();
-        httpForwarder.forward(context,
-                              route.httpMethod(),
-                              route.pathPrefix(),
-                              requestId).onSuccess(responseData -> sendResponse(response, responseData, requestId))
-                             .onFailure(cause -> response.error(HttpStatus.BAD_GATEWAY,
-                                                                cause.message()));
+        httpForwarder.forwardManagement(context, requestId)
+                     .onSuccess(responseData -> sendResponse(response, responseData, requestId))
+                     .onFailure(cause -> response.error(HttpStatus.BAD_GATEWAY, cause.message()));
     }
 
     private static boolean isHealthEndpoint(String path) {

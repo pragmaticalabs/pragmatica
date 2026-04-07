@@ -9,8 +9,9 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC
 MGMT_PORT="${MGMT_PORT:-5150}"
 APP_PORT="${APP_PORT:-8070}"
 LB_PORT="${LB_PORT:-9090}"
-# All test traffic routes through the passive LB by default
-CLUSTER_ENDPOINT="${CLUSTER_ENDPOINT:-http://${TARGET_HOST}:${LB_PORT}}"
+LB_MGMT_PORT="${LB_MGMT_PORT:-9091}"
+# App traffic → LB public port; management API → LB management port (separate port, security-critical)
+CLUSTER_ENDPOINT="${CLUSTER_ENDPOINT:-http://${TARGET_HOST}:${LB_MGMT_PORT}}"
 APP_ENDPOINT="${APP_ENDPOINT:-http://${TARGET_HOST}:${LB_PORT}}"
 LB_ENDPOINT="${LB_ENDPOINT:-http://${TARGET_HOST}:${LB_PORT}}"
 # Direct node access (for node-specific queries and CLI failover)
