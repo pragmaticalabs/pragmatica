@@ -40,6 +40,8 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
         var httpPort = parseIntOption("--http-port=", "LB_HTTP_PORT").or(DEFAULT_HTTP_PORT);
         var clusterPort = parseIntOption("--cluster-port=", "LB_CLUSTER_PORT").or(DEFAULT_CLUSTER_PORT);
         var managementPort = parseIntOption("--management-port=", "LB_MANAGEMENT_PORT");
+        var managementMaxContentLength = parseIntOption("--management-max-content-length=",
+                                                        "LB_MANAGEMENT_MAX_CONTENT_LENGTH");
         var nodeId = parseNodeId();
         var peers = parsePeers();
         if (peers.isEmpty()) {
@@ -47,7 +49,12 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
             System.exit(1);
         }
         var selfInfo = NodeInfo.nodeInfo(nodeId, nodeAddress("0.0.0.0", clusterPort).unwrap(), NodeRole.PASSIVE);
-        var config = PassiveLBConfig.passiveLBConfig(httpPort, selfInfo, peers, peers.size(), managementPort);
+        var config = PassiveLBConfig.passiveLBConfig(httpPort,
+                                                     selfInfo,
+                                                     peers,
+                                                     peers.size(),
+                                                     managementPort,
+                                                     managementMaxContentLength);
         logStartupInfo(httpPort, clusterPort, managementPort, nodeId, peers);
         var lb = AetherPassiveLB.aetherPassiveLB(config);
         registerShutdownHook(lb);

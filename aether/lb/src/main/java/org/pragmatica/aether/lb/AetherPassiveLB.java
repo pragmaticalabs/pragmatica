@@ -60,6 +60,8 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
 
     private static final int MAX_CONTENT_LENGTH = 16 * 1024 * 1024;
 
+    private static final int MAX_MANAGEMENT_CONTENT_LENGTH = 2 * 1024 * 1024;
+
     private final PassiveLBConfig config;
     private final PassiveNode<AetherKey, AetherValue> passiveNode;
     private final HttpRouteRegistry routeRegistry;
@@ -151,8 +153,9 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
     }
 
     private Promise<Unit> startManagementHttpServer(int managementPort) {
+        var managementContentLimit = config.managementMaxContentLength().or(MAX_MANAGEMENT_CONTENT_LENGTH);
         var serverConfig = HttpServerConfig.httpServerConfig("passive-lb-management", managementPort)
-                                           .withMaxContentLength(MAX_CONTENT_LENGTH);
+                                           .withMaxContentLength(managementContentLimit);
         return HttpServer.httpServer(serverConfig, this::handleManagementRequest)
                          .onSuccess(server -> managementHttpServer = Option.some(server))
                          .onSuccess(_ -> log.info("Management API forwarding enabled on port {}", managementPort))
