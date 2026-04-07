@@ -185,7 +185,7 @@ class RoutePermissionRegistryTest {
 
         @Test
         void resolve_operatorAndAbove_forScheduledTaskAction() {
-            assertThat(RoutePermissionRegistry.resolve("POST", "/api/scheduled-tasks/section/artifact/method/trigger")).isEqualTo(OPERATOR_AND_ABOVE);
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/scheduled-tasks/trigger/section/artifact/method")).isEqualTo(OPERATOR_AND_ABOVE);
         }
 
         @Test

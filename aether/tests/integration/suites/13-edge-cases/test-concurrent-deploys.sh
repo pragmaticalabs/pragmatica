@@ -29,7 +29,7 @@ test_concurrent_deploy() {
 
     (
         local status
-        status=$(http_status "${CLUSTER_ENDPOINT}/api/streams/${STREAM_A}/publish" \
+        status=$(http_status "${CLUSTER_ENDPOINT}/api/streams/publish/${STREAM_A}" \
             -X POST \
             -H "X-API-Key: ${API_KEY}" \
             -H "Content-Type: application/json" \
@@ -40,7 +40,7 @@ test_concurrent_deploy() {
 
     (
         local status
-        status=$(http_status "${CLUSTER_ENDPOINT}/api/streams/${STREAM_B}/publish" \
+        status=$(http_status "${CLUSTER_ENDPOINT}/api/streams/publish/${STREAM_B}" \
             -X POST \
             -H "X-API-Key: ${API_KEY}" \
             -H "Content-Type: application/json" \

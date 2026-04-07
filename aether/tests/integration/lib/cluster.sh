@@ -325,7 +325,7 @@ stream_info() {
 
 stream_publish() {
     local name="$1" body="$2"
-    api_post "/api/streams/${name}/publish" "$body"
+    api_post "/api/streams/publish/${name}" "$body"
 }
 
 # ---------------------------------------------------------------------------
@@ -389,7 +389,7 @@ print(result, end='')
 
 reassign_task_group() {
     local group="$1" target="$2"
-    api_put "/api/cluster/tasks/${group}/reassign" "{\"targetNode\":\"${target}\"}"
+    api_put "/api/cluster/tasks/reassign/${group}" "{\"targetNode\":\"${target}\"}"
 }
 
 wait_for_all_tasks_active() {

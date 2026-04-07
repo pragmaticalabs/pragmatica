@@ -33,7 +33,7 @@ test_sustained_stream_publish() {
     while [ "$(now_epoch)" -lt "$end_time" ]; do
         local payload="{\"key\":\"load-${count}\",\"data\":\"sustained-publish-${count}\",\"timestamp\":$(now_epoch)}"
         local status
-        status=$(http_status "${CLUSTER_ENDPOINT}/api/streams/${STREAM_NAME}/publish" \
+        status=$(http_status "${CLUSTER_ENDPOINT}/api/streams/publish/${STREAM_NAME}" \
             -X POST \
             -H "X-API-Key: ${API_KEY}" \
             -H "Content-Type: application/json" \

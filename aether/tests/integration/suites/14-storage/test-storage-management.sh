@@ -82,7 +82,7 @@ except: pass
     assert_contains "$detail" "readiness" "Detail includes readiness"
 }
 
-# POST /api/storage/{name}/snapshot — triggers snapshot
+# POST /api/storage/snapshot/{name} — triggers snapshot
 test_storage_snapshot() {
     local result
     result=$(api_get "/api/storage")
@@ -108,7 +108,7 @@ except: pass
     fi
 
     local snapshot
-    snapshot=$(api_post "/api/storage/${first_name}/snapshot" "{}")
+    snapshot=$(api_post "/api/storage/snapshot/${first_name}" "{}")
     if [ -z "$snapshot" ]; then
         log_warn "Snapshot trigger returned empty — endpoint may not be wired yet"
         return 0

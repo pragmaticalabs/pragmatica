@@ -40,7 +40,7 @@ test_stream_visible_on_governor() {
 
 test_read_events_from_partition() {
     local result
-    result=$(api_get "/api/streams/${STREAM_NAME}/0/read?from=0&max=10")
+    result=$(api_get "/api/streams/read/${STREAM_NAME}/0?from=0&max=10")
     if [ -n "$result" ]; then
         assert_contains "$result" "events" "Events readable from partition 0"
     else
