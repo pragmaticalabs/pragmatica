@@ -52,6 +52,7 @@
         <module>environment</module>
         <module>resource</module>
         <module>slice</module>
+        <module>aether-management-api</module>
         <module>aether-stream</module>
         <module>cli</module>
         <module>lb</module>
