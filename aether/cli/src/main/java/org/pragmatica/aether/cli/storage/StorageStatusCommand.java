@@ -2,12 +2,17 @@ package org.pragmatica.aether.cli.storage;
 
 import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.aether.cli.cluster.ClusterHttpClient;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.lang.Option;
 
+import java.util.List;
 import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
+
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_STORAGE_GET;
+import static org.pragmatica.aether.management.route.ManagementRoute.STORAGE_GET;
 
 
 /// Displays detailed status of a named storage instance.
@@ -22,10 +27,11 @@ import picocli.CommandLine.Command;
     @CommandLine.Option(names = "--node", description = "Target specific node") private String nodeId;
 
     @Override public Integer call() {
-        var path = Option.option(nodeId).fold(() -> "/api/cluster/storage/" + name, _ -> "/api/storage/" + name);
-        return ClusterHttpClient.fetchFromCluster(path)
-                                                 .fold(StorageCliHelper::onFailure,
-                                                       json -> OutputFormatter.printQuery(json,
-                                                                                          parent.outputOptions()));
+        ManagementRoute route = Option.option(nodeId).fold(() -> CLUSTER_STORAGE_GET, _ -> STORAGE_GET);
+        return ClusterHttpClient.fetch(route,
+                                       List.of(name))
+        .fold(StorageCliHelper::onFailure,
+              json -> OutputFormatter.printQuery(json,
+                                                 parent.outputOptions()));
     }
 }

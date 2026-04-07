@@ -2,6 +2,7 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.update.AbTestDeployment;
 import org.pragmatica.aether.update.AbTestMetrics;
@@ -26,7 +27,6 @@ import static org.pragmatica.aether.api.ManagementApiResponses.AbTestListRespons
 import static org.pragmatica.aether.api.ManagementApiResponses.AbTestMetricsResponse;
 import static org.pragmatica.aether.api.ManagementApiResponses.AbTestVariantMetrics;
 import static org.pragmatica.http.routing.PathParameter.aString;
-import static org.pragmatica.http.routing.PathParameter.spacer;
 
 
 /// Routes for A/B test management: create, conclude, metrics.
@@ -57,25 +57,24 @@ public final class AbTestRoutes implements RouteSource {
     record AbTestConcludeRequest(String winner){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<AbTestListResponse>get("/api/ab-tests").toJson(this::buildAbTestListResponse),
-                         Route.<AbTestMetricsResponse>get("/api/ab-test")
-                              .withPath(aString(),
-                                        spacer("metrics"))
-                              .to((testId, _) -> buildAbTestMetricsResponse(testId))
-                              .asJson(),
-                         Route.<AbTestInfo>get("/api/ab-test")
-                              .withPath(aString())
-                              .to(this::buildAbTestResponse)
-                              .asJson(),
-                         Route.<AbTestInfo>post("/api/ab-test/create")
-                              .withBody(AbTestCreateRequest.class)
-                              .toJson(this::handleAbTestCreate),
-                         Route.<AbTestInfo>post("/api/ab-test")
-                              .withPath(aString(),
-                                        spacer("conclude"))
-                              .withBody(AbTestConcludeRequest.class)
-                              .to((testId, _, body) -> handleAbTestConclude(testId, body))
-                              .asJson());
+        return Stream.of(ManagementRoutes.<AbTestListResponse>route(ManagementRoute.AB_TEST_LIST)
+                                         .toJson(this::buildAbTestListResponse),
+                         ManagementRoutes.<AbTestMetricsResponse>route(ManagementRoute.AB_TEST_METRICS)
+                                         .withPath(aString())
+                                         .to(this::buildAbTestMetricsResponse)
+                                         .asJson(),
+                         ManagementRoutes.<AbTestInfo>route(ManagementRoute.AB_TEST_GET)
+                                         .withPath(aString())
+                                         .to(this::buildAbTestResponse)
+                                         .asJson(),
+                         ManagementRoutes.<AbTestInfo>route(ManagementRoute.AB_TEST_CREATE)
+                                         .withBody(AbTestCreateRequest.class)
+                                         .toJson(this::handleAbTestCreate),
+                         ManagementRoutes.<AbTestInfo>route(ManagementRoute.AB_TEST_CONCLUDE)
+                                         .withPath(aString())
+                                         .withBody(AbTestConcludeRequest.class)
+                                         .to(this::handleAbTestConclude)
+                                         .asJson());
     }
 
     private Promise<AbTestInfo> handleAbTestCreate(AbTestCreateRequest request) {

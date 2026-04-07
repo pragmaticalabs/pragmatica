@@ -1,5 +1,6 @@
 package org.pragmatica.aether.api.routes;
 
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler.MavenResponse;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.http.ContentCategory;
@@ -31,9 +32,9 @@ import static org.pragmatica.http.HttpMethod.PUT;
 ///   - `GET /repository/{groupPath`/{artifactId}/maven-metadata.xml}
 ///
 public final class MavenProtocolRoutes implements RouteHandler {
-    private static final String REPOSITORY_PREFIX = "/repository/";
+    private static final String REPOSITORY_PREFIX = ManagementRoute.ARTIFACT_GET.prefix() + "/";
 
-    private static final String REPOSITORY_INFO_PREFIX = "/repository/info/";
+    private static final String REPOSITORY_INFO_PREFIX = ManagementRoute.ARTIFACT_INFO.prefix() + "/";
 
     private final Supplier<ManageableNode> nodeSupplier;
 

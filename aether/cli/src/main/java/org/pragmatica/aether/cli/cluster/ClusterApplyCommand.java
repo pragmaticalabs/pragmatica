@@ -16,6 +16,9 @@ import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 import tools.jackson.databind.JsonNode;
 
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_APPLY;
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_GET;
+
 
 /// Applies a cluster configuration file to the active cluster.
 ///
@@ -45,15 +48,15 @@ import tools.jackson.databind.JsonNode;
     }
 
     private Result<Long> fetchCurrentVersion() {
-        return ClusterHttpClient.fetchFromCluster("/api/cluster/config").flatMap(MAPPER::readTree)
-                                                 .map(node -> node.path("configVersion").asLong(0));
+        return ClusterHttpClient.fetch(CLUSTER_CONFIG_GET).flatMap(MAPPER::readTree)
+                                      .map(node -> node.path("configVersion").asLong(0));
     }
 
     private Result<Integer> sendApplyRequest(String tomlContent, long expectedVersion) {
         var jsonBody = buildApplyJson(tomlContent, dryRun
                                                   ? 0
                                                   : expectedVersion);
-        return ClusterHttpClient.postToCluster("/api/cluster/config", jsonBody).map(this::printResult);
+        return ClusterHttpClient.post(CLUSTER_CONFIG_APPLY, jsonBody).map(this::printResult);
     }
 
     private int printResult(String json) {

@@ -14,6 +14,9 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TASKS_LIST;
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TASK_REASSIGN;
+
 
 /// Lists and manages task group assignments across cluster nodes.
 ///
@@ -30,8 +33,7 @@ import picocli.CommandLine.Option;
     @CommandLine.ParentCommand private ClusterCommand parent;
 
     @Override public Integer call() {
-        return ClusterHttpClient.fetchFromCluster("/api/cluster/tasks")
-                                                 .fold(ClusterTasksCommand::onFailure, this::onSuccess);
+        return ClusterHttpClient.fetch(CLUSTER_TASKS_LIST).fold(ClusterTasksCommand::onFailure, this::onSuccess);
     }
 
     private int onSuccess(String json) {
@@ -62,9 +64,8 @@ import picocli.CommandLine.Option;
         }
 
         private Result<String> sendReassignRequest(String validGroup) {
-            var path = "/api/cluster/tasks/" + validGroup + "/reassign";
             var jsonBody = "{\"targetNode\":\"" + escapeJson(targetNode) + "\"}";
-            return ClusterHttpClient.putToCluster(path, jsonBody);
+            return ClusterHttpClient.put(CLUSTER_TASK_REASSIGN, List.of(validGroup), jsonBody);
         }
 
         private static String escapeJson(String value) {

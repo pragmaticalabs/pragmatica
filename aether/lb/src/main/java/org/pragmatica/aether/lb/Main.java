@@ -113,7 +113,8 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
         log.info("Starting Aether Passive LB");
         log.info("  HTTP port:       {}", httpPort);
         log.info("  Cluster port:    {}", clusterPort);
-        log.info("  Management port: {}", managementPort.map(String::valueOf).or("disabled"));
+        log.info("  Management port: {}",
+                 managementPort.map(String::valueOf).or("disabled"));
         log.info("  Node ID:         {}", nodeId);
         log.info("  Peers:           {}", peers.size());
     }

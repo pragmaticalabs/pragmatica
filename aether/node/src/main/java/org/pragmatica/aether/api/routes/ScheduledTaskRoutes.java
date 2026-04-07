@@ -5,6 +5,7 @@ import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry.ScheduledTask;
 import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
 import org.pragmatica.aether.invoke.SliceInvoker;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
 import org.pragmatica.aether.node.ManageableNode;
@@ -29,8 +30,6 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 /// Routes for scheduled task management: listing, pause/resume, and manual trigger.
 public final class ScheduledTaskRoutes implements RouteSource {
     private static final Cause TASK_NOT_FOUND = Causes.cause("Scheduled task not found");
-
-    private static final Cause UNKNOWN_ACTION = Causes.cause("Unknown action (expected: pause, resume, trigger)");
 
     private final ScheduledTaskRegistry registry;
     private final ScheduledTaskManager manager;
@@ -88,25 +87,36 @@ public final class ScheduledTaskRoutes implements RouteSource {
                              long updatedAt){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<ScheduledTasksResponse>get("/api/scheduled-tasks").toJson(this::buildTasksResponse),
-                         Route.<FilteredTasksResponse>get("/api/scheduled-tasks")
-                              .withPath(aString())
-                              .to(this::buildFilteredResponse)
-                              .asJson(),
-                         Route.<TaskStateResponse>get("/api/scheduled-tasks")
-                              .withPath(aString(),
-                                        aString(),
-                                        aString(),
-                                        aString())
-                              .to(this::getTaskState)
-                              .asJson(),
-                         Route.<TaskActionResult>post("/api/scheduled-tasks")
-                              .withPath(aString(),
-                                        aString(),
-                                        aString(),
-                                        aString())
-                              .to(this::handleTaskAction)
-                              .asJson());
+        return Stream.of(ManagementRoutes.<ScheduledTasksResponse>route(ManagementRoute.SCHEDULED_TASKS_LIST)
+                                         .toJson(this::buildTasksResponse),
+                         ManagementRoutes.<FilteredTasksResponse>route(ManagementRoute.SCHEDULED_TASKS_BY_SECTION)
+                                         .withPath(aString())
+                                         .to(this::buildFilteredResponse)
+                                         .asJson(),
+                         ManagementRoutes.<TaskStateResponse>route(ManagementRoute.SCHEDULED_TASK_STATE)
+                                         .withPath(aString(),
+                                                   aString(),
+                                                   aString())
+                                         .to(this::getTaskState)
+                                         .asJson(),
+                         ManagementRoutes.<TaskActionResult>route(ManagementRoute.SCHEDULED_TASK_PAUSE)
+                                         .withPath(aString(),
+                                                   aString(),
+                                                   aString())
+                                         .to((section, artifact, method) -> setPaused(section, artifact, method, true))
+                                         .asJson(),
+                         ManagementRoutes.<TaskActionResult>route(ManagementRoute.SCHEDULED_TASK_RESUME)
+                                         .withPath(aString(),
+                                                   aString(),
+                                                   aString())
+                                         .to((section, artifact, method) -> setPaused(section, artifact, method, false))
+                                         .asJson(),
+                         ManagementRoutes.<TaskActionResult>route(ManagementRoute.SCHEDULED_TASK_TRIGGER)
+                                         .withPath(aString(),
+                                                   aString(),
+                                                   aString())
+                                         .to(this::triggerTask)
+                                         .asJson());
     }
 
     private ScheduledTasksResponse buildTasksResponse() {
@@ -122,18 +132,6 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                      .map(this::toSummary)
                                      .toList();
         return Promise.success(new FilteredTasksResponse(tasks, configSection));
-    }
-
-    @SuppressWarnings("JBCT-PAT-01") private Promise<TaskActionResult> handleTaskAction(String configSection,
-                                                                                        String artifactStr,
-                                                                                        String methodStr,
-                                                                                        String action) {
-        return switch (action){
-            case "pause" -> setPaused(configSection, artifactStr, methodStr, true);
-            case "resume" -> setPaused(configSection, artifactStr, methodStr, false);
-            case "trigger" -> triggerTask(configSection, artifactStr, methodStr);
-            default -> UNKNOWN_ACTION.promise();
-        };
     }
 
     private Promise<TaskActionResult> setPaused(String configSection,
@@ -229,11 +227,7 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                totalExecutions);
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private Promise<TaskStateResponse> getTaskState(String configSection,
-                                                                                     String artifactStr,
-                                                                                     String methodStr,
-                                                                                     String stateAction) {
-        if (!"state".equals(stateAction)) {return Causes.cause("Unknown GET action: " + stateAction).promise();}
+    private Promise<TaskStateResponse> getTaskState(String configSection, String artifactStr, String methodStr) {
         return findTask(configSection, artifactStr, methodStr).flatMap(task -> buildStateResponse(task,
                                                                                                   configSection,
                                                                                                   artifactStr,

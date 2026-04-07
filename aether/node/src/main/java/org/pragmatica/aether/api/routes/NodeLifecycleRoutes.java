@@ -2,6 +2,7 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.http.security.AuditLog;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
@@ -46,23 +47,24 @@ public final class NodeLifecycleRoutes implements RouteSource {
     record TransitionResult(boolean success, String nodeId, String state, String message){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<List<LifecycleEntry>>get("/api/nodes/lifecycle").toJson(this::getAllLifecycleStates),
-                         Route.<LifecycleEntry>get("/api/node/lifecycle")
-                              .withPath(aString())
-                              .to(this::getNodeLifecycle)
-                              .asJson(),
-                         Route.<TransitionResult>post("/api/node/drain")
-                              .withPath(aString())
-                              .to(this::drainNode)
-                              .asJson(),
-                         Route.<TransitionResult>post("/api/node/activate")
-                              .withPath(aString())
-                              .to(this::activateNode)
-                              .asJson(),
-                         Route.<TransitionResult>post("/api/node/shutdown")
-                              .withPath(aString())
-                              .to(this::shutdownNode)
-                              .asJson());
+        return Stream.of(ManagementRoutes.<List<LifecycleEntry>>route(ManagementRoute.NODE_LIFECYCLE_LIST)
+                                         .toJson(this::getAllLifecycleStates),
+                         ManagementRoutes.<LifecycleEntry>route(ManagementRoute.NODE_LIFECYCLE_GET)
+                                         .withPath(aString())
+                                         .to(this::getNodeLifecycle)
+                                         .asJson(),
+                         ManagementRoutes.<TransitionResult>route(ManagementRoute.NODE_DRAIN)
+                                         .withPath(aString())
+                                         .to(this::drainNode)
+                                         .asJson(),
+                         ManagementRoutes.<TransitionResult>route(ManagementRoute.NODE_ACTIVATE)
+                                         .withPath(aString())
+                                         .to(this::activateNode)
+                                         .asJson(),
+                         ManagementRoutes.<TransitionResult>route(ManagementRoute.NODE_SHUTDOWN)
+                                         .withPath(aString())
+                                         .to(this::shutdownNode)
+                                         .asJson());
     }
 
     private List<LifecycleEntry> getAllLifecycleStates() {

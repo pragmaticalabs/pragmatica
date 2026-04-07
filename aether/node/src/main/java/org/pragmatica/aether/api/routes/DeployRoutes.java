@@ -13,6 +13,7 @@ import org.pragmatica.aether.update.StrategyConfig;
 import org.pragmatica.aether.update.StrategyConfig.BlueGreenConfig;
 import org.pragmatica.aether.update.StrategyConfig.CanaryConfig;
 import org.pragmatica.aether.update.StrategyConfig.RollingConfig;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -25,7 +26,6 @@ import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
-import static org.pragmatica.http.routing.PathParameter.spacer;
 import static org.pragmatica.lang.Option.option;
 
 
@@ -74,30 +74,28 @@ public final class DeployRoutes implements RouteSource {
     record DeploymentListResponse(List<DeploymentResponse> deployments){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<DeploymentResponse>post("/api/deploy")
-                              .withBody(DeployRequest.class)
-                              .toResult(this::startDeployment)
-                              .asJson(),
-                         Route.<DeploymentListResponse>get("/api/deploy").toJson(this::listDeployments),
-                         Route.<DeploymentResponse>get("/api/deploy")
-                              .withPath(aString())
-                              .toResult(this::getDeployment)
-                              .asJson(),
-                         Route.<DeploymentResponse>post("/api/deploy")
-                              .withPath(aString(),
-                                        spacer("promote"))
-                              .toResult(this::promoteDeployment)
-                              .asJson(),
-                         Route.<DeploymentResponse>post("/api/deploy")
-                              .withPath(aString(),
-                                        spacer("rollback"))
-                              .toResult(this::rollbackDeployment)
-                              .asJson(),
-                         Route.<DeploymentResponse>post("/api/deploy")
-                              .withPath(aString(),
-                                        spacer("complete"))
-                              .toResult(this::completeDeployment)
-                              .asJson());
+        return Stream.of(ManagementRoutes.<DeploymentResponse>route(ManagementRoute.DEPLOY_START)
+                                         .withBody(DeployRequest.class)
+                                         .toResult(this::startDeployment)
+                                         .asJson(),
+                         ManagementRoutes.<DeploymentListResponse>route(ManagementRoute.DEPLOY_LIST)
+                                         .toJson(this::listDeployments),
+                         ManagementRoutes.<DeploymentResponse>route(ManagementRoute.DEPLOY_STATUS)
+                                         .withPath(aString())
+                                         .toResult(this::getDeployment)
+                                         .asJson(),
+                         ManagementRoutes.<DeploymentResponse>route(ManagementRoute.DEPLOY_PROMOTE)
+                                         .withPath(aString())
+                                         .toResult(this::promoteDeployment)
+                                         .asJson(),
+                         ManagementRoutes.<DeploymentResponse>route(ManagementRoute.DEPLOY_ROLLBACK)
+                                         .withPath(aString())
+                                         .toResult(this::rollbackDeployment)
+                                         .asJson(),
+                         ManagementRoutes.<DeploymentResponse>route(ManagementRoute.DEPLOY_COMPLETE)
+                                         .withPath(aString())
+                                         .toResult(this::completeDeployment)
+                                         .asJson());
     }
 
     private Result<DeploymentResponse> startDeployment(DeployRequest request) {
@@ -118,15 +116,15 @@ public final class DeployRoutes implements RouteSource {
                                 .map(DeployRoutes::toResponse);
     }
 
-    private Result<DeploymentResponse> promoteDeployment(String deploymentId, String spacer) {
+    private Result<DeploymentResponse> promoteDeployment(String deploymentId) {
         return deploymentManager().promote(deploymentId).map(DeployRoutes::toResponse);
     }
 
-    private Result<DeploymentResponse> rollbackDeployment(String deploymentId, String spacer) {
+    private Result<DeploymentResponse> rollbackDeployment(String deploymentId) {
         return deploymentManager().rollback(deploymentId).map(DeployRoutes::toResponse);
     }
 
-    private Result<DeploymentResponse> completeDeployment(String deploymentId, String spacer) {
+    private Result<DeploymentResponse> completeDeployment(String deploymentId) {
         return deploymentManager().complete(deploymentId).map(DeployRoutes::toResponse);
     }
 

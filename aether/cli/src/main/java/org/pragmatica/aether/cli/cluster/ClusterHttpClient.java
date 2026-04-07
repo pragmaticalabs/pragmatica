@@ -1,5 +1,6 @@
 package org.pragmatica.aether.cli.cluster;
 
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
@@ -9,6 +10,7 @@ import org.pragmatica.lang.Result;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
+import java.util.List;
 
 import static org.pragmatica.lang.Option.option;
 
@@ -19,8 +21,45 @@ public sealed interface ClusterHttpClient {
 
     HttpOperations HTTP_OPS = JdkHttpOperations.jdkHttpOperations();
 
-    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) static Result<String> fetchFromCluster(String path) {
+    static Result<String> fetch(ManagementRoute route, List<String> params) {
+        return route.assemble(params).flatMap(ClusterHttpClient::fetchPath);
+    }
+
+    static Result<String> fetch(ManagementRoute route) {
+        return fetch(route, List.of());
+    }
+
+    static Result<String> fetch(ManagementRoute route, List<String> params, String queryString) {
+        return route.assemble(params).map(path -> queryString == null || queryString.isEmpty()
+                                                 ? path
+                                                 : path + "?" + queryString)
+                             .flatMap(ClusterHttpClient::fetchPath);
+    }
+
+    static Result<String> post(ManagementRoute route, List<String> params, String jsonBody) {
+        return route.assemble(params).flatMap(path -> postPath(path, jsonBody));
+    }
+
+    static Result<String> post(ManagementRoute route, String jsonBody) {
+        return post(route, List.of(), jsonBody);
+    }
+
+    static Result<String> put(ManagementRoute route, List<String> params, String jsonBody) {
+        return route.assemble(params).flatMap(path -> putPath(path, jsonBody));
+    }
+
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) private static Result<String> fetchPath(String path) {
         return resolveEndpoint().flatMap(endpoint -> doGet(endpoint, path));
+    }
+
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) private static Result<String> postPath(String path,
+                                                                                              String jsonBody) {
+        return resolveEndpoint().flatMap(endpoint -> doPost(endpoint, path, jsonBody));
+    }
+
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) private static Result<String> putPath(String path,
+                                                                                             String jsonBody) {
+        return resolveEndpoint().flatMap(endpoint -> doPut(endpoint, path, jsonBody));
     }
 
     static Result<String> resolveEndpoint() {
@@ -41,16 +80,6 @@ public sealed interface ClusterHttpClient {
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
         return HTTP_OPS.sendString(builder.build()).await()
                                   .flatMap(ClusterHttpClient::extractBody);
-    }
-
-    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) static Result<String> postToCluster(String path,
-                                                                                           String jsonBody) {
-        return resolveEndpoint().flatMap(endpoint -> doPost(endpoint, path, jsonBody));
-    }
-
-    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) static Result<String> putToCluster(String path,
-                                                                                          String jsonBody) {
-        return resolveEndpoint().flatMap(endpoint -> doPut(endpoint, path, jsonBody));
     }
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) private static Result<String> doPost(String endpoint,

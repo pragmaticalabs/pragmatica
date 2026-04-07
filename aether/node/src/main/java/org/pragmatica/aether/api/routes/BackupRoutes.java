@@ -19,6 +19,7 @@ import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.aether.backup.BackupService.BackupInfo;
 import org.pragmatica.aether.http.security.AuditLog;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -53,11 +54,13 @@ public final class BackupRoutes implements RouteSource {
     record RestoreRequest(String commit){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<BackupResponse>post("/api/backup").toJson(this::triggerBackup),
-                         Route.<List<BackupInfo>>get("/api/backups").toJson(this::listBackups),
-                         Route.<BackupResponse>post("/api/backup/restore")
-                              .withBody(RestoreRequest.class)
-                              .toJson(this::restoreBackup));
+        return Stream.of(ManagementRoutes.<BackupResponse>route(ManagementRoute.BACKUP_TRIGGER)
+                                         .toJson(this::triggerBackup),
+                         ManagementRoutes.<List<BackupInfo>>route(ManagementRoute.BACKUPS_LIST)
+                                         .toJson(this::listBackups),
+                         ManagementRoutes.<BackupResponse>route(ManagementRoute.BACKUP_RESTORE)
+                                         .withBody(RestoreRequest.class)
+                                         .toJson(this::restoreBackup));
     }
 
     private BackupResponse triggerBackup() {

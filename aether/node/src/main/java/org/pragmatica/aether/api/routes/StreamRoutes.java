@@ -1,5 +1,6 @@
 package org.pragmatica.aether.api.routes;
 
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -82,34 +83,33 @@ public final class StreamRoutes implements RouteSource {
     record ReadEventsResponse(List<EventRecord> events){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<StreamCreateResponse>post("/api/streams")
-                              .withBody(StreamCreateRequest.class)
-                              .toResult(this::createStream)
-                              .asJson(),
-                         Route.<StreamListResponse>get("/api/streams").toJson(this::listStreams),
-                         Route.<StreamInfoResponse>get("/api/streams")
-                              .withPath(PathParameter.aString())
-                              .toResult(this::streamInfo)
-                              .asJson(),
-                         Route.<PartitionDetail>get("/api/streams")
-                              .withPath(PathParameter.aString(),
-                                        PathParameter.aInteger())
-                              .toResult(this::partitionDetails)
-                              .asJson(),
-                         Route.<PublishResponse>post("/api/streams")
-                              .withPath(PathParameter.aString(),
-                                        PathParameter.spacer("publish"))
-                              .withBody(PublishRequest.class)
-                              .toResult(this::publishEvent)
-                              .asJson(),
-                         Route.<ReadEventsResponse>get("/api/streams")
-                              .withPath(PathParameter.aString(),
-                                        PathParameter.aInteger(),
-                                        PathParameter.spacer("read"))
-                              .withQuery(QueryParameter.aLong("from"),
-                                         QueryParameter.aInteger("max"))
-                              .toValue(this::readEvents)
-                              .asJson());
+        return Stream.of(ManagementRoutes.<StreamCreateResponse>route(ManagementRoute.STREAM_CREATE)
+                                         .withBody(StreamCreateRequest.class)
+                                         .toResult(this::createStream)
+                                         .asJson(),
+                         ManagementRoutes.<StreamListResponse>route(ManagementRoute.STREAM_LIST)
+                                         .toJson(this::listStreams),
+                         ManagementRoutes.<StreamInfoResponse>route(ManagementRoute.STREAM_GET)
+                                         .withPath(PathParameter.aString())
+                                         .toResult(this::streamInfo)
+                                         .asJson(),
+                         ManagementRoutes.<PartitionDetail>route(ManagementRoute.STREAM_PARTITION)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aInteger())
+                                         .toResult(this::partitionDetails)
+                                         .asJson(),
+                         ManagementRoutes.<PublishResponse>route(ManagementRoute.STREAM_PUBLISH)
+                                         .withPath(PathParameter.aString())
+                                         .withBody(PublishRequest.class)
+                                         .toResult(this::publishEvent)
+                                         .asJson(),
+                         ManagementRoutes.<ReadEventsResponse>route(ManagementRoute.STREAM_READ)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aInteger())
+                                         .withQuery(QueryParameter.aLong("from"),
+                                                    QueryParameter.aInteger("max"))
+                                         .toValue(this::readEvents)
+                                         .asJson());
     }
 
     private StreamListResponse listStreams() {
@@ -141,7 +141,7 @@ public final class StreamRoutes implements RouteSource {
         return streamManager().partitionInfo(name, partition).map(PartitionDetail::fromPartitionInfo);
     }
 
-    private Result<PublishResponse> publishEvent(String name, String spacer, PublishRequest request) {
+    private Result<PublishResponse> publishEvent(String name, PublishRequest request) {
         var payload = request.data().getBytes(StandardCharsets.UTF_8);
         ensureStreamExists(name);
         return streamManager().publishLocal(name, 0, payload, System.currentTimeMillis()).map(PublishResponse::new);
@@ -171,7 +171,6 @@ public final class StreamRoutes implements RouteSource {
 
     private ReadEventsResponse readEvents(String name,
                                           Integer partition,
-                                          String spacer,
                                           Option<Long> fromOpt,
                                           Option<Integer> maxOpt) {
         var fromOffset = fromOpt.or(0L);

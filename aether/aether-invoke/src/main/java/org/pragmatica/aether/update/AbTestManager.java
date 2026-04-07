@@ -44,7 +44,8 @@ import org.slf4j.LoggerFactory;
 ///
 ///
 /// A/B test state is stored in the KV-Store for persistence and visibility.
-/// Only the leader node can create, conclude, or rollback tests.
+/// Only the node currently assigned the STRATEGIES task group can create,
+/// conclude, or rollback tests.
 public interface AbTestManager extends DelegatedComponent {
     Promise<AbTestDeployment> createTest(ArtifactBase artifactBase,
                                          Map<String, Version> variantVersions,
@@ -87,14 +88,14 @@ public interface AbTestManager extends DelegatedComponent {
             private static final Logger log = LoggerFactory.getLogger(AbTestManager.class);
 
             @Override public Promise<Unit> activate() {
-                log.info("A/B test manager active (leader)");
+                log.info("A/B test manager active (STRATEGIES task group assigned)");
                 active.set(true);
                 restoreState();
                 return Promise.success(Unit.unit());
             }
 
             @Override public Promise<Unit> deactivate() {
-                log.info("A/B test manager passive (follower)");
+                log.info("A/B test manager passive (STRATEGIES task group unassigned)");
                 active.set(false);
                 return Promise.success(Unit.unit());
             }
@@ -133,7 +134,7 @@ public interface AbTestManager extends DelegatedComponent {
             @Override public Promise<AbTestDeployment> createTest(ArtifactBase artifactBase,
                                                                   Map<String, Version> variantVersions,
                                                                   SplitRule splitRule) {
-                return requireLeader().flatMap(_ -> checkNoActiveTest(artifactBase))
+                return requireActive().flatMap(_ -> checkNoActiveTest(artifactBase))
                                     .flatMap(_ -> findCurrentVersion(artifactBase))
                                     .flatMap(baseline -> createAndDeployTest(artifactBase,
                                                                              baseline,
@@ -142,12 +143,12 @@ public interface AbTestManager extends DelegatedComponent {
             }
 
             @Override public Promise<AbTestDeployment> concludeTest(String testId, String winningVariant) {
-                return requireLeader().flatMap(_ -> findTest(testId))
+                return requireActive().flatMap(_ -> findTest(testId))
                                     .flatMap(test -> validateAndConclude(test, winningVariant));
             }
 
             @Override public Promise<AbTestDeployment> rollbackTest(String testId) {
-                return requireLeader().flatMap(_ -> findTest(testId)).flatMap(this::validateAndRollback);
+                return requireActive().flatMap(_ -> findTest(testId)).flatMap(this::validateAndRollback);
             }
 
             @Override public Option<AbTestDeployment> getTest(String testId) {
@@ -176,8 +177,8 @@ public interface AbTestManager extends DelegatedComponent {
                                                                     Map.of()));
             }
 
-            private Promise<Unit> requireLeader() {
-                if (!clusterNode.leaderManager().isLeader()) {return AbTestDeploymentError.NotLeader.INSTANCE.promise();}
+            private Promise<Unit> requireActive() {
+                if (!active.get()) {return AbTestDeploymentError.NotLeader.INSTANCE.promise();}
                 return Promise.success(Unit.unit());
             }
 

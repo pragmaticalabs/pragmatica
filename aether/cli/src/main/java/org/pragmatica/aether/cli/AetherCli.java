@@ -2,6 +2,7 @@ package org.pragmatica.aether.cli;
 
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ConfigLoader;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.http.HttpOperations;
@@ -40,6 +41,7 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
 
+import static org.pragmatica.aether.management.route.ManagementRoute.*;
 import static org.pragmatica.lang.Option.empty;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
@@ -264,7 +266,60 @@ import static org.pragmatica.lang.Option.some;
         return address.startsWith("http://") || address.startsWith("https://");
     }
 
-    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) public String fetchFromNode(String path) {
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) public String fetch(ManagementRoute route, List<String> params) {
+        return assembleOr(route, params, this::rawGet);
+    }
+
+    public String fetch(ManagementRoute route) {
+        return fetch(route, List.of());
+    }
+
+    public String fetch(ManagementRoute route, List<String> params, String queryString) {
+        return assembleOr(route, params, path -> rawGet(appendQuery(path, queryString)));
+    }
+
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) public String post(ManagementRoute route,
+                                                                          List<String> params,
+                                                                          String body) {
+        return assembleOr(route, params, path -> rawPost(path, body));
+    }
+
+    public String post(ManagementRoute route, String body) {
+        return post(route, List.of(), body);
+    }
+
+    public String post(ManagementRoute route, List<String> params, String queryString, String body) {
+        return assembleOr(route, params, path -> rawPost(appendQuery(path, queryString), body));
+    }
+
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01", "JBCT-UTIL-02"}) String put(ManagementRoute route,
+                                                                                  List<String> params,
+                                                                                  byte[] content,
+                                                                                  String contentType) {
+        return assembleOr(route, params, path -> rawPut(path, content, contentType));
+    }
+
+    @SuppressWarnings("JBCT-UTIL-01") String delete(ManagementRoute route, List<String> params) {
+        return assembleOr(route, params, this::rawDelete);
+    }
+
+    public String delete(ManagementRoute route) {
+        return delete(route, List.of());
+    }
+
+    private String assembleOr(ManagementRoute route,
+                              List<String> params,
+                              java.util.function.Function<String, String> exec) {
+        return route.assemble(params).fold(cause -> "{\"error\":\"" + cause.message() + "\"}", exec::apply);
+    }
+
+    private static String appendQuery(String path, String queryString) {
+        return queryString == null || queryString.isEmpty()
+              ? path
+              : path + "?" + queryString;
+    }
+
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) private String rawGet(String path) {
         var uri = resolveNodeUri(path);
         var request = buildGetRequest(uri);
         return httpOps.sendString(request).await()
@@ -272,7 +327,7 @@ import static org.pragmatica.lang.Option.some;
                                        AetherCli::extractResponseBody);
     }
 
-    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) public String postToNode(String path, String body) {
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) private String rawPost(String path, String body) {
         var uri = resolveNodeUri(path);
         var request = buildPostRequest(uri, body);
         return httpOps.sendString(request).await()
@@ -280,9 +335,9 @@ import static org.pragmatica.lang.Option.some;
                                        AetherCli::extractResponseBody);
     }
 
-    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01", "JBCT-UTIL-02"}) String putToNode(String path,
-                                                                                        byte[] content,
-                                                                                        String contentType) {
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01", "JBCT-UTIL-02"}) private String rawPut(String path,
+                                                                                             byte[] content,
+                                                                                             String contentType) {
         var uri = resolveNodeUri(path);
         var request = buildPutRequest(uri, content, contentType);
         return httpOps.sendString(request).await()
@@ -290,7 +345,7 @@ import static org.pragmatica.lang.Option.some;
                                        AetherCli::extractPutResponseBody);
     }
 
-    @SuppressWarnings("JBCT-UTIL-01") String deleteFromNode(String path) {
+    @SuppressWarnings("JBCT-UTIL-01") private String rawDelete(String path) {
         var uri = resolveNodeUri(path);
         var request = buildDeleteRequest(uri);
         return httpOps.sendString(request).await()
@@ -372,7 +427,7 @@ import static org.pragmatica.lang.Option.some;
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Override public Integer call() {
-            var response = parent.fetchFromNode("/api/status");
+            var response = parent.fetch(CLUSTER_STATUS);
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
     }
@@ -381,7 +436,7 @@ import static org.pragmatica.lang.Option.some;
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Override public Integer call() {
-            var response = parent.fetchFromNode("/api/nodes");
+            var response = parent.fetch(NODES_LIST);
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
     }
@@ -390,7 +445,7 @@ import static org.pragmatica.lang.Option.some;
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Override public Integer call() {
-            var response = parent.fetchFromNode("/api/slices");
+            var response = parent.fetch(SLICES_LIST);
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
     }
@@ -399,7 +454,7 @@ import static org.pragmatica.lang.Option.some;
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Override public Integer call() {
-            var response = parent.fetchFromNode("/api/node/slices");
+            var response = parent.fetch(NODE_SLICES);
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
     }
@@ -408,7 +463,7 @@ import static org.pragmatica.lang.Option.some;
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Override public Integer call() {
-            var response = parent.fetchFromNode("/api/node/routes");
+            var response = parent.fetch(NODE_ROUTES);
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
     }
@@ -417,7 +472,7 @@ import static org.pragmatica.lang.Option.some;
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Override public Integer call() {
-            var response = parent.fetchFromNode("/api/routes");
+            var response = parent.fetch(ROUTES_LIST);
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
     }
@@ -426,7 +481,7 @@ import static org.pragmatica.lang.Option.some;
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Override public Integer call() {
-            var response = parent.fetchFromNode("/api/metrics");
+            var response = parent.fetch(METRICS);
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
     }
@@ -435,7 +490,7 @@ import static org.pragmatica.lang.Option.some;
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Override public Integer call() {
-            var response = parent.fetchFromNode("/api/health");
+            var response = parent.fetch(CLUSTER_HEALTH);
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
     }
@@ -457,7 +512,7 @@ import static org.pragmatica.lang.Option.some;
 
         @Override public Integer call() {
             var body = buildScaleBody();
-            var response = parent.postToNode("/api/scale", body);
+            var response = parent.post(SLICE_SCALE, body);
             var result = OutputFormatter.printAction(response,
                                                      parent.outputOptions(),
                                                      "Scaled " + artifact + " to " + instances + " instances");
@@ -496,7 +551,7 @@ import static org.pragmatica.lang.Option.some;
         }
 
         private int queryCurrentInstances() {
-            var response = parent.fetchFromNode("/api/slices");
+            var response = parent.fetch(SLICES_LIST);
             return parseInstanceCount(response);
         }
 
@@ -559,8 +614,10 @@ import static org.pragmatica.lang.Option.some;
                     }
                     byte[] content = Files.readAllBytes(jarPath);
                     var coordinates = groupId + ":" + artifactId + ":" + version;
-                    var repoPath = buildArtifactPath(groupId, artifactId, version);
-                    var response = artifactParent.parent.putToNode(repoPath, content, "application/java-archive");
+                    var response = artifactParent.parent.put(ARTIFACT_PUT,
+                                                             artifactParams(groupId, artifactId, version),
+                                                             content,
+                                                             "application/java-archive");
                     return reportDeployResult(response, coordinates, content.length);
                 } catch (IOException e) {
                     System.err.println("Error reading file: " + e.getMessage());
@@ -654,8 +711,12 @@ import static org.pragmatica.lang.Option.some;
                 }
                 try {
                     var content = Files.readAllBytes(descriptor.localPath());
-                    var repoPath = buildRepoPath(descriptor);
-                    var response = artifactParent.parent.putToNode(repoPath, content, "application/java-archive");
+                    var response = artifactParent.parent.put(ARTIFACT_PUT,
+                                                             artifactParams(descriptor.groupId(),
+                                                                            descriptor.artifactId(),
+                                                                            descriptor.version()),
+                                                             content,
+                                                             "application/java-archive");
                     var errorCode = OutputFormatter.checkResponseError(response,
                                                                        artifactParent.parent.outputOptions(),
                                                                        "Failed to push");
@@ -667,10 +728,6 @@ import static org.pragmatica.lang.Option.some;
                     System.err.println("  x " + descriptor.label() + " (error: " + e.getMessage() + ")");
                     return ExitCode.ERROR;
                 }
-            }
-
-            private static String buildRepoPath(ArtifactDescriptor descriptor) {
-                return buildArtifactPath(descriptor.groupId(), descriptor.artifactId(), descriptor.version());
             }
 
             @SuppressWarnings("JBCT-SEQ-01") private static Result<String> readBlueprintToml(Path jarPath) {
@@ -747,7 +804,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private ArtifactCommand artifactParent;
 
             @Override public Integer call() {
-                var response = artifactParent.parent.fetchFromNode("/repository/artifacts");
+                var response = artifactParent.parent.fetch(REPOSITORY_ARTIFACTS_LIST);
                 return OutputFormatter.printQuery(response, artifactParent.parent.outputOptions());
             }
         }
@@ -763,8 +820,10 @@ import static org.pragmatica.lang.Option.some;
                     System.err.println("Invalid artifact format. Expected: group:artifact");
                     return ExitCode.ERROR;
                 }
-                var path = "/repository/" + parts[0].replace('.', '/') + "/" + parts[1] + "/maven-metadata.xml";
-                var response = artifactParent.parent.fetchFromNode(path);
+                var response = artifactParent.parent.fetch(MAVEN_METADATA,
+                                                           List.of(parts[0].replace('.', '/'),
+                                                                   parts[1],
+                                                                   "maven-metadata.xml"));
                 var errorCode = OutputFormatter.checkResponseError(response,
                                                                    artifactParent.parent.outputOptions(),
                                                                    "Failed to get versions");
@@ -784,8 +843,8 @@ import static org.pragmatica.lang.Option.some;
                     System.err.println("Invalid coordinates format. Expected: group:artifact:version");
                     return ExitCode.ERROR;
                 }
-                var path = "/repository/info/" + parts[0].replace('.', '/') + "/" + parts[1] + "/" + parts[2];
-                var response = artifactParent.parent.fetchFromNode(path);
+                var response = artifactParent.parent.fetch(ARTIFACT_INFO,
+                                                           List.of(parts[0].replace('.', '/'), parts[1], parts[2]));
                 return OutputFormatter.printQuery(response, artifactParent.parent.outputOptions());
             }
         }
@@ -801,8 +860,8 @@ import static org.pragmatica.lang.Option.some;
                     System.err.println("Invalid coordinates format. Expected: group:artifact:version");
                     return ExitCode.ERROR;
                 }
-                var path = "/repository/" + parts[0].replace('.', '/') + "/" + parts[1] + "/" + parts[2];
-                var response = artifactParent.parent.deleteFromNode(path);
+                var response = artifactParent.parent.delete(ARTIFACT_DELETE,
+                                                            List.of(parts[0].replace('.', '/'), parts[1], parts[2]));
                 var errorCode = OutputFormatter.checkResponseError(response,
                                                                    artifactParent.parent.outputOptions(),
                                                                    "Failed to delete");
@@ -817,13 +876,13 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private ArtifactCommand artifactParent;
 
             @Override public Integer call() {
-                var response = artifactParent.parent.fetchFromNode("/api/artifact-metrics");
+                var response = artifactParent.parent.fetch(ARTIFACT_METRICS);
                 return OutputFormatter.printQuery(response, artifactParent.parent.outputOptions());
             }
         }
 
-        private static String buildArtifactPath(String groupId, String artifactId, String version) {
-            return "/repository/" + groupId.replace('.', '/') + "/" + artifactId + "/" + version + "/" + artifactId + "-" + version + ".jar";
+        private static List<String> artifactParams(String groupId, String artifactId, String version) {
+            return List.of(groupId.replace('.', '/'), artifactId, version, artifactId + "-" + version + ".jar");
         }
     }
 
@@ -882,7 +941,7 @@ import static org.pragmatica.lang.Option.some;
                         return ExitCode.ERROR;
                     }
                     var content = Files.readString(blueprintPath);
-                    var response = blueprintParent.parent.postToNode("/api/blueprint", content);
+                    var response = blueprintParent.parent.post(BLUEPRINT_PUBLISH_BODY, content);
                     var errorCode = OutputFormatter.checkResponseError(response,
                                                                        blueprintParent.parent.outputOptions(),
                                                                        "Failed to apply blueprint");
@@ -899,7 +958,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private BlueprintCommand blueprintParent;
 
             @Override@SuppressWarnings("JBCT-UTIL-02") public Integer call() {
-                var response = blueprintParent.parent.fetchFromNode("/api/blueprints");
+                var response = blueprintParent.parent.fetch(BLUEPRINT_LIST);
                 var output = blueprintParent.parent.outputOptions();
                 var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to list blueprints");
                 if (errorCode >= 0) {return errorCode;}
@@ -913,7 +972,7 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "0", description = "Blueprint ID (group:artifact:version)") private String blueprintId;
 
             @Override@SuppressWarnings("JBCT-UTIL-02") public Integer call() {
-                var response = blueprintParent.parent.fetchFromNode("/api/blueprint/" + blueprintId);
+                var response = blueprintParent.parent.fetch(BLUEPRINT_GET, List.of(blueprintId));
                 var output = blueprintParent.parent.outputOptions();
                 var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to get blueprint");
                 if (errorCode >= 0) {return errorCode;}
@@ -933,7 +992,7 @@ import static org.pragmatica.lang.Option.some;
                     var confirmed = confirmDeletion(blueprintId);
                     if (!confirmed) {return ExitCode.SUCCESS;}
                 }
-                var response = blueprintParent.parent.deleteFromNode("/api/blueprint/" + blueprintId);
+                var response = blueprintParent.parent.delete(BLUEPRINT_DELETE, List.of(blueprintId));
                 var errorCode = OutputFormatter.checkResponseError(response,
                                                                    blueprintParent.parent.outputOptions(),
                                                                    "Failed to delete blueprint");
@@ -962,7 +1021,7 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "0", description = "Blueprint ID (group:artifact:version)") private String blueprintId;
 
             @Override@SuppressWarnings("JBCT-UTIL-02") public Integer call() {
-                var response = blueprintParent.parent.fetchFromNode("/api/blueprint/" + blueprintId + "/status");
+                var response = blueprintParent.parent.fetch(BLUEPRINT_STATUS, List.of(blueprintId));
                 var output = blueprintParent.parent.outputOptions();
                 var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to get blueprint status");
                 if (errorCode >= 0) {return errorCode;}
@@ -982,7 +1041,7 @@ import static org.pragmatica.lang.Option.some;
                         return ExitCode.ERROR;
                     }
                     var content = Files.readString(blueprintPath);
-                    var response = blueprintParent.parent.postToNode("/api/blueprint/validate", content);
+                    var response = blueprintParent.parent.post(BLUEPRINT_VALIDATE, content);
                     if (response.contains("\"valid\":false")) {return reportValidationFailure(response);}
                     return OutputFormatter.printQuery(response, blueprintParent.parent.outputOptions());
                 } catch (IOException e) {
@@ -1066,7 +1125,7 @@ import static org.pragmatica.lang.Option.some;
                                 ? coords + ":blueprint"
                                 : coords;
                 var body = "{\"artifact\":\"" + escapeJsonValue(fullCoords) + "\"}";
-                var response = blueprintParent.parent.postToNode("/api/blueprint/deploy", body);
+                var response = blueprintParent.parent.post(BLUEPRINT_DEPLOY, body);
                 var errorCode = OutputFormatter.checkResponseError(response,
                                                                    blueprintParent.parent.outputOptions(),
                                                                    "Failed to deploy blueprint");
@@ -1105,7 +1164,7 @@ import static org.pragmatica.lang.Option.some;
             }
 
             private String queryDeploymentStatus() {
-                var response = blueprintParent.parent.fetchFromNode("/api/slices");
+                var response = blueprintParent.parent.fetch(SLICES_LIST);
                 if (response.contains("\"error\"")) {return "UNKNOWN";}
                 return response.contains(coords)
                       ? "ACTIVE"
@@ -1145,14 +1204,19 @@ import static org.pragmatica.lang.Option.some;
                     }
                     var content = Files.readAllBytes(blueprintJarPath);
                     var coordinates = groupId + ":" + artifactId + ":" + version;
-                    var repoPath = "/api/repository/" + groupId.replace('.', '/') + "/" + artifactId + "/" + version + "/" + artifactId + "-" + version + "-blueprint.jar";
-                    var uploadResponse = blueprintParent.parent.putToNode(repoPath, content, "application/java-archive");
+                    var uploadResponse = blueprintParent.parent.put(ARTIFACT_PUT,
+                                                                    List.of(groupId.replace('.', '/'),
+                                                                            artifactId,
+                                                                            version,
+                                                                            artifactId + "-" + version + "-blueprint.jar"),
+                                                                    content,
+                                                                    "application/java-archive");
                     var uploadError = OutputFormatter.checkResponseError(uploadResponse,
                                                                          blueprintParent.parent.outputOptions(),
                                                                          "Failed to upload");
                     if (uploadError >= 0) {return uploadError;}
                     var deployBody = "{\"artifact\":\"" + escapeJsonValue(coordinates) + "\"}";
-                    var deployResponse = blueprintParent.parent.postToNode("/api/blueprint/deploy", deployBody);
+                    var deployResponse = blueprintParent.parent.post(BLUEPRINT_DEPLOY, deployBody);
                     var deployError = OutputFormatter.checkResponseError(deployResponse,
                                                                          blueprintParent.parent.outputOptions(),
                                                                          "Failed to deploy");
@@ -1172,7 +1236,7 @@ import static org.pragmatica.lang.Option.some;
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Contract@Override public void run() {
-            var response = parent.fetchFromNode("/api/invocation-metrics");
+            var response = parent.fetch(INVOCATION_METRICS);
             OutputFormatter.printQuery(response, parent.outputOptions());
         }
 
@@ -1180,7 +1244,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private InvocationMetricsCommand metricsParent;
 
             @Override public Integer call() {
-                var response = metricsParent.parent.fetchFromNode("/api/invocation-metrics");
+                var response = metricsParent.parent.fetch(INVOCATION_METRICS);
                 return OutputFormatter.printQuery(response, metricsParent.parent.outputOptions());
             }
         }
@@ -1189,7 +1253,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private InvocationMetricsCommand metricsParent;
 
             @Override public Integer call() {
-                var response = metricsParent.parent.fetchFromNode("/api/invocation-metrics/slow");
+                var response = metricsParent.parent.fetch(INVOCATION_METRICS_SLOW);
                 return OutputFormatter.printQuery(response, metricsParent.parent.outputOptions());
             }
         }
@@ -1209,7 +1273,7 @@ import static org.pragmatica.lang.Option.some;
             }
 
             private void showCurrentStrategy() {
-                var response = metricsParent.parent.fetchFromNode("/api/invocation-metrics/strategy");
+                var response = metricsParent.parent.fetch(INVOCATION_METRICS_STRATEGY_GET);
                 OutputFormatter.printQuery(response, metricsParent.parent.outputOptions());
             }
 
@@ -1224,7 +1288,7 @@ import static org.pragmatica.lang.Option.some;
                         return;
                     }
                 }
-                var response = metricsParent.parent.postToNode("/api/invocation-metrics/strategy", body);
+                var response = metricsParent.parent.post(INVOCATION_METRICS_STRATEGY_SET, body);
                 if (OutputFormatter.isErrorResponse(response) || response.contains("Strategy change")) {
                     System.err.println("Error: Strategy changes at runtime are not yet supported.");
                     System.err.println("The strategy is configured at node startup. Use the GET command to view the current strategy.");
@@ -1265,10 +1329,10 @@ import static org.pragmatica.lang.Option.some;
             @Override@SuppressWarnings({"JBCT-UTIL-02", "JBCT-SEQ-01"}) public Integer call() {
                 if (hasConfigUpdate()) {
                     var body = buildConfigUpdateBody();
-                    var response = controllerParent.parent.postToNode("/api/controller/config", body);
+                    var response = controllerParent.parent.post(CONTROLLER_CONFIG_SET, body);
                     return OutputFormatter.printQuery(response, controllerParent.parent.outputOptions());
                 } else {
-                    var response = controllerParent.parent.fetchFromNode("/api/controller/config");
+                    var response = controllerParent.parent.fetch(CONTROLLER_CONFIG_GET);
                     return OutputFormatter.printQuery(response, controllerParent.parent.outputOptions());
                 }
             }
@@ -1291,7 +1355,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private ControllerCommand controllerParent;
 
             @Override public Integer call() {
-                var response = controllerParent.parent.fetchFromNode("/api/controller/status");
+                var response = controllerParent.parent.fetch(CONTROLLER_STATUS);
                 return OutputFormatter.printQuery(response, controllerParent.parent.outputOptions());
             }
         }
@@ -1300,7 +1364,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private ControllerCommand controllerParent;
 
             @Override public Integer call() {
-                var response = controllerParent.parent.postToNode("/api/controller/evaluate", "{}");
+                var response = controllerParent.parent.post(CONTROLLER_EVALUATE, "{}");
                 return OutputFormatter.printAction(response,
                                                    controllerParent.parent.outputOptions(),
                                                    "Controller evaluation triggered");
@@ -1312,7 +1376,7 @@ import static org.pragmatica.lang.Option.some;
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Contract@Override public void run() {
-            var response = parent.fetchFromNode("/api/alerts");
+            var response = parent.fetch(ALERTS);
             OutputFormatter.printQuery(response, parent.outputOptions());
         }
 
@@ -1320,7 +1384,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private AlertsCommand alertsParent;
 
             @Override public Integer call() {
-                var response = alertsParent.parent.fetchFromNode("/api/alerts");
+                var response = alertsParent.parent.fetch(ALERTS);
                 return OutputFormatter.printQuery(response, alertsParent.parent.outputOptions());
             }
         }
@@ -1329,7 +1393,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private AlertsCommand alertsParent;
 
             @Override public Integer call() {
-                var response = alertsParent.parent.fetchFromNode("/api/alerts/active");
+                var response = alertsParent.parent.fetch(ALERTS_ACTIVE);
                 return OutputFormatter.printQuery(response, alertsParent.parent.outputOptions());
             }
         }
@@ -1338,7 +1402,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private AlertsCommand alertsParent;
 
             @Override public Integer call() {
-                var response = alertsParent.parent.fetchFromNode("/api/alerts/history");
+                var response = alertsParent.parent.fetch(ALERTS_HISTORY);
                 return OutputFormatter.printQuery(response, alertsParent.parent.outputOptions());
             }
         }
@@ -1347,7 +1411,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private AlertsCommand alertsParent;
 
             @Override public Integer call() {
-                var response = alertsParent.parent.postToNode("/api/alerts/clear", "{}");
+                var response = alertsParent.parent.post(ALERTS_CLEAR, "{}");
                 return OutputFormatter.printAction(response, alertsParent.parent.outputOptions(), "Alerts cleared");
             }
         }
@@ -1357,7 +1421,7 @@ import static org.pragmatica.lang.Option.some;
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Contract@Override public void run() {
-            var response = parent.fetchFromNode("/api/thresholds");
+            var response = parent.fetch(THRESHOLDS_LIST);
             OutputFormatter.printQuery(response, parent.outputOptions());
         }
 
@@ -1365,7 +1429,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private ThresholdsCommand thresholdsParent;
 
             @Override public Integer call() {
-                var response = thresholdsParent.parent.fetchFromNode("/api/thresholds");
+                var response = thresholdsParent.parent.fetch(THRESHOLDS_LIST);
                 return OutputFormatter.printQuery(response, thresholdsParent.parent.outputOptions());
             }
         }
@@ -1381,7 +1445,7 @@ import static org.pragmatica.lang.Option.some;
 
             @Override public Integer call() {
                 var body = "{\"metric\":\"" + metric + "\",\"warning\":" + warning + ",\"critical\":" + critical + "}";
-                var response = thresholdsParent.parent.postToNode("/api/thresholds", body);
+                var response = thresholdsParent.parent.post(THRESHOLD_SET, body);
                 return OutputFormatter.printAction(response,
                                                    thresholdsParent.parent.outputOptions(),
                                                    "Threshold set for " + metric);
@@ -1394,7 +1458,7 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "0", description = "Metric name") private String metric;
 
             @Override public Integer call() {
-                var response = thresholdsParent.parent.deleteFromNode("/api/thresholds/" + metric);
+                var response = thresholdsParent.parent.delete(THRESHOLD_DELETE, List.of(metric));
                 return OutputFormatter.printAction(response,
                                                    thresholdsParent.parent.outputOptions(),
                                                    "Threshold removed for " + metric);
@@ -1419,13 +1483,12 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.Option(names = {"-s", "--status"}, description = "Filter by status (SUCCESS/FAILURE)") private String status;
 
             @Override public Integer call() {
-                var path = buildTracesListPath();
-                var response = tracesParent.parent.fetchFromNode(path);
+                var response = tracesParent.parent.fetch(TRACES_QUERY, List.of(), buildTracesQueryString());
                 return OutputFormatter.printQuery(response, tracesParent.parent.outputOptions());
             }
 
-            @SuppressWarnings("JBCT-UTIL-02") private String buildTracesListPath() {
-                var sb = new StringBuilder("/api/traces?limit=").append(limit);
+            @SuppressWarnings("JBCT-UTIL-02") private String buildTracesQueryString() {
+                var sb = new StringBuilder("limit=").append(limit);
                 option(method).onPresent(m -> sb.append("&method=").append(m));
                 option(status).onPresent(s -> sb.append("&status=").append(s));
                 return sb.toString();
@@ -1438,7 +1501,7 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "0", description = "Request ID") private String requestId;
 
             @Override public Integer call() {
-                var response = tracesParent.parent.fetchFromNode("/api/traces/" + requestId);
+                var response = tracesParent.parent.fetch(TRACE_BY_REQUEST_ID, List.of(requestId));
                 return OutputFormatter.printQuery(response, tracesParent.parent.outputOptions());
             }
         }
@@ -1447,7 +1510,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private TracesCommand tracesParent;
 
             @Override public Integer call() {
-                var response = tracesParent.parent.fetchFromNode("/api/traces/stats");
+                var response = tracesParent.parent.fetch(TRACES_STATS);
                 return OutputFormatter.printQuery(response, tracesParent.parent.outputOptions());
             }
         }
@@ -1464,7 +1527,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private ObservabilityCommand obsParent;
 
             @Override public Integer call() {
-                var response = obsParent.parent.fetchFromNode("/api/observability/depth");
+                var response = obsParent.parent.fetch(OBSERVABILITY_DEPTH_GET);
                 return OutputFormatter.printQuery(response, obsParent.parent.outputOptions());
             }
         }
@@ -1485,7 +1548,7 @@ import static org.pragmatica.lang.Option.some;
                 var artifact = target.substring(0, hashIndex);
                 var method = target.substring(hashIndex + 1);
                 var body = buildDepthSetBody(artifact, method);
-                var response = obsParent.parent.postToNode("/api/observability/depth", body);
+                var response = obsParent.parent.post(OBSERVABILITY_DEPTH_SET, body);
                 return OutputFormatter.printAction(response,
                                                    obsParent.parent.outputOptions(),
                                                    "Depth threshold set for " + target);
@@ -1509,7 +1572,7 @@ import static org.pragmatica.lang.Option.some;
                 }
                 var artifact = target.substring(0, hashIndex);
                 var method = target.substring(hashIndex + 1);
-                var response = obsParent.parent.deleteFromNode("/api/observability/depth/" + artifact + "/" + method);
+                var response = obsParent.parent.delete(OBSERVABILITY_DEPTH_DELETE, List.of(artifact, method));
                 return OutputFormatter.printAction(response,
                                                    obsParent.parent.outputOptions(),
                                                    "Depth override removed for " + target);
@@ -1521,7 +1584,7 @@ import static org.pragmatica.lang.Option.some;
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Contract@Override public void run() {
-            var response = parent.fetchFromNode("/api/logging/levels");
+            var response = parent.fetch(LOG_LEVELS_LIST);
             OutputFormatter.printQuery(response, parent.outputOptions());
         }
 
@@ -1529,7 +1592,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private LoggingCommand loggingParent;
 
             @Override public Integer call() {
-                var response = loggingParent.parent.fetchFromNode("/api/logging/levels");
+                var response = loggingParent.parent.fetch(LOG_LEVELS_LIST);
                 return OutputFormatter.printQuery(response, loggingParent.parent.outputOptions());
             }
         }
@@ -1543,7 +1606,7 @@ import static org.pragmatica.lang.Option.some;
 
             @Override public Integer call() {
                 var body = "{\"logger\":\"" + logger + "\",\"level\":\"" + level.toUpperCase() + "\"}";
-                var response = loggingParent.parent.postToNode("/api/logging/levels", body);
+                var response = loggingParent.parent.post(LOG_LEVEL_SET, body);
                 return OutputFormatter.printAction(response,
                                                    loggingParent.parent.outputOptions(),
                                                    "Log level set: " + logger + " = " + level.toUpperCase());
@@ -1556,7 +1619,7 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "0", description = "Logger name") private String logger;
 
             @Override public Integer call() {
-                var response = loggingParent.parent.deleteFromNode("/api/logging/levels/" + logger);
+                var response = loggingParent.parent.delete(LOG_LEVEL_RESET, List.of(logger));
                 return OutputFormatter.printAction(response,
                                                    loggingParent.parent.outputOptions(),
                                                    "Logger reset: " + logger);
@@ -1568,7 +1631,7 @@ import static org.pragmatica.lang.Option.some;
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Contract@Override public void run() {
-            var response = parent.fetchFromNode("/api/config");
+            var response = parent.fetch(CONFIG_LIST);
             OutputFormatter.printQuery(response, parent.outputOptions());
         }
 
@@ -1576,7 +1639,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private ConfigCommand configParent;
 
             @Override public Integer call() {
-                var response = configParent.parent.fetchFromNode("/api/config");
+                var response = configParent.parent.fetch(CONFIG_LIST);
                 return OutputFormatter.printQuery(response, configParent.parent.outputOptions());
             }
         }
@@ -1585,7 +1648,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private ConfigCommand configParent;
 
             @Override public Integer call() {
-                var response = configParent.parent.fetchFromNode("/api/config/overrides");
+                var response = configParent.parent.fetch(CONFIG_OVERRIDES);
                 return OutputFormatter.printQuery(response, configParent.parent.outputOptions());
             }
         }
@@ -1601,7 +1664,7 @@ import static org.pragmatica.lang.Option.some;
 
             @Override@SuppressWarnings("JBCT-UTIL-02") public Integer call() {
                 var body = buildConfigSetBody();
-                var response = configParent.parent.postToNode("/api/config", body);
+                var response = configParent.parent.post(CONFIG_SET, body);
                 return OutputFormatter.printAction(response,
                                                    configParent.parent.outputOptions(),
                                                    "Config set: " + key + " = " + value);
@@ -1634,8 +1697,10 @@ import static org.pragmatica.lang.Option.some;
             }
 
             @SuppressWarnings("JBCT-UTIL-02") private String fetchRemoveResponse() {
-                var path = option(nodeId).map(id -> "/api/config/node/" + id + "/" + key).or("/api/config/" + key);
-                return configParent.parent.deleteFromNode(path);
+                return option(nodeId).map(id -> configParent.parent.delete(CONFIG_NODE_DELETE,
+                                                                           List.of(id, key)))
+                             .or(() -> configParent.parent.delete(CONFIG_DELETE,
+                                                                  List.of(key)));
             }
         }
     }
@@ -1644,7 +1709,7 @@ import static org.pragmatica.lang.Option.some;
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Contract@Override public void run() {
-            var response = parent.fetchFromNode("/api/scheduled-tasks");
+            var response = parent.fetch(SCHEDULED_TASKS_LIST);
             OutputFormatter.printQuery(response, parent.outputOptions());
         }
 
@@ -1652,7 +1717,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private ScheduledTasksCommand tasksParent;
 
             @Override public Integer call() {
-                var response = tasksParent.parent.fetchFromNode("/api/scheduled-tasks");
+                var response = tasksParent.parent.fetch(SCHEDULED_TASKS_LIST);
                 return OutputFormatter.printQuery(response, tasksParent.parent.outputOptions());
             }
         }
@@ -1663,7 +1728,7 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "0", description = "Config section name") private String configSection;
 
             @Override public Integer call() {
-                var response = tasksParent.parent.fetchFromNode("/api/scheduled-tasks/" + configSection);
+                var response = tasksParent.parent.fetch(SCHEDULED_TASKS_BY_SECTION, List.of(configSection));
                 return OutputFormatter.printQuery(response, tasksParent.parent.outputOptions());
             }
         }
@@ -1678,8 +1743,9 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "2", description = "Method name") private String method;
 
             @Override public Integer call() {
-                var response = tasksParent.parent.postToNode("/api/scheduled-tasks/" + configSection + "/" + artifact + "/" + method + "/pause",
-                                                             "");
+                var response = tasksParent.parent.post(SCHEDULED_TASK_PAUSE,
+                                                       List.of(configSection, artifact, method),
+                                                       "");
                 return OutputFormatter.printAction(response,
                                                    tasksParent.parent.outputOptions(),
                                                    "Task paused: " + method);
@@ -1696,8 +1762,9 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "2", description = "Method name") private String method;
 
             @Override public Integer call() {
-                var response = tasksParent.parent.postToNode("/api/scheduled-tasks/" + configSection + "/" + artifact + "/" + method + "/resume",
-                                                             "");
+                var response = tasksParent.parent.post(SCHEDULED_TASK_RESUME,
+                                                       List.of(configSection, artifact, method),
+                                                       "");
                 return OutputFormatter.printAction(response,
                                                    tasksParent.parent.outputOptions(),
                                                    "Task resumed: " + method);
@@ -1714,8 +1781,9 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "2", description = "Method name") private String method;
 
             @Override public Integer call() {
-                var response = tasksParent.parent.postToNode("/api/scheduled-tasks/" + configSection + "/" + artifact + "/" + method + "/trigger",
-                                                             "");
+                var response = tasksParent.parent.post(SCHEDULED_TASK_TRIGGER,
+                                                       List.of(configSection, artifact, method),
+                                                       "");
                 return OutputFormatter.printAction(response,
                                                    tasksParent.parent.outputOptions(),
                                                    "Task triggered: " + method);
@@ -1729,13 +1797,12 @@ import static org.pragmatica.lang.Option.some;
         @CommandLine.Option(names = {"--since"}, description = "Show events since ISO-8601 timestamp (e.g. 2024-01-15T10:30:00Z)") private String since;
 
         @Override public Integer call() {
-            var path = buildEventsPath();
-            var response = parent.fetchFromNode(path);
+            var response = parent.fetch(EVENTS, List.of(), buildEventsQuery());
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
 
-        private String buildEventsPath() {
-            return option(since).map(s -> "/api/events?since=" + s).or("/api/events");
+        private String buildEventsQuery() {
+            return option(since).map(s -> "since=" + s).or("");
         }
     }
 
@@ -1756,12 +1823,12 @@ import static org.pragmatica.lang.Option.some;
             }
 
             private Integer showAllLifecycleStates() {
-                var response = nodeParent.parent.fetchFromNode("/api/nodes/lifecycle");
+                var response = nodeParent.parent.fetch(NODE_LIFECYCLE_LIST);
                 return OutputFormatter.printQuery(response, nodeParent.parent.outputOptions());
             }
 
             private Integer showSingleNodeLifecycle(String id) {
-                var response = nodeParent.parent.fetchFromNode("/api/node/lifecycle/" + id);
+                var response = nodeParent.parent.fetch(NODE_LIFECYCLE_GET, List.of(id));
                 return OutputFormatter.printQuery(response, nodeParent.parent.outputOptions());
             }
         }
@@ -1772,7 +1839,7 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "0", description = "Node ID") private String nodeId;
 
             @Override public Integer call() {
-                return executeTransition("drain", nodeId, nodeParent);
+                return executeTransition(NODE_DRAIN, "drain", nodeId, nodeParent);
             }
         }
 
@@ -1782,7 +1849,7 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "0", description = "Node ID") private String nodeId;
 
             @Override public Integer call() {
-                return executeTransition("activate", nodeId, nodeParent);
+                return executeTransition(NODE_ACTIVATE, "activate", nodeId, nodeParent);
             }
         }
 
@@ -1792,14 +1859,15 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "0", description = "Node ID") private String nodeId;
 
             @Override public Integer call() {
-                return executeTransition("shutdown", nodeId, nodeParent);
+                return executeTransition(NODE_SHUTDOWN, "shutdown", nodeId, nodeParent);
             }
         }
 
-        @SuppressWarnings("JBCT-UTIL-02") private static Integer executeTransition(String action,
+        @SuppressWarnings("JBCT-UTIL-02") private static Integer executeTransition(ManagementRoute route,
+                                                                                   String action,
                                                                                    String nodeId,
                                                                                    NodeCommand nodeParent) {
-            var response = nodeParent.parent.postToNode("/api/node/" + action + "/" + nodeId, "");
+            var response = nodeParent.parent.post(route, List.of(nodeId), "");
             var errorCode = OutputFormatter.checkResponseError(response,
                                                                nodeParent.parent.outputOptions(),
                                                                "Failed to " + action + " node " + nodeId);
@@ -1812,7 +1880,7 @@ import static org.pragmatica.lang.Option.some;
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Override public Integer call() {
-            var response = parent.fetchFromNode("/api/cluster/topology");
+            var response = parent.fetch(CLUSTER_TOPOLOGY);
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
     }
@@ -1828,7 +1896,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private BackupCommand backupParent;
 
             @Override public Integer call() {
-                var response = backupParent.parent.postToNode("/api/backup", "{}");
+                var response = backupParent.parent.post(BACKUP_TRIGGER, "{}");
                 return OutputFormatter.printAction(response, backupParent.parent.outputOptions(), "Backup triggered");
             }
         }
@@ -1837,7 +1905,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private BackupCommand backupParent;
 
             @Override public Integer call() {
-                var response = backupParent.parent.fetchFromNode("/api/backups");
+                var response = backupParent.parent.fetch(BACKUPS_LIST);
                 return OutputFormatter.printQuery(response, backupParent.parent.outputOptions());
             }
         }
@@ -1848,7 +1916,7 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "0", description = "Git commit ID to restore from") private String commitId;
 
             @Override public Integer call() {
-                var response = backupParent.parent.postToNode("/api/backup/restore", "{\"commit\":\"" + commitId + "\"}");
+                var response = backupParent.parent.post(BACKUP_RESTORE, "{\"commit\":\"" + commitId + "\"}");
                 return OutputFormatter.printAction(response,
                                                    backupParent.parent.outputOptions(),
                                                    "Restore initiated from " + commitId);
@@ -1867,7 +1935,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private WorkersCommand workersParent;
 
             @Override public Integer call() {
-                var response = workersParent.parent.fetchFromNode("/api/workers");
+                var response = workersParent.parent.fetch(WORKERS_LIST);
                 return OutputFormatter.printQuery(response, workersParent.parent.outputOptions());
             }
         }
@@ -1876,7 +1944,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private WorkersCommand workersParent;
 
             @Override public Integer call() {
-                var response = workersParent.parent.fetchFromNode("/api/workers/health");
+                var response = workersParent.parent.fetch(WORKERS_HEALTH);
                 return OutputFormatter.printQuery(response, workersParent.parent.outputOptions());
             }
         }
@@ -1885,7 +1953,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private WorkersCommand workersParent;
 
             @Override public Integer call() {
-                var response = workersParent.parent.fetchFromNode("/api/workers/endpoints");
+                var response = workersParent.parent.fetch(WORKERS_ENDPOINTS);
                 return OutputFormatter.printQuery(response, workersParent.parent.outputOptions());
             }
         }
@@ -1904,10 +1972,9 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "0", description = "Datasource name (optional)", arity = "0..1") private String datasource;
 
             @Override public Integer call() {
-                var path = datasource != null
-                          ? "/api/schema/status/" + datasource
-                          : "/api/schema/status";
-                var response = schemaParent.parent.fetchFromNode(path);
+                var response = datasource != null
+                              ? schemaParent.parent.fetch(SCHEMA_STATUS_ONE, List.of(datasource))
+                              : schemaParent.parent.fetch(SCHEMA_STATUS_ALL);
                 return OutputFormatter.printQuery(response, schemaParent.parent.outputOptions());
             }
         }
@@ -1918,7 +1985,7 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "0", description = "Datasource name") private String datasource;
 
             @Override public Integer call() {
-                var response = schemaParent.parent.fetchFromNode("/api/schema/history/" + datasource);
+                var response = schemaParent.parent.fetch(SCHEMA_HISTORY, List.of(datasource));
                 return OutputFormatter.printQuery(response, schemaParent.parent.outputOptions());
             }
         }
@@ -1929,7 +1996,7 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "0", description = "Datasource name") private String datasource;
 
             @Override public Integer call() {
-                var response = schemaParent.parent.postToNode("/api/schema/migrate/" + datasource, "{}");
+                var response = schemaParent.parent.post(SCHEMA_MIGRATE, List.of(datasource), "{}");
                 return OutputFormatter.printAction(response,
                                                    schemaParent.parent.outputOptions(),
                                                    "Migration triggered for " + datasource);
@@ -1944,8 +2011,10 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.Option(names = {"-v", "--version"}, required = true, description = "Target version") private int targetVersion;
 
             @Override public Integer call() {
-                var response = schemaParent.parent.postToNode("/api/schema/undo/" + datasource + "?targetVersion=" + targetVersion,
-                                                              "{}");
+                var response = schemaParent.parent.post(SCHEMA_UNDO,
+                                                        List.of(datasource),
+                                                        "targetVersion=" + targetVersion,
+                                                        "{}");
                 return OutputFormatter.printAction(response,
                                                    schemaParent.parent.outputOptions(),
                                                    "Undo to version " + targetVersion + " for " + datasource);
@@ -1960,8 +2029,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.Option(names = {"-v", "--version"}, required = true, description = "Baseline version") private int version;
 
             @Override public Integer call() {
-                var response = schemaParent.parent.postToNode("/api/schema/baseline/" + datasource + "?version=" + version,
-                                                              "{}");
+                var response = schemaParent.parent.post(SCHEMA_BASELINE, List.of(datasource), "version=" + version, "{}");
                 return OutputFormatter.printAction(response,
                                                    schemaParent.parent.outputOptions(),
                                                    "Baseline set at version " + version + " for " + datasource);
@@ -1974,7 +2042,7 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "0", description = "Datasource name") private String datasource;
 
             @Override public Integer call() {
-                var response = schemaParent.parent.postToNode("/api/schema/retry/" + datasource, "{}");
+                var response = schemaParent.parent.post(SCHEMA_RETRY, List.of(datasource), "{}");
                 return OutputFormatter.printAction(response,
                                                    schemaParent.parent.outputOptions(),
                                                    "Migration retry triggered for " + datasource);
@@ -2004,7 +2072,7 @@ import static org.pragmatica.lang.Option.some;
 
             @Override public Integer call() {
                 var body = buildCreateBody();
-                var response = abParent.parent.postToNode("/api/ab-test/create", body);
+                var response = abParent.parent.post(AB_TEST_CREATE, body);
                 return OutputFormatter.printQuery(response, abParent.parent.outputOptions());
             }
 
@@ -2017,7 +2085,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private AbTestCommand abParent;
 
             @Override public Integer call() {
-                var response = abParent.parent.fetchFromNode("/api/ab-tests");
+                var response = abParent.parent.fetch(AB_TEST_LIST);
                 return OutputFormatter.printQuery(response, abParent.parent.outputOptions());
             }
         }
@@ -2028,7 +2096,7 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "0", description = "Test ID") private String testId;
 
             @Override public Integer call() {
-                var response = abParent.parent.fetchFromNode("/api/ab-test/" + testId);
+                var response = abParent.parent.fetch(AB_TEST_GET, List.of(testId));
                 return OutputFormatter.printQuery(response, abParent.parent.outputOptions());
             }
         }
@@ -2039,7 +2107,7 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "0", description = "Test ID") private String testId;
 
             @Override public Integer call() {
-                var response = abParent.parent.fetchFromNode("/api/ab-test/" + testId + "/metrics");
+                var response = abParent.parent.fetch(AB_TEST_METRICS, List.of(testId));
                 return OutputFormatter.printQuery(response, abParent.parent.outputOptions());
             }
         }
@@ -2053,7 +2121,7 @@ import static org.pragmatica.lang.Option.some;
 
             @Override public Integer call() {
                 var body = "{\"winner\":\"" + winner + "\"}";
-                var response = abParent.parent.postToNode("/api/ab-test/" + testId + "/conclude", body);
+                var response = abParent.parent.post(AB_TEST_CONCLUDE, List.of(testId), body);
                 return OutputFormatter.printAction(response,
                                                    abParent.parent.outputOptions(),
                                                    "A/B test " + testId + " concluded with winner: " + winner);
@@ -2072,7 +2140,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private StreamCommand streamParent;
 
             @Override public Integer call() {
-                var response = streamParent.parent.fetchFromNode("/api/streams");
+                var response = streamParent.parent.fetch(STREAM_LIST);
                 return OutputFormatter.printQuery(response, streamParent.parent.outputOptions());
             }
         }
@@ -2083,7 +2151,7 @@ import static org.pragmatica.lang.Option.some;
             @Parameters(index = "0", description = "Stream name") private String name;
 
             @Override public Integer call() {
-                var response = streamParent.parent.fetchFromNode("/api/streams/" + name);
+                var response = streamParent.parent.fetch(STREAM_GET, List.of(name));
                 return OutputFormatter.printQuery(response, streamParent.parent.outputOptions());
             }
         }
@@ -2098,7 +2166,7 @@ import static org.pragmatica.lang.Option.some;
             @Override public Integer call() {
                 var encoded = Base64.getEncoder().encodeToString(message.getBytes());
                 var body = "{\"data\":\"" + encoded + "\"}";
-                var response = streamParent.parent.postToNode("/api/streams/" + name + "/publish", body);
+                var response = streamParent.parent.post(STREAM_PUBLISH, List.of(name), body);
                 return OutputFormatter.printAction(response,
                                                    streamParent.parent.outputOptions(),
                                                    "Published to stream " + name);
@@ -2110,7 +2178,7 @@ import static org.pragmatica.lang.Option.some;
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Contract@Override public void run() {
-            var response = parent.fetchFromNode("/api/certificate");
+            var response = parent.fetch(CERTIFICATE);
             OutputFormatter.printQuery(response, parent.outputOptions());
         }
 
@@ -2118,7 +2186,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private CertCommand certParent;
 
             @Override public Integer call() {
-                var response = certParent.parent.fetchFromNode("/api/certificate");
+                var response = certParent.parent.fetch(CERTIFICATE);
                 return OutputFormatter.printQuery(response, certParent.parent.outputOptions());
             }
         }

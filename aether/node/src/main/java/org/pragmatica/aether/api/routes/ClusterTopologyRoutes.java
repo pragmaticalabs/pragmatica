@@ -3,6 +3,7 @@ package org.pragmatica.aether.api.routes;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.TopologyNodeDetail;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
@@ -35,9 +36,10 @@ public final class ClusterTopologyRoutes implements RouteSource {
     }
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<ClusterTopologyStatusResponse>get("/api/cluster/topology")
-                              .toJson(this::buildTopologyStatus),
-                         Route.<GovernorsResponse>get("/api/cluster/governors").toJson(this::buildGovernorsResponse));
+        return Stream.of(ManagementRoutes.<ClusterTopologyStatusResponse>route(ManagementRoute.CLUSTER_TOPOLOGY)
+                                         .toJson(this::buildTopologyStatus),
+                         ManagementRoutes.<GovernorsResponse>route(ManagementRoute.CLUSTER_GOVERNORS)
+                                         .toJson(this::buildGovernorsResponse));
     }
 
     private GovernorsResponse buildGovernorsResponse() {

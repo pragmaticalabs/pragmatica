@@ -5,11 +5,20 @@ import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.aether.cli.OutputOptions;
 import org.pragmatica.lang.Contract;
 
+import java.util.List;
 import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
+
+import static org.pragmatica.aether.management.route.ManagementRoute.BLUEPRINT_DEPLOY;
+import static org.pragmatica.aether.management.route.ManagementRoute.DEPLOY_COMPLETE;
+import static org.pragmatica.aether.management.route.ManagementRoute.DEPLOY_LIST;
+import static org.pragmatica.aether.management.route.ManagementRoute.DEPLOY_PROMOTE;
+import static org.pragmatica.aether.management.route.ManagementRoute.DEPLOY_ROLLBACK;
+import static org.pragmatica.aether.management.route.ManagementRoute.DEPLOY_START;
+import static org.pragmatica.aether.management.route.ManagementRoute.DEPLOY_STATUS;
 
 
 /// Unified deployment management command.
@@ -61,13 +70,13 @@ import picocli.CommandLine.Parameters;
 
     @SuppressWarnings("JBCT-SEQ-01") private int deployImmediate() {
         var body = "{\"artifact\":\"" + coordinates + "\"}";
-        var response = parent.postToNode("/api/blueprint/deploy", body);
+        var response = parent.post(BLUEPRINT_DEPLOY, body);
         return OutputFormatter.printQuery(response, parent.outputOptions());
     }
 
     @SuppressWarnings("JBCT-SEQ-01") private int deployWithStrategy(String strategy, String strategyBody) {
         var body = "{\"blueprint\":\"" + coordinates + "\",\"strategy\":\"" + strategy + "\"," + strategyBody + "}";
-        var response = parent.postToNode("/api/deploy", body);
+        var response = parent.post(DEPLOY_START, body);
         return OutputFormatter.printQuery(response, parent.outputOptions());
     }
 
@@ -87,7 +96,7 @@ import picocli.CommandLine.Parameters;
         @CommandLine.ParentCommand private DeployCommand deployParent;
 
         @Override public Integer call() {
-            var response = deployParent.parent.fetchFromNode("/api/deploy");
+            var response = deployParent.parent.fetch(DEPLOY_LIST);
             return OutputFormatter.printQuery(response, deployParent.parent.outputOptions());
         }
     }
@@ -98,7 +107,7 @@ import picocli.CommandLine.Parameters;
         @Parameters(index = "0", description = "Deployment ID") private String deploymentId;
 
         @Override public Integer call() {
-            var response = deployParent.parent.fetchFromNode("/api/deploy/" + deploymentId);
+            var response = deployParent.parent.fetch(DEPLOY_STATUS, List.of(deploymentId));
             return OutputFormatter.printQuery(response, deployParent.parent.outputOptions());
         }
     }
@@ -114,7 +123,7 @@ import picocli.CommandLine.Parameters;
             var body = trafficPercent != null
                       ? "{\"trafficPercent\":" + trafficPercent + "}"
                       : "{}";
-            var response = deployParent.parent.postToNode("/api/deploy/" + deploymentId + "/promote", body);
+            var response = deployParent.parent.post(DEPLOY_PROMOTE, List.of(deploymentId), body);
             return OutputFormatter.printAction(response,
                                                deployParent.parent.outputOptions(),
                                                "Deployment " + deploymentId + " promoted");
@@ -127,7 +136,7 @@ import picocli.CommandLine.Parameters;
         @Parameters(index = "0", description = "Deployment ID") private String deploymentId;
 
         @Override public Integer call() {
-            var response = deployParent.parent.postToNode("/api/deploy/" + deploymentId + "/rollback", "{}");
+            var response = deployParent.parent.post(DEPLOY_ROLLBACK, List.of(deploymentId), "{}");
             return OutputFormatter.printAction(response,
                                                deployParent.parent.outputOptions(),
                                                "Deployment " + deploymentId + " rolled back");
@@ -140,7 +149,7 @@ import picocli.CommandLine.Parameters;
         @Parameters(index = "0", description = "Deployment ID") private String deploymentId;
 
         @Override public Integer call() {
-            var response = deployParent.parent.postToNode("/api/deploy/" + deploymentId + "/complete", "{}");
+            var response = deployParent.parent.post(DEPLOY_COMPLETE, List.of(deploymentId), "{}");
             return OutputFormatter.printAction(response,
                                                deployParent.parent.outputOptions(),
                                                "Deployment " + deploymentId + " completed");

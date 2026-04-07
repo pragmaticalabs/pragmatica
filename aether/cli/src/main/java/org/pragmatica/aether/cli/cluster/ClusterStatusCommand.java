@@ -9,6 +9,8 @@ import java.util.concurrent.Callable;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_STATUS;
+
 
 /// Displays aggregated cluster status from the management API.
 ///
@@ -17,8 +19,7 @@ import picocli.CommandLine.Command;
     @CommandLine.ParentCommand private ClusterCommand parent;
 
     @Override public Integer call() {
-        return ClusterHttpClient.fetchFromCluster("/api/cluster/status")
-                                                 .fold(ClusterStatusCommand::onFailure, this::onSuccess);
+        return ClusterHttpClient.fetch(CLUSTER_CONFIG_STATUS).fold(ClusterStatusCommand::onFailure, this::onSuccess);
     }
 
     private int onSuccess(String json) {

@@ -14,6 +14,9 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import tools.jackson.databind.JsonNode;
 
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_GET;
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_UPGRADE;
+
 
 /// Initiates a cluster upgrade to a target version via the management API.
 ///
@@ -43,14 +46,14 @@ import tools.jackson.databind.JsonNode;
     }
 
     private Result<JsonNode> fetchCurrentConfig(String version) {
-        return ClusterHttpClient.fetchFromCluster("/api/cluster/config").flatMap(MAPPER::readTree);
+        return ClusterHttpClient.fetch(CLUSTER_CONFIG_GET).flatMap(MAPPER::readTree);
     }
 
     private Result<String> initiateUpgrade(JsonNode config) {
         var currentVersion = config.path("version").asText("unknown");
         if (targetVersion.equals(currentVersion)) {return new UpgradeError.AlreadyAtVersion(targetVersion).result();}
         var jsonBody = "{\"targetVersion\":\"" + targetVersion + "\"}";
-        return ClusterHttpClient.postToCluster("/api/cluster/upgrade", jsonBody);
+        return ClusterHttpClient.post(CLUSTER_UPGRADE, jsonBody);
     }
 
     private int onSuccess(String json) {

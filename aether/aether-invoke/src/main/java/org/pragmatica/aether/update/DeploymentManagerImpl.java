@@ -44,8 +44,8 @@ import static org.pragmatica.lang.Option.option;
 ///
 /// All deployment operations are synchronous (return Result) because they
 /// execute consensus commands and wait for them to be applied. State is
-/// maintained in an in-memory cache and reconstructed from KV-Store on
-/// leader election.
+/// maintained in an in-memory cache and reconstructed from KV-Store when the
+/// STRATEGIES task group is assigned to this node.
 ///
 /// Factory method: [DeploymentManager#deploymentManager]
 final class DeploymentManagerImpl implements DeploymentManager {
@@ -56,7 +56,7 @@ final class DeploymentManagerImpl implements DeploymentManager {
 
     private final ConcurrentHashMap<String, Deployment> activeDeployments = new ConcurrentHashMap<>();
 
-    private volatile boolean leader;
+    private volatile boolean active;
 
     DeploymentManagerImpl(RabiaNode<KVCommand<AetherKey>> clusterNode, KVStore<AetherKey, AetherValue> kvStore) {
         this.clusterNode = clusterNode;
@@ -64,15 +64,15 @@ final class DeploymentManagerImpl implements DeploymentManager {
     }
 
     @Override public Promise<Unit> activate() {
-        log.info("Deployment manager active (leader)");
-        leader = true;
+        log.info("Deployment manager active (STRATEGIES task group assigned)");
+        active = true;
         restoreState();
         return Promise.success(Unit.unit());
     }
 
     @Override public Promise<Unit> deactivate() {
-        log.info("Deployment manager passive (follower)");
-        leader = false;
+        log.info("Deployment manager passive (STRATEGIES task group unassigned)");
+        active = false;
         activeDeployments.clear();
         return Promise.success(Unit.unit());
     }
@@ -82,7 +82,7 @@ final class DeploymentManagerImpl implements DeploymentManager {
     }
 
     @Override public boolean isActive() {
-        return leader;
+        return active;
     }
 
     @Override public Result<Deployment> start(String blueprintId,
@@ -92,7 +92,7 @@ final class DeploymentManagerImpl implements DeploymentManager {
                                               HealthThresholds thresholds,
                                               CleanupPolicy cleanupPolicy,
                                               int instances) {
-        return requireLeader().flatMap(_ -> checkNoActiveDeployment(blueprintId))
+        return requireActive().flatMap(_ -> checkNoActiveDeployment(blueprintId))
                             .flatMap(_ -> resolveBlueprint(blueprintId))
                             .flatMap(blueprint -> resolveSlicesAndCurrentVersion(blueprint, newVersion))
                             .flatMap(context -> createDeployment(context,
@@ -106,17 +106,17 @@ final class DeploymentManagerImpl implements DeploymentManager {
     }
 
     @Override public Result<Deployment> promote(String deploymentId) {
-        return requireLeader().flatMap(_ -> findDeployment(deploymentId)).flatMap(this::applyPromoteRouting);
+        return requireActive().flatMap(_ -> findDeployment(deploymentId)).flatMap(this::applyPromoteRouting);
     }
 
     @Override public Result<Deployment> rollback(String deploymentId) {
-        return requireLeader().flatMap(_ -> findDeployment(deploymentId))
+        return requireActive().flatMap(_ -> findDeployment(deploymentId))
                             .flatMap(Deployment::rollback)
                             .flatMap(this::applyRollbackRouting);
     }
 
     @Override public Result<Deployment> complete(String deploymentId) {
-        return requireLeader().flatMap(_ -> findDeployment(deploymentId))
+        return requireActive().flatMap(_ -> findDeployment(deploymentId))
                             .flatMap(Deployment::complete)
                             .flatMap(this::applyCompleteRouting);
     }
@@ -143,8 +143,8 @@ final class DeploymentManagerImpl implements DeploymentManager {
                                        .orElse(none());
     }
 
-    private Result<Unit> requireLeader() {
-        if (!leader) {return DeploymentError.General.NOT_LEADER.result();}
+    private Result<Unit> requireActive() {
+        if (!active) {return DeploymentError.General.NOT_ASSIGNED.result();}
         return Result.unitResult();
     }
 

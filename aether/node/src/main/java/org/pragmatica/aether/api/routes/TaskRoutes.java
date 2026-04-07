@@ -1,6 +1,7 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.deployment.delegation.TaskAssignmentCoordinator;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -20,7 +21,6 @@ import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
-import static org.pragmatica.http.routing.PathParameter.spacer;
 
 
 /// Routes for task group delegation observability: list assignments and force-reassign.
@@ -46,15 +46,14 @@ public final class TaskRoutes implements RouteSource {
     record ReassignResponse(String status){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<TaskAssignmentsResponse>get("/api/cluster/tasks")
-                              .to(_ -> Promise.success(listAssignments()))
-                              .asJson(),
-                         Route.<ReassignResponse>put("/api/cluster/tasks")
-                              .withPath(aString(),
-                                        spacer("reassign"))
-                              .withBody(ReassignRequest.class)
-                              .toResult(this::reassignTask)
-                              .asJson());
+        return Stream.of(ManagementRoutes.<TaskAssignmentsResponse>route(ManagementRoute.CLUSTER_TASKS_LIST)
+                                         .to(_ -> Promise.success(listAssignments()))
+                                         .asJson(),
+                         ManagementRoutes.<ReassignResponse>route(ManagementRoute.CLUSTER_TASK_REASSIGN)
+                                         .withPath(aString())
+                                         .withBody(ReassignRequest.class)
+                                         .toResult(this::reassignTask)
+                                         .asJson());
     }
 
     private TaskAssignmentsResponse listAssignments() {
@@ -74,7 +73,7 @@ public final class TaskRoutes implements RouteSource {
                                       value.failureReason());
     }
 
-    private Result<ReassignResponse> reassignTask(String group, String ignored, ReassignRequest request) {
+    private Result<ReassignResponse> reassignTask(String group, ReassignRequest request) {
         return parseTaskGroup(group).flatMap(taskGroup -> reassignToNode(taskGroup, request.targetNode()));
     }
 

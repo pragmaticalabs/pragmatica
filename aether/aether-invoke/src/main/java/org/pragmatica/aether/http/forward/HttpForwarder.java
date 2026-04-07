@@ -6,12 +6,19 @@ import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse
 import org.pragmatica.aether.http.forward.HttpForwardMessage.Pipeline;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
+import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.management.route.ManagementRouteError;
+import org.pragmatica.aether.management.route.RouteTarget;
+import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.http.routing.HttpMethod;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.io.TimeSpan;
@@ -51,6 +58,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
     @MessageReceiver void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved);
     @MessageReceiver void onNodeDown(TopologyChangeNotification.NodeDown nodeDown);
 
+    Fn1<Result<NodeId>, TaskGroup> UNASSIGNED_RESOLVER = group -> org.pragmatica.aether.slice.delegation.TaskAssignmentError.notAssigned(group)
+                                                                                                                                        .result();
+
     static HttpForwarder httpForwarder(NodeId selfNodeId,
                                        HttpRouteRegistry routeRegistry,
                                        ClusterNetwork clusterNetwork,
@@ -65,7 +75,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                              forwardTimeout,
                              DEFAULT_RETRY_DELAY_MS,
                              DEFAULT_MAX_FORWARD_RETRIES,
-                             Set::of);
+                             Set::of,
+                             UNASSIGNED_RESOLVER);
     }
 
     static HttpForwarder httpForwarder(NodeId selfNodeId,
@@ -83,7 +94,28 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                              forwardTimeout,
                              DEFAULT_RETRY_DELAY_MS,
                              DEFAULT_MAX_FORWARD_RETRIES,
-                             coreNodeSupplier);
+                             coreNodeSupplier,
+                             UNASSIGNED_RESOLVER);
+    }
+
+    static HttpForwarder httpForwarder(NodeId selfNodeId,
+                                       HttpRouteRegistry routeRegistry,
+                                       ClusterNetwork clusterNetwork,
+                                       Serializer serializer,
+                                       Deserializer deserializer,
+                                       TimeSpan forwardTimeout,
+                                       Supplier<Set<NodeId>> coreNodeSupplier,
+                                       Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver) {
+        return httpForwarder(selfNodeId,
+                             routeRegistry,
+                             clusterNetwork,
+                             serializer,
+                             deserializer,
+                             forwardTimeout,
+                             DEFAULT_RETRY_DELAY_MS,
+                             DEFAULT_MAX_FORWARD_RETRIES,
+                             coreNodeSupplier,
+                             taskGroupOwnerResolver);
     }
 
     long DEFAULT_RETRY_DELAY_MS = 200;
@@ -98,7 +130,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                        TimeSpan forwardTimeout,
                                        long retryDelayMs,
                                        int maxForwardRetries,
-                                       Supplier<Set<NodeId>> coreNodeSupplier) {
+                                       Supplier<Set<NodeId>> coreNodeSupplier,
+                                       Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver) {
         @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) record httpForwarder(NodeId selfNodeId,
                                                                                HttpRouteRegistry routeRegistry,
                                                                                ClusterNetwork clusterNetwork,
@@ -110,7 +143,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                                                                Map<String, PendingForward> pendingForwards,
                                                                                Map<NodeId, Set<String>> pendingForwardsByNode,
                                                                                Map<String, AtomicInteger> roundRobinCounters,
-                                                                               Supplier<Set<NodeId>> coreNodeSupplier) implements HttpForwarder {
+                                                                               Supplier<Set<NodeId>> coreNodeSupplier,
+                                                                               Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver) implements HttpForwarder {
             private static final Logger log = LoggerFactory.getLogger(HttpForwarder.class);
 
             private static final int MAX_PENDING_FORWARDS = 10_000;
@@ -168,6 +202,42 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
             @Override public Promise<HttpResponseData> forwardManagement(HttpRequestContext requestContext,
                                                                          String requestId) {
+                var methodOpt = parseHttpMethod(requestContext.method());
+                if (methodOpt.isEmpty()) {
+                    log.warn("Unsupported HTTP method {} for management forward [{}]",
+                             requestContext.method(),
+                             requestId);
+                    return Causes.cause("Unsupported HTTP method: " + requestContext.method()).promise();
+                }
+                return ManagementRoute.match(methodOpt.unwrap(),
+                                             requestContext.path())
+                .fold(cause -> {
+                          log.debug("No management route matched {} {} [{}]",
+                                    requestContext.method(),
+                                    requestContext.path(),
+                                    requestId);
+                          return cause.<HttpResponseData>promise();
+                      },
+                      matched -> dispatchByTarget(matched.route(),
+                                                  requestContext,
+                                                  requestId));
+            }
+
+            private Promise<HttpResponseData> dispatchByTarget(ManagementRoute route,
+                                                               HttpRequestContext requestContext,
+                                                               String requestId) {
+                return switch (route.target()){
+                    case RouteTarget.LocalNode __ -> ManagementRouteError.localNotForwardable(route.name())
+                                                                                             .<HttpResponseData>promise();
+                    case RouteTarget.AnyCoreNode __ -> forwardToAnyCoreNode(requestContext, requestId);
+                    case RouteTarget.TaskGroupTarget(var group) -> forwardToTaskGroupOwner(group,
+                                                                                           requestContext,
+                                                                                           requestId);
+                };
+            }
+
+            private Promise<HttpResponseData> forwardToAnyCoreNode(HttpRequestContext requestContext,
+                                                                   String requestId) {
                 var resultPromise = Promise.<HttpResponseData>promise();
                 var connectedCoreNodes = connectedCoreNodes();
                 if (connectedCoreNodes.isEmpty()) {
@@ -185,6 +255,53 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                  Math.min(connectedCoreNodes.size() - 1, maxForwardRetries),
                                  Pipeline.MANAGEMENT);
                 return resultPromise;
+            }
+
+            private Promise<HttpResponseData> forwardToTaskGroupOwner(TaskGroup group,
+                                                                      HttpRequestContext requestContext,
+                                                                      String requestId) {
+                return taskGroupOwnerResolver.apply(group)
+                                                   .fold(cause -> {
+                                                             log.debug("Task group {} has no owner for management forward [{}]",
+                                                                       group,
+                                                                       requestId);
+                                                             return cause.<HttpResponseData>promise();
+                                                         },
+                                                         owner -> {
+                                                             if (!clusterNetwork.connectedPeers().contains(owner)) {
+                                                                 log.warn("Task group {} owner {} is not connected [{}]",
+                                                                          group,
+                                                                          owner,
+                                                                          requestId);
+                                                                 return ManagementRouteError.ownerDisconnected(group,
+                                                                                                               owner.id())
+                .<HttpResponseData>promise();
+                                                             }
+                                                             return forwardToSpecificNode(requestContext,
+                                                                                          owner,
+                                                                                          requestId);
+                                                         });
+            }
+
+            private Promise<HttpResponseData> forwardToSpecificNode(HttpRequestContext requestContext,
+                                                                    NodeId targetNode,
+                                                                    String requestId) {
+                var resultPromise = Promise.<HttpResponseData>promise();
+                var routeIdentity = "MANAGEMENT:" + targetNode.id();
+                forwardWithRetry(requestContext,
+                                 resultPromise,
+                                 List.of(targetNode),
+                                 Set.of(),
+                                 routeIdentity,
+                                 requestId,
+                                 0,
+                                 Pipeline.MANAGEMENT);
+                return resultPromise;
+            }
+
+            private static Option<HttpMethod> parseHttpMethod(String raw) {
+                return Result.lift(Causes::fromThrowable,
+                                   () -> HttpMethod.valueOf(raw.toUpperCase())).option();
             }
 
             private List<NodeId> connectedCoreNodes() {
@@ -475,6 +592,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                  new ConcurrentHashMap<>(),
                                  new ConcurrentHashMap<>(),
                                  new ConcurrentHashMap<>(),
-                                 coreNodeSupplier);
+                                 coreNodeSupplier,
+                                 taskGroupOwnerResolver);
     }
 }

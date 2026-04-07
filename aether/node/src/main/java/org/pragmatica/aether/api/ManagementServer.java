@@ -306,7 +306,9 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(StorageRoutes.storageRoutes(nodeSupplier));
         routeSources.add(TaskRoutes.taskRoutes(nodeSupplier));
         dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm, nodeSupplier)));
-        this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));
+        this.router = ManagementRouter.managementRouter(nodeSupplier.get().self(),
+                                                        () -> nodeSupplier.get().taskGroupAssignmentRegistry(),
+                                                        routeSources.toArray(RouteSource[]::new));
         this.legacyRoutes = List.of(MavenProtocolRoutes.mavenProtocolRoutes(nodeSupplier));
     }
 

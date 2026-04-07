@@ -16,6 +16,7 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.http.security.AuditLog;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
@@ -72,33 +73,34 @@ public final class SchemaRoutes implements RouteSource {
     }
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<SchemaStatusListResponse>get("/api/schema/status").toJson(this::allSchemaStatuses),
-                         Route.<SchemaStatusResponse>get("/api/schema/status")
-                              .withPath(aString())
-                              .to(this::singleSchemaStatus)
-                              .asJson(),
-                         Route.<SchemaStatusResponse>get("/api/schema/history")
-                              .withPath(aString())
-                              .to(this::schemaHistory)
-                              .asJson(),
-                         Route.<SchemaMigrateResponse>post("/api/schema/migrate")
-                              .withPath(aString())
-                              .to(this::triggerMigration)
-                              .asJson(),
-                         Route.<SchemaMigrateResponse>post("/api/schema/undo")
-                              .withPath(aString())
-                              .withQuery(QueryParameter.aString("targetVersion"))
-                              .to(this::undoMigration)
-                              .asJson(),
-                         Route.<SchemaMigrateResponse>post("/api/schema/baseline")
-                              .withPath(aString())
-                              .withQuery(QueryParameter.aString("version"))
-                              .to(this::baselineDatasource)
-                              .asJson(),
-                         Route.<SchemaMigrateResponse>post("/api/schema/retry")
-                              .withPath(aString())
-                              .to(this::retryMigration)
-                              .asJson());
+        return Stream.of(ManagementRoutes.<SchemaStatusListResponse>route(ManagementRoute.SCHEMA_STATUS_ALL)
+                                         .toJson(this::allSchemaStatuses),
+                         ManagementRoutes.<SchemaStatusResponse>route(ManagementRoute.SCHEMA_STATUS_ONE)
+                                         .withPath(aString())
+                                         .to(this::singleSchemaStatus)
+                                         .asJson(),
+                         ManagementRoutes.<SchemaStatusResponse>route(ManagementRoute.SCHEMA_HISTORY)
+                                         .withPath(aString())
+                                         .to(this::schemaHistory)
+                                         .asJson(),
+                         ManagementRoutes.<SchemaMigrateResponse>route(ManagementRoute.SCHEMA_MIGRATE)
+                                         .withPath(aString())
+                                         .to(this::triggerMigration)
+                                         .asJson(),
+                         ManagementRoutes.<SchemaMigrateResponse>route(ManagementRoute.SCHEMA_UNDO)
+                                         .withPath(aString())
+                                         .withQuery(QueryParameter.aString("targetVersion"))
+                                         .to(this::undoMigration)
+                                         .asJson(),
+                         ManagementRoutes.<SchemaMigrateResponse>route(ManagementRoute.SCHEMA_BASELINE)
+                                         .withPath(aString())
+                                         .withQuery(QueryParameter.aString("version"))
+                                         .to(this::baselineDatasource)
+                                         .asJson(),
+                         ManagementRoutes.<SchemaMigrateResponse>route(ManagementRoute.SCHEMA_RETRY)
+                                         .withPath(aString())
+                                         .to(this::retryMigration)
+                                         .asJson());
     }
 
     private SchemaStatusListResponse allSchemaStatuses() {

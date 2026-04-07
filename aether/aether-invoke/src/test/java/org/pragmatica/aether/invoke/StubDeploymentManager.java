@@ -28,22 +28,22 @@ class StubDeploymentManager implements DeploymentManager {
                                     HealthThresholds thresholds,
                                     CleanupPolicy cleanupPolicy,
                                     int instances) {
-        return DeploymentError.General.NOT_LEADER.result();
+        return DeploymentError.General.NOT_ASSIGNED.result();
     }
 
     @Override
     public Result<Deployment> promote(String deploymentId) {
-        return DeploymentError.General.NOT_LEADER.result();
+        return DeploymentError.General.NOT_ASSIGNED.result();
     }
 
     @Override
     public Result<Deployment> rollback(String deploymentId) {
-        return DeploymentError.General.NOT_LEADER.result();
+        return DeploymentError.General.NOT_ASSIGNED.result();
     }
 
     @Override
     public Result<Deployment> complete(String deploymentId) {
-        return DeploymentError.General.NOT_LEADER.result();
+        return DeploymentError.General.NOT_ASSIGNED.result();
     }
 
     @Override

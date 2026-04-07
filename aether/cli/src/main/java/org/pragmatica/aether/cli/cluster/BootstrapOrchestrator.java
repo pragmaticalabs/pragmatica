@@ -4,6 +4,7 @@ import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.ClusterConfigValidator;
 import org.pragmatica.aether.config.cluster.ClusterManagementConfig;
 import org.pragmatica.aether.config.cluster.DeploymentType;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
@@ -308,12 +309,16 @@ import static org.pragmatica.lang.Result.success;
         var deploymentType = config.deployment().type()
                                               .value();
         var jsonBody = "{\"clusterName\":\"" + clusterName + "\"" + ",\"version\":\"" + version + "\"" + ",\"coreCount\":" + coreCount + ",\"deploymentType\":\"" + deploymentType + "\"" + ",\"configVersion\":1}";
-        httpPost(endpoint + "/api/cluster/config", jsonBody, apiKey);
+        httpPost(endpoint + assemblePath(ManagementRoute.CLUSTER_CONFIG_APPLY), jsonBody, apiKey);
     }
 
     private static void storeApiKey(String endpoint, String apiKey) {
         var jsonBody = "{\"apiKey\":\"" + apiKey + "\"}";
-        httpPost(endpoint + "/api/cluster/api-key", jsonBody, apiKey);
+        httpPost(endpoint + assemblePath(ManagementRoute.CLUSTER_API_KEY_SET), jsonBody, apiKey);
+    }
+
+    private static String assemblePath(ManagementRoute route) {
+        return route.assemble(List.of()).or(route.prefix());
     }
 
     private static void registerLocally(String clusterName, String endpoint, String apiKeyEnvName) {

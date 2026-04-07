@@ -3,6 +3,7 @@ package org.pragmatica.aether.api.routes;
 import org.pragmatica.aether.api.DynamicConfigManager;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.http.security.AuditLog;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.api.ManagementApiResponses.ConfigRemovedResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ConfigSetResponse;
@@ -37,20 +38,22 @@ public final class ConfigRoutes implements RouteSource {
     record SetConfigRequest(String key, String value, Option<String> nodeId){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<Object>get("/api/config").toJson(configManager::allConfigAsJson),
-                         Route.<Object>get("/api/config/overrides").toJson(configManager::overridesAsJson),
-                         Route.<ConfigSetResponse>post("/api/config")
-                              .withBody(SetConfigRequest.class)
-                              .toJson(this::handleSetConfig),
-                         Route.<ConfigRemovedResponse>delete("/api/config")
-                              .withPath(aString())
-                              .to(this::handleDeleteConfig)
-                              .asJson(),
-                         Route.<ConfigRemovedResponse>delete("/api/config/node")
-                              .withPath(aString(),
-                                        aString())
-                              .to(this::handleDeleteNodeConfig)
-                              .asJson());
+        return Stream.of(ManagementRoutes.<Object>route(ManagementRoute.CONFIG_LIST)
+                                         .toJson(configManager::allConfigAsJson),
+                         ManagementRoutes.<Object>route(ManagementRoute.CONFIG_OVERRIDES)
+                                         .toJson(configManager::overridesAsJson),
+                         ManagementRoutes.<ConfigSetResponse>route(ManagementRoute.CONFIG_SET)
+                                         .withBody(SetConfigRequest.class)
+                                         .toJson(this::handleSetConfig),
+                         ManagementRoutes.<ConfigRemovedResponse>route(ManagementRoute.CONFIG_DELETE)
+                                         .withPath(aString())
+                                         .to(this::handleDeleteConfig)
+                                         .asJson(),
+                         ManagementRoutes.<ConfigRemovedResponse>route(ManagementRoute.CONFIG_NODE_DELETE)
+                                         .withPath(aString(),
+                                                   aString())
+                                         .to(this::handleDeleteNodeConfig)
+                                         .asJson());
     }
 
     private Promise<ConfigSetResponse> handleSetConfig(SetConfigRequest req) {

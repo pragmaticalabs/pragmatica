@@ -13,6 +13,11 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import tools.jackson.databind.JsonNode;
 
+import static org.pragmatica.aether.management.route.ManagementRoute.NODE_DRAIN;
+import static org.pragmatica.aether.management.route.ManagementRoute.NODE_LIFECYCLE_GET;
+import static org.pragmatica.aether.management.route.ManagementRoute.NODE_LIFECYCLE_LIST;
+import static org.pragmatica.aether.management.route.ManagementRoute.NODE_SHUTDOWN;
+
 
 /// Destroys the active cluster: drains all nodes, shuts them down, and removes the registry entry.
 ///
@@ -73,9 +78,9 @@ import tools.jackson.databind.JsonNode;
     }
 
     private List<String> fetchNodeIds() {
-        return ClusterHttpClient.fetchFromCluster("/api/nodes/lifecycle").flatMap(MAPPER::readTree)
-                                                 .map(ClusterDestroyCommand::extractNodeIds)
-                                                 .or(List.of());
+        return ClusterHttpClient.fetch(NODE_LIFECYCLE_LIST).flatMap(MAPPER::readTree)
+                                      .map(ClusterDestroyCommand::extractNodeIds)
+                                      .or(List.of());
     }
 
     private static List<String> extractNodeIds(JsonNode root) {
@@ -99,7 +104,7 @@ import tools.jackson.databind.JsonNode;
     }
 
     private NodeResult drainSingleNode(String nodeId) {
-        var drainResult = ClusterHttpClient.postToCluster("/api/node/drain/" + nodeId, "{}");
+        var drainResult = ClusterHttpClient.post(NODE_DRAIN, List.of(nodeId), "{}");
         if (drainResult.isFailure()) {
             System.err.printf("  Failed to drain %s: %s%n", nodeId, drainResult.fold(Cause::message, v -> v));
             return new NodeResult(nodeId, false);
@@ -113,9 +118,10 @@ import tools.jackson.databind.JsonNode;
     private static boolean waitForDecommissioned(String nodeId) {
         var deadline = System.currentTimeMillis() + (long) DRAIN_TIMEOUT_SECONDS * 1000;
         while (System.currentTimeMillis() <deadline) {
-            var state = ClusterHttpClient.fetchFromCluster("/api/node/lifecycle/" + nodeId).flatMap(MAPPER::readTree)
-                                                          .map(node -> node.path("state").asText("UNKNOWN"))
-                                                          .or("UNKNOWN");
+            var state = ClusterHttpClient.fetch(NODE_LIFECYCLE_GET,
+                                                List.of(nodeId)).flatMap(MAPPER::readTree)
+                                               .map(node -> node.path("state").asText("UNKNOWN"))
+                                               .or("UNKNOWN");
             if ("DECOMMISSIONED".equals(state)) {return true;}
             sleepQuietly();
         }
@@ -126,7 +132,7 @@ import tools.jackson.databind.JsonNode;
         var results = new ArrayList<NodeResult>();
         for (var nodeId : nodeIds) {
             System.out.printf("Shutting down node %s...%n", nodeId);
-            var result = ClusterHttpClient.postToCluster("/api/node/shutdown/" + nodeId, "{}");
+            var result = ClusterHttpClient.post(NODE_SHUTDOWN, List.of(nodeId), "{}");
             var success = result.isSuccess();
             if (!success) {System.err.printf("  Failed to shutdown %s.%n", nodeId);}
             results.add(new NodeResult(nodeId, success));

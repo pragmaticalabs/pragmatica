@@ -5,6 +5,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.AlertsClearedResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.AlertsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ThresholdRemovedResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ThresholdSetResponse;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -31,18 +32,23 @@ public final class AlertRoutes implements RouteSource {
     record ThresholdRequest(String metric, Double warning, Double critical){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<Object>get("/api/thresholds").toJson(alertManager::thresholdsAsJson),
-                         Route.<AlertsResponse>get("/api/alerts").toJson(this::buildAlertsResponse),
-                         Route.<Object>get("/api/alerts/active").toJson(alertManager::activeAlertsAsJson),
-                         Route.<Object>get("/api/alerts/history").toJson(alertManager::alertHistoryAsJson),
-                         Route.<ThresholdSetResponse>post("/api/thresholds")
-                              .withBody(ThresholdRequest.class)
-                              .toJson(this::handleSetThreshold),
-                         Route.<AlertsClearedResponse>post("/api/alerts/clear").toJson(this::handleClearAlerts),
-                         Route.<ThresholdRemovedResponse>delete("/api/thresholds")
-                              .withPath(aString())
-                              .to(this::handleDeleteThreshold)
-                              .asJson());
+        return Stream.of(ManagementRoutes.<Object>route(ManagementRoute.THRESHOLDS_LIST)
+                                         .toJson(alertManager::thresholdsAsJson),
+                         ManagementRoutes.<AlertsResponse>route(ManagementRoute.ALERTS)
+                                         .toJson(this::buildAlertsResponse),
+                         ManagementRoutes.<Object>route(ManagementRoute.ALERTS_ACTIVE)
+                                         .toJson(alertManager::activeAlertsAsJson),
+                         ManagementRoutes.<Object>route(ManagementRoute.ALERTS_HISTORY)
+                                         .toJson(alertManager::alertHistoryAsJson),
+                         ManagementRoutes.<ThresholdSetResponse>route(ManagementRoute.THRESHOLD_SET)
+                                         .withBody(ThresholdRequest.class)
+                                         .toJson(this::handleSetThreshold),
+                         ManagementRoutes.<AlertsClearedResponse>route(ManagementRoute.ALERTS_CLEAR)
+                                         .toJson(this::handleClearAlerts),
+                         ManagementRoutes.<ThresholdRemovedResponse>route(ManagementRoute.THRESHOLD_DELETE)
+                                         .withPath(aString())
+                                         .to(this::handleDeleteThreshold)
+                                         .asJson());
     }
 
     private Promise<ThresholdSetResponse> handleSetThreshold(ThresholdRequest req) {

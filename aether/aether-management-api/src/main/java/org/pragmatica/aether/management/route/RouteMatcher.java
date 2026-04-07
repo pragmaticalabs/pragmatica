@@ -27,7 +27,7 @@ import java.util.Map;
 /// This allows `O(1)` lookup by `(method, prefix, paramCount)` after splitting the incoming path
 /// into segments and iterating longest-prefix-first.
 public final class RouteMatcher {
-    private static final RouteMatcher SHARED = build(ManagementRoute.values());
+    private static final RouteMatcher SHARED = buildOrFail(ManagementRoute.values());
 
     private final Map<MatchKey, ManagementRoute> index;
 
@@ -39,23 +39,26 @@ public final class RouteMatcher {
         return SHARED;
     }
 
-    static RouteMatcher build(ManagementRoute[] routes) {
+    static Result<RouteMatcher> build(ManagementRoute[] routes) {
         var index = new HashMap<MatchKey, ManagementRoute>();
         for (var r : routes) {
             var key = new MatchKey(r.method(), r.prefix(), r.paramCount());
             var existing = index.put(key, r);
-            if (existing != null) {
-                throw new ExceptionInInitializerError(
-                        "Ambiguous management routes: " + existing.name() + " and " + r.name()
-                                + " share signature " + key);
-            }
+            if (existing != null) {return ManagementRouteError.ambiguousRoutes(existing.name(),
+                                                                               r.name(),
+                                                                               key.toString())
+            .result();}
         }
-        return new RouteMatcher(Map.copyOf(index));
+        return Result.success(new RouteMatcher(Map.copyOf(index)));
+    }
+
+    private static RouteMatcher buildOrFail(ManagementRoute[] routes) {
+        return build(routes).unwrap();
     }
 
     public Result<MatchedRoute> match(HttpMethod method, String rawPath) {
         var segments = splitSegments(rawPath);
-        for (int prefixLen = segments.size(); prefixLen >= 0; prefixLen--) {
+        for (int prefixLen = segments.size();prefixLen >= 0;prefixLen--) {
             var prefix = buildPrefix(segments, prefixLen);
             var paramCount = segments.size() - prefixLen;
             var route = index.get(new MatchKey(method, prefix, paramCount));
@@ -69,34 +72,26 @@ public final class RouteMatcher {
 
     private static List<String> splitSegments(String path) {
         var queryIdx = path.indexOf('?');
-        var trimmed = queryIdx >= 0 ? path.substring(0, queryIdx) : path;
+        var trimmed = queryIdx >= 0
+                     ? path.substring(0, queryIdx)
+                     : path;
         var segments = new ArrayList<String>();
-        for (var seg : trimmed.split("/")) {
-            if (!seg.isEmpty()) {
-                segments.add(seg);
-            }
-        }
+        for (var seg : trimmed.split("/")) {if (!seg.isEmpty()) {segments.add(seg);}}
         return segments;
     }
 
     private static String buildPrefix(List<String> segments, int count) {
-        if (count == 0) {
-            return "";
-        }
+        if (count == 0) {return "";}
         var sb = new StringBuilder();
-        for (int i = 0; i < count; i++) {
-            sb.append('/').append(segments.get(i));
-        }
+        for (int i = 0;i <count;i++) {sb.append('/').append(segments.get(i));}
         return sb.toString();
     }
 
     private static List<String> decode(List<String> segments) {
         var decoded = new ArrayList<String>(segments.size());
-        for (var seg : segments) {
-            decoded.add(URLDecoder.decode(seg, StandardCharsets.UTF_8));
-        }
+        for (var seg : segments) {decoded.add(URLDecoder.decode(seg, StandardCharsets.UTF_8));}
         return decoded;
     }
 
-    private record MatchKey(HttpMethod method, String prefix, int paramCount) {}
+    private record MatchKey(HttpMethod method, String prefix, int paramCount){}
 }

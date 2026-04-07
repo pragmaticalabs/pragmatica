@@ -7,6 +7,7 @@ import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.delegation.TaskAssignmentCoordinator;
+import org.pragmatica.aether.slice.delegation.TaskGroupAssignmentRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRouteRegistry;
 import org.pragmatica.aether.metrics.ComprehensiveSnapshotCollector;
@@ -67,6 +68,7 @@ public interface ManageableNode {
     BackupService backupService();
     StreamPartitionManager streamPartitionManager();
     TaskAssignmentCoordinator taskAssignmentCoordinator();
+    TaskGroupAssignmentRegistry taskGroupAssignmentRegistry();
     Map<String, StorageFactory.StorageSetup> storageSetups();
     Option<ClusterTopologyManager> clusterTopologyManager();
     Option<CertificateRenewalScheduler> certRenewalScheduler();

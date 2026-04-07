@@ -29,6 +29,7 @@ import org.pragmatica.aether.deployment.schema.SchemaPolicy;
 import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
 import org.pragmatica.aether.deployment.delegation.TaskAssignmentCoordinator;
 import org.pragmatica.aether.deployment.delegation.TaskGroupActivator;
+import org.pragmatica.aether.slice.delegation.TaskGroupAssignmentRegistry;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.dht.AetherMaps;
@@ -383,6 +384,7 @@ public interface AetherNode extends ManageableNode {
                           BackupService backupService,
                           StreamPartitionManager streamPartitionManager,
                           TaskAssignmentCoordinator taskAssignmentCoordinator,
+                          TaskGroupAssignmentRegistry taskGroupAssignmentRegistry,
                           Map<String, StorageFactory.StorageSetup> storageSetups,
                           ClusterTopologyManager clusterTopologyManagerInstance,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
@@ -788,6 +790,7 @@ public interface AetherNode extends ManageableNode {
                                                  .map(org.pragmatica.net.tcp.Server::bossGroup);
         var serverWorkerGroup = clusterNode.network().server()
                                                    .map(org.pragmatica.net.tcp.Server::workerGroup);
+        var taskGroupAssignmentRegistry = TaskGroupAssignmentRegistry.taskGroupAssignmentRegistry(kvStore);
         var appHttpServer = AppHttpServer.appHttpServer(config.appHttp(),
                                                         config.self(),
                                                         httpRouteRegistry,
@@ -799,7 +802,9 @@ public interface AetherNode extends ManageableNode {
                                                         Option.some(invocationMetrics),
                                                         serverBossGroup,
                                                         serverWorkerGroup,
-                                                        Option.some(deploymentManager));
+                                                        Option.some(deploymentManager),
+                                                        Option.empty(),
+                                                        Option.some(taskGroupAssignmentRegistry::ownerFor));
         taskGroupActivator.register(metricsScheduler);
         taskGroupActivator.register(deploymentMetricsScheduler);
         taskGroupActivator.register(controlLoop);
@@ -847,6 +852,7 @@ public interface AetherNode extends ManageableNode {
                                                 clusterTopologyManager,
                                                 taskGroupActivator,
                                                 taskAssignmentCoordinator,
+                                                taskGroupAssignmentRegistry,
                                                 managementServerRef);
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetRequest.class,
                                                     request -> dhtNode.handleGetRequest(request,
@@ -975,6 +981,7 @@ public interface AetherNode extends ManageableNode {
                                   BackupService.disabled(),
                                   streamPartitionManager,
                                   taskAssignmentCoordinator,
+                                  taskGroupAssignmentRegistry,
                                   storageSetups,
                                   clusterTopologyManager,
                                   eventLoopMetricsCollector,
@@ -1054,6 +1061,7 @@ public interface AetherNode extends ManageableNode {
                                                                               BackupService.disabled(),
                                                                               streamPartitionManager,
                                                                               taskAssignmentCoordinator,
+                                                                              taskGroupAssignmentRegistry,
                                                                               storageSetups,
                                                                               clusterTopologyManager,
                                                                               eventLoopMetricsCollector,
@@ -1393,6 +1401,7 @@ public interface AetherNode extends ManageableNode {
                                                                     ClusterTopologyManager clusterTopologyManager,
                                                                     TaskGroupActivator taskGroupActivator,
                                                                     TaskAssignmentCoordinator taskAssignmentCoordinator,
+                                                                    TaskGroupAssignmentRegistry taskGroupAssignmentRegistry,
                                                                     java.util.concurrent.atomic.AtomicReference<Option<ManagementServer>> managementServerRef) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
         var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
@@ -1501,6 +1510,8 @@ public interface AetherNode extends ManageableNode {
                                                                           dcm::onBlueprintResourcesPut));
         kvRouterBuilder.onPut(AetherKey.TaskAssignmentKey.class, taskGroupActivator::onTaskAssignmentPut);
         kvRouterBuilder.onRemove(AetherKey.TaskAssignmentKey.class, taskGroupActivator::onTaskAssignmentRemove);
+        kvRouterBuilder.onPut(AetherKey.TaskAssignmentKey.class, taskGroupAssignmentRegistry::onTaskAssignmentPut);
+        kvRouterBuilder.onRemove(AetherKey.TaskAssignmentKey.class, taskGroupAssignmentRegistry::onTaskAssignmentRemove);
         entries.addAll(kvRouterBuilder.build().asRouteEntries());
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, controlLoop::onQuorumStateChange));

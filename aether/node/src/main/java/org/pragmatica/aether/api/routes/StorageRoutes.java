@@ -1,5 +1,6 @@
 package org.pragmatica.aether.api.routes;
 
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.StorageFactory.StorageSetup;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -90,23 +91,23 @@ import java.util.stream.Stream;
                                         List<NodeStorageDetail> nodes){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<StorageListResponse>get("/api/storage").toJson(this::listInstances),
-                         Route.<StorageDetailResponse>get("/api/storage")
-                              .withPath(PathParameter.aString())
-                              .toResult(this::instanceDetail)
-                              .asJson(),
-                         Route.<SnapshotResponse>post("/api/storage")
-                              .withPath(PathParameter.aString(),
-                                        PathParameter.spacer("snapshot"))
-                              .toResult(this::forceSnapshot)
-                              .asJson(),
-                         Route.<ClusterStorageListResponse>get("/api/cluster/storage")
-                              .to(_ -> clusterListInstances())
-                              .asJson(),
-                         Route.<ClusterStorageDetailResponse>get("/api/cluster/storage")
-                              .withPath(PathParameter.aString())
-                              .to(this::clusterInstanceDetail)
-                              .asJson());
+        return Stream.of(ManagementRoutes.<StorageListResponse>route(ManagementRoute.STORAGE_LIST)
+                                         .toJson(this::listInstances),
+                         ManagementRoutes.<StorageDetailResponse>route(ManagementRoute.STORAGE_GET)
+                                         .withPath(PathParameter.aString())
+                                         .toResult(this::instanceDetail)
+                                         .asJson(),
+                         ManagementRoutes.<SnapshotResponse>route(ManagementRoute.STORAGE_SNAPSHOT)
+                                         .withPath(PathParameter.aString())
+                                         .toResult(this::forceSnapshot)
+                                         .asJson(),
+                         ManagementRoutes.<ClusterStorageListResponse>route(ManagementRoute.CLUSTER_STORAGE_LIST)
+                                         .to(_ -> clusterListInstances())
+                                         .asJson(),
+                         ManagementRoutes.<ClusterStorageDetailResponse>route(ManagementRoute.CLUSTER_STORAGE_GET)
+                                         .withPath(PathParameter.aString())
+                                         .to(this::clusterInstanceDetail)
+                                         .asJson());
     }
 
     private StorageListResponse listInstances() {
@@ -122,7 +123,7 @@ import java.util.stream.Stream;
         return findSetup(name).map(StorageRoutes::toDetailResponse);
     }
 
-    private Result<SnapshotResponse> forceSnapshot(String name, String spacer) {
+    private Result<SnapshotResponse> forceSnapshot(String name) {
         return findSetup(name).map(StorageRoutes::triggerSnapshot);
     }
 

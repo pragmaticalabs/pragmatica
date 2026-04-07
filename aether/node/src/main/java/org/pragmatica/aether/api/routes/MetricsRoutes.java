@@ -15,6 +15,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.StrategyResponse;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.MetricsError;
 import org.pragmatica.aether.metrics.invocation.ThresholdStrategy;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.http.routing.ContentCategory;
@@ -55,37 +56,39 @@ public final class MetricsRoutes implements RouteSource {
     }
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<MetricsFullResponse>get("/api/metrics").toJson(this::buildMetricsResponse),
-                         Route.<ComprehensiveMetricsResponse>get("/api/metrics/comprehensive")
-                              .toJson(this::buildComprehensiveMetricsResponse),
-                         Route.<DerivedMetricsResponse>get("/api/metrics/derived")
-                              .toJson(this::buildDerivedMetricsResponse),
-                         Route.<String>get("/api/metrics/prometheus")
-                              .to(_ -> Promise.success(observability.scrape()))
-                              .as(PROMETHEUS_CONTENT_TYPE),
-                         Route.<List<NodeMetric>>get("/api/node-metrics").toJson(this::buildNodeMetricsResponse),
-                         Route.<ArtifactMetricsResponse>get("/api/artifact-metrics")
-                              .toJson(this::buildArtifactMetricsResponse),
-                         Route.<InvocationMetricsResponse>get("/api/invocation-metrics")
-                              .withQuery(aString("artifact"),
-                                         aString("method"))
-                              .toValue(this::buildInvocationMetricsResponse)
-                              .asJson(),
-                         Route.<SlowInvocationsResponse>get("/api/invocation-metrics/slow")
-                              .toJson(this::buildSlowInvocationsResponse),
-                         Route.<StrategyResponse>get("/api/invocation-metrics/strategy")
-                              .toJson(this::buildStrategyResponse),
-                         Route.<ErrorResponse>post("/api/invocation-metrics/strategy")
-                              .to(_ -> HttpError.httpError(HttpStatus.NOT_IMPLEMENTED,
-                                                           MetricsError.StrategyChangeNotSupported.INSTANCE)
+        return Stream.of(ManagementRoutes.<MetricsFullResponse>route(ManagementRoute.METRICS)
+                                         .toJson(this::buildMetricsResponse),
+                         ManagementRoutes.<ComprehensiveMetricsResponse>route(ManagementRoute.METRICS_COMPREHENSIVE)
+                                         .toJson(this::buildComprehensiveMetricsResponse),
+                         ManagementRoutes.<DerivedMetricsResponse>route(ManagementRoute.METRICS_DERIVED)
+                                         .toJson(this::buildDerivedMetricsResponse),
+                         ManagementRoutes.<String>route(ManagementRoute.METRICS_PROMETHEUS)
+                                         .to(_ -> Promise.success(observability.scrape()))
+                                         .as(PROMETHEUS_CONTENT_TYPE),
+                         ManagementRoutes.<List<NodeMetric>>route(ManagementRoute.NODE_METRICS)
+                                         .toJson(this::buildNodeMetricsResponse),
+                         ManagementRoutes.<ArtifactMetricsResponse>route(ManagementRoute.ARTIFACT_METRICS)
+                                         .toJson(this::buildArtifactMetricsResponse),
+                         ManagementRoutes.<InvocationMetricsResponse>route(ManagementRoute.INVOCATION_METRICS)
+                                         .withQuery(aString("artifact"),
+                                                    aString("method"))
+                                         .toValue(this::buildInvocationMetricsResponse)
+                                         .asJson(),
+                         ManagementRoutes.<SlowInvocationsResponse>route(ManagementRoute.INVOCATION_METRICS_SLOW)
+                                         .toJson(this::buildSlowInvocationsResponse),
+                         ManagementRoutes.<StrategyResponse>route(ManagementRoute.INVOCATION_METRICS_STRATEGY_GET)
+                                         .toJson(this::buildStrategyResponse),
+                         ManagementRoutes.<ErrorResponse>route(ManagementRoute.INVOCATION_METRICS_STRATEGY_SET)
+                                         .to(_ -> HttpError.httpError(HttpStatus.NOT_IMPLEMENTED,
+                                                                      MetricsError.StrategyChangeNotSupported.INSTANCE)
         .<ErrorResponse>promise())
-                              .asJson(),
-                         Route.<Object>get("/api/metrics/history")
-                              .withQuery(aString("range"))
-                              .toValue(this::buildHistoryResponse)
-                              .asJson(),
-                         Route.<Map<String, Number>>get("/api/metrics/transport")
-                              .toJson(this::buildTransportMetricsResponse));
+                                         .asJson(),
+                         ManagementRoutes.<Object>route(ManagementRoute.METRICS_HISTORY)
+                                         .withQuery(aString("range"))
+                                         .toValue(this::buildHistoryResponse)
+                                         .asJson(),
+                         ManagementRoutes.<Map<String, Number>>route(ManagementRoute.METRICS_TRANSPORT)
+                                         .toJson(this::buildTransportMetricsResponse));
     }
 
     private Map<String, Number> buildTransportMetricsResponse() {

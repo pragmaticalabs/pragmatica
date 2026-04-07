@@ -4,6 +4,7 @@ import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.http.security.AuditLog;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.Blueprint;
@@ -39,7 +40,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
-import static org.pragmatica.http.routing.PathParameter.spacer;
 import static org.pragmatica.aether.api.ManagementApiResponses.*;
 
 
@@ -68,40 +68,45 @@ public final class SliceRoutes implements RouteSource {
     record BlueprintDeployRequest(String artifact){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<ClusterSlicesResponse>get("/api/slices").toJson(this::buildClusterSlicesResponse),
-                         Route.<SlicesResponse>get("/api/node/slices").toJson(this::buildNodeSlicesResponse),
-                         Route.<SlicesStatusResponse>get("/api/slices/status").toJson(this::buildSlicesStatusResponse),
-                         Route.<RoutesResponse>get("/api/node/routes").toJson(this::buildRoutesResponse),
-                         Route.<ScaleResponse>post("/api/scale")
-                              .withBody(ScaleRequest.class)
-                              .toJson(this::handleScale),
-                         Route.<BlueprintResponse>post("/api/blueprint")
-                              .to(ctx -> handleBlueprint(ctx.bodyAsString()))
-                              .asJson(),
-                         Route.<BlueprintListResponse>get("/api/blueprints").toJson(this::buildBlueprintListResponse),
-                         Route.<BlueprintDetailResponse>get("/api/blueprint")
-                              .withPath(aString())
-                              .to(this::handleGetBlueprint)
-                              .asJson(),
-                         Route.<BlueprintStatusResponse>get("/api/blueprint")
-                              .withPath(aString(),
-                                        spacer("status"))
-                              .to((id, _) -> handleGetBlueprintStatus(id))
-                              .asJson(),
-                         Route.<BlueprintDeleteResponse>delete("/api/blueprint")
-                              .withPath(aString())
-                              .to(this::handleDeleteBlueprint)
-                              .asJson(),
-                         Route.<BlueprintResponse>post("/api/blueprint/deploy")
-                              .withBody(BlueprintDeployRequest.class)
-                              .toJson(this::handleBlueprintDeploy),
-                         Route.<BlueprintResponse>post("/api/blueprint/publish")
-                              .withBody(BlueprintDeployRequest.class)
-                              .toJson(this::handleBlueprintPublish),
-                         Route.<BlueprintValidationResponse>post("/api/blueprint/validate")
-                              .to(ctx -> handleValidateBlueprint(ctx.bodyAsString()))
-                              .asJson(),
-                         Route.<TopologyResponse>get("/api/topology").toJson(this::buildTopologyResponse));
+        return Stream.of(ManagementRoutes.<ClusterSlicesResponse>route(ManagementRoute.SLICES_LIST)
+                                         .toJson(this::buildClusterSlicesResponse),
+                         ManagementRoutes.<SlicesResponse>route(ManagementRoute.NODE_SLICES)
+                                         .toJson(this::buildNodeSlicesResponse),
+                         ManagementRoutes.<SlicesStatusResponse>route(ManagementRoute.SLICES_STATUS)
+                                         .toJson(this::buildSlicesStatusResponse),
+                         ManagementRoutes.<RoutesResponse>route(ManagementRoute.NODE_ROUTES)
+                                         .toJson(this::buildRoutesResponse),
+                         ManagementRoutes.<ScaleResponse>route(ManagementRoute.SLICE_SCALE)
+                                         .withBody(ScaleRequest.class)
+                                         .toJson(this::handleScale),
+                         ManagementRoutes.<BlueprintResponse>route(ManagementRoute.BLUEPRINT_PUBLISH_BODY)
+                                         .to(ctx -> handleBlueprint(ctx.bodyAsString()))
+                                         .asJson(),
+                         ManagementRoutes.<BlueprintListResponse>route(ManagementRoute.BLUEPRINT_LIST)
+                                         .toJson(this::buildBlueprintListResponse),
+                         ManagementRoutes.<BlueprintDetailResponse>route(ManagementRoute.BLUEPRINT_GET)
+                                         .withPath(aString())
+                                         .to(this::handleGetBlueprint)
+                                         .asJson(),
+                         ManagementRoutes.<BlueprintStatusResponse>route(ManagementRoute.BLUEPRINT_STATUS)
+                                         .withPath(aString())
+                                         .to(this::handleGetBlueprintStatus)
+                                         .asJson(),
+                         ManagementRoutes.<BlueprintDeleteResponse>route(ManagementRoute.BLUEPRINT_DELETE)
+                                         .withPath(aString())
+                                         .to(this::handleDeleteBlueprint)
+                                         .asJson(),
+                         ManagementRoutes.<BlueprintResponse>route(ManagementRoute.BLUEPRINT_DEPLOY)
+                                         .withBody(BlueprintDeployRequest.class)
+                                         .toJson(this::handleBlueprintDeploy),
+                         ManagementRoutes.<BlueprintResponse>route(ManagementRoute.BLUEPRINT_PUBLISH_ARTIFACT)
+                                         .withBody(BlueprintDeployRequest.class)
+                                         .toJson(this::handleBlueprintPublish),
+                         ManagementRoutes.<BlueprintValidationResponse>route(ManagementRoute.BLUEPRINT_VALIDATE)
+                                         .to(ctx -> handleValidateBlueprint(ctx.bodyAsString()))
+                                         .asJson(),
+                         ManagementRoutes.<TopologyResponse>route(ManagementRoute.TOPOLOGY)
+                                         .toJson(this::buildTopologyResponse));
     }
 
     private record ScaleParams(String artifact, int instances, Option<String> placement){}

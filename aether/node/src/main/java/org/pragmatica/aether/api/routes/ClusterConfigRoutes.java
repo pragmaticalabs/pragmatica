@@ -18,6 +18,7 @@ import org.pragmatica.aether.config.cluster.ClusterConfigParser;
 import org.pragmatica.aether.config.cluster.ClusterConfigValidator;
 import org.pragmatica.aether.config.cluster.ClusterManagementConfig;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -65,21 +66,21 @@ import org.slf4j.LoggerFactory;
     }
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<ClusterConfigResponse>get("/api/cluster/config")
-                              .to(_ -> buildConfigResponse())
-                              .asJson(),
-                         Route.<ClusterStatusResponse>get("/api/cluster/status")
-                              .to(_ -> buildStatusResponse())
-                              .asJson(),
-                         Route.<Object>post("/api/cluster/config")
-                              .withBody(ApplyConfigRequest.class)
-                              .toJson(this::handleApplyConfig),
-                         Route.<ScaleClusterResponse>post("/api/cluster/scale")
-                              .withBody(ScaleRequest.class)
-                              .toJson(this::handleScale),
-                         Route.<UpgradeResponse>post("/api/cluster/upgrade")
-                              .withBody(UpgradeRequest.class)
-                              .toJson(this::handleUpgrade));
+        return Stream.of(ManagementRoutes.<ClusterConfigResponse>route(ManagementRoute.CLUSTER_CONFIG_GET)
+                                         .to(_ -> buildConfigResponse())
+                                         .asJson(),
+                         ManagementRoutes.<ClusterStatusResponse>route(ManagementRoute.CLUSTER_CONFIG_STATUS)
+                                         .to(_ -> buildStatusResponse())
+                                         .asJson(),
+                         ManagementRoutes.<Object>route(ManagementRoute.CLUSTER_CONFIG_APPLY)
+                                         .withBody(ApplyConfigRequest.class)
+                                         .toJson(this::handleApplyConfig),
+                         ManagementRoutes.<ScaleClusterResponse>route(ManagementRoute.CLUSTER_SCALE)
+                                         .withBody(ScaleRequest.class)
+                                         .toJson(this::handleScale),
+                         ManagementRoutes.<UpgradeResponse>route(ManagementRoute.CLUSTER_UPGRADE)
+                                         .withBody(UpgradeRequest.class)
+                                         .toJson(this::handleUpgrade));
     }
 
     private Promise<ClusterConfigResponse> buildConfigResponse() {

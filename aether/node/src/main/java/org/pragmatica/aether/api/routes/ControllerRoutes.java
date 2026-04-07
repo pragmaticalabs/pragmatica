@@ -6,6 +6,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.EvaluationTriggeredRespo
 import org.pragmatica.aether.api.ManagementApiResponses.TtmForecast;
 import org.pragmatica.aether.api.ManagementApiResponses.TtmStatusResponse;
 import org.pragmatica.aether.controller.ControllerConfig;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.ttm.model.TTMForecast;
 import org.pragmatica.http.routing.Route;
@@ -52,18 +53,19 @@ public final class ControllerRoutes implements RouteSource {
                                    Long evaluationIntervalMs){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<ControllerConfig>get("/api/controller/config")
-                              .toJson(this::buildControllerConfigResponse),
-                         Route.<ControllerStatusResponse>get("/api/controller/status")
-                              .toJson(this::buildControllerStatusResponse),
-                         Route.<TtmStatusResponse>get("/api/ttm/status").toJson(this::buildTtmStatusResponse),
-                         Route.<ControllerConfigUpdatedResponse>post("/api/controller/config")
-                              .withBody(ControllerConfigRequest.class)
-                              .toJson(this::handleControllerConfig),
-                         Route.<EvaluationTriggeredResponse>post("/api/controller/evaluate")
-                              .toJson(() -> new EvaluationTriggeredResponse("evaluation_triggered")),
-                         Route.<List<TrainingDataPoint>>get("/api/ttm/training-data")
-                              .toJson(this::buildTrainingDataResponse));
+        return Stream.of(ManagementRoutes.<ControllerConfig>route(ManagementRoute.CONTROLLER_CONFIG_GET)
+                                         .toJson(this::buildControllerConfigResponse),
+                         ManagementRoutes.<ControllerStatusResponse>route(ManagementRoute.CONTROLLER_STATUS)
+                                         .toJson(this::buildControllerStatusResponse),
+                         ManagementRoutes.<TtmStatusResponse>route(ManagementRoute.TTM_STATUS)
+                                         .toJson(this::buildTtmStatusResponse),
+                         ManagementRoutes.<ControllerConfigUpdatedResponse>route(ManagementRoute.CONTROLLER_CONFIG_SET)
+                                         .withBody(ControllerConfigRequest.class)
+                                         .toJson(this::handleControllerConfig),
+                         ManagementRoutes.<EvaluationTriggeredResponse>route(ManagementRoute.CONTROLLER_EVALUATE)
+                                         .toJson(() -> new EvaluationTriggeredResponse("evaluation_triggered")),
+                         ManagementRoutes.<List<TrainingDataPoint>>route(ManagementRoute.TTM_TRAINING_DATA)
+                                         .toJson(this::buildTrainingDataResponse));
     }
 
     private Promise<ControllerConfigUpdatedResponse> handleControllerConfig(ControllerConfigRequest req) {

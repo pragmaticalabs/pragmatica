@@ -3,6 +3,7 @@ package org.pragmatica.aether.api.routes;
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementApiResponses.LogLevelResetResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.LogLevelSetResponse;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -32,14 +33,15 @@ public final class LogLevelRoutes implements RouteSource {
     record SetLogLevelRequest(String logger, String level){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<Object>get("/api/logging/levels").toJson(logLevelRegistry::allLevels),
-                         Route.<LogLevelSetResponse>post("/api/logging/levels")
-                              .withBody(SetLogLevelRequest.class)
-                              .toJson(this::handleSetLevel),
-                         Route.<LogLevelResetResponse>delete("/api/logging/levels")
-                              .withPath(aString())
-                              .to(this::handleResetLevel)
-                              .asJson());
+        return Stream.of(ManagementRoutes.<Object>route(ManagementRoute.LOG_LEVELS_LIST)
+                                         .toJson(logLevelRegistry::allLevels),
+                         ManagementRoutes.<LogLevelSetResponse>route(ManagementRoute.LOG_LEVEL_SET)
+                                         .withBody(SetLogLevelRequest.class)
+                                         .toJson(this::handleSetLevel),
+                         ManagementRoutes.<LogLevelResetResponse>route(ManagementRoute.LOG_LEVEL_RESET)
+                                         .withPath(aString())
+                                         .to(this::handleResetLevel)
+                                         .asJson());
     }
 
     private Promise<LogLevelSetResponse> handleSetLevel(SetLogLevelRequest req) {

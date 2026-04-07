@@ -12,6 +12,9 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_GET;
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_SCALE;
+
 
 /// Scales the cluster core node count via the management API.
 ///
@@ -39,13 +42,12 @@ import picocli.CommandLine.Option;
     }
 
     private Result<Long> fetchConfigVersion(int count) {
-        return ClusterHttpClient.fetchFromCluster("/api/cluster/config")
-                                                 .flatMap(ClusterScaleCommand::extractConfigVersion);
+        return ClusterHttpClient.fetch(CLUSTER_CONFIG_GET).flatMap(ClusterScaleCommand::extractConfigVersion);
     }
 
     private Result<String> sendScaleRequest(long expectedVersion) {
         var jsonBody = "{\"coreCount\":" + coreCount + ",\"expectedVersion\":" + expectedVersion + "}";
-        return ClusterHttpClient.postToCluster("/api/cluster/scale", jsonBody);
+        return ClusterHttpClient.post(CLUSTER_SCALE, jsonBody);
     }
 
     private int onSuccess(String json) {

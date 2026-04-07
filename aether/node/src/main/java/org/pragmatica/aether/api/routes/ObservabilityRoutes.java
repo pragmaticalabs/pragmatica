@@ -5,6 +5,7 @@ import org.pragmatica.aether.invoke.InvocationNode;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
 import org.pragmatica.aether.invoke.InvocationTraceStore.TraceStats;
 import org.pragmatica.aether.invoke.ObservabilityConfig;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -40,28 +41,29 @@ public final class ObservabilityRoutes implements RouteSource {
     record SetDepthRequest(String artifact, String method, int depthThreshold){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<Object>get("/api/traces")
-                              .withQuery(QueryParameter.aString("limit"),
-                                         QueryParameter.aString("method"),
-                                         QueryParameter.aString("status"),
-                                         QueryParameter.aString("minDepth"),
-                                         QueryParameter.aString("maxDepth"))
-                              .toValue(this::handleQueryTraces)
-                              .asJson(),
-                         Route.<TraceStats>get("/api/traces/stats").toJson(this::handleTraceStats),
-                         Route.<Object>get("/api/traces")
-                              .withPath(aString())
-                              .to(this::handleTraceByRequestId)
-                              .asJson(),
-                         Route.<Object>get("/api/observability/depth").toJson(this::handleGetDepthConfigs),
-                         Route.<Object>post("/api/observability/depth")
-                              .withBody(SetDepthRequest.class)
-                              .toJson(this::handleSetDepth),
-                         Route.<Object>delete("/api/observability/depth")
-                              .withPath(aString(),
-                                        aString())
-                              .to(this::handleDeleteDepth)
-                              .asJson());
+        return Stream.of(ManagementRoutes.<Object>route(ManagementRoute.TRACES_QUERY)
+                                         .withQuery(QueryParameter.aString("limit"),
+                                                    QueryParameter.aString("method"),
+                                                    QueryParameter.aString("status"),
+                                                    QueryParameter.aString("minDepth"),
+                                                    QueryParameter.aString("maxDepth"))
+                                         .toValue(this::handleQueryTraces)
+                                         .asJson(),
+                         ManagementRoutes.<TraceStats>route(ManagementRoute.TRACES_STATS).toJson(this::handleTraceStats),
+                         ManagementRoutes.<Object>route(ManagementRoute.TRACE_BY_REQUEST_ID)
+                                         .withPath(aString())
+                                         .to(this::handleTraceByRequestId)
+                                         .asJson(),
+                         ManagementRoutes.<Object>route(ManagementRoute.OBSERVABILITY_DEPTH_GET)
+                                         .toJson(this::handleGetDepthConfigs),
+                         ManagementRoutes.<Object>route(ManagementRoute.OBSERVABILITY_DEPTH_SET)
+                                         .withBody(SetDepthRequest.class)
+                                         .toJson(this::handleSetDepth),
+                         ManagementRoutes.<Object>route(ManagementRoute.OBSERVABILITY_DEPTH_DELETE)
+                                         .withPath(aString(),
+                                                   aString())
+                                         .to(this::handleDeleteDepth)
+                                         .asJson());
     }
 
     private Object handleQueryTraces(Option<String> limitOpt,

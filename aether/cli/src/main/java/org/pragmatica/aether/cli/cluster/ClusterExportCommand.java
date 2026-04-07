@@ -12,6 +12,9 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import tools.jackson.databind.JsonNode;
 
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_GET;
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_STATUS;
+
 
 /// Exports the cluster configuration as TOML from the management API.
 ///
@@ -25,8 +28,8 @@ import tools.jackson.databind.JsonNode;
     @CommandLine.ParentCommand private ClusterCommand parent;
 
     @Override public Integer call() {
-        return ClusterHttpClient.fetchFromCluster("/api/cluster/config").flatMap(MAPPER::readTree)
-                                                 .fold(ClusterExportCommand::onFailure, this::onSuccess);
+        return ClusterHttpClient.fetch(CLUSTER_CONFIG_GET).flatMap(MAPPER::readTree)
+                                      .fold(ClusterExportCommand::onFailure, this::onSuccess);
     }
 
     private int onSuccess(JsonNode root) {
@@ -48,8 +51,8 @@ import tools.jackson.databind.JsonNode;
     }
 
     private void enrichWithLiveStatus() {
-        ClusterHttpClient.fetchFromCluster("/api/cluster/status").flatMap(MAPPER::readTree)
-                                          .onSuccess(ClusterExportCommand::printLiveStatusComments);
+        ClusterHttpClient.fetch(CLUSTER_CONFIG_STATUS).flatMap(MAPPER::readTree)
+                               .onSuccess(ClusterExportCommand::printLiveStatusComments);
     }
 
     private static void printLiveStatusComments(JsonNode status) {

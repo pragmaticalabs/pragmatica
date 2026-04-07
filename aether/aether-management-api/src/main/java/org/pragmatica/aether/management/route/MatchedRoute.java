@@ -24,9 +24,7 @@ public record MatchedRoute(ManagementRoute route, Map<String, String> params) {
     public static MatchedRoute matchedRoute(ManagementRoute route, List<String> values) {
         var paramMap = new LinkedHashMap<String, String>();
         var names = route.paramNames();
-        for (int i = 0; i < names.size(); i++) {
-            paramMap.put(names.get(i), values.get(i));
-        }
+        for (int i = 0;i <names.size();i++) {paramMap.put(names.get(i), values.get(i));}
         return new MatchedRoute(route, Map.copyOf(paramMap));
     }
 

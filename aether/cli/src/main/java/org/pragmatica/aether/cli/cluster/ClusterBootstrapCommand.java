@@ -17,6 +17,8 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEALTH;
+
 
 /// Bootstraps a new Aether cluster from a configuration file.
 ///
@@ -153,9 +155,9 @@ import picocli.CommandLine.Parameters;
     }
 
     private static String queryClusterHealthStatus() {
-        return ClusterHttpClient.fetchFromCluster("/api/health").flatMap(MAPPER::readTree)
-                                                 .map(node -> node.path("status").asText("UNKNOWN"))
-                                                 .or("UNKNOWN");
+        return ClusterHttpClient.fetch(CLUSTER_HEALTH).flatMap(MAPPER::readTree)
+                                      .map(node -> node.path("status").asText("UNKNOWN"))
+                                      .or("UNKNOWN");
     }
 
     @SuppressWarnings("JBCT-EX-01") private static void sleepQuietly() {

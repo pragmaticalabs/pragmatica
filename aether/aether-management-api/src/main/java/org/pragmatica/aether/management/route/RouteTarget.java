@@ -27,9 +27,9 @@ public sealed interface RouteTarget {
         return new TaskGroupTarget(group);
     }
 
-    record TaskGroupTarget(TaskGroup group) implements RouteTarget {}
+    record TaskGroupTarget(TaskGroup group) implements RouteTarget{}
 
-    record AnyCoreNode() implements RouteTarget {}
+    record AnyCoreNode() implements RouteTarget{}
 
-    record LocalNode() implements RouteTarget {}
+    record LocalNode() implements RouteTarget{}
 }

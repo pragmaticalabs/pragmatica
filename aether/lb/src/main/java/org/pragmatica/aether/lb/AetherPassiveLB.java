@@ -5,8 +5,10 @@ import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse
 import org.pragmatica.aether.http.forward.HttpForwarder;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
+import org.pragmatica.aether.slice.delegation.TaskGroupAssignmentRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TaskAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.node.passive.PassiveNode;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
@@ -95,39 +97,41 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
         var passiveNode = PassiveNode.<AetherKey, AetherValue>passiveNode(topologyConfig, serializer, deserializer)
                                      .unwrap();
         var routeRegistry = HttpRouteRegistry.httpRouteRegistry();
+        var taskGroupAssignmentRegistry = TaskGroupAssignmentRegistry.taskGroupAssignmentRegistry(passiveNode.kvStore());
         var httpForwarder = HttpForwarder.httpForwarder(config.selfInfo().id(),
                                                         routeRegistry,
                                                         passiveNode.network(),
                                                         serializer,
                                                         deserializer,
                                                         config.forwardTimeout(),
-                                                        () -> passiveNode.topologyManager().coreNodes());
-        wireRoutes(passiveNode, routeRegistry, httpForwarder);
+                                                        () -> passiveNode.topologyManager().coreNodes(),
+                                                        taskGroupAssignmentRegistry::ownerFor);
+        wireRoutes(passiveNode, routeRegistry, httpForwarder, taskGroupAssignmentRegistry);
         return new AetherPassiveLB(config, passiveNode, routeRegistry, httpForwarder);
     }
 
     public Promise<Unit> start() {
-        var mgmtPortDescription = config.managementPort().map(String::valueOf).or("disabled");
+        var mgmtPortDescription = config.managementPort().map(String::valueOf)
+                                                       .or("disabled");
         log.info("Starting passive LB on HTTP port {}, management port {}, cluster port {}",
                  config.httpPort(),
                  mgmtPortDescription,
-                 config.selfInfo().address().port());
-        if (config.managementPort().isEmpty()) {
-            log.warn("Management API forwarding DISABLED — LB_MANAGEMENT_PORT not set. "
-                    + "Set LB_MANAGEMENT_PORT to enable management API forwarding on a dedicated port.");
-        }
-        return passiveNode.start()
-                          .flatMap(_ -> startHttpServer())
-                          .flatMap(_ -> startManagementHttpServerIfEnabled())
-                          .onSuccess(_ -> log.info("Passive LB started on port {}", config.httpPort()))
-                          .onFailure(cause -> log.error("Failed to start passive LB: {}", cause.message()));
+                 config.selfInfo().address()
+                                .port());
+        if (config.managementPort().isEmpty()) {log.warn("Management API forwarding DISABLED — LB_MANAGEMENT_PORT not set. " + "Set LB_MANAGEMENT_PORT to enable management API forwarding on a dedicated port.");}
+        return passiveNode.start().flatMap(_ -> startHttpServer())
+                                .flatMap(_ -> startManagementHttpServerIfEnabled())
+                                .onSuccess(_ -> log.info("Passive LB started on port {}",
+                                                         config.httpPort()))
+                                .onFailure(cause -> log.error("Failed to start passive LB: {}",
+                                                              cause.message()));
     }
 
     public Promise<Unit> stop() {
         log.info("Stopping passive LB");
         return stopManagementHttpServer().flatMap(_ -> stopHttpServer())
-                                         .flatMap(_ -> passiveNode.stop())
-                                         .onSuccess(_ -> log.info("Passive LB stopped"));
+                                       .flatMap(_ -> passiveNode.stop())
+                                       .onSuccess(_ -> log.info("Passive LB stopped"));
     }
 
     public int port() {
@@ -135,11 +139,11 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
     }
 
     private Promise<Unit> startHttpServer() {
-        var serverConfig = HttpServerConfig.httpServerConfig("passive-lb", config.httpPort())
-                                           .withMaxContentLength(MAX_CONTENT_LENGTH);
-        return HttpServer.httpServer(serverConfig, this::handleAppRequest)
-                         .onSuccess(server -> httpServer = Option.some(server))
-                         .mapToUnit();
+        var serverConfig = HttpServerConfig.httpServerConfig("passive-lb",
+                                                             config.httpPort())
+        .withMaxContentLength(MAX_CONTENT_LENGTH);
+        return HttpServer.httpServer(serverConfig, this::handleAppRequest).onSuccess(server -> httpServer = Option.some(server))
+                                    .mapToUnit();
     }
 
     private Promise<Unit> stopHttpServer() {
@@ -147,19 +151,18 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
     }
 
     private Promise<Unit> startManagementHttpServerIfEnabled() {
-        return config.managementPort()
-                     .map(this::startManagementHttpServer)
-                     .or(Promise.success(Unit.unit()));
+        return config.managementPort().map(this::startManagementHttpServer)
+                                    .or(Promise.success(Unit.unit()));
     }
 
     private Promise<Unit> startManagementHttpServer(int managementPort) {
         var managementContentLimit = config.managementMaxContentLength().or(MAX_MANAGEMENT_CONTENT_LENGTH);
         var serverConfig = HttpServerConfig.httpServerConfig("passive-lb-management", managementPort)
-                                           .withMaxContentLength(managementContentLimit);
-        return HttpServer.httpServer(serverConfig, this::handleManagementRequest)
-                         .onSuccess(server -> managementHttpServer = Option.some(server))
-                         .onSuccess(_ -> log.info("Management API forwarding enabled on port {}", managementPort))
-                         .mapToUnit();
+                                                            .withMaxContentLength(managementContentLimit);
+        return HttpServer.httpServer(serverConfig, this::handleManagementRequest).onSuccess(server -> managementHttpServer = Option.some(server))
+                                    .onSuccess(_ -> log.info("Management API forwarding enabled on port {}",
+                                                             managementPort))
+                                    .mapToUnit();
     }
 
     private Promise<Unit> stopManagementHttpServer() {
@@ -187,9 +190,12 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
             return;
         }
         var route = routeOpt.unwrap();
-        httpForwarder.forward(context, route.httpMethod(), route.pathPrefix(), requestId)
-                     .onSuccess(responseData -> sendResponse(response, responseData, requestId))
-                     .onFailure(cause -> response.error(HttpStatus.BAD_GATEWAY, cause.message()));
+        httpForwarder.forward(context,
+                              route.httpMethod(),
+                              route.pathPrefix(),
+                              requestId).onSuccess(responseData -> sendResponse(response, responseData, requestId))
+                             .onFailure(cause -> response.error(HttpStatus.BAD_GATEWAY,
+                                                                cause.message()));
     }
 
     private void handleManagementRequest(RequestContext request, ResponseWriter response) {
@@ -206,9 +212,11 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
                                                             request.headers().asMap(),
                                                             request.body(),
                                                             requestId);
-        httpForwarder.forwardManagement(context, requestId)
-                     .onSuccess(responseData -> sendResponse(response, responseData, requestId))
-                     .onFailure(cause -> response.error(HttpStatus.BAD_GATEWAY, cause.message()));
+        httpForwarder.forwardManagement(context, requestId).onSuccess(responseData -> sendResponse(response,
+                                                                                                   responseData,
+                                                                                                   requestId))
+                                       .onFailure(cause -> response.error(HttpStatus.BAD_GATEWAY,
+                                                                          cause.message()));
     }
 
     private static boolean isHealthEndpoint(String path) {
@@ -227,14 +235,17 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
             status = s;
             break;
         }}
-        var contentType = ContentType.contentType(responseData.headers().getOrDefault("Content-Type", "application/octet-stream"),
+        var contentType = ContentType.contentType(responseData.headers()
+                                                                      .getOrDefault("Content-Type",
+                                                                                    "application/octet-stream"),
                                                   ContentCategory.BINARY);
         response.write(status, responseData.body(), contentType);
     }
 
     private static void wireRoutes(PassiveNode<AetherKey, AetherValue> passiveNode,
                                    HttpRouteRegistry routeRegistry,
-                                   HttpForwarder httpForwarder) {
+                                   HttpForwarder httpForwarder,
+                                   TaskGroupAssignmentRegistry taskGroupAssignmentRegistry) {
         var topologyChangeRoutes = SealedBuilder.from(TopologyChangeNotification.class)
                                                      .route(route(TopologyChangeNotification.NodeAdded.class,
                                                                   (TopologyChangeNotification.NodeAdded msg) -> {}),
@@ -245,6 +256,10 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
         var kvRouter = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
                                            .onPut(NodeRoutesKey.class, routeRegistry::onNodeRoutesPut)
                                            .onRemove(NodeRoutesKey.class, routeRegistry::onNodeRoutesRemove)
+                                           .onPut(TaskAssignmentKey.class,
+                                                  taskGroupAssignmentRegistry::onTaskAssignmentPut)
+                                           .onRemove(TaskAssignmentKey.class,
+                                                     taskGroupAssignmentRegistry::onTaskAssignmentRemove)
                                            .build();
         var allEntries = new ArrayList<>(passiveNode.routeEntries());
         allEntries.add(topologyChangeRoutes);

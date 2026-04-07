@@ -15,6 +15,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.ReadinessResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.StatusResponse;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 import org.pragmatica.aether.http.AppHttpServer;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
@@ -53,17 +54,22 @@ public final class StatusRoutes implements RouteSource {
     }
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<StatusResponse>get("/api/status").toJson(this::buildStatusResponse),
-                         Route.<NodesResponse>get("/api/nodes").toJson(this::buildNodesResponse),
-                         Route.<HealthResponse>get("/api/health").toJson(this::buildHealthResponse),
-                         Route.<LivenessResponse>get("/health/live").toJson(this::buildLivenessResponse),
-                         Route.<ReadinessResponse>get("/health/ready").toJson(this::buildReadinessResponse),
-                         Route.<List<ClusterEvent>>get("/api/events")
-                              .<String>withQuery(QueryParameter.aString("since"))
-                              .toValue(this::buildEventsResponse)
-                              .asJson(),
-                         Route.<CertificateStatusResponse>get("/api/certificate")
-                              .toJson(this::buildCertificateStatusResponse));
+        return Stream.of(ManagementRoutes.<StatusResponse>route(ManagementRoute.CLUSTER_STATUS)
+                                         .toJson(this::buildStatusResponse),
+                         ManagementRoutes.<NodesResponse>route(ManagementRoute.NODES_LIST)
+                                         .toJson(this::buildNodesResponse),
+                         ManagementRoutes.<HealthResponse>route(ManagementRoute.CLUSTER_HEALTH)
+                                         .toJson(this::buildHealthResponse),
+                         ManagementRoutes.<LivenessResponse>route(ManagementRoute.HEALTH_LIVE)
+                                         .toJson(this::buildLivenessResponse),
+                         ManagementRoutes.<ReadinessResponse>route(ManagementRoute.HEALTH_READY)
+                                         .toJson(this::buildReadinessResponse),
+                         ManagementRoutes.<List<ClusterEvent>>route(ManagementRoute.EVENTS)
+                                         .<String>withQuery(QueryParameter.aString("since"))
+                                         .toValue(this::buildEventsResponse)
+                                         .asJson(),
+                         ManagementRoutes.<CertificateStatusResponse>route(ManagementRoute.CERTIFICATE)
+                                         .toJson(this::buildCertificateStatusResponse));
     }
 
     private List<ClusterEvent> buildEventsResponse(Option<String> sinceParam) {

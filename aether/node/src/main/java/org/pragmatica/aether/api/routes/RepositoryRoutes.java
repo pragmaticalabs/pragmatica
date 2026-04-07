@@ -4,20 +4,19 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
 
-import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 import static org.pragmatica.aether.api.ManagementApiResponses.ArtifactInfoResponse;
+import static org.pragmatica.http.routing.PathParameter.aString;
 
 
 /// Routes for artifact repository: artifact info endpoint.
@@ -26,8 +25,6 @@ import static org.pragmatica.aether.api.ManagementApiResponses.ArtifactInfoRespo
 /// Maven protocol routes (GET/PUT/POST for binary artifacts) remain in
 /// {@link MavenProtocolRoutes} as they require dynamic content types.
 public final class RepositoryRoutes implements RouteSource {
-    private static final Cause INVALID_PATH = Causes.cause("Invalid artifact path. Expected: /repository/info/{groupPath}/{artifactId}/{version}");
-
     private final Supplier<ManageableNode> nodeSupplier;
 
     private RepositoryRoutes(Supplier<ManageableNode> nodeSupplier) {
@@ -39,23 +36,23 @@ public final class RepositoryRoutes implements RouteSource {
     }
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<ArtifactInfoResponse>get("/repository/info")
-                              .withoutParameters()
-                              .to(ctx -> handleRepositoryInfo(ctx.pathParams()))
-                              .asJson());
+        return Stream.of(ManagementRoutes.<ArtifactInfoResponse>route(ManagementRoute.ARTIFACT_INFO)
+                                         .withPath(aString(),
+                                                   aString(),
+                                                   aString())
+                                         .to(this::handleRepositoryInfo)
+                                         .asJson());
     }
 
-    private Promise<ArtifactInfoResponse> handleRepositoryInfo(List<String> pathSegments) {
-        if (pathSegments.size() <3) {return INVALID_PATH.promise();}
-        return parseArtifact(pathSegments).async().flatMap(this::fetchArtifactInfo);
+    private Promise<ArtifactInfoResponse> handleRepositoryInfo(String groupPath,
+                                                               String artifactIdStr,
+                                                               String versionStr) {
+        return parseArtifact(groupPath, artifactIdStr, versionStr).async().flatMap(this::fetchArtifactInfo);
     }
 
-    private Result<Artifact> parseArtifact(List<String> parts) {
-        var versionStr = parts.getLast();
-        var artifactIdStr = parts.get(parts.size() - 2);
-        var groupPath = String.join(".",
-                                    parts.subList(0, parts.size() - 2));
-        return Result.all(GroupId.groupId(groupPath),
+    private Result<Artifact> parseArtifact(String groupPath, String artifactIdStr, String versionStr) {
+        var normalizedGroup = groupPath.replace('/', '.');
+        return Result.all(GroupId.groupId(normalizedGroup),
                           ArtifactId.artifactId(artifactIdStr),
                           Version.version(versionStr))
         .map(Artifact::new);

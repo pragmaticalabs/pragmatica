@@ -12,6 +12,8 @@ import java.util.concurrent.Callable;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TOPOLOGY;
+
 
 /// Displays cluster topology with per-node details including role, health, hostname, and zone.
 @Command(name = "topology", description = "Show cluster topology with node details") @SuppressWarnings("JBCT-RET-01") class ClusterTopologyCommand implements Callable<Integer> {
@@ -27,8 +29,7 @@ import picocli.CommandLine.Command;
     @CommandLine.ParentCommand private ClusterCommand parent;
 
     @Override public Integer call() {
-        return ClusterHttpClient.fetchFromCluster("/api/cluster/topology")
-                                                 .fold(ClusterTopologyCommand::onFailure, this::onSuccess);
+        return ClusterHttpClient.fetch(CLUSTER_TOPOLOGY).fold(ClusterTopologyCommand::onFailure, this::onSuccess);
     }
 
     private int onSuccess(String json) {

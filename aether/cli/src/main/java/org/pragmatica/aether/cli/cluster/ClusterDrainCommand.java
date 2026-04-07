@@ -4,6 +4,7 @@ import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 
+import java.util.List;
 import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
@@ -11,6 +12,9 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 import tools.jackson.databind.JsonNode;
+
+import static org.pragmatica.aether.management.route.ManagementRoute.NODE_DRAIN;
+import static org.pragmatica.aether.management.route.ManagementRoute.NODE_LIFECYCLE_GET;
 
 
 /// Drains a node by transitioning it from ON_DUTY to DRAINING state.
@@ -33,8 +37,10 @@ import tools.jackson.databind.JsonNode;
     @CommandLine.ParentCommand private ClusterCommand parent;
 
     @Override public Integer call() {
-        return ClusterHttpClient.postToCluster("/api/node/drain/" + nodeId, "{}").flatMap(MAPPER::readTree)
-                                              .fold(ClusterDrainCommand::onFailure, this::onDrainInitiated);
+        return ClusterHttpClient.post(NODE_DRAIN,
+                                      List.of(nodeId),
+                                      "{}").flatMap(MAPPER::readTree)
+                                     .fold(ClusterDrainCommand::onFailure, this::onDrainInitiated);
     }
 
     private int onDrainInitiated(JsonNode root) {
@@ -73,9 +79,10 @@ import tools.jackson.databind.JsonNode;
     }
 
     private String queryNodeLifecycleState() {
-        return ClusterHttpClient.fetchFromCluster("/api/node/lifecycle/" + nodeId).flatMap(MAPPER::readTree)
-                                                 .map(ClusterDrainCommand::extractState)
-                                                 .or("UNKNOWN");
+        return ClusterHttpClient.fetch(NODE_LIFECYCLE_GET,
+                                       List.of(nodeId)).flatMap(MAPPER::readTree)
+                                      .map(ClusterDrainCommand::extractState)
+                                      .or("UNKNOWN");
     }
 
     private static String extractState(JsonNode node) {

@@ -11,6 +11,9 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_MIGRATE;
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_MIGRATE_PLAN;
+
 
 /// Initiates a cross-environment cluster migration via the management API.
 ///
@@ -45,10 +48,9 @@ import picocli.CommandLine.Option;
 
     private Result<String> sendMigrateRequest(String validStrategy) {
         var jsonBody = buildRequestJson(validStrategy);
-        var path = dryRun
-                  ? "/api/cluster/migrate/plan"
-                  : "/api/cluster/migrate";
-        return ClusterHttpClient.postToCluster(path, jsonBody);
+        return ClusterHttpClient.post(dryRun
+                                      ? CLUSTER_MIGRATE_PLAN
+                                      : CLUSTER_MIGRATE, jsonBody);
     }
 
     private String buildRequestJson(String validStrategy) {

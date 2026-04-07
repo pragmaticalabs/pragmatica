@@ -25,6 +25,7 @@ import org.pragmatica.aether.invoke.InvocationContext;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.metrics.observability.HttpRequestObserver;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
@@ -46,6 +47,7 @@ import org.pragmatica.http.server.RequestContext;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -138,6 +140,7 @@ import static org.pragmatica.lang.Unit.unit;
                              bossGroup,
                              workerGroup,
                              strategyCoordinator,
+                             Option.empty(),
                              Option.empty());
     }
 
@@ -154,6 +157,36 @@ import static org.pragmatica.lang.Unit.unit;
                                        Option<EventLoopGroup> workerGroup,
                                        Option<DeploymentManager> strategyCoordinator,
                                        Option<HttpRequestObserver> requestObserver) {
+        return appHttpServer(config,
+                             selfNodeId,
+                             routeRegistry,
+                             httpRoutePublisher,
+                             clusterNetwork,
+                             serializer,
+                             deserializer,
+                             tls,
+                             metricsCollector,
+                             bossGroup,
+                             workerGroup,
+                             strategyCoordinator,
+                             requestObserver,
+                             Option.empty());
+    }
+
+    static AppHttpServer appHttpServer(AppHttpConfig config,
+                                       NodeId selfNodeId,
+                                       HttpRouteRegistry routeRegistry,
+                                       Option<HttpRoutePublisher> httpRoutePublisher,
+                                       Option<ClusterNetwork> clusterNetwork,
+                                       Option<Serializer> serializer,
+                                       Option<Deserializer> deserializer,
+                                       Option<TlsConfig> tls,
+                                       Option<InvocationMetricsCollector> metricsCollector,
+                                       Option<EventLoopGroup> bossGroup,
+                                       Option<EventLoopGroup> workerGroup,
+                                       Option<DeploymentManager> strategyCoordinator,
+                                       Option<HttpRequestObserver> requestObserver,
+                                       Option<Fn1<Result<NodeId>, TaskGroup>> taskGroupOwnerResolver) {
         return new AppHttpServerImpl(config,
                                      selfNodeId,
                                      routeRegistry,
@@ -166,7 +199,8 @@ import static org.pragmatica.lang.Unit.unit;
                                      bossGroup,
                                      workerGroup,
                                      strategyCoordinator,
-                                     requestObserver);
+                                     requestObserver,
+                                     taskGroupOwnerResolver);
     }
 }
 
@@ -209,7 +243,8 @@ import static org.pragmatica.lang.Unit.unit;
                       Option<EventLoopGroup> bossGroup,
                       Option<EventLoopGroup> workerGroup,
                       Option<DeploymentManager> strategyCoordinator,
-                      Option<HttpRequestObserver> requestObserver) {
+                      Option<HttpRequestObserver> requestObserver,
+                      Option<Fn1<Result<NodeId>, TaskGroup>> taskGroupOwnerResolver) {
         this.config = config;
         this.selfNodeId = selfNodeId;
         this.routeRegistry = routeRegistry;
@@ -229,7 +264,8 @@ import static org.pragmatica.lang.Unit.unit;
                                                 clusterNetwork,
                                                 serializer,
                                                 deserializer,
-                                                config);
+                                                config,
+                                                taskGroupOwnerResolver);
     }
 
     private static SecurityValidator buildSecurityValidator(AppHttpConfig config) {
@@ -246,13 +282,17 @@ import static org.pragmatica.lang.Unit.unit;
                                                             Option<ClusterNetwork> clusterNetwork,
                                                             Option<Serializer> serializer,
                                                             Option<Deserializer> deserializer,
-                                                            AppHttpConfig config) {
+                                                            AppHttpConfig config,
+                                                            Option<Fn1<Result<NodeId>, TaskGroup>> taskGroupOwnerResolver) {
+        var resolver = taskGroupOwnerResolver.or(HttpForwarder.UNASSIGNED_RESOLVER);
         return clusterNetwork.flatMap(net -> serializer.flatMap(ser -> deserializer.map(des -> HttpForwarder.httpForwarder(selfNodeId,
                                                                                                                            routeRegistry,
                                                                                                                            net,
                                                                                                                            ser,
                                                                                                                            des,
-                                                                                                                           config.forwardTimeout()))));
+                                                                                                                           config.forwardTimeout(),
+                                                                                                                           java.util.Set::of,
+                                                                                                                           resolver))));
     }
 
     @Override public Option<HttpForwarder> httpForwarder() {
