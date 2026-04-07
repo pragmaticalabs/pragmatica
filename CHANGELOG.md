@@ -59,6 +59,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **ClusterConfigApplier not wired** — ManagementServer used `unused()` no-op applier; scale operations stored config but CTM never called `setDesiredSize()`. Now wires real applier via `ManageableNode.clusterTopologyManager()`
 - **LB phantom topology nodes** — 3-part PEERS parsing in LB Main.java eliminates random NodeId generation that polluted cluster topology
 - **Consensus sync cancelled under load** — `advancePhase()` unconditionally set engine state to Idle, cancelling sync tasks when Decisions arrived during synchronization. Now only transitions InPhase→Idle, preserving Syncing state. Root cause of provisioned node 180s+ activation delay under HTTP load
+- **LB binary response corruption** — `sendResponse()` round-tripped response bodies through UTF-8 String, replacing every non-UTF-8 byte with U+FFFD (3 bytes). Corrupted artifact GETs and any binary response. Fixed to write raw bytes via `ResponseWriter.write()`
+- **LB management API on dedicated port** — Management API forwarding now requires explicit `LB_MANAGEMENT_PORT` configuration; absence disables forwarding entirely. Prevents accidentally exposing management API on public client port. Default `LB_MANAGEMENT_MAX_CONTENT_LENGTH` = 2 MiB
 
 ## [1.0.0-alpha] - 2026-04-04
 
