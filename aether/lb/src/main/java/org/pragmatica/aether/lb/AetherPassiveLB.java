@@ -13,6 +13,8 @@ import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyConfig;
+import org.pragmatica.http.ContentCategory;
+import org.pragmatica.http.ContentType;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
@@ -28,7 +30,6 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.Serializer;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -223,7 +224,9 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
             status = s;
             break;
         }}
-        response.respond(status, new String(responseData.body(), StandardCharsets.UTF_8));
+        var contentType = ContentType.contentType(responseData.headers().getOrDefault("Content-Type", "application/octet-stream"),
+                                                  ContentCategory.BINARY);
+        response.write(status, responseData.body(), contentType);
     }
 
     private static void wireRoutes(PassiveNode<AetherKey, AetherValue> passiveNode,
