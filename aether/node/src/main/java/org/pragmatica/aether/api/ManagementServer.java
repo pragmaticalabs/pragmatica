@@ -68,6 +68,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.TlsConfig;
 
 import java.nio.charset.StandardCharsets;
@@ -670,6 +671,28 @@ class ManagementServerImpl implements ManagementServer {
                                                                             Serializer ser) {
         var serverCtx = ForwardedRequestContext.forwardedRequestContext(context);
         var responseCapture = ForwardedResponseWriter.forwardedResponseWriter();
+        // Forwarded requests bypass the Netty HTTP filter chain, so we must enforce the
+        // same auth/authorization checks here that validateManagementSecurity applies on
+        // direct HTTP requests. Without this gate, the LB management port becomes an
+        // auth bypass for the entire cluster.
+        if (securityEnabled) {
+            var method = Result.lift(Causes::fromThrowable,
+                                     () -> HttpMethod.valueOf(context.method().toUpperCase())).option();
+            if (method.isEmpty()) {
+                sendManagementForwardError(network, request, "Unsupported HTTP method: " + context.method());
+                return;
+            }
+            if (!validateManagementSecurity(serverCtx, responseCapture, context.path(), method.unwrap())) {
+                responseCapture.completion().onSuccess(responseData -> sendManagementForwardSuccess(network,
+                                                                                                    request,
+                                                                                                    ser,
+                                                                                                    responseData))
+                                            .onFailure(cause -> sendManagementForwardError(network,
+                                                                                           request,
+                                                                                           cause.message()));
+                return;
+            }
+        }
         if (router.handle(serverCtx, responseCapture)) {
             responseCapture.completion().onSuccess(responseData -> sendManagementForwardSuccess(network,
                                                                                                 request,
