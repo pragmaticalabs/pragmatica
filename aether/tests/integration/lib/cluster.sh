@@ -314,6 +314,31 @@ schema_status() {
     fi
 }
 
+schema_migrate() {
+    local datasource="$1"
+    api_post "/api/schema/migrate/${datasource}" "{}"
+}
+
+schema_retry() {
+    local datasource="$1"
+    api_post "/api/schema/retry/${datasource}" "{}"
+}
+
+schema_history() {
+    local datasource="$1"
+    api_get "/api/schema/history/${datasource}"
+}
+
+schema_baseline() {
+    local datasource="$1"
+    api_post "/api/schema/baseline/${datasource}" "{}"
+}
+
+schema_undo() {
+    local datasource="$1"
+    api_post "/api/schema/undo/${datasource}" "{}"
+}
+
 # ---------------------------------------------------------------------------
 # Streams
 # ---------------------------------------------------------------------------
