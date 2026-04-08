@@ -2,10 +2,6 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.management.route.MatchedRoute;
-import org.pragmatica.aether.management.route.RouteTarget;
-import org.pragmatica.aether.slice.delegation.TaskGroup;
-import org.pragmatica.aether.slice.delegation.TaskGroupAssignmentRegistry;
-import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.ContentType;
 import org.pragmatica.http.routing.HttpMethod;
 import org.pragmatica.http.routing.JsonCodec;
@@ -24,7 +20,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
@@ -37,39 +32,33 @@ import io.netty.handler.codec.http.HttpHeaders;
 
 /// Router that bridges http-server RequestContext/ResponseWriter with http-routing Route DSL.
 ///
-/// Adapts the pragmatica-lite http-server infrastructure to work with RouteSource-based routes.
+/// Dispatches via the compile-time [ManagementRoute] registry: paths are matched by
+/// [ManagementRoute#match] (which understands path parameter positions and counts), then
+/// the corresponding [Route] handler is looked up by enum name in [#routesByName]. This
+/// avoids the limitations of the legacy [RequestRouter] tree-based dispatch when multiple
+/// routes share a base prefix but differ in arity.
 ///
-/// Includes a thin disposition layer that consults the compile-time [ManagementRoute] registry
-/// via [ManagementRoute#match] before dispatching. The match result is used for logging and
-/// target-aware diagnostics: if the route's [RouteTarget] is a [RouteTarget.TaskGroupTarget],
-/// [#dispatchLocallyIfOwner] consults the [TaskGroupAssignmentRegistry] and refuses to dispatch
-/// locally when this node is not the current owner of the task group, returning a clearer
-/// 503/SERVICE_UNAVAILABLE error instead of the legacy NOT_LEADER message.
+/// Routes that don't have a [ManagementRoute] equivalent (e.g. dashboard static files
+/// registered via legacy [RouteSource]s) fall back to [RequestRouter#findRoute].
 public final class ManagementRouter {
     private static final Logger log = LoggerFactory.getLogger(ManagementRouter.class);
 
     private final RequestRouter requestRouter;
     private final JsonCodec jsonCodec;
-    private final NodeId selfNodeId;
-    private final Supplier<TaskGroupAssignmentRegistry> taskGroupAssignmentRegistrySupplier;
+    private final Map<String, Route<?>> routesByName;
 
-    private ManagementRouter(RequestRouter requestRouter,
-                             JsonCodec jsonCodec,
-                             NodeId selfNodeId,
-                             Supplier<TaskGroupAssignmentRegistry> taskGroupAssignmentRegistrySupplier) {
+    private ManagementRouter(RequestRouter requestRouter, JsonCodec jsonCodec, Map<String, Route<?>> routesByName) {
         this.requestRouter = requestRouter;
         this.jsonCodec = jsonCodec;
-        this.selfNodeId = selfNodeId;
-        this.taskGroupAssignmentRegistrySupplier = taskGroupAssignmentRegistrySupplier;
+        this.routesByName = routesByName;
     }
 
-    public static ManagementRouter managementRouter(NodeId selfNodeId,
-                                                    Supplier<TaskGroupAssignmentRegistry> taskGroupAssignmentRegistrySupplier,
-                                                    RouteSource... sources) {
-        return new ManagementRouter(RequestRouter.with(sources),
-                                    JsonCodecAdapter.defaultCodec(),
-                                    selfNodeId,
-                                    taskGroupAssignmentRegistrySupplier);
+    public static ManagementRouter managementRouter(RouteSource... sources) {
+        var allRoutes = java.util.stream.Stream.of(sources).flatMap(RouteSource::routes).toList();
+        var byName = allRoutes.stream()
+                              .filter(r -> !r.name().isEmpty())
+                              .collect(Collectors.toMap(Route::name, r -> r, (a, _) -> a));
+        return new ManagementRouter(RequestRouter.with(sources), JsonCodecAdapter.defaultCodec(), Map.copyOf(byName));
     }
 
     public boolean handle(RequestContext ctx, ResponseWriter response) {
@@ -78,64 +67,21 @@ public final class ManagementRouter {
 
     private Option<Boolean> dispatch(HttpMethod method, RequestContext ctx, ResponseWriter response) {
         var matchResult = ManagementRoute.match(method, ctx.path());
-        return requestRouter.findRoute(method,
-                                       ctx.path())
-        .map(route -> {
-                                          dispatchMatchedRoute(matchResult, route, ctx, response);
-                                          return true;
-                                      });
-    }
-
-    private void dispatchMatchedRoute(Result<MatchedRoute> matchResult,
-                                      Route<?> route,
-                                      RequestContext ctx,
-                                      ResponseWriter response) {
-        matchResult.onSuccess(matched -> logRouteDispatch(matched))
-                             .onFailure(cause -> log.debug("No ManagementRoute match for {} {} — dispatching via RequestRouter fallback: {}",
-                                                           ctx.method().name(),
-                                                           ctx.path(),
-                                                           cause.message()));
-        if (matchResult.isSuccess() && matchResult.unwrap().route()
-                                                         .target() instanceof RouteTarget.TaskGroupTarget tgt) {
-            dispatchLocallyIfOwner(tgt.group(), route, ctx, response);
-            return;
+        if (matchResult.isSuccess()) {
+            var matched = matchResult.unwrap();
+            var route = routesByName.get(matched.route().name());
+            if (route != null) {
+                log.trace("ManagementRoute matched: {} target={}", matched.route().name(), matched.route().target());
+                handleRoute(route, ctx, response);
+                return Option.some(true);
+            }
+            log.debug("ManagementRoute {} matched but no Route handler registered under that name", matched.route().name());
         }
-        handleRoute(route, ctx, response);
-    }
-
-    private static void logRouteDispatch(MatchedRoute matched) {
-        log.trace("ManagementRoute matched: {} target={}",
-                  matched.route().name(),
-                  matched.route().target());
-    }
-
-    private void dispatchLocallyIfOwner(TaskGroup group, Route<?> route, RequestContext ctx, ResponseWriter response) {
-        var registry = taskGroupAssignmentRegistrySupplier.get();
-        var ownerOpt = registry.ownerFor(group).onFailure(cause -> {
-                                                              log.debug("Task group {} has no current owner for management route {} {}: {}",
-                                                                        group,
-                                                                        ctx.method().name(),
-                                                                        ctx.path(),
-                                                                        cause.message());
-                                                              response.error(org.pragmatica.http.HttpStatus.SERVICE_UNAVAILABLE,
-                                                                             cause.message());
-                                                          })
-                                        .option();
-        if (ownerOpt.isEmpty()) {return;}
-        var owner = ownerOpt.unwrap();
-        if (!owner.equals(selfNodeId)) {
-            log.debug("Task group {} owned by {} (not self {}) — refusing local dispatch of {} {}",
-                      group,
-                      owner,
-                      selfNodeId,
-                      ctx.method().name(),
-                      ctx.path());
-            response.error(org.pragmatica.http.HttpStatus.SERVICE_UNAVAILABLE,
-                           "Task group " + group + " is currently owned by " + owner + ", not this node");
-            return;
-        }
-        log.trace("Local dispatch of task-group-targeted management route {} (owner {})", ctx.path(), group);
-        handleRoute(route, ctx, response);
+        return requestRouter.findRoute(method, ctx.path())
+                            .map(route -> {
+                                handleRoute(route, ctx, response);
+                                return true;
+                            });
     }
 
     private void handleRoute(Route<?> route, RequestContext serverCtx, ResponseWriter response) {

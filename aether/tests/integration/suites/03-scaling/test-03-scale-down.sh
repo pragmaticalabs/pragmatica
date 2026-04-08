@@ -28,8 +28,9 @@ test_scale_up_to_7() {
 }
 
 test_scale_down_under_load() {
-    # Start load through LB
-    start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/api/health"
+    # Start load against the local health endpoint on each node directly
+    # (LOCAL routes are served on every node — no LB forwarding required)
+    APP_ENDPOINT="${CLUSTER_ENDPOINT}" start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/health/live"
     sleep 5
 
     # Scale down to 5

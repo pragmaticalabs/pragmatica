@@ -264,6 +264,10 @@ scale_cluster() {
 
 # POST to the leader node — finds leader via CLI, targets its management port
 leader_api_post() {
+    # Targets the consensus leader directly via its management port. CTM (cluster
+    # topology manager) is leader-bound, so /api/cluster/scale must reach the leader
+    # for auto-provisioning to actually run. For task-group-targeted routes like
+    # /api/cluster/config, prefer api_post (which uses the LB forwarder).
     local path="$1"
     local body="${2:-"{}"}"
     local leader
@@ -273,7 +277,6 @@ leader_api_post() {
         direct_api_post "$path" "$body"
         return
     fi
-    # Derive port from leader node ID (node-N → MGMT_PORT + N-1)
     local node_num
     node_num=$(echo "$leader" | sed 's/node-//')
     local port=$((MGMT_PORT + node_num - 1))
