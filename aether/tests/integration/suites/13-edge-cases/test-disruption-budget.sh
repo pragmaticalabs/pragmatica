@@ -8,7 +8,8 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_cluster_ready() {
     wait_for_cluster 60
-    wait_for_node_count 5 30 || log_warn "Only $(cluster_node_count) nodes available — proceeding"
+    # Recover from any prior test that killed nodes — auto-heal can take a while
+    wait_for_node_count 5 240 || log_warn "Only $(cluster_node_count) nodes available — proceeding"
     local count
     count=$(cluster_node_count)
     if [ "$count" -lt 3 ] 2>/dev/null; then
@@ -19,22 +20,7 @@ test_cluster_ready() {
 }
 
 test_drain_first_node_allowed() {
-    local nodes
-    nodes=$(cluster_node_list)
-    local node1
-    node1=$(echo "$nodes" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-entries = data if isinstance(data, list) else data.get('nodes', [])
-if entries:
-    print(entries[-1].get('nodeId', entries[-1].get('id', '')))
-" 2>/dev/null)
-
-    if [ -z "$node1" ]; then
-        log_warn "Could not identify node — using node-5"
-        node1="node-5"
-    fi
-
+    local node1="node-5"
     log_info "Draining first node: ${node1}"
     local status
     status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain/${node1}" -X POST -H "X-API-Key: ${API_KEY}")
@@ -49,22 +35,7 @@ if entries:
 }
 
 test_drain_second_node_allowed() {
-    local nodes
-    nodes=$(cluster_node_list)
-    local node2
-    node2=$(echo "$nodes" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-entries = data if isinstance(data, list) else data.get('nodes', [])
-if len(entries) >= 2:
-    print(entries[-2].get('nodeId', entries[-2].get('id', '')))
-" 2>/dev/null)
-
-    if [ -z "$node2" ]; then
-        log_warn "Could not identify second node — using node-4"
-        node2="node-4"
-    fi
-
+    local node2="node-4"
     log_info "Draining second node: ${node2}"
     local status
     status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain/${node2}" -X POST -H "X-API-Key: ${API_KEY}")
@@ -79,22 +50,7 @@ if len(entries) >= 2:
 }
 
 test_drain_beyond_budget_rejected() {
-    local nodes
-    nodes=$(cluster_node_list)
-    local node3
-    node3=$(echo "$nodes" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-entries = data if isinstance(data, list) else data.get('nodes', [])
-if len(entries) >= 3:
-    print(entries[-3].get('nodeId', entries[-3].get('id', '')))
-" 2>/dev/null)
-
-    if [ -z "$node3" ]; then
-        log_warn "Could not identify third node — using node-3"
-        node3="node-3"
-    fi
-
+    local node3="node-3"
     log_info "Attempting to drain third node (should be rejected by budget): ${node3}"
     local status
     status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain/${node3}" -X POST -H "X-API-Key: ${API_KEY}")

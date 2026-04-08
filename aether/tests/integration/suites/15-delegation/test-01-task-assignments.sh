@@ -15,6 +15,8 @@ test_cluster_ready() {
     local leader
     leader=$(cluster_leader)
     assert_ne "$leader" "" "Leader elected: ${leader}"
+    # Wait for task group assignments to land via consensus before downstream tests
+    wait_for_all_tasks_active 60 || log_warn "task assignments not all ACTIVE within 60s — proceeding anyway"
 }
 
 # ---------------------------------------------------------------------------

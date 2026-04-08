@@ -7,10 +7,15 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 DATASOURCE="${TEST_DATASOURCE:-default}"
+BLUEPRINT="org.pragmatica.aether.example:url-shortener:1.0.0"
 
 test_cluster_ready() {
     wait_for_cluster 60
-    log_pass "Cluster ready"
+    push_blueprint "$BLUEPRINT"
+    deploy_blueprint "$BLUEPRINT"
+    wait_for "slices active (>= 1 instances)" \
+        "[ \$(slices_total_instances) -ge 1 ]" 120
+    log_pass "Cluster ready with baseline slice deployment"
 }
 
 test_schema_baseline_endpoint() {

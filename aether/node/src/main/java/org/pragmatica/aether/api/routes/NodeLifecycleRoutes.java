@@ -98,9 +98,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     private Promise<TransitionResult> checkDisruptionBudget(String nodeIdStr) {
         var totalNodes = nodeSupplier.get().initialTopology()
                                          .size();
-        var currentlyDraining = countDrainingNodes();
+        var currentlyUnavailable = countUnavailableNodes();
         var minAvailable = (totalNodes / 2) + 1;
-        var operationalAfterDrain = totalNodes - currentlyDraining - 1;
+        var operationalAfterDrain = totalNodes - currentlyUnavailable - 1;
         if (operationalAfterDrain >= minAvailable) {return Promise.success(new TransitionResult(true,
                                                                                                 nodeIdStr,
                                                                                                 "",
@@ -108,17 +108,21 @@ public final class NodeLifecycleRoutes implements RouteSource {
         return budgetExceededError(nodeIdStr, operationalAfterDrain, minAvailable).promise();
     }
 
-    private int countDrainingNodes() {
+    /// Count any node that is NOT in `ON_DUTY` state — DRAINING, DECOMMISSIONED, SHUTDOWN
+    /// and any other transient or terminal state all consume a budget slot. Counting only
+    /// `DRAINING` would let the budget reset once a node finishes draining and reaches a
+    /// terminal state, defeating the protection.
+    private int countUnavailableNodes() {
         var count = new AtomicInteger(0);
         nodeSupplier.get().kvStore()
                         .forEach(NodeLifecycleKey.class,
                                  NodeLifecycleValue.class,
-                                 (_, value) -> incrementIfDraining(count, value));
+                                 (_, value) -> incrementIfUnavailable(count, value));
         return count.get();
     }
 
-    private static void incrementIfDraining(AtomicInteger count, NodeLifecycleValue value) {
-        if (value.state() == NodeLifecycleState.DRAINING) {count.incrementAndGet();}
+    private static void incrementIfUnavailable(AtomicInteger count, NodeLifecycleValue value) {
+        if (value.state() != NodeLifecycleState.ON_DUTY) {count.incrementAndGet();}
     }
 
     private static Cause budgetExceededError(String nodeIdStr, int operationalAfterDrain, int minAvailable) {

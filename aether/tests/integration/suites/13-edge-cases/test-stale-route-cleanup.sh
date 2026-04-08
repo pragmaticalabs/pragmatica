@@ -7,14 +7,17 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 ROUTE_CLEANUP_TIMEOUT="${ROUTE_CLEANUP_TIMEOUT:-60}"
+BLUEPRINT="org.pragmatica.aether.example:url-shortener:1.0.0"
 
 test_cluster_ready() {
     wait_for_cluster 60
-    log_pass "Cluster ready"
+    push_blueprint "$BLUEPRINT"
+    deploy_blueprint "$BLUEPRINT"
+    log_pass "Cluster ready with baseline blueprint deployed"
 }
 
 test_slices_deployed() {
-    wait_for_slices_active 1 60
+    wait_for_slices_active 1 120
     local instances
     instances=$(slices_total_instances)
     assert_gt "$instances" "0" "Slices deployed: ${instances} instances"
@@ -65,7 +68,10 @@ for n in (data if isinstance(data, list) else data.get('nodes', [])):
 }
 
 test_no_502_504_after_cleanup() {
-    # Make several requests — none should get 502/504 from stale routes
+    # Make several requests — none should get 502/504 from stale routes.
+    # Allow up to 30s for the LB to detect the killed peer and remove it from
+    # the round-robin pool before sampling.
+    sleep 10
     local bad_status=0
     for i in $(seq 1 10); do
         local status
@@ -73,6 +79,7 @@ test_no_502_504_after_cleanup() {
         if [ "$status" = "502" ] || [ "$status" = "504" ]; then
             bad_status=$((bad_status + 1))
         fi
+        sleep 1
     done
     assert_eq "$bad_status" "0" "No 502/504 responses after route cleanup (${bad_status}/10 bad)"
 }

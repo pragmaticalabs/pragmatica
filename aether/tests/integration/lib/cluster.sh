@@ -159,6 +159,16 @@ deploy_blueprint() {
         || api_post "/api/blueprint/deploy" "{\"artifact\":\"${artifact}\"}"
 }
 
+publish_blueprint() {
+    # Registers a blueprint in the cluster registry without making it active.
+    # Required when starting a strategy-based deploy upgrade — the upgrade target
+    # version must be in the registry, but should NOT be the currently active
+    # version (otherwise SameVersionDeployment is returned).
+    local artifact="$1"
+    log_info "Publishing blueprint (no instances): ${artifact}" >&2
+    api_post "/api/blueprint/publish" "{\"artifact\":\"${artifact}\"}"
+}
+
 deploy_blueprint_file() {
     local filepath="$1"
     log_info "Deploying blueprint file: ${filepath}" >&2
@@ -464,38 +474,65 @@ container_running() {
 deploy_start() {
     local coords="$1" strategy="$2"; shift 2
     log_info "Starting ${strategy} deployment: ${coords}" >&2
-    aether_failover deploy "$coords" --"$strategy" "$@"
+    # Compose the strategy body that DeployCommand would build (extra args ignored — CLI
+    # only passes them through HTTP body, the bash test layer just composes JSON itself).
+    local strategy_upper instances=2 traffic=10 manual=false
+    case "$strategy" in
+        blue-green) strategy_upper="BLUE_GREEN" ;;
+        canary) strategy_upper="CANARY" ;;
+        rolling) strategy_upper="ROLLING" ;;
+        *) strategy_upper=$(echo "$strategy" | tr '[:lower:]' '[:upper:]') ;;
+    esac
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --instances) instances="$2"; shift 2 ;;
+            --traffic) traffic="$2"; shift 2 ;;
+            --manual-approval) manual=true; shift ;;
+            *) shift ;;
+        esac
+    done
+    local strategy_body
+    case "$strategy_upper" in
+        BLUE_GREEN)
+            strategy_body="\"blueGreen\":{\"drainTimeoutMs\":30000}" ;;
+        CANARY)
+            strategy_body="\"canary\":{\"stages\":[{\"trafficPercent\":${traffic},\"observationMinutes\":10}]}" ;;
+        ROLLING)
+            strategy_body="\"rolling\":{\"requireManualApproval\":${manual}}" ;;
+    esac
+    local body="{\"blueprint\":\"${coords}\",\"strategy\":\"${strategy_upper}\",\"instances\":${instances},${strategy_body},\"thresholds\":{\"maxErrorRate\":0.1,\"maxLatencyMs\":1000}}"
+    api_post "/api/deploy" "$body"
 }
 
 deploy_list() {
-    aether_failover deploy list --format json
+    api_get "/api/deploy"
 }
 
 deploy_status() {
     local deployment_id="$1"
-    aether_failover deploy status "$deployment_id" --format json
+    api_get "/api/deploy/${deployment_id}"
 }
 
 deploy_promote() {
-    local deployment_id="$1"; shift
+    local deployment_id="$1"
     log_info "Promoting deployment: ${deployment_id}" >&2
-    aether_failover deploy promote "$deployment_id" "$@"
+    api_post "/api/deploy/promote/${deployment_id}" "{}"
 }
 
 deploy_rollback() {
     local deployment_id="$1"
     log_info "Rolling back deployment: ${deployment_id}" >&2
-    aether_failover deploy rollback "$deployment_id"
+    api_post "/api/deploy/rollback/${deployment_id}" "{}"
 }
 
 deploy_complete() {
     local deployment_id="$1"
     log_info "Completing deployment: ${deployment_id}" >&2
-    aether_failover deploy complete "$deployment_id"
+    api_post "/api/deploy/complete/${deployment_id}" "{}"
 }
 
 deploy_cleanup() {
-    # Complete or rollback any active deployments
+    # Complete or rollback any active deployments via the LB management endpoint.
     local deployments
     deployments=$(deploy_list 2>/dev/null)
     echo "$deployments" | python3 -c "
@@ -509,9 +546,10 @@ try:
             print(did)
 except: pass
 " 2>/dev/null | while read -r did; do
-        aether_failover deploy complete "$did" > /dev/null 2>&1 || \
-        aether_failover deploy rollback "$did" > /dev/null 2>&1 || true
+        deploy_complete "$did" > /dev/null 2>&1 || \
+        deploy_rollback "$did" > /dev/null 2>&1 || true
     done
+    sleep 1
 }
 
 # Extract deployment ID from the most recent entry in deploy list

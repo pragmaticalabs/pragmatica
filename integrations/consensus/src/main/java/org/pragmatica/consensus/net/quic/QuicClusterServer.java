@@ -133,9 +133,10 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     private static final long HELLO_TIMEOUT_MS = 15_000;
     private static final int WRITE_TIMEOUT_SECONDS = 10;
     private static final long MAX_IDLE_TIMEOUT_MS = 0; // Disabled per QUIC RFC 9000 §10.1 — cluster connections are persistent
-    private static final long INITIAL_MAX_DATA = 16_000_000;
-    private static final long INITIAL_MAX_STREAM_DATA = 4_000_000;
+    private static final long INITIAL_MAX_DATA = 64_000_000;
+    private static final long INITIAL_MAX_STREAM_DATA = 32_000_000;
     private static final long INITIAL_MAX_STREAMS = 64;
+    private static final int MAX_FRAME_LENGTH = 32 * 1024 * 1024;
 
     private final NodeId selfId;
     private final NodeRole selfRole;
@@ -291,7 +292,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         protected void initChannel(QuicStreamChannel ch) {
             ch.pipeline()
               .addLast(new io.netty.handler.timeout.WriteTimeoutHandler(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS))
-              .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(1_048_576, 0, 4, 0, 4))
+              .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
               .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
               .addLast(new ServerHelloHandler());
         }

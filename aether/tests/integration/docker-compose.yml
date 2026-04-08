@@ -124,6 +124,7 @@ services:
     environment:
       LB_HTTP_PORT: "8080"
       LB_MANAGEMENT_PORT: "8081"
+      LB_MANAGEMENT_MAX_CONTENT_LENGTH: "16777216"
       LB_CLUSTER_PORT: "7000"
       PEERS: "node-1:aether-node-1:6000,node-2:aether-node-2:6000,node-3:aether-node-3:6000,node-4:aether-node-4:6000,node-5:aether-node-5:6000"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"

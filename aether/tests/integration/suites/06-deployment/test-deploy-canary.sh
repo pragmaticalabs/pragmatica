@@ -11,11 +11,13 @@ BLUEPRINT_V2="org.pragmatica.aether.example:url-shortener:1.0.1"
 
 test_canary_start() {
     deploy_cleanup
-    # Register v2 blueprint (immediate deploy registers it in KV-Store)
-    push_blueprint "$BLUEPRINT_V2"
-    deploy_blueprint "$BLUEPRINT_V2"
+    # Baseline v1 must be active for canary upgrade to v2
+    push_blueprint "$BLUEPRINT_V1"
+    deploy_blueprint "$BLUEPRINT_V1"
     sleep 3
-    # Now start canary strategy deploy
+    push_blueprint "$BLUEPRINT_V2"
+    publish_blueprint "$BLUEPRINT_V2"
+    sleep 2
     local result
     result=$(deploy_start "$BLUEPRINT_V2" canary --traffic 5 --instances 1)
     assert_contains "$result" "deploymentId" "Canary started with deployment ID"
@@ -43,9 +45,8 @@ test_canary_complete() {
     local deployments did
     deployments=$(deploy_list)
     did=$(deploy_extract_id "$deployments")
-    # Capture complete response directly — status endpoint won't show terminal deployments
     local result
-    result=$(aether_failover deploy complete "$did" --format json 2>/dev/null)
+    result=$(deploy_complete "$did")
     assert_contains "$result" "COMPLETED" "Canary completed"
 }
 

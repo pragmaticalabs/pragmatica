@@ -713,9 +713,14 @@ class ManagementServerImpl implements ManagementServer {
                                                                                      cause.message()));
             return;
         }}
-        sendManagementForwardError(network,
-                                   request,
-                                   "No route found for " + context.method() + " " + context.path());
+        // Unknown route: send a normal HTTP 404 response so the LB relays it as 404
+        // rather than wrapping it as a 502 forwarder failure.
+        var notFoundBody = ("{\"error\":\"No route found for " + context.method() + " " + context.path() + "\"}")
+                .getBytes(StandardCharsets.UTF_8);
+        var notFound = new HttpResponseData(HttpStatus.NOT_FOUND.code(),
+                                            java.util.Map.of("Content-Type", "application/json"),
+                                            notFoundBody);
+        sendManagementForwardSuccess(network, request, ser, notFound);
     }
 
     private void sendManagementForwardSuccess(ClusterNetwork network,
