@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc1] - Unreleased
 
 ### Added
+- **Compile-time management route registry** — 116-route `ManagementRoute` enum with `RouteMatcher` (O(1) hash lookup by method+prefix+paramCount), `RouteAssembler` (CLI path construction), `RouteTarget` sealed interface (LOCAL, ANY, TaskGroupTarget). All path string literals eliminated from 21 server-side route files and 37 CLI command files. Adding/renaming a route is a compiler error at every consumer
+- **Task-group-aware management forwarding** — `TaskGroupAssignmentRegistry` seeds from KV-Store and maintains live `TaskGroup→NodeId` mapping via consensus notifications. LB `HttpForwarder.forwardManagement()` routes requests to the correct task-group owner. Enum-keyed dispatch in `ManagementRouter` bypasses legacy `RequestRouter` tree disambiguation
+- **Cloud credential distribution** — `CloudCredentialsKey/Value` KV types with AES-GCM encryption. `BootstrapOrchestrator.storeCloudCredentials()` stores Hetzner token in cluster KV-Store during bootstrap, encrypted with `cluster_secret`. `HetznerComputeProvider` reads from KV-Store for auto-heal — token never on disk, in cloud-init, or in container env vars
+- **Hetzner VM labels** — `CreateServerRequest` now includes `labels` field. `HetznerComputeProvider` and `BootstrapOrchestrator` apply `aether-cluster` and `aether-role` labels for lifecycle management and teardown
+- **Private network support in bootstrap** — `BootstrapOrchestrator.buildCreateServerJson()` passes `networks` field. `DeploymentSpec.networkId()` configurable via TOML `deployment.network_id` with `${env:...}` interpolation
+- **Cloud integration testing infrastructure** — `deploy-cloud.sh` (10-phase provisioning), `run-cloud-tests.sh`, `teardown-cloud.sh` for Hetzner Cloud. `CLOUD_MODE` flag in test library: SSH-via-bastion for `kill_node`/`start_node`, timeout multiplier, LB-routed API calls
+- **Schema management helpers** — `schema_migrate`, `schema_retry`, `schema_history`, `schema_baseline`, `schema_undo` functions in integration test library
+- **Blueprint publish endpoint** — `publish_blueprint` test helper for registering blueprints without deploying (required for v1→v2 strategy upgrade tests)
 - **ManageableNode interface** — Extracted management API surface from AetherNode (~35 methods). `AetherNode extends ManageableNode`. All route sources + ManagementServer use `Supplier<ManageableNode>`. Enables passive nodes to serve management API
 - **Passive LB ManagementServer** — `PassiveLBNode implements ManageableNode` with real KV-Store/topology/apply, no-ops for slice hosting. ManagementServer serves `/api/*` locally from LB's own synced state. `NoOpComponents` sealed interface with 13 stub implementations
 - **PassiveNode.apply()** — Passive nodes can submit consensus proposals. Creates `Batch`, sends `NewBatch` to core nodes only (no traffic to other passive/worker nodes). Decision correlation resolves original promises
@@ -35,6 +43,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Promise.allOrCancel()** — Cancels remaining promises on first failure; fixed instance `all()` from sequential to parallel
 
 ### Changed
+- **`HETZNER_API_TOKEN` → `HCLOUD_TOKEN`** — Standardized to Hetzner's official env var name across all Java code, docs, and specs
+- **`leader` → `active` rename** — `DeploymentManagerImpl` and `AbTestManager` field/method rename (`requireLeader()` → `requireActive()`), `DeploymentError.NOT_LEADER` → `NOT_ASSIGNED` with task-group-aware message
+- **Path rearrangement** — All management API paths follow "params at tail" convention (`/api/deploy/{id}/promote` → `/api/deploy/promote/{id}`). Breaking wire-protocol change, acceptable per RC1 status
+- **QUIC frame/data limits** — Bumped from 1MB/4MB/16MB to 32MB/32MB/64MB for frame length, stream data, and connection data. Enables large artifact forwarding through LB management pipeline
+- **Disruption budget** — `checkDisruptionBudget()` now counts any non-ON_DUTY node state (DRAINING, DECOMMISSIONED, SHUTDOWN) as consuming a budget slot, not just DRAINING
 - **Management API forwarding** — LB forwards all management API requests to core nodes via QUIC binary protocol (Pipeline.MANAGEMENT). Eliminates NoOp stubs, PassiveLBNode, and local handling. Endpoints that previously returned 500 or hung (artifacts, schema, drain, storage) now work correctly through the LB
 - **TopologyManager.coreNodes()** — Maintained `Set<NodeId>` of non-passive nodes for O(1) core node lookup. Used by HttpForwarder for management pipeline node selection
 - **PassiveNode simplified** — Removed `apply()` method and correlation map. KV-Store sync via decisions continues; consensus proposals no longer needed from passive nodes
@@ -61,6 +74,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Consensus sync cancelled under load** — `advancePhase()` unconditionally set engine state to Idle, cancelling sync tasks when Decisions arrived during synchronization. Now only transitions InPhase→Idle, preserving Syncing state. Root cause of provisioned node 180s+ activation delay under HTTP load
 - **LB binary response corruption** — `sendResponse()` round-tripped response bodies through UTF-8 String, replacing every non-UTF-8 byte with U+FFFD (3 bytes). Corrupted artifact GETs and any binary response. Fixed to write raw bytes via `ResponseWriter.write()`
 - **LB management API on dedicated port** — Management API forwarding now requires explicit `LB_MANAGEMENT_PORT` configuration; absence disables forwarding entirely. Prevents accidentally exposing management API on public client port. Default `LB_MANAGEMENT_MAX_CONTENT_LENGTH` = 2 MiB
+- **Auth on forwarded requests** — QUIC-forwarded management requests now enforce the same `validateManagementSecurity` check as direct HTTP. Prevents auth bypass via LB management port
+- **RequestRouter walk-back** — `findRoute()` iterates descending headMap entries instead of single `floorEntry`, fixing route resolution when sibling prefixes (e.g. `/api/streams/publish/`, `/api/streams/read/`) shadow the parent (`/api/streams/`)
+- **Unknown route fallback** — LB forwards unmatched management routes to any core node (legacy/Maven repository routes) instead of returning 502. Node-side returns proper 404 `HttpResponseData` for truly unknown paths
+- **Deploy-compose CTM cleanup** — `deploy-compose.sh` explicitly kills `aether-core-*` containers before every deploy. Auto-provisioned containers from CTM survive `docker compose down` and previously broke consensus on subsequent runs
+- **Integration test deploy helpers** — Deploy start/promote/rollback/complete/list/status use LB-routed `api_post`/`api_get` instead of `aether_failover` (which silently returned error JSON on wrong-owner nodes). Strategy tests baseline v1 first, then publish v2 for upgrade
 
 ## [1.0.0-alpha] - 2026-04-04
 
