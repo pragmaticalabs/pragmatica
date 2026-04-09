@@ -222,14 +222,15 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 89 | SWIM gossip encryption | Complete | AES-256-GCM encryption for SWIM protocol messages with dual-key rotation support |
 | 90 | Certificate lifecycle | Complete | CertificateRenewalScheduler with automatic renewal at 50% validity, gossip key rotation via consensus KV store |
 | 91 | TLS default for containers | Complete | TLS enabled by default for DOCKER and KUBERNETES environments (LOCAL remains plain for development) |
-| 92 | RBAC — per-route security | Complete | Per-route security via routes.toml `[security]` section (public/authenticated/role:name), type-safe SecurityPolicy with `canAccess()`, route-level enforcement in AppHttpServer, Principal/SecurityContext injection in handlers, blueprint operator overrides with strengthen_only policy, security metadata in KV-Store, dashboard security badges, security denial metrics |
+| 92 | RBAC — per-route security | Complete | Per-route security via routes.toml `[security]` section (public/authenticated/role:name), type-safe SecurityPolicy with `canAccess()` and deny-by-default for unknown values, route-level enforcement in AppHttpServer, Principal/SecurityContext injection in handlers, blueprint operator overrides with strengthen_only policy, security metadata in KV-Store, dashboard security badges, security denial metrics |
+| 136 | Security hardening (RC1) | Complete | InsecureTrustManagerFactory gated behind explicit opt-in for QUIC (env var) and PostgreSQL (system property). Cloud config `toString()` redacts secrets. SQL injection prevention in PG LISTEN/UNLISTEN. SSH command injection prevention via image name validation. Bootstrap API key stored to file with 600 permissions instead of stdout. Docker Compose uses random fallback secret |
 
 ## Embeddable Runtime
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
 | 73 | Ember embeddable cluster | Complete | Headless cluster runtime extracted from Forge as `aether/ember/` module. Fluent builder API: `Ember.cluster(5).withH2().start()`. Programmatic lifecycle management via `EmberInstance` |
-| 74 | Remote Maven repositories | Complete | Resolve slices from Maven Central or private Nexus. SHA-1 verification, local `~/.m2/repository` cache, `settings.xml` auth |
+| 74 | Remote Maven repositories | Complete | Resolve slices from Maven Central or private Nexus. SHA-256 verification (SHA-1 fallback), mandatory checksums, XXE-hardened XML parsing, local `~/.m2/repository` cache, `settings.xml` auth |
 | 75 | Load Balancer | Complete | Standalone `aether/lb/` module. Round-robin routing, active health checking, automatic retry, X-Forwarded-* headers, hop-by-hop stripping |
 
 ## Worker Pools

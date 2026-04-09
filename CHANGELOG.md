@@ -79,6 +79,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Unknown route fallback** — LB forwards unmatched management routes to any core node (legacy/Maven repository routes) instead of returning 502. Node-side returns proper 404 `HttpResponseData` for truly unknown paths
 - **Deploy-compose CTM cleanup** — `deploy-compose.sh` explicitly kills `aether-core-*` containers before every deploy. Auto-provisioned containers from CTM survive `docker compose down` and previously broke consensus on subsequent runs
 - **Integration test deploy helpers** — Deploy start/promote/rollback/complete/list/status use LB-routed `api_post`/`api_get` instead of `aether_failover` (which silently returned error JSON on wrong-owner nodes). Strategy tests baseline v1 first, then publish v2 for upgrade
+- **SecurityPolicy deny-by-default** — Unrecognized security policy values now default to `apiKeyRequired()` instead of silently falling through to `publicRoute()`. Prevents config typos from creating unauthenticated routes
+- **SQL injection in LISTEN/UNLISTEN** — PostgreSQL channel names validated against `^[a-zA-Z_][a-zA-Z0-9_]*$` before interpolation into simple query protocol
+- **InsecureTrustManagerFactory gated in QUIC transport** — Insecure TLS mode now requires `AETHER_INSECURE_DEV_MODE=true` env var. Default (no TLS config) returns an error instead of silently disabling certificate validation
+- **InsecureTrustManagerFactory gated in PostgreSQL driver** — PG SSL connections default to JVM system trust manager. Insecure mode requires `pragmatica.pg.insecure-tls=true` system property
+- **XXE protection in Maven XML parsing** — Full XXE hardening (disallow-doctype-decl, external entities, XInclude) in `MavenSettingsCredentials` and `MavenLocalRepoLocator`
+- **SHA-256 artifact checksums** — Artifact verification upgraded from SHA-1 to SHA-256 primary with SHA-1 fallback. Missing checksums now fail the download instead of being silently skipped
+- **Cloud config secret redaction** — `toString()` overridden on `HetznerConfig`, `AwsConfig`, `AzureConfig`, `GcpConfig`, `S3Config` to redact API tokens, secret keys, and private keys
+- **Docker Compose random secret** — Fallback cluster secret uses `SecureRandom` 32-byte hex instead of hardcoded `"auto-generated-compose-secret"`
+- **SSH image name validation** — Docker image names validated against safe pattern before interpolation into SSH commands, preventing command injection
+- **API key file storage** — Bootstrap writes API key to `~/.aether/clusters/<name>/api-key` with 600 permissions instead of printing to stdout
 
 ## [1.0.0-alpha] - 2026-04-04
 
