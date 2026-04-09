@@ -30,7 +30,7 @@ import static org.pragmatica.aether.slice.repository.Location.location;
 
 /// Repository implementation that downloads artifacts from remote Maven repositories.
 ///
-/// Downloads JARs from remote HTTP(S) endpoints, verifies SHA-1 checksums,
+/// Downloads JARs from remote HTTP(S) endpoints, verifies SHA-256 checksums (with SHA-1 fallback),
 /// and caches to the local Maven repository (~/.m2/repository).
 /// Subsequent resolves for the same artifact are instant (local cache hit).
 ///
@@ -74,14 +74,16 @@ import static org.pragmatica.aether.slice.repository.Location.location;
         var httpOps = JdkHttpOperations.jdkHttpOperations(httpTimeout, HttpClient.Redirect.NORMAL, Option.none());
         var artifactPath = remotePath(artifact);
         var jarUrl = baseUrl + artifactPath;
+        var sha256Url = jarUrl + ".sha256";
         var sha1Url = jarUrl + ".sha1";
-        return downloadJar(httpOps, jarUrl, credentials, artifact, httpTimeout).flatMap(jarBytes -> verifySha1AndCache(httpOps,
-                                                                                                                       sha1Url,
-                                                                                                                       credentials,
-                                                                                                                       jarBytes,
-                                                                                                                       artifact,
-                                                                                                                       targetPath,
-                                                                                                                       httpTimeout))
+        return downloadJar(httpOps, jarUrl, credentials, artifact, httpTimeout).flatMap(jarBytes -> verifyChecksumAndCache(httpOps,
+                                                                                                                           sha256Url,
+                                                                                                                           sha1Url,
+                                                                                                                           credentials,
+                                                                                                                           jarBytes,
+                                                                                                                           artifact,
+                                                                                                                           targetPath,
+                                                                                                                           httpTimeout))
                           .flatMap(path -> toLocation(artifact, path));
     }
 
@@ -103,44 +105,80 @@ import static org.pragmatica.aether.slice.repository.Location.location;
         return Promise.success(jarBytes);
     }
 
-    private static Promise<Path> verifySha1AndCache(HttpOperations httpOps,
-                                                    String sha1Url,
-                                                    Option<MavenSettingsCredentials.Credentials> credentials,
-                                                    byte[] jarBytes,
-                                                    Artifact artifact,
-                                                    Path targetPath,
-                                                    Duration httpTimeout) {
-        var sha1Request = buildRequest(sha1Url, credentials, httpTimeout);
-        return httpOps.sendString(sha1Request).flatMap(result -> handleSha1Response(result, jarBytes, artifact))
+    private static Promise<Path> verifyChecksumAndCache(HttpOperations httpOps,
+                                                        String sha256Url,
+                                                        String sha1Url,
+                                                        Option<MavenSettingsCredentials.Credentials> credentials,
+                                                        byte[] jarBytes,
+                                                        Artifact artifact,
+                                                        Path targetPath,
+                                                        Duration httpTimeout) {
+        var sha256Request = buildRequest(sha256Url, credentials, httpTimeout);
+        return httpOps.sendString(sha256Request).flatMap(result -> handleChecksumResponse(result,
+                                                                                          "SHA-256",
+                                                                                          httpOps,
+                                                                                          sha1Url,
+                                                                                          credentials,
+                                                                                          jarBytes,
+                                                                                          artifact,
+                                                                                          httpTimeout))
                                  .flatMap(_ -> cacheAndReturn(targetPath, jarBytes, artifact));
     }
 
-    @SuppressWarnings("JBCT-SEQ-01") private static Promise<byte[]> handleSha1Response(HttpResult<String> result,
-                                                                                       byte[] jarBytes,
-                                                                                       Artifact artifact) {
-        if (result.statusCode() == 200) {return verifySha1Checksum(result.body(), jarBytes, artifact);}
-        log.debug("No SHA-1 checksum available for {} ({}), skipping verification",
-                  artifact.asString(),
-                  result.statusCode());
-        return Promise.success(jarBytes);
+    @SuppressWarnings("JBCT-SEQ-01") private static Promise<byte[]> handleChecksumResponse(HttpResult<String> result,
+                                                                                            String algorithm,
+                                                                                            HttpOperations httpOps,
+                                                                                            String sha1Url,
+                                                                                            Option<MavenSettingsCredentials.Credentials> credentials,
+                                                                                            byte[] jarBytes,
+                                                                                            Artifact artifact,
+                                                                                            Duration httpTimeout) {
+        if (result.statusCode() == 200) {return verifyChecksum(result.body(), algorithm, jarBytes, artifact);}
+        log.debug("No {} checksum available for {} ({}), trying fallback", algorithm, artifact.asString(), result.statusCode());
+        return fallbackToSha1(httpOps, sha1Url, credentials, jarBytes, artifact, httpTimeout);
     }
 
-    @SuppressWarnings("JBCT-SEQ-01") private static Promise<byte[]> verifySha1Checksum(String sha1Body,
-                                                                                       byte[] jarBytes,
-                                                                                       Artifact artifact) {
-        var expectedSha1 = sha1Body.trim().split("\\s") [0];
+    @SuppressWarnings("JBCT-SEQ-01") private static Promise<byte[]> fallbackToSha1(HttpOperations httpOps,
+                                                                                    String sha1Url,
+                                                                                    Option<MavenSettingsCredentials.Credentials> credentials,
+                                                                                    byte[] jarBytes,
+                                                                                    Artifact artifact,
+                                                                                    Duration httpTimeout) {
+        var sha1Request = buildRequest(sha1Url, credentials, httpTimeout);
+        return httpOps.sendString(sha1Request).flatMap(sha1Result -> handleSha1FallbackResponse(sha1Result,
+                                                                                                jarBytes,
+                                                                                                artifact));
+    }
+
+    @SuppressWarnings("JBCT-SEQ-01") private static Promise<byte[]> handleSha1FallbackResponse(HttpResult<String> result,
+                                                                                                byte[] jarBytes,
+                                                                                                Artifact artifact) {
+        if (result.statusCode() == 200) {return verifyChecksum(result.body(), "SHA-1", jarBytes, artifact);}
+        log.warn("No checksum available for {} — neither SHA-256 nor SHA-1", artifact.asString());
+        return new RemoteRepositoryError.ChecksumUnavailable(artifact.asString()).promise();
+    }
+
+    @SuppressWarnings("JBCT-SEQ-01") private static Promise<byte[]> verifyChecksum(String checksumBody,
+                                                                                    String algorithm,
+                                                                                    byte[] jarBytes,
+                                                                                    Artifact artifact) {
+        var expectedChecksum = checksumBody.trim().split("\\s")[0];
         return Promise.lift(cause -> new RemoteRepositoryError.DownloadFailed(artifact.asString(),
                                                                               cause),
-                            () -> computeSha1(jarBytes))
-        .flatMap(actualSha1 -> matchChecksum(expectedSha1, actualSha1, jarBytes, artifact));
+                            () -> computeChecksum(jarBytes, algorithm))
+        .flatMap(actualChecksum -> matchChecksum(expectedChecksum, actualChecksum, algorithm, jarBytes, artifact));
     }
 
-    private static Promise<byte[]> matchChecksum(String expected, String actual, byte[] jarBytes, Artifact artifact) {
+    private static Promise<byte[]> matchChecksum(String expected,
+                                                  String actual,
+                                                  String algorithm,
+                                                  byte[] jarBytes,
+                                                  Artifact artifact) {
         if (!expected.equalsIgnoreCase(actual)) {return new RemoteRepositoryError.DownloadFailed(artifact.asString(),
                                                                                                  new ChecksumMismatchException(artifact.asString(),
                                                                                                                                expected,
                                                                                                                                actual)).promise();}
-        log.debug("SHA-1 verified for {}: {}", artifact.asString(), actual);
+        log.debug("{} verified for {}: {}", algorithm, artifact.asString(), actual);
         return Promise.success(jarBytes);
     }
 
@@ -165,8 +203,8 @@ import static org.pragmatica.aether.slice.repository.Location.location;
         return builder.build();
     }
 
-    private static String computeSha1(byte[] data) throws Exception {
-        var digest = MessageDigest.getInstance("SHA-1");
+    private static String computeChecksum(byte[] data, String algorithm) throws Exception {
+        var digest = MessageDigest.getInstance(algorithm);
         var hash = digest.digest(data);
         var sb = new StringBuilder();
         for (byte b : hash) {sb.append(String.format("%02x", b));}
@@ -215,6 +253,12 @@ import static org.pragmatica.aether.slice.repository.Location.location;
                 if (cause instanceof RemoteDownloadException rde) {return "Download failed: HTTP " + rde.statusCode() + " from " + rde.url();}
                 if (cause instanceof ChecksumMismatchException cme) {return "Checksum mismatch for " + cme.artifact() + ": expected " + cme.expected() + ", got " + cme.actual();}
                 return "Download failed from " + url + ": " + cause.getMessage();
+            }
+        }
+
+        record ChecksumUnavailable(String artifact) implements RemoteRepositoryError {
+            @Override public String message() {
+                return "No checksum available for artifact " + artifact + " — neither SHA-256 nor SHA-1";
             }
         }
     }

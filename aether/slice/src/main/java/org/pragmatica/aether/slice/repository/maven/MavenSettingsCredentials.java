@@ -38,6 +38,11 @@ import static org.pragmatica.lang.Option.option;
         try {
             var dbf = DocumentBuilderFactory.newInstance();
             dbf.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
+            dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            dbf.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            dbf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            dbf.setXIncludeAware(false);
+            dbf.setExpandEntityReferences(false);
             var db = dbf.newDocumentBuilder();
             var doc = db.parse(settingsFile);
             var servers = doc.getElementsByTagName("server");
