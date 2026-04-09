@@ -74,11 +74,7 @@ class ManagementRouteAmbiguityTest {
         var doubled = new ManagementRoute[single.length * 2];
         System.arraycopy(single, 0, doubled, 0, single.length);
         System.arraycopy(single, 0, doubled, single.length, single.length);
-        try {
-            RouteMatcher.build(doubled);
-            org.junit.jupiter.api.Assertions.fail("Expected ExceptionInInitializerError");
-        } catch (ExceptionInInitializerError expected) {
-            assertThat(expected.getMessage()).contains("Ambiguous management routes");
-        }
+        var result = RouteMatcher.build(doubled);
+        assertThat(result.isFailure()).isTrue();
     }
 }

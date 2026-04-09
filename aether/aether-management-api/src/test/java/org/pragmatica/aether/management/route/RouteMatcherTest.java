@@ -157,12 +157,8 @@ class RouteMatcherTest {
         var doubled = new ManagementRoute[routes.length * 2];
         System.arraycopy(routes, 0, doubled, 0, routes.length);
         System.arraycopy(routes, 0, doubled, routes.length, routes.length);
-        try {
-            RouteMatcher.build(doubled);
-            org.junit.jupiter.api.Assertions.fail("Expected ExceptionInInitializerError");
-        } catch (ExceptionInInitializerError expected) {
-            assertThat(expected.getMessage()).contains("Ambiguous management routes");
-        }
+        var result = RouteMatcher.build(doubled);
+        assertThat(result.isFailure()).isTrue();
     }
 
     @Test
