@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.cloud.hetzner.HetznerConfig.hetznerConfig;
 
 /// Integration tests for the Hetzner Cloud provider.
-/// Requires HETZNER_API_TOKEN environment variable to be set.
+/// Requires HCLOUD_TOKEN environment variable to be set.
 /// Run with: mvn verify -Djbct.skip=true -Pwith-cloud-tests -pl aether/environment/hetzner -am
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class HetznerCloudIT {
@@ -30,8 +30,8 @@ class HetznerCloudIT {
 
     @BeforeAll
     static void setUp() {
-        var token = System.getenv("HETZNER_API_TOKEN");
-        Assumptions.assumeTrue(token != null && !token.isBlank(), "HETZNER_API_TOKEN not set");
+        var token = System.getenv("HCLOUD_TOKEN");
+        Assumptions.assumeTrue(token != null && !token.isBlank(), "HCLOUD_TOKEN not set");
 
         var config = hetznerConfig(token);
         client = HetznerClient.hetznerClient(config);

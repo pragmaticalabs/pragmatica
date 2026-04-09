@@ -66,7 +66,8 @@ public record Server(long id,
                                       List<FirewallRef> firewalls,
                                       String location,
                                       @JsonProperty("user_data") String userData,
-                                      @JsonProperty("start_after_create") boolean startAfterCreate) {
+                                      @JsonProperty("start_after_create") boolean startAfterCreate,
+                                      Map<String, String> labels) {
         /// Firewall reference for server creation.
         public record FirewallRef(long firewall) {}
 
@@ -79,7 +80,8 @@ public record Server(long id,
                                                               List<Long> firewalls,
                                                               String location,
                                                               String userData,
-                                                              boolean startAfterCreate) {
+                                                              boolean startAfterCreate,
+                                                              Map<String, String> labels) {
             return new CreateServerRequest(name,
                                            serverType,
                                            image,
@@ -90,7 +92,8 @@ public record Server(long id,
                                                     .toList(),
                                            location,
                                            userData,
-                                           startAfterCreate);
+                                           startAfterCreate,
+                                           Map.copyOf(labels));
         }
     }
 

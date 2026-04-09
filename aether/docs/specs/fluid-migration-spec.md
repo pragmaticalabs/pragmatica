@@ -135,7 +135,7 @@ All three ports must be open between every source node and every target node bef
 
 | Provider | Credentials |
 |----------|-------------|
-| Hetzner | `HETZNER_API_TOKEN` |
+| Hetzner | `HCLOUD_TOKEN` |
 | AWS | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` |
 | GCP | `GOOGLE_APPLICATION_CREDENTIALS` or `gcloud` auth |
 | Azure | `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` |

@@ -82,7 +82,20 @@ import static org.pragmatica.lang.Result.success;
                                              parsePorts(doc),
                                              parseTlsConfig(doc),
                                              parseNodes(doc),
-                                             parseSshConfig(doc));
+                                             parseSshConfig(doc),
+                                             parseNetworkId(doc));
+    }
+
+    private static Option<Long> parseNetworkId(TomlDocument doc) {
+        return doc.getString(DEPLOYMENT, "network_id").flatMap(ClusterConfigParser::parseLongOption);
+    }
+
+    private static Option<Long> parseLongOption(String value) {
+        try {
+            return Option.some(Long.parseLong(value.trim()));
+        } catch (NumberFormatException _) {
+            return none();
+        }
     }
 
     private static Map<String, String> parseInstances(TomlDocument doc) {

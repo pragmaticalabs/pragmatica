@@ -360,7 +360,7 @@ Cloud provider integration is configured via the `[cloud]` TOML section. See [Cl
 provider = "hetzner"                          # Required: hetzner | aws | gcp | azure
 
 [cloud.credentials]                            # Provider-specific authentication
-api_token = "${env:HETZNER_API_TOKEN}"         # Supports ${env:VAR} interpolation
+api_token = "${env:HCLOUD_TOKEN}"         # Supports ${env:VAR} interpolation
 
 [cloud.compute]                                # Instance provisioning parameters
 server_type = "cx22"

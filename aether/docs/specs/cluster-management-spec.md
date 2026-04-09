@@ -212,7 +212,7 @@ enabled = true
 retry_interval = "30s"
 ```
 
-Cloud credentials: `HETZNER_API_TOKEN` environment variable. Maps to existing `HetznerEnvironmentConfig` / `HetznerComputeProvider`.
+Cloud credentials: `HCLOUD_TOKEN` environment variable. Maps to existing `HetznerEnvironmentConfig` / `HetznerComputeProvider`.
 
 #### 2.4.2 AWS
 
@@ -961,14 +961,14 @@ REQ-AUTH-01: Cloud provider credentials come exclusively from environment variab
 
 | Provider | Required Environment Variables |
 |----------|-------------------------------|
-| Hetzner | `HETZNER_API_TOKEN` |
+| Hetzner | `HCLOUD_TOKEN` |
 | AWS | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` |
 | GCP | `GOOGLE_APPLICATION_CREDENTIALS` or `GOOGLE_CLOUD_PROJECT` + default credentials |
 | Azure | `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` |
 
 REQ-AUTH-02: Missing cloud credentials produce a clear error before any provisioning:
 ```
-Error: HETZNER_API_TOKEN not set. Required for deployment type "hetzner".
+Error: HCLOUD_TOKEN not set. Required for deployment type "hetzner".
 ```
 
 ### 12.2 Cluster API Key

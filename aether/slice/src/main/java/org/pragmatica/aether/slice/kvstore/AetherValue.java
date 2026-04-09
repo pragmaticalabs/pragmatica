@@ -879,6 +879,16 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
+    record CloudCredentialsValue(byte[] encryptedToken, String provider, long storedAt) implements AetherValue {
+        public static CloudCredentialsValue cloudCredentialsValue(byte[] encryptedToken, String provider) {
+            return new CloudCredentialsValue(encryptedToken.clone(), provider, System.currentTimeMillis());
+        }
+
+        @Override public byte[] encryptedToken() {
+            return encryptedToken.clone();
+        }
+    }
+
     record TaskAssignmentValue(NodeId assignedTo, long assignedAtMs, AssignmentStatus status, String failureReason) implements AetherValue {
         @Codec public enum AssignmentStatus {
             ASSIGNED,

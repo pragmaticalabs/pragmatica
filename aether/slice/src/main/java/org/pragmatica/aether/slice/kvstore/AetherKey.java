@@ -1086,4 +1086,29 @@ import static org.pragmatica.lang.Result.success;
     }
 
     Fn1<Cause, String> TASK_ASSIGNMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid task-assignment key format: %s");
+
+    Fn1<Cause, String> CLOUD_CREDENTIALS_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cloud-credentials key format: %s");
+
+    record CloudCredentialsKey(String provider) implements AetherKey {
+        private static final String PREFIX = "cloud-credentials/";
+
+        @Override public String asString() {
+            return PREFIX + provider;
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02") public static CloudCredentialsKey cloudCredentialsKey(String provider) {
+            return new CloudCredentialsKey(provider);
+        }
+
+        public static Result<CloudCredentialsKey> parseCloudCredentialsKey(String key) {
+            if (!key.startsWith(PREFIX)) {return CLOUD_CREDENTIALS_KEY_FORMAT_ERROR.apply(key).result();}
+            var provider = key.substring(PREFIX.length());
+            if (provider.isEmpty()) {return CLOUD_CREDENTIALS_KEY_FORMAT_ERROR.apply(key).result();}
+            return success(new CloudCredentialsKey(provider));
+        }
+    }
 }

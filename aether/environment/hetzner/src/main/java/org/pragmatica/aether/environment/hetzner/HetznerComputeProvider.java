@@ -112,6 +112,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         var networkIds = config.networkIds();
         var firewallIds = config.firewallIds();
         var userData = config.userData();
+        var labels = buildLabels();
         return CreateServerRequest.createServerRequest(name,
                                                        serverType,
                                                        image,
@@ -120,7 +121,13 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                        firewallIds,
                                                        location,
                                                        userData,
-                                                       true);
+                                                       true,
+                                                       labels);
+    }
+
+    private Map<String, String> buildLabels() {
+        var clusterLabel = config.clusterName().or("unknown");
+        return Map.of("aether-cluster", clusterLabel, "aether-role", "core");
     }
 
     private String extractLocation(Option<PlacementHint> placement) {

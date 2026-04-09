@@ -30,6 +30,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -178,7 +179,8 @@ public final class HetznerCloudCluster implements AutoCloseable {
             name, SERVER_TYPE, IMAGE,
             List.of(sshKeyManager.hetznerKeyId()),
             List.of(), List.of(),
-            LOCATION, CLOUD_INIT_SCRIPT, true);
+            LOCATION, CLOUD_INIT_SCRIPT, true,
+            Map.of("aether-cluster", "cloud-test", "aether-role", "core"));
 
         return client.createServer(request);
     }

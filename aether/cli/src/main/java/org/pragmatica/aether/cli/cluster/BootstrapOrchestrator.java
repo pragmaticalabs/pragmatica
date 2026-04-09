@@ -15,10 +15,16 @@ import org.pragmatica.lang.Result;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+
+import javax.crypto.Cipher;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 
 import tools.jackson.databind.JsonNode;
 
@@ -113,8 +119,8 @@ import static org.pragmatica.lang.Result.success;
     private static Result<String> resolveApiToken(ClusterManagementConfig config) {
         if (config.deployment().type() != DeploymentType.HETZNER) {return new BootstrapError.UnsupportedProvider(config.deployment().type()
                                                                                                                                   .value()).result();}
-        return option(System.getenv("HETZNER_API_TOKEN")).toResult(new ClusterConfigError.CloudCredentialsMissing("Hetzner",
-                                                                                                                  "HETZNER_API_TOKEN"));
+        return option(System.getenv("HCLOUD_TOKEN")).toResult(new ClusterConfigError.CloudCredentialsMissing("Hetzner",
+                                                                                                            "HCLOUD_TOKEN"));
     }
 
     private static String resolveClusterSecret(ClusterManagementConfig config) {
@@ -177,6 +183,7 @@ import static org.pragmatica.lang.Result.success;
         storeClusterConfig(firstEndpoint, ctx.config(), apiKey);
         System.out.println("Step 10/12: Storing API key...");
         storeApiKey(firstEndpoint, apiKey);
+        storeCloudCredentials(firstEndpoint, apiKey, ctx);
         System.out.println("Step 11/12: Registering in local registry...");
         var clusterName = ctx.config().cluster()
                                     .name();
@@ -227,7 +234,8 @@ import static org.pragmatica.lang.Result.success;
                                      .type() == org.pragmatica.aether.config.cluster.RuntimeType.CONTAINER
                    ? "ubuntu-24.04"
                    : "ubuntu-24.04";
-        var jsonBody = buildCreateServerJson(nodeId, instanceType, image, location, userData, clusterName);
+        var networkId = config.deployment().networkId();
+        var jsonBody = buildCreateServerJson(nodeId, instanceType, image, location, userData, clusterName, networkId);
         return hetznerPost(apiToken, "/servers", jsonBody).map(body -> parseProvisionedNode(body, nodeId));
     }
 
@@ -244,9 +252,11 @@ import static org.pragmatica.lang.Result.success;
                                                                                   String image,
                                                                                   String location,
                                                                                   String userData,
-                                                                                  String clusterName) {
+                                                                                  String clusterName,
+                                                                                  Option<Long> networkId) {
         var escapedUserData = escapeJsonString(userData);
-        return "{\"name\":\"" + name + "\"" + ",\"server_type\":\"" + serverType + "\"" + ",\"image\":\"" + image + "\"" + ",\"location\":\"" + location + "\"" + ",\"user_data\":\"" + escapedUserData + "\"" + ",\"start_after_create\":true" + ",\"labels\":{\"aether-cluster\":\"" + clusterName + "\"" + ",\"aether-node-id\":\"" + name + "\"" + ",\"aether-role\":\"core\"}}";
+        var networks = networkId.map(id -> ",\"networks\":[" + id + "]").or("");
+        return "{\"name\":\"" + name + "\"" + ",\"server_type\":\"" + serverType + "\"" + ",\"image\":\"" + image + "\"" + ",\"location\":\"" + location + "\"" + ",\"user_data\":\"" + escapedUserData + "\"" + ",\"start_after_create\":true" + networks + ",\"labels\":{\"aether-cluster\":\"" + clusterName + "\"" + ",\"aether-node-id\":\"" + name + "\"" + ",\"aether-role\":\"core\"}}";
     }
 
     private static ProvisionedNode parseProvisionedNode(String responseJson, String nodeId) {
@@ -315,6 +325,47 @@ import static org.pragmatica.lang.Result.success;
     private static void storeApiKey(String endpoint, String apiKey) {
         var jsonBody = "{\"apiKey\":\"" + apiKey + "\"}";
         httpPost(endpoint + assemblePath(ManagementRoute.CLUSTER_API_KEY_SET), jsonBody, apiKey);
+    }
+
+    private static void storeCloudCredentials(String endpoint, String apiKey, BootstrapContext ctx) {
+        if (ctx.apiToken().isEmpty()) {return;}
+        var provider = ctx.config().deployment()
+                                  .type()
+                                  .value()
+                                  .toLowerCase();
+        var encrypted = encryptToken(ctx.apiToken(), ctx.clusterSecret());
+        if (encrypted.length == 0) {
+            System.err.println("Warning: failed to encrypt cloud credentials for KV-Store storage.");
+            return;
+        }
+        var encodedToken = Base64.getUrlEncoder().withoutPadding()
+                                               .encodeToString(encrypted);
+        var jsonBody = "{\"key\":\"cloud-credentials/" + provider + "\"" + ",\"value\":{\"encryptedToken\":\"" + encodedToken + "\"" + ",\"provider\":\"" + provider + "\"" + ",\"storedAt\":" + System.currentTimeMillis() + "}}";
+        httpPost(endpoint + assemblePath(ManagementRoute.CONFIG_SET), jsonBody, apiKey);
+        System.out.println("  Cloud credentials stored in KV-Store (encrypted).");
+    }
+
+    private static byte[] encryptToken(String token, String clusterSecret) {
+        try {
+            var keyBytes = deriveKeyBytes(clusterSecret);
+            var key = new SecretKeySpec(keyBytes, "AES");
+            var cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            var iv = new byte[12];
+            new SecureRandom().nextBytes(iv);
+            cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(128, iv));
+            var ciphertext = cipher.doFinal(token.getBytes(StandardCharsets.UTF_8));
+            var result = new byte[iv.length + ciphertext.length];
+            System.arraycopy(iv, 0, result, 0, iv.length);
+            System.arraycopy(ciphertext, 0, result, iv.length, ciphertext.length);
+            return result;
+        } catch (Exception _) {
+            return new byte[0];
+        }
+    }
+
+    private static byte[] deriveKeyBytes(String secret) throws Exception {
+        var digest = MessageDigest.getInstance("SHA-256");
+        return digest.digest(secret.getBytes(StandardCharsets.UTF_8));
     }
 
     private static String assemblePath(ManagementRoute route) {

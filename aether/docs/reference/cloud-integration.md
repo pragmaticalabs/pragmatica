@@ -31,7 +31,7 @@ Add the provider module to your classpath (it registers via ServiceLoader automa
 provider = "hetzner"
 
 [cloud.credentials]
-api_token = "${env:HETZNER_API_TOKEN}"
+api_token = "${env:HCLOUD_TOKEN}"
 
 [cloud.compute]
 server_type = "cx22"
@@ -137,7 +137,7 @@ Any value in `[cloud.credentials]` or `[cloud.compute]` that matches the pattern
 
 ```toml
 [cloud.credentials]
-api_token = "${env:HETZNER_API_TOKEN}"   # Resolved from HETZNER_API_TOKEN env var
+api_token = "${env:HCLOUD_TOKEN}"   # Resolved from HCLOUD_TOKEN env var
 ```
 
 ## Provider Configuration
@@ -191,7 +191,7 @@ Hetzner uses environment variable-based secrets. Secrets are resolved from envir
 provider = "hetzner"
 
 [cloud.credentials]
-api_token = "${env:HETZNER_API_TOKEN}"
+api_token = "${env:HCLOUD_TOKEN}"
 
 [cloud.compute]
 server_type = "cx22"

@@ -15,6 +15,7 @@ import java.util.Map;
 /// @param tls TLS configuration
 /// @param nodes static node inventory (on-premises only)
 /// @param ssh SSH configuration for on-premises bootstrap
+/// @param networkId optional cloud network ID for private networking
 public record DeploymentSpec(DeploymentType type,
                              Map<String, String> instances,
                              RuntimeConfig runtime,
@@ -22,7 +23,28 @@ public record DeploymentSpec(DeploymentType type,
                              PortMapping ports,
                              Option<TlsDeploymentConfig> tls,
                              Option<Map<String, String>> nodes,
-                             Option<SshConfig> ssh) {
+                             Option<SshConfig> ssh,
+                             Option<Long> networkId) {
+    public static DeploymentSpec deploymentSpec(DeploymentType type,
+                                                Map<String, String> instances,
+                                                RuntimeConfig runtime,
+                                                Map<String, String> zones,
+                                                PortMapping ports,
+                                                Option<TlsDeploymentConfig> tls,
+                                                Option<Map<String, String>> nodes,
+                                                Option<SshConfig> ssh,
+                                                Option<Long> networkId) {
+        return new DeploymentSpec(type,
+                                  Map.copyOf(instances),
+                                  runtime,
+                                  Map.copyOf(zones),
+                                  ports,
+                                  tls,
+                                  nodes.map(Map::copyOf),
+                                  ssh,
+                                  networkId);
+    }
+
     public static DeploymentSpec deploymentSpec(DeploymentType type,
                                                 Map<String, String> instances,
                                                 RuntimeConfig runtime,
@@ -31,14 +53,7 @@ public record DeploymentSpec(DeploymentType type,
                                                 Option<TlsDeploymentConfig> tls,
                                                 Option<Map<String, String>> nodes,
                                                 Option<SshConfig> ssh) {
-        return new DeploymentSpec(type,
-                                  Map.copyOf(instances),
-                                  runtime,
-                                  Map.copyOf(zones),
-                                  ports,
-                                  tls,
-                                  nodes.map(Map::copyOf),
-                                  ssh);
+        return deploymentSpec(type, instances, runtime, zones, ports, tls, nodes, ssh, Option.none());
     }
 
     public static DeploymentSpec deploymentSpec(DeploymentType type,
@@ -48,6 +63,6 @@ public record DeploymentSpec(DeploymentType type,
                                                 PortMapping ports,
                                                 Option<TlsDeploymentConfig> tls,
                                                 Option<Map<String, String>> nodes) {
-        return deploymentSpec(type, instances, runtime, zones, ports, tls, nodes, Option.none());
+        return deploymentSpec(type, instances, runtime, zones, ports, tls, nodes, Option.none(), Option.none());
     }
 }

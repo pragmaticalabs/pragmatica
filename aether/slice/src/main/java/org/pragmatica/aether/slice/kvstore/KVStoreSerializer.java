@@ -155,6 +155,7 @@ import static org.pragmatica.lang.Result.success;
             case StorageBlockKey _ -> "storage-block";
             case StorageRefKey _ -> "storage-ref";
             case TaskAssignmentKey _ -> "task-assignment";
+            case CloudCredentialsKey _ -> "cloud-credentials";
         };
     }
 
@@ -213,6 +214,7 @@ import static org.pragmatica.lang.Result.success;
             case StorageBlockValue v -> serializeStorageBlock(v);
             case StorageRefValue v -> serializeStorageRef(v);
             case TaskAssignmentValue v -> serializeTaskAssignment(v);
+            case CloudCredentialsValue v -> serializeCloudCredentials(v);
         };
     }
 
@@ -369,6 +371,7 @@ import static org.pragmatica.lang.Result.success;
             case "storage-block" -> parseStorageBlockEntry(identity, rawValue);
             case "storage-ref" -> parseStorageRefEntry(identity, rawValue);
             case "task-assignment" -> parseTaskAssignmentEntry(identity, rawValue);
+            case "cloud-credentials" -> parseCloudCredentialsEntry(identity, rawValue);
             default -> new SerializationError.UnknownKeyType(section).result();
         };
     }
@@ -919,6 +922,22 @@ import static org.pragmatica.lang.Result.success;
         return Result.lift(() -> Long.parseLong(parts[1]))
                           .flatMap(ts -> Result.lift(() -> TaskAssignmentValue.AssignmentStatus.valueOf(parts[2]))
                                                     .map(status -> new TaskAssignmentValue(nodeId, ts, status, parts[3])));
+    }
+
+    private static String serializeCloudCredentials(CloudCredentialsValue v) {
+        return java.util.Base64.getUrlEncoder().withoutPadding()
+                                             .encodeToString(v.encryptedToken()) + PIPE + v.provider() + PIPE + v.storedAt();
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseCloudCredentialsEntry(String identity, String raw) {
+        var parts = raw.split("(?<!\\\\)\\|", - 1);
+        if (parts.length <3) {return parseFailure("cloud-credentials requires 3 parts: " + raw);}
+        var encryptedToken = java.util.Base64.getUrlDecoder().decode(parts[0]);
+        var provider = parts[1];
+        var storedAt = Long.parseLong(parts[2]);
+        var key = new AetherKey.CloudCredentialsKey(provider);
+        var value = new AetherValue.CloudCredentialsValue(encryptedToken, provider, storedAt);
+        return Result.success(Map.entry(key, value));
     }
 
     private static <T> Result<T> parseFailure(String detail) {
