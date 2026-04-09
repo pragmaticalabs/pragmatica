@@ -188,21 +188,34 @@ list_blueprints() {
 kill_node() {
     local node_id="$1"
     log_info "Killing node: ${node_id}"
-    remote_exec "docker kill aether-${node_id}" 2>/dev/null
+    if [ "$CLOUD_MODE" = "true" ]; then
+        # Cloud: each VM runs a single container named "aether-node"
+        cloud_ssh "$node_id" "docker kill aether-node" 2>/dev/null
+    else
+        remote_exec "docker kill aether-${node_id}" 2>/dev/null
+    fi
 }
 
 start_node() {
     local node_id="$1"
     log_info "Starting node: ${node_id}"
-    remote_exec "docker start aether-${node_id}" 2>/dev/null
+    if [ "$CLOUD_MODE" = "true" ]; then
+        cloud_ssh "$node_id" "docker start aether-node" 2>/dev/null
+    else
+        remote_exec "docker start aether-${node_id}" 2>/dev/null
+    fi
 }
 
 # Restart all containers for clean cluster formation
-# Stops everything first (prevents CTM re-provisioning during restart), removes auto-provisioned,
-# then starts compose containers fresh
 restart_all_nodes() {
     log_info "Restoring cluster to baseline..."
-    remote_exec "docker ps -a --filter 'name=aether-node-' -q | xargs -r docker stop 2>/dev/null; docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=aether-node-' -q | xargs -r docker start" 2>/dev/null
+    if [ "$CLOUD_MODE" = "true" ]; then
+        for i in $(seq 1 "$NODE_COUNT"); do
+            cloud_ssh "node-${i}" "docker restart aether-node" 2>/dev/null || true
+        done
+    else
+        remote_exec "docker ps -a --filter 'name=aether-node-' -q | xargs -r docker stop 2>/dev/null; docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=aether-node-' -q | xargs -r docker start" 2>/dev/null
+    fi
 }
 
 drain_node() {
@@ -276,10 +289,24 @@ scale_cluster() {
 leader_api_post() {
     # Targets the consensus leader directly via its management port. CTM (cluster
     # topology manager) is leader-bound, so /api/cluster/scale must reach the leader
-    # for auto-provisioning to actually run. For task-group-targeted routes like
-    # /api/cluster/config, prefer api_post (which uses the LB forwarder).
+    # for auto-provisioning to actually run.
     local path="$1"
     local body="${2:-"{}"}"
+    if [ "$CLOUD_MODE" = "true" ]; then
+        # Cloud: SSH-tunnel to the leader via bastion
+        local leader
+        leader=$(cluster_leader)
+        if [ -z "$leader" ] || [ "$leader" = "none" ]; then
+            log_warn "No leader available, falling back to api_post" >&2
+            api_post "$path" "$body"
+            return
+        fi
+        local leader_ip
+        leader_ip=$(cloud_node_ip "$leader")
+        # Use SSH tunnel for the request
+        cloud_ssh "$leader" "curl -sf -X POST -H 'X-API-Key: ${API_KEY}' -H 'Content-Type: application/json' -d '${body}' http://localhost:8080${path}" 2>/dev/null
+        return
+    fi
     local leader
     leader=$(cluster_leader)
     if [ -z "$leader" ] || [ "$leader" = "none" ]; then

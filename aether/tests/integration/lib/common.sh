@@ -31,6 +31,11 @@ NODE_COUNT="${NODE_COUNT:-5}"
 # Try CLI command against available nodes (failover on connection failure)
 # Tries ports MGMT_PORT, MGMT_PORT+1, ... MGMT_PORT+NODE_COUNT-1
 aether_failover() {
+    if [ "$CLOUD_MODE" = "true" ]; then
+        # Cloud: use the Aether LB directly — it handles task-group routing
+        aether -c "${TARGET_HOST}:${MGMT_PORT}" --api-key "${API_KEY}" "$@" 2>/dev/null
+        return $?
+    fi
     local base_port="${MGMT_PORT}"
     for i in $(seq 0 $((NODE_COUNT - 1))); do
         local port=$((base_port + i))
@@ -98,6 +103,11 @@ api_delete() {
 # Tries ports MGMT_PORT through MGMT_PORT+NODE_COUNT-1 with failover
 direct_api_get() {
     local path="$1"
+    if [ "$CLOUD_MODE" = "true" ]; then
+        # Cloud: no direct node access — use LB (handles task-group routing)
+        api_get "$path"
+        return $?
+    fi
     local base_port="${MGMT_PORT}"
     for i in $(seq 0 $((NODE_COUNT - 1))); do
         local port=$((base_port + i))
@@ -110,6 +120,10 @@ direct_api_get() {
 direct_api_post() {
     local path="$1"
     local body="${2:-"{}"}"
+    if [ "$CLOUD_MODE" = "true" ]; then
+        api_post "$path" "$body"
+        return $?
+    fi
     local base_port="${MGMT_PORT}"
     for i in $(seq 0 $((NODE_COUNT - 1))); do
         local port=$((base_port + i))
@@ -246,6 +260,32 @@ remote_exec() {
     : "${AETHER_SSH_KEY:?AETHER_SSH_KEY must be set for remote_exec}"
     ssh -i "$AETHER_SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
         "${AETHER_SSH_USER}@${TARGET_HOST}" "$@"
+}
+
+# ---------------------------------------------------------------------------
+# Cloud mode: SSH to private-network nodes via bastion jump host
+# ---------------------------------------------------------------------------
+CLOUD_MODE="${CLOUD_MODE:-false}"
+BASTION_IP="${BASTION_IP:-}"
+CLOUD_TIMEOUT_MULTIPLIER="${CLOUD_TIMEOUT_MULTIPLIER:-1}"
+
+# Map node-N to private IP (cloud mode only)
+cloud_node_ip() {
+    local node_id="$1"
+    local num
+    num=$(echo "$node_id" | sed 's/node-//')
+    echo "10.0.1.1${num}"
+}
+
+# SSH to a cloud node via the bastion (LB VM)
+cloud_ssh() {
+    local node_id="$1"; shift
+    local ip
+    ip=$(cloud_node_ip "$node_id")
+    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+        -J "${AETHER_SSH_USER}@${BASTION_IP}" \
+        -i "${AETHER_SSH_KEY}" \
+        "${AETHER_SSH_USER}@${ip}" "$@"
 }
 
 # ---------------------------------------------------------------------------

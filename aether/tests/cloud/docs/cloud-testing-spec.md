@@ -63,7 +63,7 @@ This file is consumed by `aether cluster bootstrap aether-cloud.toml --yes --wai
 The CLI flow is:
 1. `ClusterBootstrapCommand.call()` reads the file and passes content through `ConfigReferenceResolver.resolveAll()` (resolves `${env:...}` and `${secrets:...}` references).
 2. `ClusterConfigParser.parse()` maps TOML sections to `ClusterManagementConfig`.
-3. `BootstrapOrchestrator.bootstrap()` validates, resolves credentials from `HETZNER_API_TOKEN` env var, provisions VMs via Hetzner REST API, waits for health/quorum, stores config + API key in the cluster, and registers the cluster locally.
+3. `BootstrapOrchestrator.bootstrap()` validates, resolves credentials from `HCLOUD_TOKEN` env var, provisions VMs via Hetzner REST API, waits for health/quorum, stores config + API key in the cluster, and registers the cluster locally.
 
 **Key constraint:** The `BootstrapOrchestrator` currently provisions **core nodes only**. It does NOT provision the Aether LB, the postgres VM, or the Hetzner managed LB. Those are handled by the deploy script (section 3).
 
@@ -71,7 +71,7 @@ The CLI flow is:
 # aether-cloud.toml -- Cloud integration test cluster on Hetzner
 #
 # Usage:
-#   export HETZNER_API_TOKEN=<token>
+#   export HCLOUD_TOKEN=<token>
 #   aether cluster bootstrap aether-cloud.toml --yes --wait --timeout 600
 
 [cluster]
@@ -161,7 +161,7 @@ Decision: **Option A**. The deploy script handles network setup outside the boot
 ### 3.2 Prerequisites
 
 - `hcloud` CLI installed and on PATH.
-- `HETZNER_API_TOKEN` environment variable set (never echoed, logged, or written to files).
+- `HCLOUD_TOKEN` environment variable set (never echoed, logged, or written to files).
 - Project built (`aether-node.jar` exists, or `--build` flag triggers a build).
 - `aether` CLI installed and on PATH.
 - Docker image `ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1` published to GHCR (or use `--local-image` to build and push from local JAR).
@@ -174,7 +174,7 @@ The script executes 10 phases. Each phase is idempotent -- re-running after a fa
 #### Phase 1: Validate Environment
 
 ```
-REQ-D01: Verify HETZNER_API_TOKEN is set (test -n, never echo).
+REQ-D01: Verify HCLOUD_TOKEN is set (test -n, never echo).
 REQ-D02: Verify hcloud CLI is installed.
 REQ-D03: Verify aether CLI is installed.
 REQ-D04: Optionally build the project (mvn clean install -DskipTests) if --build flag is set.
@@ -633,7 +633,7 @@ The existing test suites at `aether/tests/integration/suites/` and libraries at 
 ```
 Developer                 deploy-cloud.sh           Hetzner Cloud            run-cloud-tests.sh
     |                          |                          |                          |
-    |-- HETZNER_API_TOKEN ---->|                          |                          |
+    |-- HCLOUD_TOKEN ---->|                          |                          |
     |                          |-- create SSH key ------->|                          |
     |                          |-- create network ------->|                          |
     |                          |-- aether bootstrap ----->| (5 core VMs)            |
@@ -665,9 +665,9 @@ Developer                 deploy-cloud.sh           Hetzner Cloud            run
 ## 10. Security Considerations
 
 ```
-REQ-S01: HETZNER_API_TOKEN is NEVER echoed, logged, written to files, or passed as CLI argument.
+REQ-S01: HCLOUD_TOKEN is NEVER echoed, logged, written to files, or passed as CLI argument.
          The aether CLI reads it from the environment. The hcloud CLI reads it from
-         HCLOUD_TOKEN (set via: export HCLOUD_TOKEN="$HETZNER_API_TOKEN").
+         HCLOUD_TOKEN (set via: export HCLOUD_TOKEN="$HCLOUD_TOKEN").
 REQ-S02: SSH keys are ephemeral -- generated per test run, destroyed on teardown.
 REQ-S03: Core nodes have no public IPs (or have firewall blocking all inbound).
 REQ-S04: Postgres is accessible only from the private network (10.0.1.0/24).

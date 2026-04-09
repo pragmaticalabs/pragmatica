@@ -1,0 +1,45 @@
+# aether-cloud.toml — Cloud integration test cluster on Hetzner
+#
+# Usage:
+#   export HCLOUD_TOKEN=<token>
+#   aether cluster bootstrap aether-cloud.toml --yes --wait --timeout 600
+#
+# Teardown:
+#   bash aether/tests/cloud/teardown-cloud.sh --yes
+
+[cluster]
+name = "cloud-test"
+version = "1.0.0-rc1"
+
+[cluster.core]
+count = 5
+min = 3
+max = 9
+
+[cluster.auto_heal]
+enabled = true
+retry_interval = "30s"
+startup_cooldown = "15s"
+
+[deployment]
+type = "hetzner"
+
+[deployment.instances]
+core = "cx22"
+
+[deployment.runtime]
+type = "container"
+image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1"
+
+[deployment.zones]
+zone-1 = "fsn1-dc14"
+
+[deployment.ports]
+cluster = 6000
+management = 8080
+app-http = 8070
+swim = 6100
+
+[deployment.tls]
+auto_generate = true
+cert_ttl = "720h"
