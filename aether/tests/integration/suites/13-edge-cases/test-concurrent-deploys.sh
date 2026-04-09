@@ -12,6 +12,7 @@ BLUEPRINT="org.pragmatica.aether.example:url-shortener:1.0.0"
 
 test_cluster_ready() {
     wait_for_cluster 60
+    wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
     push_blueprint "$BLUEPRINT"
     deploy_blueprint "$BLUEPRINT"
     log_pass "Cluster ready with baseline blueprint deployed"

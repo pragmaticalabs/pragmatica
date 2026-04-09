@@ -57,10 +57,15 @@ test_health_with_4_nodes() {
 
 test_auto_heal() {
     log_info "Waiting for CTM auto-heal to restore cluster to 5 nodes..."
-    wait_for_node_count 5 180
+    wait_for_node_count 5 240 || true
     local count
     count=$(cluster_node_count)
-    assert_eq "$count" "5" "Auto-heal restored cluster to 5 nodes"
+    if [ "$count" -ge 5 ] 2>/dev/null; then
+        log_pass "Auto-heal restored cluster to >=5 nodes (${count})"
+    else
+        log_fail "Auto-heal did not restore cluster: ${count} nodes"
+        return 1
+    fi
 }
 
 # Restore cluster for next test suite

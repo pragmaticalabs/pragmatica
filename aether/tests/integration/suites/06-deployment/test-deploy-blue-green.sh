@@ -9,6 +9,12 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 BLUEPRINT_V1="org.pragmatica.aether.example:url-shortener:1.0.0"
 BLUEPRINT_V2="org.pragmatica.aether.example:url-shortener:1.0.1"
 
+test_cluster_ready() {
+    wait_for_cluster 60
+    wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
+    log_pass "Cluster ready"
+}
+
 test_blue_green_start() {
     deploy_cleanup
     # v1 must be currently active, v2 must be registered (but not active) for the upgrade
@@ -61,6 +67,7 @@ cleanup() {
     deploy_cleanup
 }
 
+run_test "Cluster ready" test_cluster_ready
 run_test "Blue-green start" test_blue_green_start
 run_test "Blue-green promote (switch)" test_blue_green_promote
 run_test "Blue-green complete" test_blue_green_complete

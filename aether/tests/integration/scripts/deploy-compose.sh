@@ -108,8 +108,14 @@ log_step "Building Docker image on ${HOST}"
 
 if [ "$CLEAN" = true ]; then
     log_info "Cleaning old containers and images..."
-    ssh_exec "cd ${REMOTE_DIR} && docker compose down --remove-orphans 2>/dev/null; docker rmi ${IMAGE_TAG} aether-lb:local 2>/dev/null" || true
+    # compose down handles named services; auto-provisioned containers from CTM
+    # (aether-core-node-*) are not tracked by compose, so we nuke them explicitly.
+    ssh_exec "cd ${REMOTE_DIR} && docker compose down --remove-orphans 2>/dev/null; docker rm -f \$(docker ps -aq --filter 'name=aether-core') 2>/dev/null; docker rm -f \$(docker ps -aq --filter 'name=aether-node') 2>/dev/null; docker rmi ${IMAGE_TAG} aether-lb:local 2>/dev/null" || true
 fi
+
+# Always kill auto-provisioned CTM containers before starting, even without --clean.
+# They survive `docker compose down` and break consensus on the next run.
+ssh_exec "docker rm -f \$(docker ps -aq --filter 'name=aether-core') 2>/dev/null" || true
 
 ssh_exec "cd ${REMOTE_DIR} && docker build --no-cache -t ${IMAGE_TAG} -f Dockerfile . 2>&1 | tail -3"
 log_pass "Docker image built: ${IMAGE_TAG}"
