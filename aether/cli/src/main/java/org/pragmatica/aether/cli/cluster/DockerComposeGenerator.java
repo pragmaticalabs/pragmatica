@@ -3,6 +3,8 @@ package org.pragmatica.aether.cli.cluster;
 import org.pragmatica.aether.config.cluster.ClusterManagementConfig;
 import org.pragmatica.aether.config.cluster.PortMapping;
 
+import java.security.SecureRandom;
+
 
 /// Generates a Docker Compose YAML file from cluster configuration.
 ///
@@ -143,6 +145,14 @@ sealed interface DockerComposeGenerator {
     private static String resolveClusterSecret(ClusterManagementConfig config) {
         return config.deployment().tls()
                                 .flatMap(tls -> tls.clusterSecret())
-                                .or("auto-generated-compose-secret");
+                                .or(generateRandomSecret());
+    }
+
+    private static String generateRandomSecret() {
+        var bytes = new byte[32];
+        new SecureRandom().nextBytes(bytes);
+        var sb = new StringBuilder(64);
+        for (byte b : bytes) {sb.append(String.format("%02x", b));}
+        return sb.toString();
     }
 }

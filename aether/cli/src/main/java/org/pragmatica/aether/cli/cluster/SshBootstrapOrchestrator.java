@@ -11,6 +11,7 @@ import org.pragmatica.lang.Unit;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -118,6 +119,10 @@ import static org.pragmatica.lang.Result.success;
 
     private static Result<Unit> ensureImage(ClusterManagementConfig config, String host, SshConfig ssh) {
         var image = resolveImage(config);
+        return validateImageName(image).flatMap(validImage -> ensureImageOnHost(validImage, host, ssh));
+    }
+
+    private static Result<Unit> ensureImageOnHost(String image, String host, SshConfig ssh) {
         System.out.printf("    Ensuring image %s on %s...%n", image, host);
         return RemoteCommandRunner.ssh(host,
                                        "docker image inspect " + image + " >/dev/null 2>&1 || docker pull " + image,
@@ -155,6 +160,13 @@ import static org.pragmatica.lang.Result.success;
     private static String buildPeers(String clusterName, int nodeCount, int clusterPort) {
         return IntStream.rangeClosed(1, nodeCount).mapToObj(i -> clusterName + "-" + i + ":aether-" + clusterName + "-" + i + ":" + clusterPort)
                                     .collect(Collectors.joining(","));
+    }
+
+    Pattern VALID_IMAGE_NAME = Pattern.compile("^[a-zA-Z0-9][a-zA-Z0-9._/-]*:[a-zA-Z0-9._-]+$");
+
+    private static Result<String> validateImageName(String image) {
+        if (VALID_IMAGE_NAME.matcher(image).matches()) {return success(image);}
+        return new ClusterConfigError.InvalidImageName(image).result();
     }
 
     private static String resolveImage(ClusterManagementConfig config) {

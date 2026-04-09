@@ -13,9 +13,13 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.ArrayList;
@@ -387,13 +391,31 @@ import static org.pragmatica.lang.Result.success;
         System.out.printf("Cluster \"%s\" bootstrapped successfully.%n", clusterName);
         System.out.printf("Nodes: %d/%d healthy%n", nodes.size(), nodes.size());
         System.out.printf("Endpoint: %s%n", endpoint);
-        System.out.printf("API Key: %s (save this -- it will not be shown again)%n", apiKey);
+        var keyFile = saveApiKeyToFile(clusterName, apiKey);
+        System.out.printf("API Key saved to: %s%n", keyFile);
         System.out.println();
         System.out.println("Node list:");
         for (var node : nodes) {System.out.printf("  %s  %s  %s%n", node.nodeId(), node.serverId(), node.publicIp());}
         System.out.println();
         var envName = "AETHER_" + clusterName.toUpperCase().replace('-', '_') + "_API_KEY";
-        System.out.printf("Set %s=%s in your environment.%n", envName, apiKey);
+        System.out.printf("Set %s=$(cat %s) in your environment.%n", envName, keyFile);
+    }
+
+    private static Path saveApiKeyToFile(String clusterName, String apiKey) {
+        var dir = Path.of(System.getProperty("user.home"), ".aether", "clusters", clusterName);
+        var keyFile = dir.resolve("api-key");
+        try {
+            Files.createDirectories(dir);
+            var permissions = PosixFilePermissions.fromString("rw-------");
+            var attrs = PosixFilePermissions.asFileAttribute(permissions);
+            Files.deleteIfExists(keyFile);
+            Files.createFile(keyFile, attrs);
+            Files.writeString(keyFile, apiKey);
+        } catch (IOException e) {
+            System.err.println("Warning: failed to write API key file: " + e.getMessage());
+            System.err.printf("API Key: %s (save this -- it will not be shown again)%n", apiKey);
+        }
+        return keyFile;
     }
 
     private static Result<String> hetznerPost(String apiToken, String path, String jsonBody) {

@@ -194,6 +194,12 @@ public sealed interface ClusterConfigError extends Cause {
         }
     }
 
+    record InvalidImageName(String value) implements ClusterConfigError {
+        @Override public String message() {
+            return "Invalid container image name: '" + value + "'. Must match [a-zA-Z0-9][a-zA-Z0-9._/-]*:[a-zA-Z0-9._-]+";
+        }
+    }
+
     record unused() implements ClusterConfigError {
         @Override public String message() {
             return "";
