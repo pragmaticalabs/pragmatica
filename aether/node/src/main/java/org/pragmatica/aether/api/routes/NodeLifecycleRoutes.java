@@ -108,10 +108,6 @@ public final class NodeLifecycleRoutes implements RouteSource {
         return budgetExceededError(nodeIdStr, operationalAfterDrain, minAvailable).promise();
     }
 
-    /// Count any node that is NOT in `ON_DUTY` state — DRAINING, DECOMMISSIONED, SHUTDOWN
-    /// and any other transient or terminal state all consume a budget slot. Counting only
-    /// `DRAINING` would let the budget reset once a node finishes draining and reaches a
-    /// terminal state, defeating the protection.
     private int countUnavailableNodes() {
         var count = new AtomicInteger(0);
         nodeSupplier.get().kvStore()

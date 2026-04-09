@@ -212,10 +212,6 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                 return ManagementRoute.match(methodOpt.unwrap(),
                                              requestContext.path())
                 .fold(_ -> {
-                          // No enum match: route may be a legacy/dynamic path (Maven /repository,
-                          // dashboard static files, blueprint TOML upload, etc.) handled by the
-                          // node's legacyRoutes fallback. Forward to any connected core and let
-                          // the core decide whether to dispatch or 404.
                           log.debug("No ManagementRoute match for {} {} [{}] — falling back to any-core forward",
                                     requestContext.method(),
                                     requestContext.path(),

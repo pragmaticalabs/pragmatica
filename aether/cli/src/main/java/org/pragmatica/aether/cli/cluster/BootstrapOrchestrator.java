@@ -21,7 +21,6 @@ import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
-
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
@@ -120,7 +119,7 @@ import static org.pragmatica.lang.Result.success;
         if (config.deployment().type() != DeploymentType.HETZNER) {return new BootstrapError.UnsupportedProvider(config.deployment().type()
                                                                                                                                   .value()).result();}
         return option(System.getenv("HCLOUD_TOKEN")).toResult(new ClusterConfigError.CloudCredentialsMissing("Hetzner",
-                                                                                                            "HCLOUD_TOKEN"));
+                                                                                                             "HCLOUD_TOKEN"));
     }
 
     private static String resolveClusterSecret(ClusterManagementConfig config) {
@@ -330,9 +329,9 @@ import static org.pragmatica.lang.Result.success;
     private static void storeCloudCredentials(String endpoint, String apiKey, BootstrapContext ctx) {
         if (ctx.apiToken().isEmpty()) {return;}
         var provider = ctx.config().deployment()
-                                  .type()
-                                  .value()
-                                  .toLowerCase();
+                                 .type()
+                                 .value()
+                                 .toLowerCase();
         var encrypted = encryptToken(ctx.apiToken(), ctx.clusterSecret());
         if (encrypted.length == 0) {
             System.err.println("Warning: failed to encrypt cloud credentials for KV-Store storage.");

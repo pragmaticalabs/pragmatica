@@ -671,13 +671,10 @@ class ManagementServerImpl implements ManagementServer {
                                                                             Serializer ser) {
         var serverCtx = ForwardedRequestContext.forwardedRequestContext(context);
         var responseCapture = ForwardedResponseWriter.forwardedResponseWriter();
-        // Forwarded requests bypass the Netty HTTP filter chain, so we must enforce the
-        // same auth/authorization checks here that validateManagementSecurity applies on
-        // direct HTTP requests. Without this gate, the LB management port becomes an
-        // auth bypass for the entire cluster.
         if (securityEnabled) {
             var method = Result.lift(Causes::fromThrowable,
-                                     () -> HttpMethod.valueOf(context.method().toUpperCase())).option();
+                                     () -> HttpMethod.valueOf(context.method().toUpperCase()))
+            .option();
             if (method.isEmpty()) {
                 sendManagementForwardError(network, request, "Unsupported HTTP method: " + context.method());
                 return;
@@ -687,9 +684,9 @@ class ManagementServerImpl implements ManagementServer {
                                                                                                     request,
                                                                                                     ser,
                                                                                                     responseData))
-                                            .onFailure(cause -> sendManagementForwardError(network,
-                                                                                           request,
-                                                                                           cause.message()));
+                                          .onFailure(cause -> sendManagementForwardError(network,
+                                                                                         request,
+                                                                                         cause.message()));
                 return;
             }
         }
@@ -713,10 +710,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                                      cause.message()));
             return;
         }}
-        // Unknown route: send a normal HTTP 404 response so the LB relays it as 404
-        // rather than wrapping it as a 502 forwarder failure.
-        var notFoundBody = ("{\"error\":\"No route found for " + context.method() + " " + context.path() + "\"}")
-                .getBytes(StandardCharsets.UTF_8);
+        var notFoundBody = ("{\"error\":\"No route found for " + context.method() + " " + context.path() + "\"}").getBytes(StandardCharsets.UTF_8);
         var notFound = new HttpResponseData(HttpStatus.NOT_FOUND.code(),
                                             java.util.Map.of("Content-Type", "application/json"),
                                             notFoundBody);

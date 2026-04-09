@@ -54,10 +54,12 @@ public final class ManagementRouter {
     }
 
     public static ManagementRouter managementRouter(RouteSource... sources) {
-        var allRoutes = java.util.stream.Stream.of(sources).flatMap(RouteSource::routes).toList();
-        var byName = allRoutes.stream()
-                              .filter(r -> !r.name().isEmpty())
-                              .collect(Collectors.toMap(Route::name, r -> r, (a, _) -> a));
+        var allRoutes = java.util.stream.Stream.of(sources).flatMap(RouteSource::routes)
+                                                  .toList();
+        var byName = allRoutes.stream().filter(r -> !r.name().isEmpty())
+                                     .collect(Collectors.toMap(Route::name,
+                                                               r -> r,
+                                                               (a, _) -> a));
         return new ManagementRouter(RequestRouter.with(sources), JsonCodecAdapter.defaultCodec(), Map.copyOf(byName));
     }
 
@@ -71,17 +73,21 @@ public final class ManagementRouter {
             var matched = matchResult.unwrap();
             var route = routesByName.get(matched.route().name());
             if (route != null) {
-                log.trace("ManagementRoute matched: {} target={}", matched.route().name(), matched.route().target());
+                log.trace("ManagementRoute matched: {} target={}",
+                          matched.route().name(),
+                          matched.route().target());
                 handleRoute(route, ctx, response);
                 return Option.some(true);
             }
-            log.debug("ManagementRoute {} matched but no Route handler registered under that name", matched.route().name());
+            log.debug("ManagementRoute {} matched but no Route handler registered under that name",
+                      matched.route().name());
         }
-        return requestRouter.findRoute(method, ctx.path())
-                            .map(route -> {
-                                handleRoute(route, ctx, response);
-                                return true;
-                            });
+        return requestRouter.findRoute(method,
+                                       ctx.path())
+        .map(route -> {
+                                          handleRoute(route, ctx, response);
+                                          return true;
+                                      });
     }
 
     private void handleRoute(Route<?> route, RequestContext serverCtx, ResponseWriter response) {
