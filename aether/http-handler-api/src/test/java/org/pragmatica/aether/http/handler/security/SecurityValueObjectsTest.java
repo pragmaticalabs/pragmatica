@@ -191,9 +191,9 @@ class SecurityValueObjectsTest {
         }
 
         @Test
-        void fromString_unknownDefaultsToPublic() {
+        void fromString_unknownDefaultsToApiKeyRequired() {
             assertThat(SecurityPolicy.fromString("UNKNOWN"))
-                .isInstanceOf(SecurityPolicy.Public.class);
+                .isInstanceOf(SecurityPolicy.ApiKeyRequired.class);
         }
 
         @Test
@@ -456,9 +456,9 @@ class SecurityValueObjectsTest {
         }
 
         @Test
-        void fromBlueprintString_unknownDefaultsToPublic() {
+        void fromBlueprintString_unknownDefaultsToApiKeyRequired() {
             assertThat(SecurityPolicy.fromBlueprintString("unknown_value"))
-                .isInstanceOf(SecurityPolicy.Public.class);
+                .isInstanceOf(SecurityPolicy.ApiKeyRequired.class);
         }
     }
 }
