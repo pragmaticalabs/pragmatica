@@ -126,43 +126,45 @@ import static org.pragmatica.aether.slice.repository.Location.location;
     }
 
     @SuppressWarnings("JBCT-SEQ-01") private static Promise<byte[]> handleChecksumResponse(HttpResult<String> result,
-                                                                                            String algorithm,
-                                                                                            HttpOperations httpOps,
-                                                                                            String sha1Url,
-                                                                                            Option<MavenSettingsCredentials.Credentials> credentials,
-                                                                                            byte[] jarBytes,
-                                                                                            Artifact artifact,
-                                                                                            Duration httpTimeout) {
+                                                                                           String algorithm,
+                                                                                           HttpOperations httpOps,
+                                                                                           String sha1Url,
+                                                                                           Option<MavenSettingsCredentials.Credentials> credentials,
+                                                                                           byte[] jarBytes,
+                                                                                           Artifact artifact,
+                                                                                           Duration httpTimeout) {
         if (result.statusCode() == 200) {return verifyChecksum(result.body(), algorithm, jarBytes, artifact);}
-        log.debug("No {} checksum available for {} ({}), trying fallback", algorithm, artifact.asString(), result.statusCode());
+        log.debug("No {} checksum available for {} ({}), trying fallback",
+                  algorithm,
+                  artifact.asString(),
+                  result.statusCode());
         return fallbackToSha1(httpOps, sha1Url, credentials, jarBytes, artifact, httpTimeout);
     }
 
     @SuppressWarnings("JBCT-SEQ-01") private static Promise<byte[]> fallbackToSha1(HttpOperations httpOps,
-                                                                                    String sha1Url,
-                                                                                    Option<MavenSettingsCredentials.Credentials> credentials,
-                                                                                    byte[] jarBytes,
-                                                                                    Artifact artifact,
-                                                                                    Duration httpTimeout) {
+                                                                                   String sha1Url,
+                                                                                   Option<MavenSettingsCredentials.Credentials> credentials,
+                                                                                   byte[] jarBytes,
+                                                                                   Artifact artifact,
+                                                                                   Duration httpTimeout) {
         var sha1Request = buildRequest(sha1Url, credentials, httpTimeout);
-        return httpOps.sendString(sha1Request).flatMap(sha1Result -> handleSha1FallbackResponse(sha1Result,
-                                                                                                jarBytes,
-                                                                                                artifact));
+        return httpOps.sendString(sha1Request)
+                                 .flatMap(sha1Result -> handleSha1FallbackResponse(sha1Result, jarBytes, artifact));
     }
 
     @SuppressWarnings("JBCT-SEQ-01") private static Promise<byte[]> handleSha1FallbackResponse(HttpResult<String> result,
-                                                                                                byte[] jarBytes,
-                                                                                                Artifact artifact) {
+                                                                                               byte[] jarBytes,
+                                                                                               Artifact artifact) {
         if (result.statusCode() == 200) {return verifyChecksum(result.body(), "SHA-1", jarBytes, artifact);}
         log.warn("No checksum available for {} — neither SHA-256 nor SHA-1", artifact.asString());
         return new RemoteRepositoryError.ChecksumUnavailable(artifact.asString()).promise();
     }
 
     @SuppressWarnings("JBCT-SEQ-01") private static Promise<byte[]> verifyChecksum(String checksumBody,
-                                                                                    String algorithm,
-                                                                                    byte[] jarBytes,
-                                                                                    Artifact artifact) {
-        var expectedChecksum = checksumBody.trim().split("\\s")[0];
+                                                                                   String algorithm,
+                                                                                   byte[] jarBytes,
+                                                                                   Artifact artifact) {
+        var expectedChecksum = checksumBody.trim().split("\\s") [0];
         return Promise.lift(cause -> new RemoteRepositoryError.DownloadFailed(artifact.asString(),
                                                                               cause),
                             () -> computeChecksum(jarBytes, algorithm))
@@ -170,10 +172,10 @@ import static org.pragmatica.aether.slice.repository.Location.location;
     }
 
     private static Promise<byte[]> matchChecksum(String expected,
-                                                  String actual,
-                                                  String algorithm,
-                                                  byte[] jarBytes,
-                                                  Artifact artifact) {
+                                                 String actual,
+                                                 String algorithm,
+                                                 byte[] jarBytes,
+                                                 Artifact artifact) {
         if (!expected.equalsIgnoreCase(actual)) {return new RemoteRepositoryError.DownloadFailed(artifact.asString(),
                                                                                                  new ChecksumMismatchException(artifact.asString(),
                                                                                                                                expected,

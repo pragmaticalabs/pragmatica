@@ -9,9 +9,9 @@ import org.pragmatica.http.routing.security.RouteSecurityPolicy;
 ///
 /// Sealed interface defining authentication requirements per route.
 /// Designed for extensibility - add new variants for JWT, mTLS, etc.
-@SuppressWarnings("JBCT-NAM-01")
-public sealed interface SecurityPolicy extends RouteSecurityPolicy {
+@SuppressWarnings("JBCT-NAM-01") public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     System.Logger log = System.getLogger(SecurityPolicy.class.getName());
+
     @SuppressWarnings({"JBCT-VO-02", "JBCT-NAM-01"}) record Public() implements SecurityPolicy {
         private static final Public INSTANCE = new Public();
 
@@ -151,7 +151,9 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     private static SecurityPolicy parseBlueprintRoleOrDefault(String value) {
         var stripped = value.strip().toLowerCase();
         if (stripped.startsWith("role:")) {return roleRequired(value.strip().substring(5));}
-        log.log(System.Logger.Level.WARNING, "Unrecognized blueprint security policy ''{0}'', defaulting to API_KEY", value);
+        log.log(System.Logger.Level.WARNING,
+                "Unrecognized blueprint security policy ''{0}'', defaulting to API_KEY",
+                value);
         return apiKeyRequired();
     }
 }
