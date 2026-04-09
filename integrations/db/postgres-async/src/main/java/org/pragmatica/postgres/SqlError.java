@@ -12,6 +12,7 @@ public sealed interface SqlError extends Cause {
     record LogicalConnectionClosed(String message) implements SqlError {}
     record BadAuthenticationSequence(String message) implements SqlError {}
     record CommunicationError(String message) implements SqlError {}
+    record InvalidChannelName(String message) implements SqlError {}
 
     record NoResultsReturned(String message) implements SqlError {}
     record TooManyResultsReturned(String message) implements SqlError {}

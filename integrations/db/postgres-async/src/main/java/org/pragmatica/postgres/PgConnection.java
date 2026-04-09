@@ -36,6 +36,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.pragmatica.postgres.message.backend.RowDescription.ColumnDescription;
@@ -142,6 +143,7 @@ public class PgConnection implements Connection {
 
     private static final String DUPLICATED_PREPARED_STATEMENT_DETECTED =
         "Duplicated prepared statement detected. Closing extra instance. \n{}";
+    private static final Pattern VALID_CHANNEL_NAME = Pattern.compile("^[a-zA-Z_][a-zA-Z0-9_]*$");
 
     public record Columns(Map<String, PgColumn> byName, PgColumn[] ordered) {}
 
@@ -319,7 +321,8 @@ public class PgConnection implements Connection {
 
     public Promise<Listening> subscribe(String channel, Consumer<String> onNotification) {
         // TODO: wait for commit before sending unlisten as otherwise it can be rolled back
-        return completeScript("LISTEN " + channel)
+        return validateChannelName(channel)
+            .flatMap(_ -> completeScript("LISTEN " + channel))
             .map(_ -> {
                 var unsubscribe = stream.subscribe(channel, onNotification);
 
@@ -330,13 +333,21 @@ public class PgConnection implements Connection {
 
     @Override
     public Promise<Listening> subscribe(String channel, NotificationHandler onNotification) {
-        return completeScript("LISTEN " + channel)
+        return validateChannelName(channel)
+            .flatMap(_ -> completeScript("LISTEN " + channel))
             .map(_ -> {
                 var unsubscribe = stream.subscribeWithDetails(channel, onNotification);
 
                 return () -> completeScript("UNLISTEN " + channel).withSuccess(_ -> unsubscribe.run())
                                                                   .mapToUnit();
             });
+    }
+
+    private static Promise<Unit> validateChannelName(String channel) {
+        if (channel != null && VALID_CHANNEL_NAME.matcher(channel).matches()) {
+            return Promise.success(unit());
+        }
+        return new SqlError.InvalidChannelName("Invalid channel name: " + channel).promise();
     }
 
     @Override

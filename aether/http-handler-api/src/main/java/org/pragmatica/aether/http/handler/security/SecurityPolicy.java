@@ -9,7 +9,9 @@ import org.pragmatica.http.routing.security.RouteSecurityPolicy;
 ///
 /// Sealed interface defining authentication requirements per route.
 /// Designed for extensibility - add new variants for JWT, mTLS, etc.
+@SuppressWarnings("JBCT-NAM-01")
 public sealed interface SecurityPolicy extends RouteSecurityPolicy {
+    System.Logger log = System.getLogger(SecurityPolicy.class.getName());
     @SuppressWarnings({"JBCT-VO-02", "JBCT-NAM-01"}) record Public() implements SecurityPolicy {
         private static final Public INSTANCE = new Public();
 
@@ -87,7 +89,7 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
             case ApiKeyRequired() -> "API_KEY";
             case BearerTokenRequired() -> "BEARER_TOKEN";
             case RoleRequired(var name) -> "ROLE:" + name;
-            default -> "PUBLIC";
+            default -> "API_KEY";
         };
     }
 
@@ -98,7 +100,7 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
             case ApiKeyRequired() -> 20;
             case BearerTokenRequired() -> 20;
             case RoleRequired(_) -> 30;
-            default -> 0;
+            default -> 20;
         };
     }
 
@@ -142,12 +144,14 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
 
     private static SecurityPolicy parseRoleOrDefault(String value) {
         if (value.startsWith("ROLE:")) {return roleRequired(value.substring(5));}
-        return publicRoute();
+        log.log(System.Logger.Level.WARNING, "Unrecognized security policy ''{0}'', defaulting to API_KEY", value);
+        return apiKeyRequired();
     }
 
     private static SecurityPolicy parseBlueprintRoleOrDefault(String value) {
         var stripped = value.strip().toLowerCase();
         if (stripped.startsWith("role:")) {return roleRequired(value.strip().substring(5));}
-        return publicRoute();
+        log.log(System.Logger.Level.WARNING, "Unrecognized blueprint security policy ''{0}'', defaulting to API_KEY", value);
+        return apiKeyRequired();
     }
 }
