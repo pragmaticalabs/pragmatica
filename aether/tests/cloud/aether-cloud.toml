@@ -23,6 +23,8 @@ startup_cooldown = "15s"
 
 [deployment]
 type = "hetzner"
+# Network ID is set by deploy-cloud.sh after creating the Hetzner private network
+network_id = "${env:CLOUD_NETWORK_ID}"
 
 [deployment.instances]
 core = "cx22"

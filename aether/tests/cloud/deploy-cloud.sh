@@ -119,6 +119,7 @@ else
 fi
 
 NETWORK_ID=$(hcloud network describe "${NETWORK_NAME}" -o json | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+export CLOUD_NETWORK_ID="${NETWORK_ID}"
 log_info "Network ID: ${NETWORK_ID}"
 
 # =========================================================================
