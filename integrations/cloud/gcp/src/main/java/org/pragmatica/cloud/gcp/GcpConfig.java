@@ -30,4 +30,13 @@ public record GcpConfig(String projectId, String zone, String serviceAccountEmai
     public static GcpConfig gcpConfig(String projectId, String zone, String serviceAccountEmail, String privateKeyPem, String baseUrl) {
         return new GcpConfig(projectId, zone, serviceAccountEmail, privateKeyPem, baseUrl);
     }
+
+    @Override
+    public String toString() {
+        return "GcpConfig[projectId=" + projectId
+               + ", zone=" + zone
+               + ", serviceAccountEmail=" + serviceAccountEmail
+               + ", privateKeyPem=REDACTED"
+               + ", baseUrl=" + baseUrl + "]";
+    }
 }
