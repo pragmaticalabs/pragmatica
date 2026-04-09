@@ -51,11 +51,14 @@ public sealed interface QuicTlsProvider {
         );
     }
 
+    /// Environment variable that must be set to "true" to allow insecure TLS in development.
+    String INSECURE_DEV_MODE_ENV = "AETHER_INSECURE_DEV_MODE";
+
     /// Obtain a QUIC client SSL context for cluster transport.
-    /// Uses insecure trust for self-signed certs (development), or configured trust for production.
+    /// Uses configured trust for production, requires explicit opt-in for insecure development mode.
     static Result<QuicSslContext> clientContext(Option<TlsConfig> tlsConfig) {
         return tlsConfig.fold(
-            QuicTlsProvider::createInsecureClient,
+            QuicTlsProvider::createDevClient,
             QuicSslContextFactory::createClient
         );
     }
@@ -76,11 +79,23 @@ public sealed interface QuicTlsProvider {
         }
     }
 
+    /// Development client context — requires explicit AETHER_INSECURE_DEV_MODE=true.
+    /// Returns an error if the env var is not set, preventing accidental insecure operation.
+    @SuppressWarnings("JBCT-UTIL-01")
+    private static Result<QuicSslContext> createDevClient() {
+        if (!"true".equalsIgnoreCase(System.getenv(INSECURE_DEV_MODE_ENV))) {
+            return QuicTransportError.General.NO_TLS_CONFIGURATION.result();
+        }
+
+        return createInsecureClient();
+    }
+
     /// Insecure client context with cluster ALPN protocol (trusts all certificates).
+    /// Only reachable when AETHER_INSECURE_DEV_MODE=true.
     @SuppressWarnings("JBCT-UTIL-01")
     private static Result<QuicSslContext> createInsecureClient() {
         try {
-            log.warn("Creating insecure QUIC client context - FOR DEVELOPMENT ONLY!");
+            log.warn("*** INSECURE TLS: QUIC client trusts ALL certificates (AETHER_INSECURE_DEV_MODE=true) ***");
             var context = QuicSslContextBuilder.forClient()
                                                .trustManager(InsecureTrustManagerFactory.INSTANCE)
                                                .applicationProtocols(CLUSTER_PROTOCOL)

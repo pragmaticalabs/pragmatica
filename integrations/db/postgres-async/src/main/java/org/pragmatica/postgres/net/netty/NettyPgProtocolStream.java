@@ -27,6 +27,7 @@ import io.netty.channel.*;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
+import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslHandshakeCompletionEvent;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
@@ -34,6 +35,8 @@ import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.SocketAddress;
@@ -48,6 +51,9 @@ import static org.pragmatica.lang.Unit.unit;
  * @author Antti Laisi
  */
 public class NettyPgProtocolStream extends PgProtocolStream {
+    private static final Logger log = LoggerFactory.getLogger(NettyPgProtocolStream.class);
+    private static final String INSECURE_TLS_PROPERTY = "pragmatica.pg.insecure-tls";
+
     protected final boolean useSsl;
     private final SocketAddress address;
     private final Bootstrap channelPipeline;
@@ -151,13 +157,9 @@ public class NettyPgProtocolStream extends PgProtocolStream {
             protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) throws Exception {
                 if (in.readableBytes() >= 1) {
                     if ('S' == in.readByte()) { // SSL supported response
-                        //TODO: take SSL configuration from config
                         ctx.pipeline().remove(this);
                         ctx.pipeline().addFirst(
-                            SslContextBuilder
-                                .forClient()
-                                .trustManager(InsecureTrustManagerFactory.INSTANCE)
-                                .build()
+                            buildSslContext()
                                 .newHandler(ctx.alloc()));
                     } else {
                         ctx.fireExceptionCaught(new IllegalStateException("SSL required but not supported by Postgres"));
@@ -165,6 +167,17 @@ public class NettyPgProtocolStream extends PgProtocolStream {
                 }
             }
         };
+    }
+
+    private static SslContext buildSslContext() throws Exception {
+        var builder = SslContextBuilder.forClient();
+
+        if ("true".equalsIgnoreCase(System.getProperty(INSECURE_TLS_PROPERTY))) {
+            log.warn("*** INSECURE TLS: PostgreSQL client trusts ALL certificates (pragmatica.pg.insecure-tls=true) ***");
+            builder.trustManager(InsecureTrustManagerFactory.INSTANCE);
+        }
+
+        return builder.build();
     }
 
     private ChannelHandler newProtocolHandler() {

@@ -26,7 +26,8 @@ public sealed interface QuicTransportError extends Cause {
     enum General implements QuicTransportError {
         HELLO_TIMEOUT("Hello handshake timed out"),
         UNEXPECTED_MESSAGE("Expected Hello message but received different type"),
-        SERVER_NOT_STARTED("QUIC server is not started");
+        SERVER_NOT_STARTED("QUIC server is not started"),
+        NO_TLS_CONFIGURATION("No TLS configuration provided. Set AETHER_INSECURE_DEV_MODE=true for development without TLS verification");
 
         private final String text;
 
