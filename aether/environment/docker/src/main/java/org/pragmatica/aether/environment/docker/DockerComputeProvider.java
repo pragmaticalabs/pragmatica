@@ -136,6 +136,8 @@ import static org.pragmatica.lang.Result.success;
                                               "CORE_MAX=" + coreMax,
                                               "-e",
                                               "AETHER_API_KEY=" + apiKey));
+        propagateEnvVar(command, "AETHER_INSECURE_DEV_MODE");
+        propagateEnvVar(command, "AETHER_CLUSTER_SECRET");
         if (!config.dockerGid().isEmpty()) {
             command.add("--group-add");
             command.add(config.dockerGid());
@@ -144,6 +146,14 @@ import static org.pragmatica.lang.Result.success;
         addPlacementLabels(command, spec.placement());
         command.add(config.imageName());
         return List.copyOf(command);
+    }
+
+    private static void propagateEnvVar(ArrayList<String> command, String name) {
+        var value = System.getenv(name);
+        if (value != null && !value.isEmpty()) {
+            command.add("-e");
+            command.add(name + "=" + value);
+        }
     }
 
     private static void addSpecLabels(ArrayList<String> command, Map<String, String> tags) {
