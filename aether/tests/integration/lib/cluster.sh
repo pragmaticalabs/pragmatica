@@ -241,9 +241,7 @@ restore_baseline() {
         remote_exec "docker ps -a --filter 'name=aether-node-' --filter 'status=exited' -q | xargs -r docker start" 2>/dev/null
     fi
     if [ "$needs_restore" = true ]; then
-        log_info "Cluster was degraded — restarting LB for fresh QUIC connections"
-        remote_exec "docker restart aether-lb" 2>/dev/null
-        wait_for "LB healthy" "curl -sf http://${TARGET_HOST}:${LB_PORT}/health/live >/dev/null 2>&1" 30 || true
+        log_info "Cluster was degraded — waiting for nodes to rejoin"
     fi
 }
 

@@ -131,6 +131,12 @@ public interface TopologyObserver extends TopologyManager {
 
             private void initReconcile() {
                 if (active.get()) {
+                    // Re-add any configured core nodes that were removed due to disconnection.
+                    // Without this, nodes removed from nodeStatesById are never reconnected
+                    // because reconcile() only requests connections for nodes IN the map.
+                    config().coreNodes().stream()
+                          .filter(node -> !nodeStatesById.containsKey(node.id()))
+                          .forEach(this::addNode);
                     router().route(new NetworkServiceMessage.ListConnectedNodes());
                 } else if (nodeStatesById().size() <= 1) {
                     log.info("Topology drained to self-only — re-seeding from config ({} core nodes)", config().coreNodes().size());
