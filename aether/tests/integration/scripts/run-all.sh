@@ -65,6 +65,11 @@ for suite in "${SUITE_DIR}"/*/; do
     else
         SUITES_FAILED=$((SUITES_FAILED + 1))
     fi
+
+    # Restore baseline cluster between suites — remove CTM containers, start stopped compose nodes
+    restore_baseline
+    wait_for_node_count 5 120 || log_warn "Cluster did not fully restore between suites"
+    wait_for_leader 60 || true
 done
 
 # ---------------------------------------------------------------------------

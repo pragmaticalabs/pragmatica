@@ -206,7 +206,7 @@ start_node() {
     fi
 }
 
-# Restart all containers for clean cluster formation
+# Restart all containers for clean cluster formation (hard reset — stops everything first)
 restart_all_nodes() {
     log_info "Restoring cluster to baseline..."
     if [ "$CLOUD_MODE" = "true" ]; then
@@ -215,6 +215,35 @@ restart_all_nodes() {
         done
     else
         remote_exec "docker ps -a --filter 'name=aether-node-' -q | xargs -r docker stop 2>/dev/null; docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=aether-node-' -q | xargs -r docker start" 2>/dev/null
+    fi
+}
+
+# Lightweight restore: remove CTM-provisioned containers and start any stopped compose nodes.
+# Only acts when the cluster is actually degraded (stopped nodes or CTM containers present).
+# Restarts LB to re-establish QUIC connections when nodes were restored.
+restore_baseline() {
+    if [ "$CLOUD_MODE" = "true" ]; then
+        return 0
+    fi
+    local needs_restore=false
+    # Check for CTM-provisioned containers
+    local ctm_count
+    ctm_count=$(remote_exec "docker ps -a -q --filter name=aether-core 2>/dev/null | wc -l" 2>/dev/null)
+    if [ "${ctm_count:-0}" -gt 0 ] 2>/dev/null; then
+        needs_restore=true
+        remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null || true" 2>/dev/null
+    fi
+    # Check for stopped compose nodes
+    local stopped
+    stopped=$(remote_exec "docker ps -a --filter 'name=aether-node-' --filter 'status=exited' -q 2>/dev/null | wc -l" 2>/dev/null)
+    if [ "${stopped:-0}" -gt 0 ] 2>/dev/null; then
+        needs_restore=true
+        remote_exec "docker ps -a --filter 'name=aether-node-' --filter 'status=exited' -q | xargs -r docker start" 2>/dev/null
+    fi
+    if [ "$needs_restore" = true ]; then
+        log_info "Cluster was degraded — restarting LB for fresh QUIC connections"
+        remote_exec "docker restart aether-lb" 2>/dev/null
+        wait_for "LB healthy" "curl -sf http://${TARGET_HOST}:${LB_PORT}/health/live >/dev/null 2>&1" 30 || true
     fi
 }
 
