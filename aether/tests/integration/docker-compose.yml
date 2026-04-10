@@ -25,6 +25,7 @@ x-node-common: &node-common
     CORE_MAX: "5"
     DOCKER_GID: "${DOCKER_GID:-984}"
     JAVA_OPTS: "-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
+    AETHER_INSECURE_DEV_MODE: "true"
   healthcheck:
     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
     interval: 10s
@@ -128,6 +129,7 @@ services:
       LB_CLUSTER_PORT: "7000"
       PEERS: "node-1:aether-node-1:6000,node-2:aether-node-2:6000,node-3:aether-node-3:6000,node-4:aether-node-4:6000,node-5:aether-node-5:6000"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
+      AETHER_INSECURE_DEV_MODE: "true"
     ports:
       - "9090:8080"   # Public app HTTP (forwarded via Pipeline.APP)
       - "9091:8081"   # Management API (forwarded via Pipeline.MANAGEMENT)
