@@ -1,5 +1,6 @@
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.lang.Contract;
@@ -10,6 +11,7 @@ import org.pragmatica.lang.Unit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.pragmatica.lang.Option.option;
@@ -65,6 +67,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     public Result<Unit> createStream(StreamConfig config) {
         if (streams.containsKey(config.name())) {return StreamError.General.STREAM_ALREADY_EXISTS.result();}
+        if (config.consistencyMode() == ConsistencyMode.STRONG && evictionListener == EvictionListener.NOOP) {return StreamError.General.AHSE_REQUIRED_FOR_STRONG.result();}
         var requiredBytes = calculateStreamBytes(config);
         if (totalAllocatedBytes.get() + requiredBytes > maxTotalBytes) {return StreamError.General.STREAM_MEMORY_EXCEEDED.result();}
         var entry = StreamEntry.fromConfig(config, evictionListener);
@@ -83,14 +86,18 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     public Result<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {
-        return resolveStreamEntry(streamName).flatMap(entry -> checkEventSize(entry, payload))
-                                 .flatMap(_ -> resolvePartitionBuffer(streamName, partition))
-                                 .flatMap(buffer -> buffer.append(payload, timestamp))
+        return resolveStreamEntry(streamName).flatMap(entry -> appendToPartition(entry, streamName, partition, payload, timestamp))
                                  .onSuccess(offset -> replicationManager.replicateEvent(streamName,
                                                                                         partition,
                                                                                         offset,
                                                                                         payload,
                                                                                         timestamp));
+    }
+
+    private Result<Long> appendToPartition(StreamEntry entry, String streamName, int partition, byte[] payload, long timestamp) {
+        return checkEventSize(entry, payload).flatMap(_ -> resolvePartitionBuffer(streamName, partition))
+                     .flatMap(buffer -> buffer.append(payload, timestamp))
+                     .onSuccess(_ -> entry.updateActivity());
     }
 
     public Result<List<OffHeapRingBuffer.RawEvent>> readLocal(String streamName,
@@ -113,17 +120,29 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     public int reapIdleStreams() {
         var now = System.currentTimeMillis();
-        var reaped = new ArrayList<String>();
-        streams.forEach((name, entry) -> {
-                            var maxAge = entry.config().retention()
-                                                     .maxAgeMs();
-                            var isEmpty = java.util.Arrays.stream(entry.partitions())
-                                                                 .allMatch(b -> b.eventCount() == 0);
-                            var isExpired = (now - entry.createdAt()) > maxAge;
-                            if (isEmpty && isExpired) {reaped.add(name);}
-                        });
-        reaped.forEach(this::destroyStream);
-        return reaped.size();
+        var reaped = new AtomicInteger(0);
+        streams.forEach((name, entry) -> reapIfIdle(name, entry, now, reaped));
+        return reaped.get();
+    }
+
+    private void reapIfIdle(String name, StreamEntry entry, long now, AtomicInteger reaped) {
+        var maxAge = entry.config().retention().maxAgeMs();
+        var isEmpty = java.util.Arrays.stream(entry.partitions()).allMatch(b -> b.eventCount() == 0);
+        var isExpired = (now - entry.createdAt()) > maxAge;
+        var isIdle = (now - entry.lastActivity()) > maxAge;
+        if (isEmpty && isExpired && isIdle) {
+            var capturedActivity = entry.lastActivity();
+            streams.computeIfPresent(name, (_, current) -> removeIfStillIdle(current, capturedActivity, reaped));
+        }
+    }
+
+    private StreamEntry removeIfStillIdle(StreamEntry current, long capturedActivity, AtomicInteger reaped) {
+        if (current.lastActivity() == capturedActivity) {
+            closeAndRelease(current);
+            reaped.incrementAndGet();
+            return null;
+        }
+        return current;
     }
 
     @Contract@Override public void close() {
@@ -206,16 +225,36 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
     }
 
-    record StreamEntry(StreamConfig config, OffHeapRingBuffer[] partitions, long createdAt) implements AutoCloseable {
+    record StreamEntry(StreamConfig config,
+                       OffHeapRingBuffer[] partitions,
+                       long createdAt,
+                       AtomicLong lastActivityRef) implements AutoCloseable {
         static StreamEntry fromConfig(StreamConfig config, EvictionListener listener) {
             var retention = config.retention();
+            var policy = deriveEvictionPolicy(config);
             var buffers = new OffHeapRingBuffer[config.partitions()];
             for (int i = 0;i <config.partitions();i++) {buffers[i] = OffHeapRingBuffer.offHeapRingBuffer(config.name(),
                                                                                                          i,
                                                                                                          retention.maxCount(),
                                                                                                          retention.maxBytes(),
-                                                                                                         listener);}
-            return new StreamEntry(config, buffers, System.currentTimeMillis());
+                                                                                                         listener,
+                                                                                                         policy);}
+            var now = System.currentTimeMillis();
+            return new StreamEntry(config, buffers, now, new AtomicLong(now));
+        }
+
+        long lastActivity() {
+            return lastActivityRef.get();
+        }
+
+        void updateActivity() {
+            lastActivityRef.set(System.currentTimeMillis());
+        }
+
+        private static EvictionPolicy deriveEvictionPolicy(StreamConfig config) {
+            return config.consistencyMode() == ConsistencyMode.STRONG
+                  ? EvictionPolicy.REJECT_WHEN_FULL
+                  : EvictionPolicy.DROP_OLDEST;
         }
 
         @Contract@Override public void close() {

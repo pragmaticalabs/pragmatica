@@ -371,6 +371,74 @@ class StreamPartitionManagerTest {
     }
 
     @Nested
+    class ReapIdleStreams {
+
+        @Test
+        void reapIdleStreams_updatesLastActivity_onPublish() {
+            var retention = RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 60_000);
+            var config = StreamConfig.streamConfig("orders", 1, retention, "latest");
+            manager.createStream(config);
+
+            manager.publishLocal("orders", 0, "event".getBytes(), 1000L);
+
+            // Stream should still exist — lastActivity was just updated
+            assertThat(manager.reapIdleStreams()).isEqualTo(0);
+            assertThat(manager.streamInfo("orders").isPresent()).isTrue();
+        }
+
+        @Test
+        void reapIdleStreams_reapsExpiredEmptyIdleStream() {
+            // Use 1ms retention so the stream expires immediately
+            var retention = RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 1);
+            var config = StreamConfig.streamConfig("ephemeral", 1, retention, "latest");
+            manager.createStream(config);
+
+            // Small delay to ensure creation time + lastActivity are in the past
+            busyWait(5);
+
+            assertThat(manager.reapIdleStreams()).isEqualTo(1);
+            assertThat(manager.streamInfo("ephemeral").isEmpty()).isTrue();
+        }
+
+        @Test
+        void reapIdleStreams_preventsDestructionWhenPublishOccurred() {
+            // Use 1ms retention so the stream expires immediately
+            var retention = RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 1);
+            var config = StreamConfig.streamConfig("active", 1, retention, "latest");
+            manager.createStream(config);
+
+            // Wait for creation time to expire
+            busyWait(5);
+
+            // Publish updates lastActivity — prevents reaping even though createdAt is expired
+            manager.publishLocal("active", 0, "data".getBytes(), System.currentTimeMillis());
+
+            // Stream has data and recent activity — should not be reaped
+            assertThat(manager.reapIdleStreams()).isEqualTo(0);
+            assertThat(manager.streamInfo("active").isPresent()).isTrue();
+        }
+
+        @Test
+        void reapIdleStreams_skipsNonEmptyStreams() {
+            var retention = RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 1);
+            var config = StreamConfig.streamConfig("with-data", 1, retention, "latest");
+            manager.createStream(config);
+
+            manager.publishLocal("with-data", 0, "event".getBytes(), 1000L);
+
+            busyWait(5);
+
+            // Stream has events — should not be reaped regardless of age
+            assertThat(manager.reapIdleStreams()).isEqualTo(0);
+        }
+
+        private void busyWait(long millis) {
+            var deadline = System.currentTimeMillis() + millis;
+            while (System.currentTimeMillis() < deadline) {Thread.onSpinWait();}
+        }
+    }
+
+    @Nested
     class StreamInfoTests {
 
         @Test
