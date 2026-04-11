@@ -48,6 +48,10 @@ public final class SuppressionExtractor {
                                                               "org.pragmatica.lang.Contract");
     private static final Set<String> CONTRACT_SUPPRESSED_RULES = Set.of("all");
 
+    private static final Set<String> TERMINAL_OP_NAMES = Set.of("TerminalOperation",
+                                                                  "org.pragmatica.lang.TerminalOperation");
+    private static final Set<String> TERMINAL_OP_SUPPRESSED = Set.of("JBCT-PAT-03");
+
     /// Extract all suppressions from a CST.
     public static List<Suppression> extractSuppressions(CstNode root, String source) {
         var suppressions = new ArrayList<Suppression>();
@@ -60,6 +64,14 @@ public final class SuppressionExtractor {
             if (CONTRACT_NAMES.contains(name)) {
                 findAnnotatedDeclaration(root, annotation)
                 .onPresent(scopeNode -> suppressions.add(Suppression.suppression(CONTRACT_SUPPRESSED_RULES,
+                                                                                  startLine(scopeNode),
+                                                                                  endLine(scopeNode))));
+                continue;
+            }
+            // @TerminalOperation suppresses JBCT-PAT-03 (blocking .await() calls)
+            if (TERMINAL_OP_NAMES.contains(name)) {
+                findAnnotatedDeclaration(root, annotation)
+                .onPresent(scopeNode -> suppressions.add(Suppression.suppression(TERMINAL_OP_SUPPRESSED,
                                                                                   startLine(scopeNode),
                                                                                   endLine(scopeNode))));
                 continue;

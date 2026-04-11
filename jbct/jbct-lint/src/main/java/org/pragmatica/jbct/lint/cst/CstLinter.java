@@ -192,6 +192,14 @@ public class CstLinter {
         new CstSealedErrorRule(),
         // JBCT-SEAL-01
         // Pattern mixing (JBCT-PAT-02)
-        new CstPatternMixingRule());
+        new CstPatternMixingRule(),
+        // Blocking await (JBCT-PAT-03)
+        new CstAwaitRule(),
+        // Discarded Result/Promise/Option (JBCT-RET-07)
+        new CstDiscardedResultRule(),
+        // Unnecessary var before return (JBCT-STY-07)
+        new CstUnnecessaryVarReturnRule(),
+        // If/else with return in both branches (JBCT-STY-08)
+        new CstIfElseReturnRule());
     }
 }
