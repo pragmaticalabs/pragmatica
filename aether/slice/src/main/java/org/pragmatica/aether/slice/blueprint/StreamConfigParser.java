@@ -5,10 +5,13 @@ import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.slice.ConsumerConfig.ProcessingMode;
 import org.pragmatica.aether.slice.ReadPreference;
+import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import java.util.LinkedHashMap;
@@ -74,23 +77,40 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                              .or(1_048_576L);
         var consistencyMode = doc.getString(section, "consistency").map(StreamConfigParser::parseConsistencyMode)
                                            .or(ConsistencyMode.EVENTUAL);
+        var minSyncReplicas = doc.getInt(section, "min-sync-replicas").or(0);
+        var compression = doc.getString(section, "compression").map(StreamConfigParser::parseCompression)
+                                       .or(StreamCompression.NONE);
+        var encryptionKeyId = doc.getString(section, "encryption-key-id");
         return StreamConfig.streamConfig(streamName,
                                          partitions,
                                          retention,
                                          autoOffsetReset,
                                          maxEventSizeBytes,
-                                         consistencyMode);
+                                         consistencyMode,
+                                         minSyncReplicas,
+                                         compression,
+                                         encryptionKeyId);
     }
 
     private static RetentionPolicy parseRetention(TomlDocument doc, String section) {
         var retentionType = doc.getString(section, "retention").or("count");
         var retentionValue = doc.getString(section, "retention-value").or("");
+        var mode = doc.getString(section, "retention-mode").map(StreamConfigParser::parseRetentionMode)
+                                .or(RetentionMode.ANY);
         return switch (retentionType.toLowerCase()){
-            case "time" -> RetentionPolicy.retentionPolicy(Long.MAX_VALUE, Long.MAX_VALUE, parseTimeMs(retentionValue));
+            case "compound" -> parseCompoundRetention(doc, section, mode);
+            case "time" -> RetentionPolicy.retentionPolicy(Long.MAX_VALUE,
+                                                           Long.MAX_VALUE,
+                                                           parseTimeMs(retentionValue),
+                                                           mode);
             case "size" -> RetentionPolicy.retentionPolicy(Long.MAX_VALUE,
                                                            parseSizeBytes(retentionValue),
-                                                           Long.MAX_VALUE);
-            case "count" -> RetentionPolicy.retentionPolicy(parseCount(retentionValue), Long.MAX_VALUE, Long.MAX_VALUE);
+                                                           Long.MAX_VALUE,
+                                                           mode);
+            case "count" -> RetentionPolicy.retentionPolicy(parseCount(retentionValue),
+                                                            Long.MAX_VALUE,
+                                                            Long.MAX_VALUE,
+                                                            mode);
             default -> RetentionPolicy.retentionPolicy();
         };
     }
@@ -116,7 +136,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
         var maxRetries = doc.getInt(section, "max-retries").or(3);
         var deadLetterStream = doc.getString(section, "dead-letter").or("");
         var readPreference = doc.getString(section, "read-preference").map(StreamConfigParser::parseReadPreference)
-                                          .or(ReadPreference.LEADER);
+                                          .or(ReadPreference.GOVERNOR);
         return ConsumerConfig.consumerConfig(groupName,
                                              batchSize,
                                              processing,
@@ -141,11 +161,36 @@ import static org.pragmatica.lang.utils.Causes.cause;
         };
     }
 
+    private static RetentionPolicy parseCompoundRetention(TomlDocument doc, String section, RetentionMode mode) {
+        var maxAge = doc.getString(section, "max-age").map(StreamConfigParser::parseTimeMs)
+                                  .or(Long.MAX_VALUE);
+        var maxCount = doc.getString(section, "max-count").map(StreamConfigParser::parseCount)
+                                    .or(Long.MAX_VALUE);
+        var maxBytes = doc.getString(section, "max-bytes").map(StreamConfigParser::parseSizeBytes)
+                                    .or(Long.MAX_VALUE);
+        return RetentionPolicy.retentionPolicy(maxCount, maxBytes, maxAge, mode);
+    }
+
+    private static RetentionMode parseRetentionMode(String value) {
+        return switch (value.toLowerCase()){
+            case "all" -> RetentionMode.ALL;
+            default -> RetentionMode.ANY;
+        };
+    }
+
+    private static StreamCompression parseCompression(String value) {
+        return switch (value.toLowerCase()){
+            case "lz4" -> StreamCompression.LZ4;
+            case "zstd" -> StreamCompression.ZSTD;
+            default -> StreamCompression.NONE;
+        };
+    }
+
     private static ReadPreference parseReadPreference(String value) {
         return switch (value.toLowerCase()){
-            case "nearest", "any" -> ReadPreference.NEAREST;
-            case "follower-only", "follower_only", "follower" -> ReadPreference.FOLLOWER_ONLY;
-            default -> ReadPreference.LEADER;
+            case "nearest" -> ReadPreference.NEAREST;
+            case "any-replica", "any_replica", "any", "replica", "follower-only", "follower_only", "follower" -> ReadPreference.ANY_REPLICA;
+            default -> ReadPreference.GOVERNOR;
         };
     }
 

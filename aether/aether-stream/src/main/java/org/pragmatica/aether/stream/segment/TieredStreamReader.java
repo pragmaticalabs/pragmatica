@@ -1,14 +1,18 @@
 package org.pragmatica.aether.stream.segment;
 
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.storage.BlockEncryptor;
 import org.pragmatica.storage.StorageInstance;
 
 import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Option.none;
 
 
 /// Cross-tier read optimization for streaming segments.
@@ -22,7 +26,13 @@ public sealed interface TieredStreamReader {
     Promise<Unit> prefetch(String streamName, int partition, long fromOffset);
 
     static TieredStreamReader tieredStreamReader(SegmentIndex index, StorageInstance storage) {
-        return new TieredReader(index, storage);
+        return new TieredReader(index, storage, none());
+    }
+
+    static TieredStreamReader tieredStreamReader(SegmentIndex index,
+                                                 StorageInstance storage,
+                                                 Option<BlockEncryptor> encryptor) {
+        return new TieredReader(index, storage, encryptor);
     }
 }
 
@@ -35,9 +45,9 @@ final class TieredReader implements TieredStreamReader {
     private final SegmentReader reader;
     private final StorageInstance storage;
 
-    TieredReader(SegmentIndex index, StorageInstance storage) {
+    TieredReader(SegmentIndex index, StorageInstance storage, Option<BlockEncryptor> encryptor) {
         this.index = index;
-        this.reader = SegmentReader.segmentReader(storage, index);
+        this.reader = SegmentReader.segmentReader(storage, index, encryptor);
         this.storage = storage;
     }
 

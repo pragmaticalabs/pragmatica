@@ -19,13 +19,27 @@ import static org.pragmatica.lang.Option.option;
 public final class SegmentIndex {
     private final ConcurrentHashMap<PartitionKey, ConcurrentSkipListMap<Long, SegmentRef>> partitions = new ConcurrentHashMap<>();
 
-    public record SegmentRef(long startOffset, long endOffset, long maxTimestamp) {
+    public record SegmentRef(long startOffset,
+                             long endOffset,
+                             long maxTimestamp,
+                             int compressionOrdinal,
+                             boolean encrypted,
+                             int originalSize) {
         public static SegmentRef segmentRef(long startOffset, long endOffset, long maxTimestamp) {
-            return new SegmentRef(startOffset, endOffset, maxTimestamp);
+            return new SegmentRef(startOffset, endOffset, maxTimestamp, 0, false, 0);
         }
 
         public static SegmentRef segmentRef(long startOffset, long endOffset) {
-            return new SegmentRef(startOffset, endOffset, 0L);
+            return new SegmentRef(startOffset, endOffset, 0L, 0, false, 0);
+        }
+
+        public static SegmentRef segmentRef(long startOffset,
+                                            long endOffset,
+                                            long maxTimestamp,
+                                            int compressionOrdinal,
+                                            boolean encrypted,
+                                            int originalSize) {
+            return new SegmentRef(startOffset, endOffset, maxTimestamp, compressionOrdinal, encrypted, originalSize);
         }
 
         boolean containsOffset(long offset) {
@@ -38,13 +52,25 @@ public final class SegmentIndex {
                                      long startOffset,
                                      long endOffset,
                                      long maxTimestamp) {
-        var key = PartitionKey.partitionKey(streamName, partition);
-        var map = partitions.computeIfAbsent(key, _ -> new ConcurrentSkipListMap<>());
-        map.put(startOffset, SegmentRef.segmentRef(startOffset, endOffset, maxTimestamp));
+        addSegment(streamName, partition, startOffset, endOffset, maxTimestamp, 0, false, 0);
     }
 
     @Contract public void addSegment(String streamName, int partition, long startOffset, long endOffset) {
         addSegment(streamName, partition, startOffset, endOffset, 0L);
+    }
+
+    @Contract public void addSegment(String streamName,
+                                     int partition,
+                                     long startOffset,
+                                     long endOffset,
+                                     long maxTimestamp,
+                                     int compressionOrdinal,
+                                     boolean encrypted,
+                                     int originalSize) {
+        var key = PartitionKey.partitionKey(streamName, partition);
+        var map = partitions.computeIfAbsent(key, _ -> new ConcurrentSkipListMap<>());
+        map.put(startOffset,
+                SegmentRef.segmentRef(startOffset, endOffset, maxTimestamp, compressionOrdinal, encrypted, originalSize));
     }
 
     @Contract public void removeSegment(String streamName, int partition, long startOffset) {
