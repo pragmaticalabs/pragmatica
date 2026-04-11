@@ -41,6 +41,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Same-version deploy rejection** — Strategy deploys rejected when oldVersion == newVersion. `/api/blueprint/publish` for register-without-deploy
 - **Disruption budget enforcement** — Drain endpoint checks quorum-based `minAvailable` before allowing DRAINING transition
 - **Promise.allOrCancel()** — Cancels remaining promises on first failure; fixed instance `all()` from sequential to parallel
+- **JBCT lint rules (4 new)** — `JBCT-PAT-03` blocking `.await()` detection (WARNING), `JBCT-RET-07` discarded `Result`/`Promise`/`Option` value (ERROR), `JBCT-STY-07` unnecessary intermediate variable before return (WARNING), `JBCT-STY-08` simple if/else with return in both branches (WARNING)
+- **`@TerminalOperation` annotation** — Semantic suppression for `JBCT-PAT-03` on methods/classes where blocking is intentional (CLI, lifecycle, background threads)
 
 ### Changed
 - **`HETZNER_API_TOKEN` → `HCLOUD_TOKEN`** — Standardized to Hetzner's official env var name across all Java code, docs, and specs
