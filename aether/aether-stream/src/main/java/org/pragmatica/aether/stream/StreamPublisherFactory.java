@@ -4,7 +4,10 @@ import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.StreamPublisher;
+import org.pragmatica.aether.stream.forward.StreamForwardClient;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Causes;
@@ -47,7 +50,19 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
                                                                                  ProvisioningContext context) {
         ensureStreamExists(manager, config);
         var keyExtractor = extractPartitionKeyFunction(context);
-        return StreamPublisherImpl.streamPublisher(manager, serializer, config.name(), config.partitions(), keyExtractor);
+        var forwardClient = context.extension(StreamForwardClient.class).option();
+        var governorResolver = context.extension(GovernorResolver.class).option()
+                                                .map(GovernorResolver::resolver);
+        return StreamPublisherImpl.streamPublisher(manager,
+                                                   serializer,
+                                                   config.name(),
+                                                   config.partitions(),
+                                                   keyExtractor,
+                                                   config.consistencyMode(),
+                                                   Option.none(),
+                                                   config.minSyncReplicas(),
+                                                   forwardClient,
+                                                   governorResolver);
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"}) private static <T> Option<Function<T, Object>> extractPartitionKeyFunction(ProvisioningContext context) {
@@ -58,4 +73,6 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
     private static void ensureStreamExists(StreamPartitionManager manager, StreamConfig config) {
         manager.createStream(config);
     }
+
+    public record GovernorResolver(Fn0<Option<NodeId>> resolver){}
 }
