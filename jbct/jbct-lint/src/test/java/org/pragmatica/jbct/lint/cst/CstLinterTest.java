@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/// Comprehensive test suite for all 37 JBCT lint rules.
+/// Comprehensive test suite for all 41 JBCT lint rules.
 /// Each test verifies that violations are properly detected.
 class CstLinterTest {
     private CstLinter linter;
