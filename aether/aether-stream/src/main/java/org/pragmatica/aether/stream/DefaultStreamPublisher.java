@@ -44,15 +44,15 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     private final Option<Fn0<Option<NodeId>>> governorResolver;
 
     private DefaultStreamPublisher(StreamPartitionManager partitionManager,
-                                Serializer serializer,
-                                String streamName,
-                                int partitionCount,
-                                Option<Function<T, Object>> partitionKeyExtractor,
-                                ConsistencyMode consistencyMode,
-                                Option<ConsensusPublishPath> consensusPath,
-                                int minSyncReplicas,
-                                Option<StreamForwardClient> forwardClient,
-                                Option<Fn0<Option<NodeId>>> governorResolver) {
+                                   Serializer serializer,
+                                   String streamName,
+                                   int partitionCount,
+                                   Option<Function<T, Object>> partitionKeyExtractor,
+                                   ConsistencyMode consistencyMode,
+                                   Option<ConsensusPublishPath> consensusPath,
+                                   int minSyncReplicas,
+                                   Option<StreamForwardClient> forwardClient,
+                                   Option<Fn0<Option<NodeId>>> governorResolver) {
         this.partitionManager = partitionManager;
         this.serializer = serializer;
         this.streamName = streamName;
@@ -67,81 +67,81 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     }
 
     public static <T> DefaultStreamPublisher<T> streamPublisher(StreamPartitionManager partitionManager,
-                                                             Serializer serializer,
-                                                             String streamName,
-                                                             int partitionCount,
-                                                             Option<Function<T, Object>> partitionKeyExtractor) {
+                                                                Serializer serializer,
+                                                                String streamName,
+                                                                int partitionCount,
+                                                                Option<Function<T, Object>> partitionKeyExtractor) {
         return new DefaultStreamPublisher<>(partitionManager,
-                                         serializer,
-                                         streamName,
-                                         partitionCount,
-                                         partitionKeyExtractor,
-                                         ConsistencyMode.EVENTUAL,
-                                         Option.none(),
-                                         0,
-                                         Option.none(),
-                                         Option.none());
+                                            serializer,
+                                            streamName,
+                                            partitionCount,
+                                            partitionKeyExtractor,
+                                            ConsistencyMode.EVENTUAL,
+                                            Option.none(),
+                                            0,
+                                            Option.none(),
+                                            Option.none());
     }
 
     public static <T> DefaultStreamPublisher<T> streamPublisher(StreamPartitionManager partitionManager,
-                                                             Serializer serializer,
-                                                             String streamName,
-                                                             int partitionCount,
-                                                             Option<Function<T, Object>> partitionKeyExtractor,
-                                                             ConsistencyMode consistencyMode,
-                                                             Option<ConsensusPublishPath> consensusPath) {
+                                                                Serializer serializer,
+                                                                String streamName,
+                                                                int partitionCount,
+                                                                Option<Function<T, Object>> partitionKeyExtractor,
+                                                                ConsistencyMode consistencyMode,
+                                                                Option<ConsensusPublishPath> consensusPath) {
         return new DefaultStreamPublisher<>(partitionManager,
-                                         serializer,
-                                         streamName,
-                                         partitionCount,
-                                         partitionKeyExtractor,
-                                         consistencyMode,
-                                         consensusPath,
-                                         0,
-                                         Option.none(),
-                                         Option.none());
+                                            serializer,
+                                            streamName,
+                                            partitionCount,
+                                            partitionKeyExtractor,
+                                            consistencyMode,
+                                            consensusPath,
+                                            0,
+                                            Option.none(),
+                                            Option.none());
     }
 
     public static <T> DefaultStreamPublisher<T> streamPublisher(StreamPartitionManager partitionManager,
-                                                             Serializer serializer,
-                                                             String streamName,
-                                                             int partitionCount,
-                                                             Option<Function<T, Object>> partitionKeyExtractor,
-                                                             ConsistencyMode consistencyMode,
-                                                             Option<ConsensusPublishPath> consensusPath,
-                                                             int minSyncReplicas) {
+                                                                Serializer serializer,
+                                                                String streamName,
+                                                                int partitionCount,
+                                                                Option<Function<T, Object>> partitionKeyExtractor,
+                                                                ConsistencyMode consistencyMode,
+                                                                Option<ConsensusPublishPath> consensusPath,
+                                                                int minSyncReplicas) {
         return new DefaultStreamPublisher<>(partitionManager,
-                                         serializer,
-                                         streamName,
-                                         partitionCount,
-                                         partitionKeyExtractor,
-                                         consistencyMode,
-                                         consensusPath,
-                                         minSyncReplicas,
-                                         Option.none(),
-                                         Option.none());
+                                            serializer,
+                                            streamName,
+                                            partitionCount,
+                                            partitionKeyExtractor,
+                                            consistencyMode,
+                                            consensusPath,
+                                            minSyncReplicas,
+                                            Option.none(),
+                                            Option.none());
     }
 
     public static <T> DefaultStreamPublisher<T> streamPublisher(StreamPartitionManager partitionManager,
-                                                             Serializer serializer,
-                                                             String streamName,
-                                                             int partitionCount,
-                                                             Option<Function<T, Object>> partitionKeyExtractor,
-                                                             ConsistencyMode consistencyMode,
-                                                             Option<ConsensusPublishPath> consensusPath,
-                                                             int minSyncReplicas,
-                                                             Option<StreamForwardClient> forwardClient,
-                                                             Option<Fn0<Option<NodeId>>> governorResolver) {
+                                                                Serializer serializer,
+                                                                String streamName,
+                                                                int partitionCount,
+                                                                Option<Function<T, Object>> partitionKeyExtractor,
+                                                                ConsistencyMode consistencyMode,
+                                                                Option<ConsensusPublishPath> consensusPath,
+                                                                int minSyncReplicas,
+                                                                Option<StreamForwardClient> forwardClient,
+                                                                Option<Fn0<Option<NodeId>>> governorResolver) {
         return new DefaultStreamPublisher<>(partitionManager,
-                                         serializer,
-                                         streamName,
-                                         partitionCount,
-                                         partitionKeyExtractor,
-                                         consistencyMode,
-                                         consensusPath,
-                                         minSyncReplicas,
-                                         forwardClient,
-                                         governorResolver);
+                                            serializer,
+                                            streamName,
+                                            partitionCount,
+                                            partitionKeyExtractor,
+                                            consistencyMode,
+                                            consensusPath,
+                                            minSyncReplicas,
+                                            forwardClient,
+                                            governorResolver);
     }
 
     @Override public Promise<Unit> publish(T event) {

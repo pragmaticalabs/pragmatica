@@ -3,11 +3,16 @@ package org.pragmatica.aether.stream.forward;
 import org.pragmatica.lang.Cause;
 
 
-/// Error types for stream publish forwarding.
+/// Error types for stream publish and read forwarding.
+///
+/// SPEC: §4 READ_FORWARD_TIMEOUT, READ_FORWARD_FAILED, READ_RESPONSE_OVERSIZED, STREAM_FORWARD_UNAVAILABLE.
 public sealed interface StreamForwardError extends Cause {
     enum General implements StreamForwardError {
         FORWARD_TIMEOUT("Stream publish forward timed out"),
-        GOVERNOR_UNAVAILABLE("No governor available for STREAMING task group");
+        GOVERNOR_UNAVAILABLE("No governor available for STREAMING task group"),
+        READ_FORWARD_TIMEOUT("Stream read forward timed out"),
+        READ_RESPONSE_OVERSIZED("Read forward response exceeded maximum size and could not be returned"),
+        STREAM_FORWARD_UNAVAILABLE("Stream forwarding is not available on this node");
         private final String message;
         General(String message) {
             this.message = message;
@@ -20,6 +25,12 @@ public sealed interface StreamForwardError extends Cause {
     record RemotePublishFailed(String detail) implements StreamForwardError {
         @Override public String message() {
             return "Remote publish failed: " + detail;
+        }
+    }
+
+    record ReadForwardFailed(String detail) implements StreamForwardError {
+        @Override public String message() {
+            return "Remote read failed: " + detail;
         }
     }
 }

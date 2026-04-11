@@ -5,6 +5,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
+import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
+import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -124,6 +126,111 @@ class StreamForwardClientTest {
 
             assertThat(result.isSuccess()).isFalse();
             result.onFailure(cause -> assertThat(cause.message()).contains("governor"));
+        }
+
+        // SPEC: §4.5 NOOP readRemote returns STREAM_FORWARD_UNAVAILABLE
+        @Test
+        void noopClient_readRemote_failsWithUnavailable() {
+            var result = StreamForwardClient.NOOP.readRemote(GOVERNOR, STREAM, PARTITION, 0L, 10).await();
+
+            assertThat(result.isSuccess()).isFalse();
+            result.onFailure(cause -> assertThat(cause.message()).contains("not available"));
+        }
+    }
+
+    // SPEC: §11.1 ReadRemoteTests — readRemote_success / timeout / failureResponse / orphanedResponse / multiplePending / separateTimeout
+    @Nested
+    class ReadRemoteTests {
+        private static final long FROM_OFFSET = 0L;
+        private static final int MAX_EVENTS = 10;
+
+        @Test
+        void readRemote_success_resolvesPromise() {
+            var promise = client.readRemote(GOVERNOR, STREAM, PARTITION, FROM_OFFSET, MAX_EVENTS);
+            var correlationId = ((ReadForward) sentMessages.getFirst().message()).correlationId();
+            var events = List.of(new RawEventDto(5L, 100L, "hello".getBytes()));
+
+            client.onReadForwardResponse(ReadForwardResponse.successResponse(GOVERNOR, correlationId, events));
+
+            var result = promise.await();
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(r -> {
+                assertThat(r.events()).hasSize(1);
+                assertThat(r.truncated()).isFalse();
+                assertThat(r.events().getFirst().offset()).isEqualTo(5L);
+            });
+        }
+
+        @Test
+        void readRemote_timeout_returnsReadForwardTimeout() {
+            var shortTimeoutTransport = (StreamForwardTransport) (_, _) -> {};
+            var shortClient = streamForwardClient(SELF,
+                                                  shortTimeoutTransport,
+                                                  TimeSpan.timeSpan(5).seconds(),
+                                                  TimeSpan.timeSpan(100).millis());
+
+            var promise = shortClient.readRemote(GOVERNOR, STREAM, PARTITION, FROM_OFFSET, MAX_EVENTS);
+
+            var result = promise.await();
+            assertThat(result.isSuccess()).isFalse();
+            result.onFailure(cause -> assertThat(cause.message()).contains("read forward timed out"));
+        }
+
+        @Test
+        void readRemote_failureResponse_returnsReadForwardFailed() {
+            var promise = client.readRemote(GOVERNOR, STREAM, PARTITION, FROM_OFFSET, MAX_EVENTS);
+            var correlationId = ((ReadForward) sentMessages.getFirst().message()).correlationId();
+
+            client.onReadForwardResponse(ReadForwardResponse.failureResponse(GOVERNOR,
+                                                                              correlationId,
+                                                                              "partition not local"));
+
+            var result = promise.await();
+            assertThat(result.isSuccess()).isFalse();
+            result.onFailure(cause -> assertThat(cause.message()).contains("partition not local"));
+        }
+
+        @Test
+        void readRemote_orphanedResponse_isDropped() {
+            // Arrives for an unknown correlationId — no crash, pending reads unaffected
+            client.onReadForwardResponse(ReadForwardResponse.successResponse(GOVERNOR, "unknown-id", List.of()));
+        }
+
+        @Test
+        void readRemote_multiplePending_correlatedByCorrelationId() {
+            var p1 = client.readRemote(GOVERNOR, STREAM, 0, 0L, 5);
+            var p2 = client.readRemote(GOVERNOR, STREAM, 1, 0L, 5);
+            assertThat(sentMessages).hasSize(2);
+            var id1 = ((ReadForward) sentMessages.get(0).message()).correlationId();
+            var id2 = ((ReadForward) sentMessages.get(1).message()).correlationId();
+            assertThat(id1).isNotEqualTo(id2);
+
+            var e1 = List.of(new RawEventDto(0L, 100L, "a".getBytes()));
+            var e2 = List.of(new RawEventDto(0L, 200L, "b".getBytes()));
+            // Resolve p2 first to prove independence
+            client.onReadForwardResponse(ReadForwardResponse.successResponse(GOVERNOR, id2, e2));
+            client.onReadForwardResponse(ReadForwardResponse.successResponse(GOVERNOR, id1, e1));
+
+            var r1 = p1.await();
+            var r2 = p2.await();
+            r1.onSuccess(r -> assertThat(r.events().getFirst().data()).isEqualTo("a".getBytes()));
+            r2.onSuccess(r -> assertThat(r.events().getFirst().data()).isEqualTo("b".getBytes()));
+        }
+
+        @Test
+        void readRemote_separateTimeoutFromPublish_honored() {
+            var timeoutTransport = (StreamForwardTransport) (_, _) -> {};
+            // Publish timeout long, read timeout short — prove they're independent
+            var splitClient = streamForwardClient(SELF,
+                                                  timeoutTransport,
+                                                  TimeSpan.timeSpan(30).seconds(),
+                                                  TimeSpan.timeSpan(150).millis());
+
+            var readPromise = splitClient.readRemote(GOVERNOR, STREAM, PARTITION, FROM_OFFSET, MAX_EVENTS);
+
+            var result = readPromise.await();
+            assertThat(result.isSuccess()).isFalse();
+            result.onFailure(cause -> assertThat(cause.message()).contains("read forward timed out"));
         }
     }
 

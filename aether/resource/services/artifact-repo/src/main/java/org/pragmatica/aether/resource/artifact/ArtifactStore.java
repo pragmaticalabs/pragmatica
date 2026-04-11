@@ -8,6 +8,7 @@ import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -275,7 +276,7 @@ class ArtifactStoreImpl implements ArtifactStore {
         return versions;
     }
 
-    private List<Version> parseVersionsList(byte[] data) {
+    @Contract private List<Version> parseVersionsList(byte[] data) {
         var str = new String(data, StandardCharsets.UTF_8);
         if (str.isEmpty()) {return new ArrayList<>();}
         var versions = new ArrayList<Version>();

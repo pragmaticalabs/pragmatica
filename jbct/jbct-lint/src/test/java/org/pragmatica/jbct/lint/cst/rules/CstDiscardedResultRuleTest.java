@@ -156,4 +156,73 @@ class CstDiscardedResultRuleTest {
                 """);
         assertTrue(diagnostics.stream().anyMatch(d -> d.ruleId().equals("JBCT-RET-07")));
     }
+
+    @Test
+    void no_false_positive_on_chained_factory() {
+        var diagnostics = lint("""
+                package org.example;
+                class Foo {
+                    void run() {
+                        Option.option(localSlices.get(key))
+                              .onEmpty(() -> log.warn("missing"))
+                              .onPresent(bridge -> process(bridge));
+                    }
+                }
+                """);
+        assertFalse(diagnostics.stream().anyMatch(d -> d.ruleId().equals("JBCT-RET-07")));
+    }
+
+    @Test
+    void no_false_positive_on_discarded_onPresent() {
+        var diagnostics = lint("""
+                package org.example;
+                class Foo {
+                    void run() {
+                        config.effectiveUsername().onPresent(builder::setUsername);
+                    }
+                }
+                """);
+        assertFalse(diagnostics.stream().anyMatch(d -> d.ruleId().equals("JBCT-RET-07")));
+    }
+
+    @Test
+    void no_false_positive_on_chain_terminal_in_string_literal() {
+        var diagnostics = lint("""
+                package org.example;
+                class Foo {
+                    void run() {
+                        sb.append("        ).map((");
+                    }
+                }
+                """);
+        assertFalse(diagnostics.stream().anyMatch(d -> d.ruleId().equals("JBCT-RET-07")));
+    }
+
+    @Test
+    void no_false_positive_on_explicitly_typed_local_declaration() {
+        var diagnostics = lint("""
+                package org.example;
+                class Foo {
+                    void run() {
+                        Option<String> leaderId = leader.flatMap(LeaderManager::leader).map(NodeId::id);
+                        int quorumSize = topology.map(TopologyManager::quorumSize).or(0);
+                        boolean isLeader = leaderId.map(id -> id.equals(nodeIdStr)).or(false);
+                    }
+                }
+                """);
+        assertFalse(diagnostics.stream().anyMatch(d -> d.ruleId().equals("JBCT-RET-07")));
+    }
+
+    @Test
+    void no_false_positive_on_factory_in_string_literal() {
+        var diagnostics = lint("""
+                package org.example;
+                class Foo {
+                    void run() {
+                        sb.append("return Result.success(value);");
+                    }
+                }
+                """);
+        assertFalse(diagnostics.stream().anyMatch(d -> d.ruleId().equals("JBCT-RET-07")));
+    }
 }

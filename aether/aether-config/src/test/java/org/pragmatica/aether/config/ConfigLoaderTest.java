@@ -378,4 +378,46 @@ class ConfigLoaderTest {
                 assertThat(config.slice().repositories().getFirst()).isInstanceOf(RepositoryType.Local.class);
             });
     }
+
+    // SPEC: §11.5 [streaming] section — custom values honored
+    @Test
+    void loadFromString_streamingSection_customValuesHonored() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            publish_forward_timeout = "8s"
+            read_forward_timeout = "500ms"
+            max_read_response_bytes = "16MB"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.streaming().publishForwardTimeout().millis()).isEqualTo(8000L);
+                assertThat(config.streaming().readForwardTimeout().millis()).isEqualTo(500L);
+                assertThat(config.streaming().maxReadResponseBytes()).isEqualTo(16L * 1024 * 1024);
+            });
+    }
+
+    // SPEC: §8.3 absence of [streaming] section → defaults
+    @Test
+    void loadFromString_streamingSectionAbsent_defaultsApplied() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                var defaults = StreamingConfig.streamingConfig();
+                assertThat(config.streaming().publishForwardTimeout()).isEqualTo(defaults.publishForwardTimeout());
+                assertThat(config.streaming().readForwardTimeout()).isEqualTo(defaults.readForwardTimeout());
+                assertThat(config.streaming().maxReadResponseBytes()).isEqualTo(defaults.maxReadResponseBytes());
+            });
+    }
 }

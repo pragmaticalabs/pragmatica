@@ -24,7 +24,7 @@ public final class SchemaBuilder {
         return current;
     }
 
-    public static Result<Schema> applyEvent(Schema schema, SchemaEvent event) {
+    @SuppressWarnings("JBCT-RET-07") public static Result<Schema> applyEvent(Schema schema, SchemaEvent event) {
         return switch (event){
             case SchemaEvent.TableCreated e -> Result.success(schema.withTable(Table.table(e.name(),
                                                                                            e.schema(),

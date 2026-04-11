@@ -65,7 +65,8 @@ public record AetherConfig(ClusterConfig cluster,
                            TimeoutsConfig timeouts,
                            Map<String, StorageConfig> storage,
                            Option<CloudConfig> cloud,
-                           Map<String, EndpointConfig> endpoints) {
+                           Map<String, EndpointConfig> endpoints,
+                           StreamingConfig streaming) {
     public static Result<AetherConfig> aetherConfig(ClusterConfig cluster,
                                                     NodeConfig node,
                                                     Option<TlsConfig> tls,
@@ -90,7 +91,8 @@ public record AetherConfig(ClusterConfig cluster,
                                         timeouts,
                                         Map.of(),
                                         none(),
-                                        Map.of()));
+                                        Map.of(),
+                                        StreamingConfig.streamingConfig()));
     }
 
     @SuppressWarnings("JBCT-SEQ-01") public static AetherConfig aetherConfig(Environment env) {
@@ -133,7 +135,8 @@ public record AetherConfig(ClusterConfig cluster,
                                 timeouts,
                                 storage,
                                 cloud,
-                                endpoints);
+                                endpoints,
+                                streaming);
     }
 
     @SuppressWarnings("JBCT-VO-02") public AetherConfig withEndpoints(Map<String, EndpointConfig> endpoints) {
@@ -150,7 +153,8 @@ public record AetherConfig(ClusterConfig cluster,
                                 timeouts,
                                 storage,
                                 cloud,
-                                endpoints);
+                                endpoints,
+                                streaming);
     }
 
     @SuppressWarnings("JBCT-VO-02") public AetherConfig withCloud(CloudConfig cloud) {
@@ -167,7 +171,26 @@ public record AetherConfig(ClusterConfig cluster,
                                 timeouts,
                                 storage,
                                 some(cloud),
-                                endpoints);
+                                endpoints,
+                                streaming);
+    }
+
+    @SuppressWarnings("JBCT-VO-02") public AetherConfig withStreaming(StreamingConfig streaming) {
+        return new AetherConfig(cluster,
+                                node,
+                                tls,
+                                docker,
+                                kubernetes,
+                                ttm,
+                                slice,
+                                appHttp,
+                                backup,
+                                dhtReplication,
+                                timeouts,
+                                storage,
+                                cloud,
+                                endpoints,
+                                streaming);
     }
 
     public static Builder builder() {
@@ -213,6 +236,7 @@ public record AetherConfig(ClusterConfig cluster,
         private CloudConfig cloudConfig;
         private Map<String, StorageConfig> storageConfig;
         private Map<String, EndpointConfig> endpointsConfig;
+        private StreamingConfig streamingConfig;
 
         @SuppressWarnings("JBCT-NAM-01") public Builder withEnvironment(Environment environment) {
             this.environment = environment;
@@ -309,6 +333,11 @@ public record AetherConfig(ClusterConfig cluster,
             return this;
         }
 
+        public Builder streaming(StreamingConfig streamingConfig) {
+            this.streamingConfig = streamingConfig;
+            return this;
+        }
+
         public AetherConfig build() {
             var base = AetherConfig.aetherConfig(environment);
             var clusterConfig = applyClusterOverrides(base.cluster());
@@ -342,7 +371,8 @@ public record AetherConfig(ClusterConfig cluster,
             var withEp = finalEndpoints.isEmpty()
                         ? withStorage
                         : withStorage.withEndpoints(finalEndpoints);
-            return option(cloudConfig).fold(() -> withEp, withEp::withCloud);
+            var withStreaming = option(streamingConfig).map(withEp::withStreaming).or(withEp);
+            return option(cloudConfig).fold(() -> withStreaming, withStreaming::withCloud);
         }
 
         private ClusterConfig applyClusterOverrides(ClusterConfig base) {

@@ -39,8 +39,7 @@ public sealed interface ConsumerGroupRegistry {
 
         @Override public Map<Integer, ConsumerGroupValue> assignmentsFor(String groupId, String streamName) {
             var key = new GroupStreamKey(groupId, streamName);
-            return option(state.get(key)).map(Map::copyOf)
-                                        .or(Map.of());
+            return option(state.get(key)).map(Map::copyOf).or(Map.of());
         }
 
         @Override public List<Integer> partitionsFor(String groupId, String streamName, NodeId nodeId) {
@@ -70,8 +69,8 @@ public sealed interface ConsumerGroupRegistry {
             var kvKey = notification.cause().key();
             var groupStreamKey = new GroupStreamKey(kvKey.groupId(), kvKey.streamName());
             option(state.get(groupStreamKey)).onPresent(partitions -> removePartitionEntry(partitions,
-                                                                                            groupStreamKey,
-                                                                                            kvKey.partition()));
+                                                                                           groupStreamKey,
+                                                                                           kvKey.partition()));
             log.info("Consumer group {}/{} partition {} assignment removed",
                      kvKey.groupId(),
                      kvKey.streamName(),
@@ -79,8 +78,8 @@ public sealed interface ConsumerGroupRegistry {
         }
 
         private void removePartitionEntry(ConcurrentHashMap<Integer, ConsumerGroupValue> partitions,
-                                           GroupStreamKey groupStreamKey,
-                                           int partition) {
+                                          GroupStreamKey groupStreamKey,
+                                          int partition) {
             partitions.remove(partition);
             if (partitions.isEmpty()) {state.remove(groupStreamKey);}
         }

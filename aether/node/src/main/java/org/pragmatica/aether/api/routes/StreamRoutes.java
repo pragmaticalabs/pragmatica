@@ -9,6 +9,7 @@ import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.PartitionInfo;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamInfo;
+import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator.ConsumerInfo;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
@@ -19,6 +20,7 @@ import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
@@ -134,7 +136,7 @@ public final class StreamRoutes implements RouteSource {
                                          .withQuery(QueryParameter.aLong("from"),
                                                     QueryParameter.aInteger("max"),
                                                     QueryParameter.aString("readPreference"))
-                                         .toResult(this::readEvents)
+                                         .to(this::readEvents)
                                          .asJson(),
                          ManagementRoutes.<StreamDeleteResponse>route(ManagementRoute.STREAM_DELETE)
                                          .withPath(PathParameter.aString())
@@ -194,10 +196,10 @@ public final class StreamRoutes implements RouteSource {
     private Result<PublishResponse> publishToPartition(String name, PublishRequest request) {
         var payload = request.data().getBytes(StandardCharsets.UTF_8);
         return ensureStreamExists(name).flatMap(_ -> streamManager().publishLocal(name,
-                                                                                   0,
-                                                                                   payload,
-                                                                                   System.currentTimeMillis()))
-                                       .map(PublishResponse::new);
+                                                                                  0,
+                                                                                  payload,
+                                                                                  System.currentTimeMillis()))
+                                 .map(PublishResponse::new);
     }
 
     private Result<StreamCreateResponse> createStream(StreamCreateRequest request) {
@@ -217,33 +219,32 @@ public final class StreamRoutes implements RouteSource {
 
     private Result<Unit> ensureStreamExists(String name) {
         return streamManager().createStream(StreamConfig.streamConfig(name,
-                                                                       DEFAULT_PARTITIONS,
-                                                                       MANAGEMENT_API_RETENTION,
-                                                                       "latest"))
-                              .recover(_ -> Unit.unit());
+                                                                      DEFAULT_PARTITIONS,
+                                                                      MANAGEMENT_API_RETENTION,
+                                                                      "latest"))
+                            .recover(_ -> Unit.unit());
     }
 
-    private Result<ReadEventsResponse> readEvents(String name,
-                                                  Integer partition,
-                                                  Option<Long> fromOpt,
-                                                  Option<Integer> maxOpt,
-                                                  Option<String> readPreferenceOpt) {
+    private Promise<ReadEventsResponse> readEvents(String name,
+                                                   Integer partition,
+                                                   Option<Long> fromOpt,
+                                                   Option<Integer> maxOpt,
+                                                   Option<String> readPreferenceOpt) {
         var fromOffset = fromOpt.or(0L);
         var maxEvents = maxOpt.or(DEFAULT_MAX_EVENTS);
-        var preference = readPreferenceOpt.map(StreamRoutes::parseReadPreference)
-                                          .or(ReadPreference.GOVERNOR);
-        return readLocalEvents(name, partition, fromOffset, maxEvents, preference);
+        var preference = readPreferenceOpt.map(StreamRoutes::parseReadPreference).or(ReadPreference.GOVERNOR);
+        return readWithPreference(name, partition, fromOffset, maxEvents, preference);
     }
 
-    private Result<ReadEventsResponse> readLocalEvents(String name,
-                                                       Integer partition,
-                                                       long fromOffset,
-                                                       int maxEvents,
-                                                       ReadPreference preference) {
-        return streamManager().readLocal(name, partition, fromOffset, maxEvents)
-                            .map(list -> list.stream().map(EventRecord::fromRawEvent)
-                                                    .toList())
-                            .map(ReadEventsResponse::new);
+    private Promise<ReadEventsResponse> readWithPreference(String name,
+                                                           Integer partition,
+                                                           long fromOffset,
+                                                           int maxEvents,
+                                                           ReadPreference preference) {
+        return streamReadRouter().read(name, partition, fromOffset, maxEvents, preference)
+                               .map(list -> list.stream().map(EventRecord::fromRawEvent)
+                                                       .toList())
+                               .map(ReadEventsResponse::new);
     }
 
     private static ReadPreference parseReadPreference(String value) {
@@ -286,5 +287,9 @@ public final class StreamRoutes implements RouteSource {
 
     private StreamPartitionManager streamManager() {
         return nodeSupplier.get().streamPartitionManager();
+    }
+
+    private StreamReadRouter streamReadRouter() {
+        return nodeSupplier.get().streamReadRouter();
     }
 }

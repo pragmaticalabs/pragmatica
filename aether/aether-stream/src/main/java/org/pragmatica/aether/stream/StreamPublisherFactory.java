@@ -54,15 +54,15 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
         var governorResolver = context.extension(GovernorResolver.class).option()
                                                 .map(GovernorResolver::resolver);
         return DefaultStreamPublisher.streamPublisher(manager,
-                                                   serializer,
-                                                   config.name(),
-                                                   config.partitions(),
-                                                   keyExtractor,
-                                                   config.consistencyMode(),
-                                                   Option.none(),
-                                                   config.minSyncReplicas(),
-                                                   forwardClient,
-                                                   governorResolver);
+                                                      serializer,
+                                                      config.name(),
+                                                      config.partitions(),
+                                                      keyExtractor,
+                                                      config.consistencyMode(),
+                                                      Option.none(),
+                                                      config.minSyncReplicas(),
+                                                      forwardClient,
+                                                      governorResolver);
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"}) private static <T> Option<Function<T, Object>> extractPartitionKeyFunction(ProvisioningContext context) {

@@ -70,8 +70,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         return maxTotalBytes;
     }
 
-    @SuppressWarnings("JBCT-NULL-01") // ConcurrentHashMap.putIfAbsent returns null on success per API contract
-    public Result<Unit> createStream(StreamConfig config) {
+    @SuppressWarnings("JBCT-NULL-01") public Result<Unit> createStream(StreamConfig config) {
         if (streams.containsKey(config.name())) {return StreamError.General.STREAM_ALREADY_EXISTS.result();}
         if (config.consistencyMode() == ConsistencyMode.STRONG && evictionListener == EvictionListener.NOOP) {return StreamError.General.AHSE_REQUIRED_FOR_STRONG.result();}
         var requiredBytes = calculateStreamBytes(config);
@@ -193,8 +192,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private static Result<OffHeapRingBuffer> resolvePartitionInEntry(String streamName,
-                                                                      int partition,
-                                                                      StreamEntry entry) {
+                                                                     int partition,
+                                                                     StreamEntry entry) {
         if (partition <0 || partition >= entry.partitions().length) {return new StreamError.PartitionOutOfRange(streamName,
                                                                                                                 partition,
                                                                                                                 entry.partitions().length).result();}

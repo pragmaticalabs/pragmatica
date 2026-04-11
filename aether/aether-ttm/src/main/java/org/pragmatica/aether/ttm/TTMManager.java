@@ -10,6 +10,7 @@ import org.pragmatica.aether.ttm.model.ScalingRecommendation;
 import org.pragmatica.aether.ttm.model.TTMForecast;
 import org.pragmatica.aether.ttm.model.TTMPredictor;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -185,7 +186,7 @@ public interface TTMManager extends DelegatedComponent {
             log.info("TTM evaluation stopped");
         }
 
-        private void runEvaluation() {
+        @Contract private void runEvaluation() {
             evaluateAsync().onFailure(this::handleEvaluationError);
         }
 

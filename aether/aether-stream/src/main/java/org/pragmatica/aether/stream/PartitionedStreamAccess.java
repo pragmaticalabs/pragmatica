@@ -2,11 +2,17 @@ package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.StreamAccess;
+import org.pragmatica.aether.stream.forward.RawEventDto;
+import org.pragmatica.aether.stream.forward.StreamForwardClient;
+import org.pragmatica.aether.stream.forward.StreamForwardClient.ReadForwardResult;
+import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.aether.stream.segment.CursorStore;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -32,6 +38,8 @@ import static org.pragmatica.lang.Result.allOf;
 /// StreamAccess implementation backed by StreamPartitionManager.
 ///
 /// Provides full publish/fetch/commit/metadata operations on a stream.
+/// When [ReadPreference] is ANY_REPLICA/NEAREST, reads are routed to a
+/// caught-up remote replica via [StreamForwardClient] (SPEC: §6).
 ///
 /// @param <T> Event type
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01"}) public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
@@ -40,6 +48,8 @@ import static org.pragmatica.lang.Result.allOf;
     }
 
     private static final CursorCheckpointWriter NOOP_WRITER = (_, _, _, _) -> Promise.unitPromise();
+
+    private static final NodeId EMPTY_SELF = new NodeId("__no_self__");
 
     private static final System.Logger LOG = System.getLogger(PartitionedStreamAccess.class.getName());
 
@@ -54,6 +64,9 @@ import static org.pragmatica.lang.Result.allOf;
     private final Option<CursorStore> cursorStore;
     private final ReadPreference readPreference;
     private final Option<ReplicaRegistry> replicaRegistry;
+    private final Option<StreamForwardClient> forwardClient;
+    private final NodeId selfNodeId;
+    private final StreamReadForwardMetrics metrics;
     private final AtomicLong roundRobinCounter;
     private final ConcurrentHashMap<ConsumerPartitionKey, Long> committedOffsets;
 
@@ -67,7 +80,10 @@ import static org.pragmatica.lang.Result.allOf;
                                     Option<TieredStreamReader> tieredReader,
                                     Option<CursorStore> cursorStore,
                                     ReadPreference readPreference,
-                                    Option<ReplicaRegistry> replicaRegistry) {
+                                    Option<ReplicaRegistry> replicaRegistry,
+                                    Option<StreamForwardClient> forwardClient,
+                                    NodeId selfNodeId,
+                                    StreamReadForwardMetrics metrics) {
         this.partitionManager = partitionManager;
         this.serializer = serializer;
         this.deserializer = deserializer;
@@ -79,6 +95,9 @@ import static org.pragmatica.lang.Result.allOf;
         this.cursorStore = cursorStore;
         this.readPreference = readPreference;
         this.replicaRegistry = replicaRegistry;
+        this.forwardClient = forwardClient;
+        this.selfNodeId = selfNodeId;
+        this.metrics = metrics;
         this.roundRobinCounter = new AtomicLong(0);
         this.committedOffsets = new ConcurrentHashMap<>();
     }
@@ -99,7 +118,10 @@ import static org.pragmatica.lang.Result.allOf;
                                              Option.none(),
                                              Option.none(),
                                              ReadPreference.GOVERNOR,
-                                             Option.none());
+                                             Option.none(),
+                                             Option.none(),
+                                             EMPTY_SELF,
+                                             StreamReadForwardMetrics.NOOP);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -119,7 +141,10 @@ import static org.pragmatica.lang.Result.allOf;
                                              Option.none(),
                                              Option.none(),
                                              ReadPreference.GOVERNOR,
-                                             Option.none());
+                                             Option.none(),
+                                             Option.none(),
+                                             EMPTY_SELF,
+                                             StreamReadForwardMetrics.NOOP);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -140,7 +165,10 @@ import static org.pragmatica.lang.Result.allOf;
                                              Option.some(tieredReader),
                                              Option.none(),
                                              ReadPreference.GOVERNOR,
-                                             Option.none());
+                                             Option.none(),
+                                             Option.none(),
+                                             EMPTY_SELF,
+                                             StreamReadForwardMetrics.NOOP);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -162,7 +190,10 @@ import static org.pragmatica.lang.Result.allOf;
                                              Option.some(tieredReader),
                                              Option.some(cursorStore),
                                              ReadPreference.GOVERNOR,
-                                             Option.none());
+                                             Option.none(),
+                                             Option.none(),
+                                             EMPTY_SELF,
+                                             StreamReadForwardMetrics.NOOP);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -186,7 +217,40 @@ import static org.pragmatica.lang.Result.allOf;
                                              Option.some(tieredReader),
                                              Option.some(cursorStore),
                                              readPreference,
-                                             Option.some(replicaRegistry));
+                                             Option.some(replicaRegistry),
+                                             Option.none(),
+                                             EMPTY_SELF,
+                                             StreamReadForwardMetrics.NOOP);
+    }
+
+    public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              String streamName,
+                                                              int partitionCount,
+                                                              Option<Function<T, Object>> partitionKeyExtractor,
+                                                              CursorCheckpointWriter cursorWriter,
+                                                              TieredStreamReader tieredReader,
+                                                              CursorStore cursorStore,
+                                                              ReadPreference readPreference,
+                                                              ReplicaRegistry replicaRegistry,
+                                                              Option<StreamForwardClient> forwardClient,
+                                                              NodeId selfNodeId,
+                                                              StreamReadForwardMetrics metrics) {
+        return new PartitionedStreamAccess<>(partitionManager,
+                                             serializer,
+                                             deserializer,
+                                             streamName,
+                                             partitionCount,
+                                             partitionKeyExtractor,
+                                             cursorWriter,
+                                             Option.some(tieredReader),
+                                             Option.some(cursorStore),
+                                             readPreference,
+                                             Option.some(replicaRegistry),
+                                             forwardClient,
+                                             selfNodeId,
+                                             metrics);
     }
 
     @Override public Promise<Long> publish(T event) {
@@ -225,7 +289,7 @@ import static org.pragmatica.lang.Result.allOf;
 
     private Promise<Option<Long>> fetchFromCursorStore(String consumerGroup, int partition) {
         return cursorStore.map(store -> store.fetch(consumerGroup, streamName, partition))
-                         .or(Promise.success(Option.empty()));
+                              .or(Promise.success(Option.empty()));
     }
 
     @Override public Promise<StreamMetadata> metadata() {
@@ -245,11 +309,12 @@ import static org.pragmatica.lang.Result.allOf;
     }
 
     private Promise<List<StreamEvent<T>>> fetchFromAllPartitions(long fromOffset, int maxEvents) {
-        List<Promise<List<StreamEvent<T>>>> perPartitionPromises = IntStream.range(0, partitionCount)
-            .mapToObj(p -> readPartition(p, fromOffset, maxEvents))
-            .toList();
+        List<Promise<List<StreamEvent<T>>>> perPartitionPromises = IntStream.range(0, partitionCount).mapToObj(p -> readPartition(p,
+                                                                                                                                  fromOffset,
+                                                                                                                                  maxEvents))
+                                                                                  .toList();
         return Promise.allOf(perPartitionPromises)
-                      .flatMap(results -> allOf(results).map(lists -> mergeAndLimit(lists, maxEvents)).async());
+                            .flatMap(results -> allOf(results).map(lists -> mergeAndLimit(lists, maxEvents)).async());
     }
 
     private Promise<List<StreamEvent<T>>> readWithPreference(int partition, long fromOffset, int maxEvents) {
@@ -268,30 +333,107 @@ import static org.pragmatica.lang.Result.allOf;
                                                                int partition,
                                                                long fromOffset,
                                                                int maxEvents) {
-        var caughtUpReplicas = registry.replicasFor(streamName, partition).stream()
-                                                   .filter(PartitionedStreamAccess::isCaughtUp)
-                                                   .toList();
-        if (caughtUpReplicas.isEmpty()) {return readPartition(partition, fromOffset, maxEvents);}
-        var selected = caughtUpReplicas.get(ThreadLocalRandom.current().nextInt(caughtUpReplicas.size()));
+        var caughtUp = registry.replicasFor(streamName, partition).stream()
+                                           .filter(PartitionedStreamAccess::isCaughtUp)
+                                           .toList();
+        if (caughtUp.isEmpty()) {return readPartition(partition, fromOffset, maxEvents);}
+        return readWithPrimaryAndRetry(caughtUp, partition, fromOffset, maxEvents);
+    }
+
+    private Promise<List<StreamEvent<T>>> readWithPrimaryAndRetry(List<ReplicaDescriptor> caughtUp,
+                                                                  int partition,
+                                                                  long fromOffset,
+                                                                  int maxEvents) {
+        var remote = caughtUp.stream().filter(r -> !r.nodeId().equals(selfNodeId))
+                                    .toList();
+        if (remote.isEmpty()) {return readPartition(partition, fromOffset, maxEvents);}
+        return forwardClient.map(client -> attemptPrimary(client, remote, partition, fromOffset, maxEvents))
+                                .or(() -> readPartition(partition, fromOffset, maxEvents));
+    }
+
+    private Promise<List<StreamEvent<T>>> attemptPrimary(StreamForwardClient client,
+                                                         List<ReplicaDescriptor> pool,
+                                                         int partition,
+                                                         long fromOffset,
+                                                         int maxEvents) {
+        var primary = pickReplica(pool);
         LOG.log(System.Logger.Level.DEBUG,
-                "ReadPreference {0}: selected replica {1} for {2}[{3}], falling back to local read (remote forwarding is Phase 2)",
+                "ReadPreference {0}: primary replica {1} for {2}[{3}]",
                 readPreference,
-                selected.nodeId(),
+                primary.nodeId(),
                 streamName,
                 partition);
-        return readPartition(partition, fromOffset, maxEvents);
+        return client.readRemote(primary.nodeId(),
+                                 streamName,
+                                 partition,
+                                 fromOffset,
+                                 maxEvents).map(result -> decodeAll(result.events(),
+                                                                    partition))
+                                .fold(result -> result.fold(cause -> retryOrFail(client,
+                                                                                 primary,
+                                                                                 pool,
+                                                                                 partition,
+                                                                                 fromOffset,
+                                                                                 maxEvents,
+                                                                                 cause),
+                                                            Promise::success));
+    }
+
+    private Promise<List<StreamEvent<T>>> retryOrFail(StreamForwardClient client,
+                                                      ReplicaDescriptor primary,
+                                                      List<ReplicaDescriptor> pool,
+                                                      int partition,
+                                                      long fromOffset,
+                                                      int maxEvents,
+                                                      Cause firstCause) {
+        var alternatives = pool.stream().filter(r -> !r.nodeId().equals(primary.nodeId()))
+                                      .toList();
+        if (alternatives.isEmpty()) {
+            LOG.log(System.Logger.Level.DEBUG,
+                    "ReadPreference {0}: single-replica failure for {1}[{2}]: {3}",
+                    readPreference,
+                    streamName,
+                    partition,
+                    firstCause.message());
+            return firstCause.promise();
+        }
+        metrics.recordRetry();
+        var retry = pickReplica(alternatives);
+        LOG.log(System.Logger.Level.DEBUG,
+                "ReadPreference {0}: retry replica {1} for {2}[{3}] after primary {4} failed: {5}",
+                readPreference,
+                retry.nodeId(),
+                streamName,
+                partition,
+                primary.nodeId(),
+                firstCause.message());
+        return client.readRemote(retry.nodeId(),
+                                 streamName,
+                                 partition,
+                                 fromOffset,
+                                 maxEvents)
+        .map(result -> decodeAll(result.events(),
+                                 partition));
+    }
+
+    private static ReplicaDescriptor pickReplica(List<ReplicaDescriptor> pool) {
+        return pool.get(ThreadLocalRandom.current().nextInt(pool.size()));
+    }
+
+    private List<StreamEvent<T>> decodeAll(List<RawEventDto> events, int partition) {
+        return events.stream().map(dto -> toStreamEventFromDto(dto, partition))
+                            .toList();
     }
 
     private static boolean isCaughtUp(ReplicaDescriptor descriptor) {
         return descriptor.state() == ReplicationState.CAUGHT_UP;
     }
 
-    // Genuine bifurcation: CursorExpired failures recover via tiered reader fallback, others propagate
     private Promise<List<StreamEvent<T>>> readPartition(int partition, long fromOffset, int maxEvents) {
-        return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents)
-                               .map(rawEvents -> toStreamEvents(rawEvents, partition))
-                               .fold(cause -> handleReadFailure(cause, partition, fromOffset, maxEvents),
-                                     Promise::success);
+        return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents).map(rawEvents -> toStreamEvents(rawEvents,
+                                                                                                                        partition))
+                                         .fold(cause -> handleReadFailure(cause, partition, fromOffset, maxEvents),
+                                               Promise::success);
     }
 
     private Promise<List<StreamEvent<T>>> handleReadFailure(org.pragmatica.lang.Cause cause,
@@ -315,9 +457,8 @@ import static org.pragmatica.lang.Result.allOf;
 
     private Promise<List<StreamEvent<T>>> cursorExpiredPromise(int partition, long expiredOffset) {
         return new StreamError.CursorExpired(expiredOffset,
-                                             partitionManager.partitionInfo(streamName, partition)
-                                                             .map(StreamPartitionManager.PartitionInfo::tailOffset)
-                                                             .or(0L)).promise();
+                                             partitionManager.partitionInfo(streamName, partition).map(StreamPartitionManager.PartitionInfo::tailOffset)
+                                                                           .or(0L)).promise();
     }
 
     private Promise<List<StreamEvent<T>>> readFromTieredReader(TieredStreamReader reader,
@@ -325,7 +466,7 @@ import static org.pragmatica.lang.Result.allOf;
                                                                long fromOffset,
                                                                int maxEvents) {
         return reader.read(streamName, partition, fromOffset, maxEvents)
-                     .map(sealedEvents -> combineWithBufferEvents(sealedEvents, partition, fromOffset, maxEvents));
+                          .map(sealedEvents -> combineWithBufferEvents(sealedEvents, partition, fromOffset, maxEvents));
     }
 
     private List<StreamEvent<T>> combineWithBufferEvents(List<OffHeapRingBuffer.RawEvent> sealedEvents,
@@ -361,6 +502,11 @@ import static org.pragmatica.lang.Result.allOf;
     private StreamEvent<T> toStreamEvent(OffHeapRingBuffer.RawEvent raw, int partition) {
         T payload = deserializer.decode(raw.data());
         return new StreamEvent<>(raw.offset(), raw.timestamp(), partition, payload);
+    }
+
+    private StreamEvent<T> toStreamEventFromDto(RawEventDto dto, int partition) {
+        T payload = deserializer.decode(dto.data());
+        return new StreamEvent<>(dto.offset(), dto.timestamp(), partition, payload);
     }
 
     private int resolvePartition(T event) {

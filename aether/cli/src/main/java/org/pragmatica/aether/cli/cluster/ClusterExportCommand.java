@@ -3,6 +3,7 @@ package org.pragmatica.aether.cli.cluster;
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 
 import java.time.Instant;
 import java.util.concurrent.Callable;
@@ -50,7 +51,7 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CON
         System.out.println();
     }
 
-    private void enrichWithLiveStatus() {
+    @Contract private void enrichWithLiveStatus() {
         ClusterHttpClient.fetch(CLUSTER_CONFIG_STATUS).flatMap(MAPPER::readTree)
                                .onSuccess(ClusterExportCommand::printLiveStatusComments);
     }

@@ -76,6 +76,7 @@ import org.pragmatica.aether.storage.DhtStorageTier;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.stream.StreamPublisherFactory;
@@ -84,6 +85,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamForwardHandler;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage;
 import org.pragmatica.aether.stream.forward.StreamForwardTransport;
+import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.GovernorFailoverHandler;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.StreamPartitionRecovery;
@@ -225,6 +227,7 @@ public interface AetherNode extends ManageableNode {
     ClusterEventAggregator eventAggregator();
     BackupService backupService();
     StreamPartitionManager streamPartitionManager();
+    StreamReadRouter streamReadRouter();
     ConsumerGroupCoordinator consumerGroupCoordinator();
     ConsumerGroupRegistry consumerGroupRegistry();
     TaskAssignmentCoordinator taskAssignmentCoordinator();
@@ -416,6 +419,7 @@ public interface AetherNode extends ManageableNode {
                           ClusterEventAggregator eventAggregator,
                           BackupService backupService,
                           StreamPartitionManager streamPartitionManager,
+                          StreamReadRouter streamReadRouter,
                           ConsumerGroupCoordinator consumerGroupCoordinator,
                           ConsumerGroupRegistry consumerGroupRegistry,
                           TaskAssignmentCoordinator taskAssignmentCoordinator,
@@ -981,7 +985,8 @@ public interface AetherNode extends ManageableNode {
         var streamRetentionEnforcer = RetentionEnforcer.retentionEnforcer(streamStorage,
                                                                           streamSegmentIndex,
                                                                           DEFAULT_STREAM_RETENTION_MS);
-        var streamFailoverHandler = GovernorFailoverHandler.governorFailoverHandler(ReplicaRegistry.replicaRegistry(),
+        var streamReplicaRegistry = ReplicaRegistry.replicaRegistry();
+        var streamFailoverHandler = GovernorFailoverHandler.governorFailoverHandler(streamReplicaRegistry,
                                                                                     StreamPartitionRecovery.NOOP);
         var streamingCoordinator = StreamingCoordinator.streamingCoordinator(streamFailoverHandler,
                                                                              streamRetentionEnforcer,
@@ -991,14 +996,31 @@ public interface AetherNode extends ManageableNode {
                                                                              streamSegmentReader);
         taskGroupActivator.register(streamingCoordinator);
         var streamForwardTransport = createStreamForwardTransport(clusterNode.network());
-        var streamForwardClient = StreamForwardClient.streamForwardClient(config.self(), streamForwardTransport);
+        var streamingConfig = config.streaming();
+        var streamReadForwardMetrics = StreamReadForwardMetrics.inMemory();
+        var streamForwardClient = StreamForwardClient.streamForwardClient(config.self(),
+                                                                          streamForwardTransport,
+                                                                          streamingConfig.publishForwardTimeout(),
+                                                                          streamingConfig.readForwardTimeout(),
+                                                                          streamReadForwardMetrics);
         var streamForwardHandler = StreamForwardHandler.streamForwardHandler(config.self(),
                                                                              streamPartitionManager,
-                                                                             streamForwardTransport);
+                                                                             streamForwardTransport,
+                                                                             streamingConfig.maxReadResponseBytes(),
+                                                                             streamReadForwardMetrics);
+        var streamReadRouter = StreamReadRouter.streamReadRouter(streamPartitionManager,
+                                                                 Option.some(streamReplicaRegistry),
+                                                                 Option.some(streamForwardClient),
+                                                                 config.self(),
+                                                                 streamReadForwardMetrics);
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.PublishForward.class,
                                                  streamForwardHandler::onPublishForward));
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.PublishForwardResponse.class,
                                                  streamForwardClient::onPublishForwardResponse));
+        allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.ReadForward.class,
+                                                 streamForwardHandler::onReadForward));
+        allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.ReadForwardResponse.class,
+                                                 streamForwardClient::onReadForwardResponse));
         registerStreamForwardExtensions(resourceProviderSetup, streamForwardClient, taskGroupAssignmentRegistry);
         var certRenewalScheduler = createCertRenewalScheduler(config,
                                                               clusterNode,
@@ -1045,6 +1067,7 @@ public interface AetherNode extends ManageableNode {
                                   eventAggregator,
                                   BackupService.disabled(),
                                   streamPartitionManager,
+                                  streamReadRouter,
                                   consumerGroupCoordinator,
                                   consumerGroupRegistry,
                                   taskAssignmentCoordinator,
@@ -1127,6 +1150,7 @@ public interface AetherNode extends ManageableNode {
                                                                               eventAggregator,
                                                                               BackupService.disabled(),
                                                                               streamPartitionManager,
+                                                                              streamReadRouter,
                                                                               consumerGroupCoordinator,
                                                                               consumerGroupRegistry,
                                                                               taskAssignmentCoordinator,

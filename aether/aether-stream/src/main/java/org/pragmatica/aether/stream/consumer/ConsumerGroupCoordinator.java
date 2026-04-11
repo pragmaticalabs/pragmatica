@@ -109,10 +109,10 @@ public sealed interface ConsumerGroupCoordinator {
             @Override public Result<Unit> leaveGroup(String groupId, String streamName, String consumerId) {
                 var key = new GroupKey(groupId, streamName);
                 option(members.get(key)).onPresent(memberList -> removeMemberAndRebalance(key,
-                                                                                           memberList,
-                                                                                           groupId,
-                                                                                           streamName,
-                                                                                           consumerId));
+                                                                                          memberList,
+                                                                                          groupId,
+                                                                                          streamName,
+                                                                                          consumerId));
                 return Result.unitResult();
             }
 
@@ -151,10 +151,10 @@ public sealed interface ConsumerGroupCoordinator {
             }
 
             private void removeMemberAndRebalance(GroupKey key,
-                                                    List<ConsumerMember> memberList,
-                                                    String groupId,
-                                                    String streamName,
-                                                    String consumerId) {
+                                                  List<ConsumerMember> memberList,
+                                                  String groupId,
+                                                  String streamName,
+                                                  String consumerId) {
                 memberList.removeIf(m -> m.consumerId().equals(consumerId));
                 if (memberList.isEmpty()) {
                     members.remove(key);
@@ -203,7 +203,7 @@ public sealed interface ConsumerGroupCoordinator {
     }
 
     record DefaultConsumerGroupCoordinator(ClusterNode<KVCommand<AetherKey>> clusterNode,
-                                          AtomicReference<CoordinatorState> state) implements ConsumerGroupCoordinator {
+                                           AtomicReference<CoordinatorState> state) implements ConsumerGroupCoordinator {
         private static final Logger log = LoggerFactory.getLogger(DefaultConsumerGroupCoordinator.class);
 
         @Override public void onLeaderChange(LeaderChange leaderChange) {

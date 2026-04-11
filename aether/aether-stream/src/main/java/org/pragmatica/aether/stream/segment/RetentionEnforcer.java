@@ -110,7 +110,10 @@ public final class RetentionEnforcer implements AutoCloseable {
     private void removeSegment(String streamName, int partition, SegmentIndex.SegmentRef ref) {
         var refName = SegmentIndex.buildRefName(streamName, partition, ref);
         storage.resolveRef(refName).map(blockId -> deleteBlockAndRef(refName, blockId))
-                         .onPresent(promise -> promise.onFailure(cause -> logDeleteFailure(streamName, partition, ref, cause)));
+                          .onPresent(promise -> promise.onFailure(cause -> logDeleteFailure(streamName,
+                                                                                            partition,
+                                                                                            ref,
+                                                                                            cause)));
         index.removeSegment(streamName, partition, ref.startOffset());
         log.debug("Removed expired segment {}/{}:[{}-{}] maxTimestamp={}",
                   streamName,

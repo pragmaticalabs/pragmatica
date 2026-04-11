@@ -37,7 +37,7 @@ public sealed interface RepositoryType {
         return RepositoryTypeError.InvalidRepositoryType.invalidRepositoryType("repository name cannot be blank");
     }
 
-    private static Result<RepositoryType> fromNormalized(String name) {
+    @SuppressWarnings("JBCT-RET-07") private static Result<RepositoryType> fromNormalized(String name) {
         return switch (name.toLowerCase()){
             case "local" -> success(new Local());
             case "builtin" -> success(new Builtin());

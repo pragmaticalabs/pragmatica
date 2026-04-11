@@ -10,6 +10,7 @@ import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -197,7 +198,7 @@ import static org.pragmatica.lang.Result.success;
         return success(new BootstrapResult(clusterName, firstEndpoint, apiKey, nodes, apiKeyEnvName));
     }
 
-    private static Result<List<ProvisionedNode>> provisionInstances(BootstrapContext ctx) {
+    @Contract private static Result<List<ProvisionedNode>> provisionInstances(BootstrapContext ctx) {
         System.out.println("Step 6/12: Provisioning instances...");
         var config = ctx.config();
         var coreCount = config.cluster().core()

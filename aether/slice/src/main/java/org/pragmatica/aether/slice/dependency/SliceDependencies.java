@@ -37,7 +37,7 @@ import static org.pragmatica.lang.Result.success;
         return Result.lift(Causes::fromThrowable, () -> readDependencies(resource));
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static List<DependencyDescriptor> readDependencies(InputStream resource) throws IOException {
+    @SuppressWarnings({"JBCT-EX-01", "JBCT-RET-07"}) private static List<DependencyDescriptor> readDependencies(InputStream resource) throws IOException {
         try (var reader = new BufferedReader(new InputStreamReader(resource))) {
             var dependencies = new ArrayList<DependencyDescriptor>();
             String line;

@@ -43,6 +43,7 @@ import org.pragmatica.aether.resource.StreamNameConfig;
 import org.pragmatica.aether.resource.TopicConfig;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -1053,7 +1054,7 @@ public interface NodeDeploymentManager {
                 }
             }
 
-            private void handleReactivationFailure(SliceNodeKey sliceKey, Cause cause) {
+            @Contract private void handleReactivationFailure(SliceNodeKey sliceKey, Cause cause) {
                 log.error("Failed to reactivate slice {}: {}", sliceKey.artifact(), cause.message());
                 unregisterSliceFromInvocation(sliceKey);
                 unpublishEndpoints(sliceKey).flatMap(this::unpublishTopicSubscriptions)

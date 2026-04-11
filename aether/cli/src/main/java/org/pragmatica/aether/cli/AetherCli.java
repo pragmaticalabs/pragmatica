@@ -166,7 +166,7 @@ import static org.pragmatica.lang.Option.some;
                         .onEmpty(() -> nodeAddress = DEFAULT_ADDRESS);
     }
 
-    private void readConfigFromPath(Path path) {
+    @Contract private void readConfigFromPath(Path path) {
         ConfigLoader.load(path).onSuccess(this::setAddressFromConfig)
                          .onFailure(this::onConfigLoadFailure);
         configPath = path;

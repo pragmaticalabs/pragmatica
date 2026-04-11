@@ -6,6 +6,7 @@ import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.TimeoutsConfig;
@@ -88,7 +89,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                DeploymentDefaults deploymentDefaults,
                                HttpProtocol managementHttpProtocol,
                                Map<String, StorageConfig> storageConfig,
-                               Option<BackupConfig> backupConfig) {
+                               Option<BackupConfig> backupConfig,
+                               StreamingConfig streaming) {
     public record DeploymentDefaults(long canaryEvaluationIntervalMs, List<CanaryStageConfig> defaultCanaryStages) {
         @SuppressWarnings("JBCT-VO-02") public static final DeploymentDefaults DEFAULT = new DeploymentDefaults(30_000,
                                                                                                                 DeploymentConfig.defaultCanaryStages());
@@ -204,7 +206,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     DeploymentDefaults.DEFAULT,
                                     HttpProtocol.H1,
                                     Map.of(),
-                                    Option.empty());
+                                    Option.empty(),
+                                    StreamingConfig.streamingConfig());
     }
 
     public static AetherNodeConfig testConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
@@ -237,7 +240,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     DeploymentDefaults.DEFAULT,
                                     HttpProtocol.H1,
                                     Map.of(),
-                                    Option.empty());
+                                    Option.empty(),
+                                    StreamingConfig.streamingConfig());
     }
 
     public static AetherNodeConfig forgeConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
@@ -270,7 +274,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     DeploymentDefaults.DEFAULT,
                                     HttpProtocol.H1,
                                     Map.of(),
-                                    Option.empty());
+                                    Option.empty(),
+                                    StreamingConfig.streamingConfig());
     }
 
     public AetherNodeConfig withTls(TlsConfig tlsConfig) {
@@ -309,7 +314,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     deploymentDefaults,
                                     managementHttpProtocol,
                                     storageConfig,
-                                    backupConfig);
+                                    backupConfig,
+                                    streaming);
     }
 
     public AetherNodeConfig withTtm(TtmConfig ttmConfig) {
@@ -337,7 +343,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     deploymentDefaults,
                                     managementHttpProtocol,
                                     storageConfig,
-                                    backupConfig);
+                                    backupConfig,
+                                    streaming);
     }
 
     public AetherNodeConfig withRollback(RollbackConfig rollbackConfig) {
@@ -365,7 +372,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     deploymentDefaults,
                                     managementHttpProtocol,
                                     storageConfig,
-                                    backupConfig);
+                                    backupConfig,
+                                    streaming);
     }
 
     public AetherNodeConfig withSliceConfig(SliceConfig newSliceConfig) {
@@ -393,7 +401,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     deploymentDefaults,
                                     managementHttpProtocol,
                                     storageConfig,
-                                    backupConfig);
+                                    backupConfig,
+                                    streaming);
     }
 
     public AetherNodeConfig withAppHttp(AppHttpConfig appHttpConfig) {
@@ -421,7 +430,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     deploymentDefaults,
                                     managementHttpProtocol,
                                     storageConfig,
-                                    backupConfig);
+                                    backupConfig,
+                                    streaming);
     }
 
     public AetherNodeConfig withControllerConfig(ControllerConfig newControllerConfig) {
@@ -449,7 +459,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     deploymentDefaults,
                                     managementHttpProtocol,
                                     storageConfig,
-                                    backupConfig);
+                                    backupConfig,
+                                    streaming);
     }
 
     public AetherNodeConfig withConfigProvider(ConfigurationProvider provider) {
@@ -477,7 +488,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     deploymentDefaults,
                                     managementHttpProtocol,
                                     storageConfig,
-                                    backupConfig);
+                                    backupConfig,
+                                    streaming);
     }
 
     public AetherNodeConfig withEnvironment(EnvironmentIntegration env) {
@@ -505,7 +517,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     deploymentDefaults,
                                     managementHttpProtocol,
                                     storageConfig,
-                                    backupConfig);
+                                    backupConfig,
+                                    streaming);
     }
 
     public AetherNodeConfig withAutoHeal(AutoHealConfig autoHealConfig) {
@@ -533,7 +546,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     deploymentDefaults,
                                     managementHttpProtocol,
                                     storageConfig,
-                                    backupConfig);
+                                    backupConfig,
+                                    streaming);
     }
 
     public AetherNodeConfig withAtomicity(DeploymentAtomicity deploymentAtomicity) {
@@ -561,7 +575,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     deploymentDefaults,
                                     managementHttpProtocol,
                                     storageConfig,
-                                    backupConfig);
+                                    backupConfig,
+                                    streaming);
     }
 
     public AetherNodeConfig withActivationGated(boolean gated) {
@@ -589,7 +604,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     deploymentDefaults,
                                     managementHttpProtocol,
                                     storageConfig,
-                                    backupConfig);
+                                    backupConfig,
+                                    streaming);
     }
 
     public AetherNodeConfig withTimeouts(TimeoutsConfig newTimeouts) {
@@ -617,7 +633,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     deploymentDefaults,
                                     managementHttpProtocol,
                                     storageConfig,
-                                    backupConfig);
+                                    backupConfig,
+                                    streaming);
     }
 
     public AetherNodeConfig withCertificateProvider(CertificateProvider provider) {
@@ -645,7 +662,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     deploymentDefaults,
                                     managementHttpProtocol,
                                     storageConfig,
-                                    backupConfig);
+                                    backupConfig,
+                                    streaming);
     }
 
     public AetherNodeConfig withWorkerConfig(WorkerConfig config) {
@@ -673,7 +691,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     deploymentDefaults,
                                     managementHttpProtocol,
                                     storageConfig,
-                                    backupConfig);
+                                    backupConfig,
+                                    streaming);
     }
 
     public AetherNodeConfig withDeploymentDefaults(DeploymentDefaults defaults) {
@@ -701,7 +720,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     defaults,
                                     managementHttpProtocol,
                                     storageConfig,
-                                    backupConfig);
+                                    backupConfig,
+                                    streaming);
     }
 
     public AetherNodeConfig withManagementHttpProtocol(HttpProtocol protocol) {
@@ -729,7 +749,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     deploymentDefaults,
                                     protocol,
                                     storageConfig,
-                                    backupConfig);
+                                    backupConfig,
+                                    streaming);
     }
 
     public AetherNodeConfig withStorage(Map<String, StorageConfig> newStorageConfig) {
@@ -757,7 +778,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     deploymentDefaults,
                                     managementHttpProtocol,
                                     newStorageConfig,
-                                    backupConfig);
+                                    backupConfig,
+                                    streaming);
     }
 
     public AetherNodeConfig withBackupConfig(BackupConfig backup) {
@@ -785,7 +807,37 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     deploymentDefaults,
                                     managementHttpProtocol,
                                     storageConfig,
-                                    Option.some(backup));
+                                    Option.some(backup),
+                                    streaming);
+    }
+
+    public AetherNodeConfig withStreaming(StreamingConfig newStreaming) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    cache,
+                                    tls,
+                                    ttm,
+                                    rollback,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    environment,
+                                    autoHeal,
+                                    observability,
+                                    atomicity,
+                                    activationGated,
+                                    timeouts,
+                                    certificateProvider,
+                                    workerConfig,
+                                    deploymentDefaults,
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig,
+                                    newStreaming);
     }
 
     public NodeId self() {

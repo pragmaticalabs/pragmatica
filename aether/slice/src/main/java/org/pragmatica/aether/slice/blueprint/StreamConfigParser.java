@@ -47,14 +47,14 @@ import static org.pragmatica.lang.utils.Causes.cause;
 
     static Result<Map<String, StreamConfig>> parse(String toml) {
         return option(toml).filter(s -> !s.isBlank())
-                           .map(StreamConfigParser::parseStreamToml)
-                           .or(success(Map.of()));
+                     .map(StreamConfigParser::parseStreamToml)
+                     .or(success(Map.of()));
     }
 
     static Result<Map<String, ConsumerConfig>> parseConsumers(String toml, String streamName) {
         return option(toml).filter(s -> !s.isBlank())
-                           .map(t -> parseConsumerToml(t, streamName))
-                           .or(success(Map.of()));
+                     .map(t -> parseConsumerToml(t, streamName))
+                     .or(success(Map.of()));
     }
 
     private static Result<Map<String, StreamConfig>> parseStreamToml(String toml) {

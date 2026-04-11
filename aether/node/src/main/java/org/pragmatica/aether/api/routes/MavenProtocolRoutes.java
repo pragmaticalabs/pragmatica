@@ -8,6 +8,7 @@ import org.pragmatica.http.ContentType;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.server.RequestContext;
 import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.lang.Contract;
 
 import java.util.function.Supplier;
 
@@ -61,14 +62,14 @@ public final class MavenProtocolRoutes implements RouteHandler {
         return false;
     }
 
-    private void handleGet(ResponseWriter response, String uri) {
+    @Contract private void handleGet(ResponseWriter response, String uri) {
         var node = nodeSupplier.get();
         node.mavenProtocolHandler().handleGet(uri)
                                  .onSuccess(r -> sendProtocolResponse(response, r))
                                  .onFailure(response::internalError);
     }
 
-    private void handlePut(ResponseWriter response, String uri, byte[] content) {
+    @Contract private void handlePut(ResponseWriter response, String uri, byte[] content) {
         var node = nodeSupplier.get();
         node.mavenProtocolHandler().handlePut(uri, content)
                                  .onSuccess(r -> sendProtocolResponse(response, r))

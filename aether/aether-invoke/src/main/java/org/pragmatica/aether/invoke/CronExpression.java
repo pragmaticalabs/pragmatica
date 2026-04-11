@@ -1,6 +1,7 @@
 package org.pragmatica.aether.invoke;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -100,7 +101,7 @@ public record CronExpression(BitSet minutes, BitSet hours, BitSet daysOfMonth, B
         return daysOfMonth.get(dt.getDayOfMonth()) && daysOfWeek.get(dt.getDayOfWeek().getValue() % 7);
     }
 
-    private static Result<BitSet> parseField(String field, int min, int max, String fieldName) {
+    @Contract private static Result<BitSet> parseField(String field, int min, int max, String fieldName) {
         var bits = new BitSet(max + 1);
         var parts = field.split(",");
         for (var part : parts) {

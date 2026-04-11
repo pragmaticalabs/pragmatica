@@ -213,7 +213,7 @@ public final class ConfigurableLoadRunner {
         launchRunner(entry.getValue(), entry.getKey());
     }
 
-    private void scheduleMetricsSync() {
+    @SuppressWarnings("JBCT-RET-07") private void scheduleMetricsSync() {
         scheduler.get().onPresent(this::scheduleMetricsSyncOn);
     }
 
@@ -223,7 +223,7 @@ public final class ConfigurableLoadRunner {
                        TimeUnit.MILLISECONDS);
     }
 
-    private void cleanupScheduler() {
+    @SuppressWarnings("JBCT-RET-07") private void cleanupScheduler() {
         scheduler.getAndClear().onPresent(ScheduledExecutorService::shutdownNow);
     }
 

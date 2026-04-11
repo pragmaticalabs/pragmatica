@@ -171,7 +171,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 138 | Consumer group coordination | Complete | KV-Store-backed `ConsumerGroupCoordinator` (leader-side round-robin assignment) + `ConsumerGroupRegistry` (read-side mirror via KV notifications). Join/leave/status API endpoints. Automatic rebalance on topology change |
 | 139 | Sync replication ack | Complete | `replicateAndAwait(minSyncReplicas)` waits for N replica acks. Configurable via `StreamConfig.minSyncReplicas`. PendingAck correlation with timeout |
 | 140 | Batch replication | Complete | `ReplicationBatcher` accumulates events per partition (100 events or 1ms window), sends single `ReplicateEvents` message. 10-50x QUIC message reduction |
-| 141 | Consumer read-preference | Complete | `ReadPreference` enum (GOVERNOR/ANY_REPLICA/NEAREST) routes reads to replicas. Query parameter on read endpoint |
+| 141 | Consumer read-preference | Partial | `ReadPreference` enum (GOVERNOR/ANY_REPLICA/NEAREST) exposed on read endpoint and selected via `PartitionedStreamAccess.readWithPreference()`. **Remote replica reads not yet implemented** — `selectReplicaAndRead()` picks a caught-up replica but falls back to local read (Phase 2 scope; see `PartitionedStreamAccess.java:278`) |
 | 142 | Segment compression | Complete | LZ4 and ZSTD compression for sealed segments via `CompressionCodec` infrastructure. Per-stream `StreamConfig.compression`. Metadata in SegmentRef |
 | 143 | Segment encryption | Complete | AES-256-GCM encryption for sealed segments via `BlockEncryptor`. Per-stream `StreamConfig.encryptionKeyId`. IV prepended to ciphertext |
 | 144 | Transactional cursor commits | Complete | `PgTransactionalCursorCommit` wraps cursor UPSERT + business logic in single PostgreSQL transaction. Exactly-once semantics |
@@ -297,11 +297,15 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 179 | Streaming retention enforcement | Complete | Scheduled `RetentionEnforcer` with compound retention policy evaluation (ALL/ANY mode), scans SegmentIndex, removes expired segments from AHSE |
 | 180 | Streaming failover recovery | Complete | `StreamingCoordinator.activate()` triggers `GovernorFailoverHandler` for all stream partitions. Watermark-based catchup from AHSE segments + replica watermarks |
 | 181 | Stream memory management | Complete | Configurable `STREAM_MAX_MEMORY_BYTES` (default 128MB), `aether.streams.memory.used.ratio` Micrometer gauge, STRONG streams require AHSE (EvictionListener != NOOP) |
-| 180 | Consumer cursor persistence | Complete | `CursorStore` persists consumer group cursors in AHSE via named references |
-| 181 | Node metadata labels | Complete | `NodeInfo.labels` (hostname, zone, instance-type, pool) propagated via Hello handshake. Bootstrap from environment |
-| 182 | PlacementHint provisioning | Complete | `ZoneHint`, `HostGroupHint`, `AffinityHint`, `AntiAffinityHint` in `ProvisionSpec`. Cloud providers respect zone placement |
-| 183 | Same-version deploy rejection | Complete | Strategy deploys rejected when oldVersion == newVersion. `/api/blueprint/publish` for register-without-deploy |
-| 184 | Disruption budget enforcement | Complete | Drain endpoint checks quorum-based minAvailable before allowing transition to DRAINING |
+| 185 | Consumer cursor persistence | Complete | `CursorStore` persists consumer group cursors in AHSE via named references (`aether-stream/segment/CursorStore.java`) |
+| 186 | Node metadata labels | Complete | `NodeInfo.labels` (hostname, zone, instance-type, pool) propagated via Hello handshake. Bootstrap from environment |
+| 187 | PlacementHint provisioning | Complete | `ZoneHint`, `HostGroupHint`, `AffinityHint`, `AntiAffinityHint` in `ProvisionSpec`. Cloud providers respect zone placement |
+| 188 | Same-version deploy rejection | Complete | Strategy deploys rejected when oldVersion == newVersion. `/api/blueprint/publish` for register-without-deploy |
+| 189 | Disruption budget enforcement | Complete | Drain endpoint checks quorum-based minAvailable before allowing transition to DRAINING |
+| 190 | Tiered stream reader | Complete | `TieredStreamReader` reads across in-memory ring buffer and sealed storage tiers. Async prefetch of next segment when reading near tail. `aether-stream/segment/TieredStreamReader.java`, test `TieredStreamReaderTest.java` |
+| 191 | PostgreSQL stream backend | Complete | `PgStreamStore`, `PgSegmentSink`, `PgCursorStore` provide cold-tier storage and persistent cursor commits for streams. Phase 3 backend. `aether-stream/pg/`, tests `PgStreamStoreTest`, `PgSegmentSinkTest`, `PgCursorStoreTest` |
+| 192 | Stream consensus publish path | Complete | STRONG-consistency publish via Rabia consensus: `ConsensusPublishPath`, `ConsensusProposer`, `StreamConsensusCommand`. Test: `ConsensusPublishPathTest`. `aether-stream/consensus/` |
+| 193 | Stream dead-letter handling | Complete | `DeadLetterHandler` SPI with in-memory default for events exceeding retry limits or failing decode. Test: `DeadLetterHandlerTest`. `aether-stream/` |
 
 ---
 
@@ -310,11 +314,11 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 24 |
-| Complete | 140 |
+| Complete | 143 |
 | Critical | 1 |
-| Partial | 2 |
+| Partial | 3 |
 | Planned | 6 |
-| Total | 173 |
+| Total | 177 |
 
 **Critical features:**
 | Feature | Issue |

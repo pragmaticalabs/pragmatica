@@ -88,7 +88,8 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
         var withTls = wireTlsIfEnabled(withMgmtProtocol, aetherConfig);
         warnInsecureTlsInNonLocal(withTls, aetherConfig);
         var withStorage = wireStorageIfConfigured(withTls, aetherConfig);
-        var finalConfig = wireCloudIfConfigured(withStorage, aetherConfig);
+        var withStreaming = wireStreamingIfConfigured(withStorage, aetherConfig);
+        var finalConfig = wireCloudIfConfigured(withStreaming, aetherConfig);
         var node = AetherNode.aetherNode(finalConfig).unwrap();
         registerShutdownHook(node);
         startNodeAndWait(node, nodeId);
@@ -142,6 +143,12 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
                                                             Option<AetherConfig> aetherConfig) {
         return aetherConfig.map(AetherConfig::storage).filter(m -> !m.isEmpty())
                                .map(config::withStorage)
+                               .or(config);
+    }
+
+    private static AetherNodeConfig wireStreamingIfConfigured(AetherNodeConfig config,
+                                                              Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(AetherConfig::streaming).map(config::withStreaming)
                                .or(config);
     }
 

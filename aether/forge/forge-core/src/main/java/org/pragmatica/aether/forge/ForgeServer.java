@@ -25,6 +25,7 @@ import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.websocket.WebSocketEndpoint;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -316,7 +317,7 @@ import org.slf4j.LoggerFactory;
         wsPublisher.onPresent(StatusWebSocketPublisher::start);
     }
 
-    private void pollNodeEvents() {
+    @Contract private void pollNodeEvents() {
         try {
             var port = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
             var uriStr = "http://localhost:" + port + "/api/events";

@@ -81,17 +81,15 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                                                                         .millis());
     }
 
-    @SuppressWarnings("JBCT-NULL-01") // ConcurrentHashMap.putIfAbsent returns null on success per API contract
-    @Override public Result<Unit> subscribe(String streamName,
-                                            int partition,
-                                            ConsumerConfig config,
-                                            ConsumerCallback callback) {
+    @SuppressWarnings("JBCT-NULL-01") @Override public Result<Unit> subscribe(String streamName,
+                                                                              int partition,
+                                                                              ConsumerConfig config,
+                                                                              ConsumerCallback callback) {
         if (closed.get()) {return StreamError.General.CONSUMER_RUNTIME_CLOSED.result();}
         var key = ConsumerKey.consumerKey(streamName, partition, config.groupId());
-        var initialCursor = loadInitialCursor(config.groupId(), streamName, partition);
-        var state = ConsumerState.consumerState(config, callback, initialCursor);
+        var state = ConsumerState.consumerState(config, callback, 0L);
         if (consumers.putIfAbsent(key, state) != null) {return StreamError.General.CONSUMER_ALREADY_SUBSCRIBED.result();}
-        subscribePushOrPoll(key, state);
+        loadCursorAndStart(key, state, config.groupId(), streamName, partition);
         return success(unit());
     }
 
@@ -144,14 +142,29 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         unsubscribe(key.streamName(), key.partition(), key.groupId());
     }
 
-    @SuppressWarnings("JBCT-AWAIT-01") // Subscription setup, not SharedScheduler thread — blocking is acceptable
-    private long loadInitialCursor(String groupId, String streamName, int partition) {
-        return cursorStore.map(store -> store.fetch(groupId, streamName, partition).await().or(Option.<Long>empty()))
-                         .flatMap(opt -> opt)
-                         .or(0L);
+    private void loadCursorAndStart(ConsumerKey key,
+                                    ConsumerState state,
+                                    String groupId,
+                                    String streamName,
+                                    int partition) {
+        cursorStore.onPresent(store -> store.fetch(groupId, streamName, partition)
+                                                  .onResult(result -> applyCursorAndStart(result, key, state)))
+        .onEmpty(() -> startConsumer(key, state));
+    }
+
+    private void applyCursorAndStart(Result<Option<Long>> result, ConsumerKey key, ConsumerState state) {
+        result.onSuccess(opt -> opt.onPresent(state::advanceCursor));
+        startConsumer(key, state);
+    }
+
+    private void startConsumer(ConsumerKey key, ConsumerState state) {
+        if (closed.get() || state.isCancelled()) {return;}
+        state.markCursorInitialized();
+        subscribePushOrPoll(key, state);
     }
 
     private void flushCursorForKey(ConsumerKey key, ConsumerState state) {
+        if (!state.cursorInitialized()) {return;}
         cursorStore.onPresent(store -> store.commit(key.groupId(), key.streamName(), key.partition(), state.cursor()));
     }
 
@@ -218,21 +231,20 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                   List<OffHeapRingBuffer.RawEvent> events,
                                   int index) {
         if (index >= events.size() || state.isCancelled() || state.isStalled()) {return;}
-        deliverSingleEvent(key, state, events.get(index))
-            .onSuccess(_ -> deliverNextEvent(key, state, events, index + 1));
+        deliverSingleEvent(key, state, events.get(index)).onSuccess(_ -> deliverNextEvent(key, state, events, index + 1));
     }
 
     private Promise<Unit> deliverSingleEvent(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
         return state.callback().onEvent(event.offset(),
                                         event.data(),
                                         event.timestamp())
-                      .onSuccess(_ -> advanceCursor(key,
-                                                    state,
-                                                    event.offset()))
-                      .onFailure(cause -> handleDeliveryFailure(key,
-                                                                state,
-                                                                event,
-                                                                cause.message()));
+                             .onSuccess(_ -> advanceCursor(key,
+                                                           state,
+                                                           event.offset()))
+                             .onFailure(cause -> handleDeliveryFailure(key,
+                                                                       state,
+                                                                       event,
+                                                                       cause.message()));
     }
 
     private void advanceCursor(ConsumerKey key, ConsumerState state, long offset) {
@@ -270,9 +282,16 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     private void retryDeliverEvent(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
         if (state.isCancelled() || state.isStalled()) {return;}
-        state.callback().onEvent(event.offset(), event.data(), event.timestamp())
-                      .onSuccess(_ -> advanceCursor(key, state, event.offset()))
-                      .onFailure(cause -> handleRetryFailureAgain(key, state, event, cause.message()));
+        state.callback().onEvent(event.offset(),
+                                 event.data(),
+                                 event.timestamp())
+                      .onSuccess(_ -> advanceCursor(key,
+                                                    state,
+                                                    event.offset()))
+                      .onFailure(cause -> handleRetryFailureAgain(key,
+                                                                  state,
+                                                                  event,
+                                                                  cause.message()));
     }
 
     private void handleRetryFailureAgain(ConsumerKey key,
@@ -359,6 +378,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
 
+        private final AtomicBoolean cursorInitialized = new AtomicBoolean(false);
+
         private volatile ScheduledFuture<?> future;
         private volatile LongConsumer pushListenerRef;
 
@@ -400,14 +421,22 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             cursor.set(offset);
         }
 
+        void markCursorInitialized() {
+            cursorInitialized.set(true);
+        }
+
+        boolean cursorInitialized() {
+            return cursorInitialized.get();
+        }
+
         void resetRetryCount() {
             retryCount.set(0);
         }
 
         void adjustPollInterval(boolean hasData) {
             currentPollMs.set(hasData
-                             ? MIN_POLL_MS
-                             : Math.min(currentPollMs.get() * 2, MAX_POLL_MS));
+                              ? MIN_POLL_MS
+                              : Math.min(currentPollMs.get() * 2, MAX_POLL_MS));
         }
 
         int incrementRetryCount() {

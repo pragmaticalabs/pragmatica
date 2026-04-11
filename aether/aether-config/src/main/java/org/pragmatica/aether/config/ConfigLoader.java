@@ -90,7 +90,26 @@ public final class ConfigLoader {
         populateStorageConfig(doc, builder);
         populateCloudConfig(doc, builder);
         populateEndpointsConfig(doc, builder);
+        populateStreamingConfig(doc, builder);
         return builder;
+    }
+
+    private static void populateStreamingConfig(TomlDocument doc, AetherConfig.Builder builder) {
+        var hasSection = doc.sectionNames().stream()
+                                         .anyMatch(s -> s.equals("streaming"));
+        if (!hasSection) {return;}
+        var defaults = StreamingConfig.streamingConfig();
+        var publishTimeout = parseTimeSpan(doc, "streaming", "publish_forward_timeout", defaults.publishForwardTimeout());
+        var readTimeout = parseTimeSpan(doc, "streaming", "read_forward_timeout", defaults.readForwardTimeout());
+        var maxBytes = parseDataSize(doc, "streaming", "max_read_response_bytes", defaults.maxReadResponseBytes());
+        builder.streaming(StreamingConfig.streamingConfig(publishTimeout, readTimeout, maxBytes));
+    }
+
+    private static long parseDataSize(TomlDocument doc, String section, String key, long defaultValue) {
+        var stringVal = doc.getString(section, key).flatMap(v -> DataSize.dataSize(v).option())
+                                     .map(DataSize::bytes);
+        if (stringVal.isPresent()) {return stringVal.or(defaultValue);}
+        return doc.getLong(section, key).or(defaultValue);
     }
 
     private static TimeSpan parseTimeSpan(TomlDocument doc, String section, String key, TimeSpan defaultValue) {
@@ -113,7 +132,8 @@ public final class ConfigLoader {
                             .or(defaultValue);
     }
 
-    private static void populateClusterConfig(TomlDocument doc, AetherConfig.Builder builder) {
+    @SuppressWarnings("JBCT-RET-07") private static void populateClusterConfig(TomlDocument doc,
+                                                                               AetherConfig.Builder builder) {
         doc.getInt("cluster", "nodes").onPresent(builder::nodes);
         doc.getString("cluster", "tls").map(ConfigLoader::toBooleanValue)
                      .onPresent(builder::tls);
@@ -129,7 +149,8 @@ public final class ConfigLoader {
         return PortsConfig.portsConfig(mgmtPort, clusterPort, mgmtProtocol).unwrap();
     }
 
-    private static void populateNodeConfig(TomlDocument doc, AetherConfig.Builder builder) {
+    @SuppressWarnings("JBCT-RET-07") private static void populateNodeConfig(TomlDocument doc,
+                                                                            AetherConfig.Builder builder) {
         doc.getString("node", "heap").onPresent(builder::heap);
         doc.getString("node", "gc").onPresent(builder::gc);
     }
@@ -198,8 +219,8 @@ public final class ConfigLoader {
                                   .or(TtmConfig.ttmConfig());
     }
 
-    @SuppressWarnings("JBCT-STY-05") private static void populateSliceConfig(TomlDocument doc,
-                                                                             AetherConfig.Builder builder) {
+    @SuppressWarnings({"JBCT-STY-05", "JBCT-RET-07"}) private static void populateSliceConfig(TomlDocument doc,
+                                                                                              AetherConfig.Builder builder) {
         doc.getStringList("slice", "repositories").map(repos -> SliceConfig.sliceConfigFromNames(repos))
                          .flatMap(Result::option)
                          .onPresent(builder::sliceConfig);
@@ -690,7 +711,8 @@ public final class ConfigLoader {
         return Map.copyOf(result);
     }
 
-    private static void mergeCliOverrides(Map<String, String> overrides, AetherConfig.Builder builder) {
+    @SuppressWarnings("JBCT-RET-07") private static void mergeCliOverrides(Map<String, String> overrides,
+                                                                           AetherConfig.Builder builder) {
         if (overrides.containsKey("nodes")) {Number.parseInt(overrides.get("nodes")).onSuccess(builder::nodes);}
         if (overrides.containsKey("heap")) {builder.heap(overrides.get("heap"));}
         if (overrides.containsKey("tls")) {builder.tls(Boolean.parseBoolean(overrides.get("tls")));}
