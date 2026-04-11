@@ -1089,6 +1089,8 @@ import static org.pragmatica.lang.Result.success;
 
     Fn1<Cause, String> CLOUD_CREDENTIALS_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cloud-credentials key format: %s");
 
+    Fn1<Cause, String> CONSUMER_GROUP_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid consumer-group key format: %s");
+
     record CloudCredentialsKey(String provider) implements AetherKey {
         private static final String PREFIX = "cloud-credentials/";
 
@@ -1109,6 +1111,32 @@ import static org.pragmatica.lang.Result.success;
             var provider = key.substring(PREFIX.length());
             if (provider.isEmpty()) {return CLOUD_CREDENTIALS_KEY_FORMAT_ERROR.apply(key).result();}
             return success(new CloudCredentialsKey(provider));
+        }
+    }
+
+    record ConsumerGroupKey(String groupId, String streamName, int partition) implements AetherKey {
+        private static final String PREFIX = "consumer-group/";
+
+        @Override public String asString() {
+            return PREFIX + groupId + "/" + streamName + "/" + partition;
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02") public static ConsumerGroupKey consumerGroupKey(String groupId,
+                                                                                        String streamName,
+                                                                                        int partition) {
+            return new ConsumerGroupKey(groupId, streamName, partition);
+        }
+
+        public static Result<ConsumerGroupKey> consumerGroupKey(String key) {
+            if (!key.startsWith(PREFIX)) {return CONSUMER_GROUP_KEY_FORMAT_ERROR.apply(key).result();}
+            var content = key.substring(PREFIX.length());
+            var parts = content.split("/");
+            if (parts.length != 3) {return CONSUMER_GROUP_KEY_FORMAT_ERROR.apply(key).result();}
+            return Number.parseInt(parts[2]).map(partition -> new ConsumerGroupKey(parts[0], parts[1], partition));
         }
     }
 }

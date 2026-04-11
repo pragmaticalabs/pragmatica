@@ -35,7 +35,7 @@ public record ConsumerConfig(String groupId,
                                   DEFAULT_CHECKPOINT_INTERVAL_MS,
                                   DEFAULT_MAX_RETRIES,
                                   DEFAULT_DEAD_LETTER_STREAM,
-                                  ReadPreference.LEADER);
+                                  ReadPreference.GOVERNOR);
     }
 
     public static ConsumerConfig consumerConfig(String groupId,
@@ -49,7 +49,7 @@ public record ConsumerConfig(String groupId,
                                   DEFAULT_CHECKPOINT_INTERVAL_MS,
                                   DEFAULT_MAX_RETRIES,
                                   DEFAULT_DEAD_LETTER_STREAM,
-                                  ReadPreference.LEADER);
+                                  ReadPreference.GOVERNOR);
     }
 
     public static ConsumerConfig consumerConfig(String groupId,
@@ -66,7 +66,7 @@ public record ConsumerConfig(String groupId,
                                   checkpointIntervalMs,
                                   maxRetries,
                                   deadLetterStream,
-                                  ReadPreference.LEADER);
+                                  ReadPreference.GOVERNOR);
     }
 
     public static ConsumerConfig consumerConfig(String groupId,

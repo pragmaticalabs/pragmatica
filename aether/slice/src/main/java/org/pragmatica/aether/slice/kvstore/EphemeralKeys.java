@@ -23,7 +23,8 @@ import java.util.Set;
                                                                  SliceNodeKey.class,
                                                                  HttpNodeRouteKey.class,
                                                                  SchemaMigrationLockKey.class,
-                                                                 StorageStatusKey.class);
+                                                                 StorageStatusKey.class,
+                                                                 ConsumerGroupKey.class);
 
     Set<String> EPHEMERAL_SECTIONS = Set.of("node-artifact",
                                             "node-routes",
@@ -34,7 +35,8 @@ import java.util.Set;
                                             "slices",
                                             "http-node-routes",
                                             "schema-lock",
-                                            "storage-status");
+                                            "storage-status",
+                                            "consumer-group");
 
     static boolean isEphemeral(AetherKey key) {
         return EPHEMERAL_KEY_TYPES.contains(key.getClass());

@@ -1,16 +1,26 @@
 package org.pragmatica.aether.slice;
 
+import org.pragmatica.lang.Option;
+
+import static org.pragmatica.lang.Option.none;
+
+
 public record StreamConfig(String name,
                            int partitions,
                            RetentionPolicy retention,
                            String autoOffsetReset,
                            long maxEventSizeBytes,
-                           ConsistencyMode consistencyMode) {
+                           ConsistencyMode consistencyMode,
+                           int minSyncReplicas,
+                           StreamCompression compression,
+                           Option<String> encryptionKeyId) {
     private static final int DEFAULT_PARTITIONS = 4;
 
     private static final String DEFAULT_AUTO_OFFSET_RESET = "latest";
 
     private static final long DEFAULT_MAX_EVENT_SIZE_BYTES = 1_048_576L;
+
+    private static final int DEFAULT_MIN_SYNC_REPLICAS = 0;
 
     public static StreamConfig streamConfig(String name) {
         return new StreamConfig(name,
@@ -18,7 +28,10 @@ public record StreamConfig(String name,
                                 RetentionPolicy.retentionPolicy(),
                                 DEFAULT_AUTO_OFFSET_RESET,
                                 DEFAULT_MAX_EVENT_SIZE_BYTES,
-                                ConsistencyMode.EVENTUAL);
+                                ConsistencyMode.EVENTUAL,
+                                DEFAULT_MIN_SYNC_REPLICAS,
+                                StreamCompression.NONE,
+                                none());
     }
 
     public static StreamConfig streamConfig(String name,
@@ -30,7 +43,10 @@ public record StreamConfig(String name,
                                 retention,
                                 autoOffsetReset,
                                 DEFAULT_MAX_EVENT_SIZE_BYTES,
-                                ConsistencyMode.EVENTUAL);
+                                ConsistencyMode.EVENTUAL,
+                                DEFAULT_MIN_SYNC_REPLICAS,
+                                StreamCompression.NONE,
+                                none());
     }
 
     public static StreamConfig streamConfig(String name,
@@ -43,7 +59,10 @@ public record StreamConfig(String name,
                                 retention,
                                 autoOffsetReset,
                                 maxEventSizeBytes,
-                                ConsistencyMode.EVENTUAL);
+                                ConsistencyMode.EVENTUAL,
+                                DEFAULT_MIN_SYNC_REPLICAS,
+                                StreamCompression.NONE,
+                                none());
     }
 
     public static StreamConfig streamConfig(String name,
@@ -52,6 +71,52 @@ public record StreamConfig(String name,
                                             String autoOffsetReset,
                                             long maxEventSizeBytes,
                                             ConsistencyMode consistencyMode) {
-        return new StreamConfig(name, partitions, retention, autoOffsetReset, maxEventSizeBytes, consistencyMode);
+        return new StreamConfig(name,
+                                partitions,
+                                retention,
+                                autoOffsetReset,
+                                maxEventSizeBytes,
+                                consistencyMode,
+                                DEFAULT_MIN_SYNC_REPLICAS,
+                                StreamCompression.NONE,
+                                none());
+    }
+
+    public static StreamConfig streamConfig(String name,
+                                            int partitions,
+                                            RetentionPolicy retention,
+                                            String autoOffsetReset,
+                                            long maxEventSizeBytes,
+                                            ConsistencyMode consistencyMode,
+                                            int minSyncReplicas) {
+        return new StreamConfig(name,
+                                partitions,
+                                retention,
+                                autoOffsetReset,
+                                maxEventSizeBytes,
+                                consistencyMode,
+                                minSyncReplicas,
+                                StreamCompression.NONE,
+                                none());
+    }
+
+    public static StreamConfig streamConfig(String name,
+                                            int partitions,
+                                            RetentionPolicy retention,
+                                            String autoOffsetReset,
+                                            long maxEventSizeBytes,
+                                            ConsistencyMode consistencyMode,
+                                            int minSyncReplicas,
+                                            StreamCompression compression,
+                                            Option<String> encryptionKeyId) {
+        return new StreamConfig(name,
+                                partitions,
+                                retention,
+                                autoOffsetReset,
+                                maxEventSizeBytes,
+                                consistencyMode,
+                                minSyncReplicas,
+                                compression,
+                                encryptionKeyId);
     }
 }

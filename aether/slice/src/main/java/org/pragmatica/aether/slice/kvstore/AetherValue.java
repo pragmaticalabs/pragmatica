@@ -908,4 +908,10 @@ import static org.pragmatica.lang.Option.none;
             return new TaskAssignmentValue(assignedTo, assignedAtMs, AssignmentStatus.FAILED, reason);
         }
     }
+
+    record ConsumerGroupValue(NodeId assignedTo, String consumerId, long assignedAt) implements AetherValue {
+        public static ConsumerGroupValue consumerGroupValue(NodeId assignedTo, String consumerId) {
+            return new ConsumerGroupValue(assignedTo, consumerId, System.currentTimeMillis());
+        }
+    }
 }

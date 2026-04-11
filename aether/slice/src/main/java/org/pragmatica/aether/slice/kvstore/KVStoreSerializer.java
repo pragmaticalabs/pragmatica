@@ -156,6 +156,7 @@ import static org.pragmatica.lang.Result.success;
             case StorageRefKey _ -> "storage-ref";
             case TaskAssignmentKey _ -> "task-assignment";
             case CloudCredentialsKey _ -> "cloud-credentials";
+            case ConsumerGroupKey _ -> "consumer-group";
         };
     }
 
@@ -215,6 +216,7 @@ import static org.pragmatica.lang.Result.success;
             case StorageRefValue v -> serializeStorageRef(v);
             case TaskAssignmentValue v -> serializeTaskAssignment(v);
             case CloudCredentialsValue v -> serializeCloudCredentials(v);
+            case ConsumerGroupValue v -> serializeConsumerGroup(v);
         };
     }
 
@@ -372,6 +374,7 @@ import static org.pragmatica.lang.Result.success;
             case "storage-ref" -> parseStorageRefEntry(identity, rawValue);
             case "task-assignment" -> parseTaskAssignmentEntry(identity, rawValue);
             case "cloud-credentials" -> parseCloudCredentialsEntry(identity, rawValue);
+            case "consumer-group" -> parseConsumerGroupEntry(identity, rawValue);
             default -> new SerializationError.UnknownKeyType(section).result();
         };
     }
@@ -927,6 +930,21 @@ import static org.pragmatica.lang.Result.success;
     private static String serializeCloudCredentials(CloudCredentialsValue v) {
         return java.util.Base64.getUrlEncoder().withoutPadding()
                                              .encodeToString(v.encryptedToken()) + PIPE + v.provider() + PIPE + v.storedAt();
+    }
+
+    private static String serializeConsumerGroup(ConsumerGroupValue v) {
+        return v.assignedTo().id() + PIPE + v.consumerId() + PIPE + v.assignedAt();
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseConsumerGroupEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length <3) {return parseFailure("consumer-group requires 3 parts: " + raw);}
+        var consumerId = parts[1];
+        var assignedAt = Long.parseLong(parts[2]);
+        return Result.all(ConsumerGroupKey.consumerGroupKey("consumer-group/" + identity),
+                          NodeId.nodeId(parts[0]))
+        .map((key, nodeId) -> entry(key,
+                                    new ConsumerGroupValue(nodeId, consumerId, assignedAt)));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseCloudCredentialsEntry(String identity, String raw) {
