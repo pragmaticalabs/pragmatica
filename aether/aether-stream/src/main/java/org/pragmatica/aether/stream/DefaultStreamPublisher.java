@@ -30,7 +30,7 @@ import java.util.function.Function;
 /// governor node that owns the STREAMING task group via StreamForwardClient.
 ///
 /// @param <T> Event type
-public final class StreamPublisherImpl<T> implements StreamPublisher<T> {
+public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     private final StreamPartitionManager partitionManager;
     private final Serializer serializer;
     private final String streamName;
@@ -43,7 +43,7 @@ public final class StreamPublisherImpl<T> implements StreamPublisher<T> {
     private final Option<StreamForwardClient> forwardClient;
     private final Option<Fn0<Option<NodeId>>> governorResolver;
 
-    private StreamPublisherImpl(StreamPartitionManager partitionManager,
+    private DefaultStreamPublisher(StreamPartitionManager partitionManager,
                                 Serializer serializer,
                                 String streamName,
                                 int partitionCount,
@@ -66,12 +66,12 @@ public final class StreamPublisherImpl<T> implements StreamPublisher<T> {
         this.governorResolver = governorResolver;
     }
 
-    public static <T> StreamPublisherImpl<T> streamPublisher(StreamPartitionManager partitionManager,
+    public static <T> DefaultStreamPublisher<T> streamPublisher(StreamPartitionManager partitionManager,
                                                              Serializer serializer,
                                                              String streamName,
                                                              int partitionCount,
                                                              Option<Function<T, Object>> partitionKeyExtractor) {
-        return new StreamPublisherImpl<>(partitionManager,
+        return new DefaultStreamPublisher<>(partitionManager,
                                          serializer,
                                          streamName,
                                          partitionCount,
@@ -83,14 +83,14 @@ public final class StreamPublisherImpl<T> implements StreamPublisher<T> {
                                          Option.none());
     }
 
-    public static <T> StreamPublisherImpl<T> streamPublisher(StreamPartitionManager partitionManager,
+    public static <T> DefaultStreamPublisher<T> streamPublisher(StreamPartitionManager partitionManager,
                                                              Serializer serializer,
                                                              String streamName,
                                                              int partitionCount,
                                                              Option<Function<T, Object>> partitionKeyExtractor,
                                                              ConsistencyMode consistencyMode,
                                                              Option<ConsensusPublishPath> consensusPath) {
-        return new StreamPublisherImpl<>(partitionManager,
+        return new DefaultStreamPublisher<>(partitionManager,
                                          serializer,
                                          streamName,
                                          partitionCount,
@@ -102,7 +102,7 @@ public final class StreamPublisherImpl<T> implements StreamPublisher<T> {
                                          Option.none());
     }
 
-    public static <T> StreamPublisherImpl<T> streamPublisher(StreamPartitionManager partitionManager,
+    public static <T> DefaultStreamPublisher<T> streamPublisher(StreamPartitionManager partitionManager,
                                                              Serializer serializer,
                                                              String streamName,
                                                              int partitionCount,
@@ -110,7 +110,7 @@ public final class StreamPublisherImpl<T> implements StreamPublisher<T> {
                                                              ConsistencyMode consistencyMode,
                                                              Option<ConsensusPublishPath> consensusPath,
                                                              int minSyncReplicas) {
-        return new StreamPublisherImpl<>(partitionManager,
+        return new DefaultStreamPublisher<>(partitionManager,
                                          serializer,
                                          streamName,
                                          partitionCount,
@@ -122,7 +122,7 @@ public final class StreamPublisherImpl<T> implements StreamPublisher<T> {
                                          Option.none());
     }
 
-    public static <T> StreamPublisherImpl<T> streamPublisher(StreamPartitionManager partitionManager,
+    public static <T> DefaultStreamPublisher<T> streamPublisher(StreamPartitionManager partitionManager,
                                                              Serializer serializer,
                                                              String streamName,
                                                              int partitionCount,
@@ -132,7 +132,7 @@ public final class StreamPublisherImpl<T> implements StreamPublisher<T> {
                                                              int minSyncReplicas,
                                                              Option<StreamForwardClient> forwardClient,
                                                              Option<Fn0<Option<NodeId>>> governorResolver) {
-        return new StreamPublisherImpl<>(partitionManager,
+        return new DefaultStreamPublisher<>(partitionManager,
                                          serializer,
                                          streamName,
                                          partitionCount,

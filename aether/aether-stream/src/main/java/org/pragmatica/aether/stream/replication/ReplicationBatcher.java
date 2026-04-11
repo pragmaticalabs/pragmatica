@@ -100,7 +100,7 @@ public final class ReplicationBatcher implements AutoCloseable {
 
         private List<Long> timestamps = new ArrayList<>();
 
-        boolean add(long offset, byte[] payload, long timestamp, int maxEvents) {
+        @SuppressWarnings("JBCT-EX-01") boolean add(long offset, byte[] payload, long timestamp, int maxEvents) {
             lock.lock();
             try {
                 if (payloads.isEmpty()) {fromOffset = offset;}
@@ -112,7 +112,7 @@ public final class ReplicationBatcher implements AutoCloseable {
             }
         }
 
-        BatchSnapshot drain() {
+        @SuppressWarnings("JBCT-EX-01") BatchSnapshot drain() {
             lock.lock();
             try {
                 if (payloads.isEmpty()) {return BatchSnapshot.EMPTY;}

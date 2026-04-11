@@ -18,7 +18,7 @@ import java.util.function.Function;
 
 /// ResourceFactory SPI implementation for provisioning StreamPublisher instances.
 ///
-/// Discovered via ServiceLoader. Creates StreamPublisherImpl instances using
+/// Discovered via ServiceLoader. Creates DefaultStreamPublisher instances using
 /// runtime extensions (StreamPartitionManager, Serializer) from the ProvisioningContext.
 public final class StreamPublisherFactory implements ResourceFactory<StreamPublisher, StreamConfig> {
     private static final Cause REQUIRES_CONTEXT = Causes.cause("StreamPublisher requires ProvisioningContext with runtime extensions");
@@ -53,7 +53,7 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
         var forwardClient = context.extension(StreamForwardClient.class).option();
         var governorResolver = context.extension(GovernorResolver.class).option()
                                                 .map(GovernorResolver::resolver);
-        return StreamPublisherImpl.streamPublisher(manager,
+        return DefaultStreamPublisher.streamPublisher(manager,
                                                    serializer,
                                                    config.name(),
                                                    config.partitions(),

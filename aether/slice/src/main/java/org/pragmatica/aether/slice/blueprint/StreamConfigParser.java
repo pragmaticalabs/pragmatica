@@ -17,6 +17,7 @@ import org.pragmatica.lang.Result;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
 
@@ -45,13 +46,23 @@ import static org.pragmatica.lang.utils.Causes.cause;
     int DEFAULT_PARTITIONS = 4;
 
     static Result<Map<String, StreamConfig>> parse(String toml) {
-        if (toml == null || toml.isBlank()) {return success(Map.of());}
+        return option(toml).filter(s -> !s.isBlank())
+                           .map(StreamConfigParser::parseStreamToml)
+                           .or(success(Map.of()));
+    }
+
+    static Result<Map<String, ConsumerConfig>> parseConsumers(String toml, String streamName) {
+        return option(toml).filter(s -> !s.isBlank())
+                           .map(t -> parseConsumerToml(t, streamName))
+                           .or(success(Map.of()));
+    }
+
+    private static Result<Map<String, StreamConfig>> parseStreamToml(String toml) {
         return TomlParser.parse(toml).mapError(err -> cause("Stream config parse error: " + err.message()))
                                .map(StreamConfigParser::extractStreamConfigs);
     }
 
-    static Result<Map<String, ConsumerConfig>> parseConsumers(String toml, String streamName) {
-        if (toml == null || toml.isBlank()) {return success(Map.of());}
+    private static Result<Map<String, ConsumerConfig>> parseConsumerToml(String toml, String streamName) {
         return TomlParser.parse(toml).mapError(err -> cause("Stream config parse error: " + err.message()))
                                .map(doc -> extractConsumerConfigs(doc, streamName));
     }

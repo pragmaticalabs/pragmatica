@@ -70,6 +70,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         return maxTotalBytes;
     }
 
+    @SuppressWarnings("JBCT-NULL-01") // ConcurrentHashMap.putIfAbsent returns null on success per API contract
     public Result<Unit> createStream(StreamConfig config) {
         if (streams.containsKey(config.name())) {return StreamError.General.STREAM_ALREADY_EXISTS.result();}
         if (config.consistencyMode() == ConsistencyMode.STRONG && evictionListener == EvictionListener.NOOP) {return StreamError.General.AHSE_REQUIRED_FOR_STRONG.result();}
@@ -176,9 +177,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private Result<StreamEntry> resolveStreamEntry(String streamName) {
-        var entry = streams.get(streamName);
-        if (entry == null) {return new StreamError.StreamNotFound(streamName).result();}
-        return success(entry);
+        return option(streams.get(streamName)).toResult(new StreamError.StreamNotFound(streamName));
     }
 
     private static Result<Unit> checkEventSize(StreamEntry entry, byte[] payload) {
@@ -189,8 +188,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private Result<OffHeapRingBuffer> resolvePartitionBuffer(String streamName, int partition) {
-        var entry = streams.get(streamName);
-        if (entry == null) {return new StreamError.StreamNotFound(streamName).result();}
+        return option(streams.get(streamName)).toResult(new StreamError.StreamNotFound(streamName))
+                     .flatMap(entry -> resolvePartitionInEntry(streamName, partition, entry));
+    }
+
+    private static Result<OffHeapRingBuffer> resolvePartitionInEntry(String streamName,
+                                                                      int partition,
+                                                                      StreamEntry entry) {
         if (partition <0 || partition >= entry.partitions().length) {return new StreamError.PartitionOutOfRange(streamName,
                                                                                                                 partition,
                                                                                                                 entry.partitions().length).result();}
@@ -227,14 +231,17 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     public Result<List<PartitionInfo>> allPartitionInfo(String streamName) {
-        var entry = streams.get(streamName);
-        if (entry == null) {return new StreamError.StreamNotFound(streamName).result();}
+        return option(streams.get(streamName)).toResult(new StreamError.StreamNotFound(streamName))
+                     .map(StreamPartitionManager::buildAllPartitionInfo);
+    }
+
+    private static List<PartitionInfo> buildAllPartitionInfo(StreamEntry entry) {
         var infos = new ArrayList<PartitionInfo>();
         for (int i = 0;i <entry.partitions().length;i++) {
             var buffer = entry.partitions() [i];
             infos.add(PartitionInfo.partitionInfo(i, buffer.headOffset(), buffer.tailOffset(), buffer.eventCount()));
         }
-        return success(List.copyOf(infos));
+        return List.copyOf(infos);
     }
 
     public record StreamInfo(String name, int partitions, long totalEvents, long totalBytes) {

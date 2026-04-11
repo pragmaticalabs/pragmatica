@@ -6,6 +6,7 @@ import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
 import org.pragmatica.aether.stream.segment.CursorStore;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -80,6 +81,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                                                                         .millis());
     }
 
+    @SuppressWarnings("JBCT-NULL-01") // ConcurrentHashMap.putIfAbsent returns null on success per API contract
     @Override public Result<Unit> subscribe(String streamName,
                                             int partition,
                                             ConsumerConfig config,
@@ -95,12 +97,15 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     @Override public Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup) {
         var key = ConsumerKey.consumerKey(streamName, partition, consumerGroup);
-        var state = consumers.remove(key);
-        if (state == null) {return StreamError.General.CONSUMER_NOT_FOUND.result();}
+        return option(consumers.remove(key)).toResult(StreamError.General.CONSUMER_NOT_FOUND)
+                     .onSuccess(state -> cleanupConsumer(key, state))
+                     .mapToUnit();
+    }
+
+    private void cleanupConsumer(ConsumerKey key, ConsumerState state) {
         flushCursorForKey(key, state);
         removePushListener(key, state);
         state.cancel();
-        return success(unit());
     }
 
     @Override public Option<Long> cursorPosition(String streamName, int partition, String consumerGroup) {
@@ -139,8 +144,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         unsubscribe(key.streamName(), key.partition(), key.groupId());
     }
 
+    @SuppressWarnings("JBCT-AWAIT-01") // Subscription setup, not SharedScheduler thread — blocking is acceptable
     private long loadInitialCursor(String groupId, String streamName, int partition) {
-        return cursorStore.flatMap(store -> store.fetch(groupId, streamName, partition)).or(0L);
+        return cursorStore.map(store -> store.fetch(groupId, streamName, partition).await().or(Option.<Long>empty()))
+                         .flatMap(opt -> opt)
+                         .or(0L);
     }
 
     private void flushCursorForKey(ConsumerKey key, ConsumerState state) {
@@ -175,7 +183,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     private void scheduleNextPoll(ConsumerKey key, ConsumerState state) {
         if (state.isCancelled()) {return;}
-        var delay = TimeSpan.timeSpan(state.currentPollMs).millis();
+        var delay = TimeSpan.timeSpan(state.currentPollMs.get()).millis();
         var future = SharedScheduler.schedule(() -> pollAndReschedule(key, state), delay);
         state.scheduledFuture(future);
     }
@@ -202,16 +210,22 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     }
 
     private void deliverEvents(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
-        for (var event : events) {
-            if (state.isCancelled() || state.isStalled()) {return;}
-            deliverSingleEvent(key, state, event);
-        }
+        deliverNextEvent(key, state, events, 0);
     }
 
-    private void deliverSingleEvent(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
-        state.callback().onEvent(event.offset(),
-                                 event.data(),
-                                 event.timestamp())
+    private void deliverNextEvent(ConsumerKey key,
+                                  ConsumerState state,
+                                  List<OffHeapRingBuffer.RawEvent> events,
+                                  int index) {
+        if (index >= events.size() || state.isCancelled() || state.isStalled()) {return;}
+        deliverSingleEvent(key, state, events.get(index))
+            .onSuccess(_ -> deliverNextEvent(key, state, events, index + 1));
+    }
+
+    private Promise<Unit> deliverSingleEvent(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
+        return state.callback().onEvent(event.offset(),
+                                        event.data(),
+                                        event.timestamp())
                       .onSuccess(_ -> advanceCursor(key,
                                                     state,
                                                     event.offset()))
@@ -256,16 +270,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     private void retryDeliverEvent(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
         if (state.isCancelled() || state.isStalled()) {return;}
-        state.callback().onEvent(event.offset(),
-                                 event.data(),
-                                 event.timestamp())
-                      .onSuccess(_ -> advanceCursor(key,
-                                                    state,
-                                                    event.offset()))
-                      .onFailure(cause -> handleRetryFailureAgain(key,
-                                                                  state,
-                                                                  event,
-                                                                  cause.message()));
+        state.callback().onEvent(event.offset(), event.data(), event.timestamp())
+                      .onSuccess(_ -> advanceCursor(key, state, event.offset()))
+                      .onFailure(cause -> handleRetryFailureAgain(key, state, event, cause.message()));
     }
 
     private void handleRetryFailureAgain(ConsumerKey key,
@@ -355,11 +362,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         private volatile ScheduledFuture<?> future;
         private volatile LongConsumer pushListenerRef;
 
-        volatile long currentPollMs = MIN_POLL_MS;
+        private final AtomicLong currentPollMs = new AtomicLong(MIN_POLL_MS);
 
-        private volatile long lastCheckpointTime = System.currentTimeMillis();
+        private final AtomicLong lastCheckpointTime = new AtomicLong(System.currentTimeMillis());
 
-        volatile long lastPollTime = System.currentTimeMillis();
+        private final AtomicLong lastPollTime = new AtomicLong(System.currentTimeMillis());
 
         private ConsumerState(ConsumerConfig config, ConsumerCallback callback, long initialCursor) {
             this.config = config;
@@ -398,9 +405,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         }
 
         void adjustPollInterval(boolean hasData) {
-            currentPollMs = hasData
-                           ? MIN_POLL_MS
-                           : Math.min(currentPollMs * 2, MAX_POLL_MS);
+            currentPollMs.set(hasData
+                             ? MIN_POLL_MS
+                             : Math.min(currentPollMs.get() * 2, MAX_POLL_MS));
         }
 
         int incrementRetryCount() {
@@ -412,12 +419,12 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         }
 
         boolean shouldCheckpoint() {
-            return eventsSinceCheckpoint.get() >= CHECKPOINT_EVENT_THRESHOLD || (System.currentTimeMillis() - lastCheckpointTime) >= CHECKPOINT_TIME_THRESHOLD_MS;
+            return eventsSinceCheckpoint.get() >= CHECKPOINT_EVENT_THRESHOLD || (System.currentTimeMillis() - lastCheckpointTime.get()) >= CHECKPOINT_TIME_THRESHOLD_MS;
         }
 
         void resetCheckpointCounters() {
             eventsSinceCheckpoint.set(0);
-            lastCheckpointTime = System.currentTimeMillis();
+            lastCheckpointTime.set(System.currentTimeMillis());
         }
 
         boolean isStalled() {
@@ -445,17 +452,16 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         }
 
         void touchLastPollTime() {
-            lastPollTime = System.currentTimeMillis();
+            lastPollTime.set(System.currentTimeMillis());
         }
 
         long lastPollTime() {
-            return lastPollTime;
+            return lastPollTime.get();
         }
 
         void cancel() {
             cancelled.set(true);
-            var f = future;
-            if (f != null) {f.cancel(false);}
+            option(future).onPresent(f -> f.cancel(false));
         }
     }
 }

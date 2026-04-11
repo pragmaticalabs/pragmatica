@@ -200,7 +200,7 @@ import static org.pragmatica.lang.Result.allOf;
     }
 
     @Override public Promise<List<StreamEvent<T>>> fetch(int partition, long fromOffset, int maxEvents) {
-        return readWithPreference(partition, fromOffset, maxEvents).async();
+        return readWithPreference(partition, fromOffset, maxEvents);
     }
 
     public Result<MemorySegment> readSlice(int partition, long offset) {
@@ -219,13 +219,13 @@ import static org.pragmatica.lang.Result.allOf;
 
     @Override public Promise<Option<Long>> committedOffset(String consumerGroup, int partition) {
         var inMemory = option(committedOffsets.get(new ConsumerPartitionKey(consumerGroup, partition)));
-        return Promise.success(inMemory.isPresent()
-                               ? inMemory
-                               : fetchFromCursorStore(consumerGroup, partition));
+        if (inMemory.isPresent()) {return Promise.success(inMemory);}
+        return fetchFromCursorStore(consumerGroup, partition);
     }
 
-    private Option<Long> fetchFromCursorStore(String consumerGroup, int partition) {
-        return cursorStore.flatMap(store -> store.fetch(consumerGroup, streamName, partition));
+    private Promise<Option<Long>> fetchFromCursorStore(String consumerGroup, int partition) {
+        return cursorStore.map(store -> store.fetch(consumerGroup, streamName, partition))
+                         .or(Promise.success(Option.empty()));
     }
 
     @Override public Promise<StreamMetadata> metadata() {
@@ -245,29 +245,29 @@ import static org.pragmatica.lang.Result.allOf;
     }
 
     private Promise<List<StreamEvent<T>>> fetchFromAllPartitions(long fromOffset, int maxEvents) {
-        List<Result<List<StreamEvent<T>>>> perPartitionResults = IntStream.range(0, partitionCount).mapToObj(p -> readPartition(p,
-                                                                                                                                fromOffset,
-                                                                                                                                maxEvents))
-                                                                                .toList();
-        return allOf(perPartitionResults).map(lists -> mergeAndLimit(lists, maxEvents)).async();
+        List<Promise<List<StreamEvent<T>>>> perPartitionPromises = IntStream.range(0, partitionCount)
+            .mapToObj(p -> readPartition(p, fromOffset, maxEvents))
+            .toList();
+        return Promise.allOf(perPartitionPromises)
+                      .flatMap(results -> allOf(results).map(lists -> mergeAndLimit(lists, maxEvents)).async());
     }
 
-    private Result<List<StreamEvent<T>>> readWithPreference(int partition, long fromOffset, int maxEvents) {
+    private Promise<List<StreamEvent<T>>> readWithPreference(int partition, long fromOffset, int maxEvents) {
         return switch (readPreference){
             case GOVERNOR -> readPartition(partition, fromOffset, maxEvents);
             case ANY_REPLICA, NEAREST -> readFromReplicaOrLocal(partition, fromOffset, maxEvents);
         };
     }
 
-    private Result<List<StreamEvent<T>>> readFromReplicaOrLocal(int partition, long fromOffset, int maxEvents) {
+    private Promise<List<StreamEvent<T>>> readFromReplicaOrLocal(int partition, long fromOffset, int maxEvents) {
         return replicaRegistry.map(registry -> selectReplicaAndRead(registry, partition, fromOffset, maxEvents))
                                   .or(() -> readPartition(partition, fromOffset, maxEvents));
     }
 
-    private Result<List<StreamEvent<T>>> selectReplicaAndRead(ReplicaRegistry registry,
-                                                              int partition,
-                                                              long fromOffset,
-                                                              int maxEvents) {
+    private Promise<List<StreamEvent<T>>> selectReplicaAndRead(ReplicaRegistry registry,
+                                                               int partition,
+                                                               long fromOffset,
+                                                               int maxEvents) {
         var caughtUpReplicas = registry.replicasFor(streamName, partition).stream()
                                                    .filter(PartitionedStreamAccess::isCaughtUp)
                                                    .toList();
@@ -286,41 +286,46 @@ import static org.pragmatica.lang.Result.allOf;
         return descriptor.state() == ReplicationState.CAUGHT_UP;
     }
 
-    private Result<List<StreamEvent<T>>> readPartition(int partition, long fromOffset, int maxEvents) {
-        return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents).map(rawEvents -> toStreamEvents(rawEvents,
-                                                                                                                        partition))
-                                         .fold(cause -> handleReadFailure(cause, partition, fromOffset, maxEvents),
-                                               Result::success);
+    // Genuine bifurcation: CursorExpired failures recover via tiered reader fallback, others propagate
+    private Promise<List<StreamEvent<T>>> readPartition(int partition, long fromOffset, int maxEvents) {
+        return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents)
+                               .map(rawEvents -> toStreamEvents(rawEvents, partition))
+                               .fold(cause -> handleReadFailure(cause, partition, fromOffset, maxEvents),
+                                     Promise::success);
     }
 
-    private Result<List<StreamEvent<T>>> handleReadFailure(org.pragmatica.lang.Cause cause,
-                                                           int partition,
-                                                           long fromOffset,
-                                                           int maxEvents) {
+    private Promise<List<StreamEvent<T>>> handleReadFailure(org.pragmatica.lang.Cause cause,
+                                                            int partition,
+                                                            long fromOffset,
+                                                            int maxEvents) {
         if (cause instanceof StreamError.CursorExpired expired) {return readWithSegmentFallback(partition,
                                                                                                 fromOffset,
                                                                                                 maxEvents,
                                                                                                 expired.requestedOffset());}
-        return cause.result();
+        return cause.promise();
     }
 
-    private Result<List<StreamEvent<T>>> readWithSegmentFallback(int partition,
-                                                                 long fromOffset,
-                                                                 int maxEvents,
-                                                                 long expiredOffset) {
+    private Promise<List<StreamEvent<T>>> readWithSegmentFallback(int partition,
+                                                                  long fromOffset,
+                                                                  int maxEvents,
+                                                                  long expiredOffset) {
         return tieredReader.map(reader -> readFromTieredReader(reader, partition, fromOffset, maxEvents))
-                               .or(() -> new StreamError.CursorExpired(expiredOffset,
-                                                                       partitionManager.partitionInfo(streamName,
-                                                                                                      partition).map(StreamPartitionManager.PartitionInfo::tailOffset)
-                                                                                                     .or(0L)).result());
+                               .or(() -> cursorExpiredPromise(partition, expiredOffset));
     }
 
-    private Result<List<StreamEvent<T>>> readFromTieredReader(TieredStreamReader reader,
-                                                              int partition,
-                                                              long fromOffset,
-                                                              int maxEvents) {
-        var segmentEvents = reader.read(streamName, partition, fromOffset, maxEvents).await();
-        return segmentEvents.map(sealedEvents -> combineWithBufferEvents(sealedEvents, partition, fromOffset, maxEvents));
+    private Promise<List<StreamEvent<T>>> cursorExpiredPromise(int partition, long expiredOffset) {
+        return new StreamError.CursorExpired(expiredOffset,
+                                             partitionManager.partitionInfo(streamName, partition)
+                                                             .map(StreamPartitionManager.PartitionInfo::tailOffset)
+                                                             .or(0L)).promise();
+    }
+
+    private Promise<List<StreamEvent<T>>> readFromTieredReader(TieredStreamReader reader,
+                                                               int partition,
+                                                               long fromOffset,
+                                                               int maxEvents) {
+        return reader.read(streamName, partition, fromOffset, maxEvents)
+                     .map(sealedEvents -> combineWithBufferEvents(sealedEvents, partition, fromOffset, maxEvents));
     }
 
     private List<StreamEvent<T>> combineWithBufferEvents(List<OffHeapRingBuffer.RawEvent> sealedEvents,

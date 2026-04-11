@@ -9,7 +9,7 @@ import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.slice.ConsumerConfig.ProcessingMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
-import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -20,8 +20,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.StreamConsumerRuntime.streamConsumerRuntime;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
-import static org.pragmatica.lang.Result.success;
-import static org.pragmatica.lang.Unit.unit;
 
 class StreamConsumerRuntimeTest {
 
@@ -53,7 +51,7 @@ class StreamConsumerRuntimeTest {
             createTestStream("orders");
             var config = ConsumerConfig.consumerConfig("group-1");
 
-            runtime.subscribe("orders", 0, config, (offset, payload, ts) -> success(unit()))
+            runtime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise())
                    .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"));
         }
 
@@ -61,7 +59,7 @@ class StreamConsumerRuntimeTest {
         void subscribe_failure_duplicateSubscription() {
             createTestStream("orders");
             var config = ConsumerConfig.consumerConfig("group-1");
-            StreamConsumerRuntime.ConsumerCallback noop = (offset, payload, ts) -> success(unit());
+            StreamConsumerRuntime.ConsumerCallback noop = (offset, payload, ts) -> Promise.unitPromise();
 
             runtime.subscribe("orders", 0, config, noop);
 
@@ -81,7 +79,7 @@ class StreamConsumerRuntimeTest {
             runtime.subscribe("orders", 0, config, (offset, payload, ts) -> {
                 received.add(offset);
                 latch.countDown();
-                return success(unit());
+                return Promise.unitPromise();
             });
 
             manager.publishLocal("orders", 0, "event-1".getBytes(), 1000L);
@@ -100,7 +98,7 @@ class StreamConsumerRuntimeTest {
 
             runtime.subscribe("orders", 0, config, (offset, payload, ts) -> {
                 latch.countDown();
-                return success(unit());
+                return Promise.unitPromise();
             });
 
             manager.publishLocal("orders", 0, "event-1".getBytes(), 1000L);
@@ -123,7 +121,7 @@ class StreamConsumerRuntimeTest {
             createTestStream("orders");
             var config = ConsumerConfig.consumerConfig("group-1");
 
-            runtime.subscribe("orders", 0, config, (offset, payload, ts) -> success(unit()));
+            runtime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
 
             runtime.unsubscribe("orders", 0, "group-1")
                    .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"));
@@ -144,7 +142,7 @@ class StreamConsumerRuntimeTest {
 
             runtime.subscribe("orders", 0, config, (offset, payload, ts) -> {
                 callCount.incrementAndGet();
-                return success(unit());
+                return Promise.unitPromise();
             });
 
             // Publish, wait for delivery, then unsubscribe
@@ -176,7 +174,7 @@ class StreamConsumerRuntimeTest {
             createTestStream("orders");
             var config = ConsumerConfig.consumerConfig("group-1");
 
-            runtime.subscribe("orders", 0, config, (offset, payload, ts) -> success(unit()));
+            runtime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
 
             var cursor = runtime.cursorPosition("orders", 0, "group-1");
             assertThat(cursor.isPresent()).isTrue();
@@ -198,10 +196,10 @@ class StreamConsumerRuntimeTest {
 
             runtime.subscribe("orders", 0, config, (offset, payload, ts) -> {
                 if (attempts.incrementAndGet() < 3) {
-                    return StreamError.General.BUFFER_EMPTY.result();
+                    return StreamError.General.BUFFER_EMPTY.promise();
                 }
                 latch.countDown();
-                return success(unit());
+                return Promise.unitPromise();
             });
 
             manager.publishLocal("orders", 0, "event".getBytes(), 1000L);
@@ -219,10 +217,8 @@ class StreamConsumerRuntimeTest {
                 ProcessingMode.ORDERED, ErrorStrategy.RETRY);
 
             runtime.subscribe("orders", 0, config, (offset, payload, ts) -> {
-                var result = StreamError.General.BUFFER_EMPTY.<Unit>result();
-                // Signal when we've been called enough for max retries
                 latch.countDown();
-                return result;
+                return StreamError.General.BUFFER_EMPTY.promise();
             });
 
             manager.publishLocal("orders", 0, "event".getBytes(), 1000L);
@@ -252,9 +248,9 @@ class StreamConsumerRuntimeTest {
                 deliveredOffsets.add(offset);
                 latch.countDown();
                 if (offset == 0L) {
-                    return StreamError.General.BUFFER_EMPTY.result();
+                    return StreamError.General.BUFFER_EMPTY.promise();
                 }
-                return success(unit());
+                return Promise.unitPromise();
             });
 
             manager.publishLocal("orders", 0, "fail-event".getBytes(), 1000L);
@@ -285,9 +281,9 @@ class StreamConsumerRuntimeTest {
             runtime.subscribe("orders", 0, config, (offset, payload, ts) -> {
                 deliveredOffsets.add(offset);
                 if (offset == 0L) {
-                    return StreamError.General.BUFFER_EMPTY.result();
+                    return StreamError.General.BUFFER_EMPTY.promise();
                 }
-                return success(unit());
+                return Promise.unitPromise();
             });
 
             manager.publishLocal("orders", 0, "fail-event".getBytes(), 1000L);
@@ -312,12 +308,12 @@ class StreamConsumerRuntimeTest {
             createTestStream("orders");
             var config = ConsumerConfig.consumerConfig("group-1");
 
-            runtime.subscribe("orders", 0, config, (offset, payload, ts) -> success(unit()));
+            runtime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
             runtime.close();
 
             // After close, subscribe should fail
             runtime.subscribe("orders", 0, ConsumerConfig.consumerConfig("group-2"),
-                              (offset, payload, ts) -> success(unit()))
+                              (offset, payload, ts) -> Promise.unitPromise())
                    .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
                    .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.CONSUMER_RUNTIME_CLOSED));
         }

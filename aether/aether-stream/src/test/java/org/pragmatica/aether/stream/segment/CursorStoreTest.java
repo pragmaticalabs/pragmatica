@@ -34,10 +34,13 @@ class CursorStoreTest {
         void commit_fetch_returnsCommittedOffset() {
             store.commit(GROUP, STREAM, PARTITION, 42L).await();
 
-            var result = store.fetch(GROUP, STREAM, PARTITION);
+            var result = store.fetch(GROUP, STREAM, PARTITION).await();
 
-            assertThat(result.isPresent()).isTrue();
-            result.onPresent(offset -> assertThat(offset).isEqualTo(42L));
+            result.onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"))
+                  .onSuccess(opt -> {
+                      assertThat(opt.isPresent()).isTrue();
+                      opt.onPresent(offset -> assertThat(offset).isEqualTo(42L));
+                  });
         }
 
         @Test
@@ -45,17 +48,21 @@ class CursorStoreTest {
             store.commit(GROUP, STREAM, PARTITION, 10L).await();
             store.commit(GROUP, STREAM, PARTITION, 100L).await();
 
-            var result = store.fetch(GROUP, STREAM, PARTITION);
+            var result = store.fetch(GROUP, STREAM, PARTITION).await();
 
-            assertThat(result.isPresent()).isTrue();
-            result.onPresent(offset -> assertThat(offset).isEqualTo(100L));
+            result.onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"))
+                  .onSuccess(opt -> {
+                      assertThat(opt.isPresent()).isTrue();
+                      opt.onPresent(offset -> assertThat(offset).isEqualTo(100L));
+                  });
         }
 
         @Test
         void fetch_returnsNone_whenNotCommitted() {
-            var result = store.fetch(GROUP, STREAM, PARTITION);
+            var result = store.fetch(GROUP, STREAM, PARTITION).await();
 
-            assertThat(result.isEmpty()).isTrue();
+            result.onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"))
+                  .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
         }
 
         @Test
@@ -63,11 +70,11 @@ class CursorStoreTest {
             store.commit("group-a", STREAM, PARTITION, 10L).await();
             store.commit("group-b", STREAM, PARTITION, 20L).await();
 
-            var resultA = store.fetch("group-a", STREAM, PARTITION);
-            var resultB = store.fetch("group-b", STREAM, PARTITION);
+            var resultA = store.fetch("group-a", STREAM, PARTITION).await();
+            var resultB = store.fetch("group-b", STREAM, PARTITION).await();
 
-            resultA.onPresent(offset -> assertThat(offset).isEqualTo(10L));
-            resultB.onPresent(offset -> assertThat(offset).isEqualTo(20L));
+            resultA.onSuccess(opt -> opt.onPresent(offset -> assertThat(offset).isEqualTo(10L)));
+            resultB.onSuccess(opt -> opt.onPresent(offset -> assertThat(offset).isEqualTo(20L)));
         }
 
         @Test
@@ -75,11 +82,11 @@ class CursorStoreTest {
             store.commit(GROUP, STREAM, 0, 10L).await();
             store.commit(GROUP, STREAM, 1, 20L).await();
 
-            var result0 = store.fetch(GROUP, STREAM, 0);
-            var result1 = store.fetch(GROUP, STREAM, 1);
+            var result0 = store.fetch(GROUP, STREAM, 0).await();
+            var result1 = store.fetch(GROUP, STREAM, 1).await();
 
-            result0.onPresent(offset -> assertThat(offset).isEqualTo(10L));
-            result1.onPresent(offset -> assertThat(offset).isEqualTo(20L));
+            result0.onSuccess(opt -> opt.onPresent(offset -> assertThat(offset).isEqualTo(10L)));
+            result1.onSuccess(opt -> opt.onPresent(offset -> assertThat(offset).isEqualTo(20L)));
         }
 
         @Test
@@ -87,11 +94,11 @@ class CursorStoreTest {
             store.commit(GROUP, "stream-a", PARTITION, 10L).await();
             store.commit(GROUP, "stream-b", PARTITION, 20L).await();
 
-            var resultA = store.fetch(GROUP, "stream-a", PARTITION);
-            var resultB = store.fetch(GROUP, "stream-b", PARTITION);
+            var resultA = store.fetch(GROUP, "stream-a", PARTITION).await();
+            var resultB = store.fetch(GROUP, "stream-b", PARTITION).await();
 
-            resultA.onPresent(offset -> assertThat(offset).isEqualTo(10L));
-            resultB.onPresent(offset -> assertThat(offset).isEqualTo(20L));
+            resultA.onSuccess(opt -> opt.onPresent(offset -> assertThat(offset).isEqualTo(10L)));
+            resultB.onSuccess(opt -> opt.onPresent(offset -> assertThat(offset).isEqualTo(20L)));
         }
     }
 

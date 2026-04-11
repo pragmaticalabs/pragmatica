@@ -41,21 +41,23 @@ public final class CursorStore {
                           .onSuccess(_ -> logCommit(consumerGroup, streamName, partition, offset));
     }
 
-    public Option<Long> fetch(String consumerGroup, String streamName, int partition) {
+    public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
         var refName = buildRefName(consumerGroup, streamName, partition);
-        return storage.resolveRef(refName).flatMap(this::readOffset);
+        return storage.resolveRef(refName).map(this::readOffset)
+                         .or(Promise.success(Option.empty()));
     }
 
     private Promise<Unit> replaceRef(String refName, BlockId blockId) {
         return storage.deleteRef(refName).flatMap(_ -> storage.createRef(refName, blockId));
     }
 
-    private Option<Long> readOffset(BlockId blockId) {
-        return storage.get(blockId).await()
-                          .option()
-                          .flatMap(opt -> opt)
-                          .filter(bytes -> bytes.length == Long.BYTES)
-                          .map(CursorStore::decodeOffset);
+    private Promise<Option<Long>> readOffset(BlockId blockId) {
+        return storage.get(blockId).map(CursorStore::decodeOptionalOffset);
+    }
+
+    private static Option<Long> decodeOptionalOffset(Option<byte[]> opt) {
+        return opt.filter(bytes -> bytes.length == Long.BYTES)
+                  .map(CursorStore::decodeOffset);
     }
 
     private static void logCommit(String consumerGroup, String streamName, int partition, long offset) {

@@ -14,6 +14,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.option;
+
 
 /// Read-side mirror of consumer group partition assignments held in the
 /// consensus KV-Store. Stays in sync via KV notifications wired through
@@ -27,20 +29,18 @@ public sealed interface ConsumerGroupRegistry {
     @MessageReceiver void onConsumerGroupRemove(ValueRemove<ConsumerGroupKey, ConsumerGroupValue> notification);
 
     static ConsumerGroupRegistry consumerGroupRegistry() {
-        return new consumerGroupRegistry(new ConcurrentHashMap<>());
+        return new DefaultConsumerGroupRegistry(new ConcurrentHashMap<>());
     }
 
     record GroupStreamKey(String groupId, String streamName){}
 
-    record consumerGroupRegistry(ConcurrentHashMap<GroupStreamKey, ConcurrentHashMap<Integer, ConsumerGroupValue>> state) implements ConsumerGroupRegistry {
-        private static final Logger log = LoggerFactory.getLogger(consumerGroupRegistry.class);
+    record DefaultConsumerGroupRegistry(ConcurrentHashMap<GroupStreamKey, ConcurrentHashMap<Integer, ConsumerGroupValue>> state) implements ConsumerGroupRegistry {
+        private static final Logger log = LoggerFactory.getLogger(DefaultConsumerGroupRegistry.class);
 
         @Override public Map<Integer, ConsumerGroupValue> assignmentsFor(String groupId, String streamName) {
             var key = new GroupStreamKey(groupId, streamName);
-            var partitions = state.get(key);
-            return partitions != null
-                  ? Map.copyOf(partitions)
-                  : Map.of();
+            return option(state.get(key)).map(Map::copyOf)
+                                        .or(Map.of());
         }
 
         @Override public List<Integer> partitionsFor(String groupId, String streamName, NodeId nodeId) {
@@ -69,15 +69,20 @@ public sealed interface ConsumerGroupRegistry {
         @Override public void onConsumerGroupRemove(ValueRemove<ConsumerGroupKey, ConsumerGroupValue> notification) {
             var kvKey = notification.cause().key();
             var groupStreamKey = new GroupStreamKey(kvKey.groupId(), kvKey.streamName());
-            var partitions = state.get(groupStreamKey);
-            if (partitions != null) {
-                partitions.remove(kvKey.partition());
-                if (partitions.isEmpty()) {state.remove(groupStreamKey);}
-            }
+            option(state.get(groupStreamKey)).onPresent(partitions -> removePartitionEntry(partitions,
+                                                                                            groupStreamKey,
+                                                                                            kvKey.partition()));
             log.info("Consumer group {}/{} partition {} assignment removed",
                      kvKey.groupId(),
                      kvKey.streamName(),
                      kvKey.partition());
+        }
+
+        private void removePartitionEntry(ConcurrentHashMap<Integer, ConsumerGroupValue> partitions,
+                                           GroupStreamKey groupStreamKey,
+                                           int partition) {
+            partitions.remove(partition);
+            if (partitions.isEmpty()) {state.remove(groupStreamKey);}
         }
     }
 }

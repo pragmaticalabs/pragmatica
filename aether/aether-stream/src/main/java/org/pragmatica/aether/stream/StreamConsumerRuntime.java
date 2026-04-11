@@ -4,6 +4,7 @@ import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
 import org.pragmatica.aether.stream.segment.CursorStore;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -29,11 +30,11 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     DeadLetterHandler deadLetterHandler();
 
     @FunctionalInterface interface ConsumerCallback {
-        Result<Unit> onEvent(long offset, byte[] payload, long timestamp);
+        Promise<Unit> onEvent(long offset, byte[] payload, long timestamp);
     }
 
     @FunctionalInterface interface BatchConsumerCallback {
-        Result<Unit> onBatch(List<OffHeapRingBuffer.RawEvent> events);
+        Promise<Unit> onBatch(List<OffHeapRingBuffer.RawEvent> events);
     }
 
     static StreamConsumerRuntime streamConsumerRuntime(StreamPartitionManager partitionManager) {

@@ -2,6 +2,8 @@ package org.pragmatica.aether.stream.segment;
 
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.storage.BlockId;
@@ -13,6 +15,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Option.option;
 
 
 /// Scheduled task that removes expired segments from storage and the segment index.
@@ -66,8 +70,7 @@ public final class RetentionEnforcer implements AutoCloseable {
 
     @Contract@Override public void close() {
         if (closed.compareAndSet(false, true)) {
-            var f = scheduledFuture;
-            if (f != null) {f.cancel(false);}
+            option(scheduledFuture).onPresent(f -> f.cancel(false));
             log.info("RetentionEnforcer stopped");
         }
     }
@@ -106,7 +109,8 @@ public final class RetentionEnforcer implements AutoCloseable {
 
     private void removeSegment(String streamName, int partition, SegmentIndex.SegmentRef ref) {
         var refName = SegmentIndex.buildRefName(streamName, partition, ref);
-        storage.resolveRef(refName).onPresent(blockId -> deleteBlockAndRef(refName, blockId));
+        storage.resolveRef(refName).map(blockId -> deleteBlockAndRef(refName, blockId))
+                         .onPresent(promise -> promise.onFailure(cause -> logDeleteFailure(streamName, partition, ref, cause)));
         index.removeSegment(streamName, partition, ref.startOffset());
         log.debug("Removed expired segment {}/{}:[{}-{}] maxTimestamp={}",
                   streamName,
@@ -116,8 +120,19 @@ public final class RetentionEnforcer implements AutoCloseable {
                   ref.maxTimestamp());
     }
 
-    private void deleteBlockAndRef(String refName, BlockId blockId) {
-        storage.deleteRef(refName).await();
-        storage.delete(blockId).await();
+    private Promise<Unit> deleteBlockAndRef(String refName, BlockId blockId) {
+        return storage.deleteRef(refName).flatMap(_ -> storage.delete(blockId));
+    }
+
+    private static void logDeleteFailure(String streamName,
+                                         int partition,
+                                         SegmentIndex.SegmentRef ref,
+                                         org.pragmatica.lang.Cause cause) {
+        log.warn("Failed to delete segment block {}/{}:[{}-{}]: {}",
+                 streamName,
+                 partition,
+                 ref.startOffset(),
+                 ref.endOffset(),
+                 cause.message());
     }
 }

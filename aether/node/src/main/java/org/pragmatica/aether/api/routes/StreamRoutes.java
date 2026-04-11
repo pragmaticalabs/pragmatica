@@ -20,6 +20,7 @@ import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import java.nio.charset.StandardCharsets;
@@ -192,8 +193,11 @@ public final class StreamRoutes implements RouteSource {
 
     private Result<PublishResponse> publishToPartition(String name, PublishRequest request) {
         var payload = request.data().getBytes(StandardCharsets.UTF_8);
-        ensureStreamExists(name);
-        return streamManager().publishLocal(name, 0, payload, System.currentTimeMillis()).map(PublishResponse::new);
+        return ensureStreamExists(name).flatMap(_ -> streamManager().publishLocal(name,
+                                                                                   0,
+                                                                                   payload,
+                                                                                   System.currentTimeMillis()))
+                                       .map(PublishResponse::new);
     }
 
     private Result<StreamCreateResponse> createStream(StreamCreateRequest request) {
@@ -211,11 +215,12 @@ public final class StreamRoutes implements RouteSource {
                                                                                                     4 * 1024 * 1024L,
                                                                                                     60 * 60 * 1000L);
 
-    private void ensureStreamExists(String name) {
-        streamManager().createStream(StreamConfig.streamConfig(name,
-                                                               DEFAULT_PARTITIONS,
-                                                               MANAGEMENT_API_RETENTION,
-                                                               "latest"));
+    private Result<Unit> ensureStreamExists(String name) {
+        return streamManager().createStream(StreamConfig.streamConfig(name,
+                                                                       DEFAULT_PARTITIONS,
+                                                                       MANAGEMENT_API_RETENTION,
+                                                                       "latest"))
+                              .recover(_ -> Unit.unit());
     }
 
     private Result<ReadEventsResponse> readEvents(String name,
@@ -223,15 +228,18 @@ public final class StreamRoutes implements RouteSource {
                                                   Option<Long> fromOpt,
                                                   Option<Integer> maxOpt,
                                                   Option<String> readPreferenceOpt) {
-        return readLocalEvents(name, partition, fromOpt, maxOpt);
+        var fromOffset = fromOpt.or(0L);
+        var maxEvents = maxOpt.or(DEFAULT_MAX_EVENTS);
+        var preference = readPreferenceOpt.map(StreamRoutes::parseReadPreference)
+                                          .or(ReadPreference.GOVERNOR);
+        return readLocalEvents(name, partition, fromOffset, maxEvents, preference);
     }
 
     private Result<ReadEventsResponse> readLocalEvents(String name,
                                                        Integer partition,
-                                                       Option<Long> fromOpt,
-                                                       Option<Integer> maxOpt) {
-        var fromOffset = fromOpt.or(0L);
-        var maxEvents = maxOpt.or(DEFAULT_MAX_EVENTS);
+                                                       long fromOffset,
+                                                       int maxEvents,
+                                                       ReadPreference preference) {
         return streamManager().readLocal(name, partition, fromOffset, maxEvents)
                             .map(list -> list.stream().map(EventRecord::fromRawEvent)
                                                     .toList())

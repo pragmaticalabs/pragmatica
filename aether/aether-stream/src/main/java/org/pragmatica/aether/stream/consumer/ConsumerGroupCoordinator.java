@@ -18,10 +18,13 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Option.option;
 
 
 /// Leader-side component that manages consumer group partition assignments.
@@ -42,7 +45,7 @@ public sealed interface ConsumerGroupCoordinator {
     }
 
     static ConsumerGroupCoordinator consumerGroupCoordinator(ClusterNode<KVCommand<AetherKey>> clusterNode) {
-        return new consumerGroupCoordinator(clusterNode, new AtomicReference<>(new CoordinatorState.Dormant()));
+        return new DefaultConsumerGroupCoordinator(clusterNode, new AtomicReference<>(new CoordinatorState.Dormant()));
     }
 
     record NoOpCoordinator() implements ConsumerGroupCoordinator {
@@ -95,7 +98,7 @@ public sealed interface ConsumerGroupCoordinator {
                                                     String consumerId,
                                                     NodeId nodeId) {
                 var key = new GroupKey(groupId, streamName);
-                var memberList = members.computeIfAbsent(key, _ -> new ArrayList<>());
+                var memberList = members.computeIfAbsent(key, _ -> new CopyOnWriteArrayList<>());
                 var alreadyPresent = memberList.stream().anyMatch(m -> m.consumerId().equals(consumerId));
                 if (!alreadyPresent) {memberList.add(new ConsumerMember(consumerId, nodeId));}
                 partitionCounts.put(key, partitionCount);
@@ -105,15 +108,11 @@ public sealed interface ConsumerGroupCoordinator {
 
             @Override public Result<Unit> leaveGroup(String groupId, String streamName, String consumerId) {
                 var key = new GroupKey(groupId, streamName);
-                var memberList = members.get(key);
-                if (memberList == null) {return Result.unitResult();}
-                memberList.removeIf(m -> m.consumerId().equals(consumerId));
-                if (memberList.isEmpty()) {
-                    members.remove(key);
-                    partitionCounts.remove(key);
-                    return Result.unitResult();
-                }
-                rebalanceFromMembers(groupId, streamName, memberList);
+                option(members.get(key)).onPresent(memberList -> removeMemberAndRebalance(key,
+                                                                                           memberList,
+                                                                                           groupId,
+                                                                                           streamName,
+                                                                                           consumerId));
                 return Result.unitResult();
             }
 
@@ -149,6 +148,20 @@ public sealed interface ConsumerGroupCoordinator {
                            memberList.stream().map(m -> new ConsumerInfo(m.consumerId(),
                                                                          m.nodeId()))
                                             .toList());
+            }
+
+            private void removeMemberAndRebalance(GroupKey key,
+                                                    List<ConsumerMember> memberList,
+                                                    String groupId,
+                                                    String streamName,
+                                                    String consumerId) {
+                memberList.removeIf(m -> m.consumerId().equals(consumerId));
+                if (memberList.isEmpty()) {
+                    members.remove(key);
+                    partitionCounts.remove(key);
+                    return;
+                }
+                rebalanceFromMembers(groupId, streamName, memberList);
             }
 
             private void rebalanceFromMembers(String groupId, String streamName, List<ConsumerMember> memberList) {
@@ -189,9 +202,9 @@ public sealed interface ConsumerGroupCoordinator {
         }
     }
 
-    record consumerGroupCoordinator(ClusterNode<KVCommand<AetherKey>> clusterNode,
-                                    AtomicReference<CoordinatorState> state) implements ConsumerGroupCoordinator {
-        private static final Logger log = LoggerFactory.getLogger(consumerGroupCoordinator.class);
+    record DefaultConsumerGroupCoordinator(ClusterNode<KVCommand<AetherKey>> clusterNode,
+                                          AtomicReference<CoordinatorState> state) implements ConsumerGroupCoordinator {
+        private static final Logger log = LoggerFactory.getLogger(DefaultConsumerGroupCoordinator.class);
 
         @Override public void onLeaderChange(LeaderChange leaderChange) {
             if (leaderChange.localNodeIsLeader()) {

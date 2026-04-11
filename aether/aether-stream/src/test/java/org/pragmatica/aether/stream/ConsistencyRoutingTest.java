@@ -18,7 +18,7 @@ import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
-import static org.pragmatica.aether.stream.StreamPublisherImpl.streamPublisher;
+import static org.pragmatica.aether.stream.DefaultStreamPublisher.streamPublisher;
 import static org.pragmatica.aether.stream.consensus.ConsensusPublishPath.consensusPublishPath;
 
 class ConsistencyRoutingTest {
@@ -73,7 +73,7 @@ class ConsistencyRoutingTest {
             };
             var consensusPath = consensusPublishPath(countingProposer);
 
-            var publisher = StreamPublisherImpl.streamPublisher(
+            var publisher = DefaultStreamPublisher.streamPublisher(
                 partitionManager, serializer, STREAM, PARTITION_COUNT,
                 Option.<Function<byte[], Object>>none(),
                 ConsistencyMode.STRONG, Option.some(consensusPath));
