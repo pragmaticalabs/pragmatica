@@ -15,7 +15,10 @@ public sealed interface StreamError extends Cause {
         CONSUMER_STALLED("Consumer is stalled due to processing failure"),
         CONSUMER_RUNTIME_CLOSED("Consumer runtime has been closed"),
         STREAM_MEMORY_EXCEEDED("Total off-heap memory limit exceeded"),
-        CONSENSUS_PATH_UNAVAILABLE("Consensus publish path not configured for STRONG consistency stream");
+        CONSENSUS_PATH_UNAVAILABLE("Consensus publish path not configured for STRONG consistency stream"),
+        BUFFER_FULL("Ring buffer is full, STRONG consistency prevents eviction"),
+        AHSE_REQUIRED_FOR_STRONG("STRONG consistency requires AHSE storage (EvictionListener must not be NOOP)"),
+        PARTITION_NOT_LOCAL("Stream partition is not owned by this node");
         private final String message;
         General(String message) {
             this.message = message;

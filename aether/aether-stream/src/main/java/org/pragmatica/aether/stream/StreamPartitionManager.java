@@ -5,6 +5,7 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -65,6 +66,10 @@ public final class StreamPartitionManager implements AutoCloseable {
         return totalAllocatedBytes.get();
     }
 
+    public long maxTotalBytes() {
+        return maxTotalBytes;
+    }
+
     public Result<Unit> createStream(StreamConfig config) {
         if (streams.containsKey(config.name())) {return StreamError.General.STREAM_ALREADY_EXISTS.result();}
         if (config.consistencyMode() == ConsistencyMode.STRONG && evictionListener == EvictionListener.NOOP) {return StreamError.General.AHSE_REQUIRED_FOR_STRONG.result();}
@@ -86,7 +91,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     public Result<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {
-        return resolveStreamEntry(streamName).flatMap(entry -> appendToPartition(entry, streamName, partition, payload, timestamp))
+        return resolveStreamEntry(streamName).flatMap(entry -> appendToPartition(entry,
+                                                                                 streamName,
+                                                                                 partition,
+                                                                                 payload,
+                                                                                 timestamp))
                                  .onSuccess(offset -> replicationManager.replicateEvent(streamName,
                                                                                         partition,
                                                                                         offset,
@@ -94,10 +103,22 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                         timestamp));
     }
 
-    private Result<Long> appendToPartition(StreamEntry entry, String streamName, int partition, byte[] payload, long timestamp) {
+    public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
+        return replicationManager.awaitReplication(streamName, partition, offset, minAcks);
+    }
+
+    private Result<Long> appendToPartition(StreamEntry entry,
+                                           String streamName,
+                                           int partition,
+                                           byte[] payload,
+                                           long timestamp) {
         return checkEventSize(entry, payload).flatMap(_ -> resolvePartitionBuffer(streamName, partition))
-                     .flatMap(buffer -> buffer.append(payload, timestamp))
-                     .onSuccess(_ -> entry.updateActivity());
+                             .flatMap(buffer -> buffer.append(payload, timestamp))
+                             .onSuccess(_ -> entry.updateActivity());
+    }
+
+    public Option<OffHeapRingBuffer> partitionBuffer(String streamName, int partition) {
+        return resolvePartitionBuffer(streamName, partition).option();
     }
 
     public Result<List<OffHeapRingBuffer.RawEvent>> readLocal(String streamName,
@@ -126,7 +147,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private void reapIfIdle(String name, StreamEntry entry, long now, AtomicInteger reaped) {
-        var maxAge = entry.config().retention().maxAgeMs();
+        var maxAge = entry.config().retention()
+                                 .maxAgeMs();
         var isEmpty = java.util.Arrays.stream(entry.partitions()).allMatch(b -> b.eventCount() == 0);
         var isExpired = (now - entry.createdAt()) > maxAge;
         var isIdle = (now - entry.lastActivity()) > maxAge;
@@ -136,7 +158,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
     }
 
-    private StreamEntry removeIfStillIdle(StreamEntry current, long capturedActivity, AtomicInteger reaped) {
+    @SuppressWarnings("JBCT-RET-03") private StreamEntry removeIfStillIdle(StreamEntry current,
+                                                                           long capturedActivity,
+                                                                           AtomicInteger reaped) {
         if (current.lastActivity() == capturedActivity) {
             closeAndRelease(current);
             reaped.incrementAndGet();
