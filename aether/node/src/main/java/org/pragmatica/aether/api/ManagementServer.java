@@ -52,6 +52,7 @@ import org.pragmatica.aether.deployment.DeploymentMap.SliceInstanceInfo;
 import org.pragmatica.aether.metrics.observability.HttpRequestObserver;
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
@@ -303,7 +304,9 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(BackupRoutes.backupRoutes(() -> nodeSupplier.get().backupService(),
                                                    nodeSupplier));
         routeSources.add(SchemaRoutes.schemaRoutes(nodeSupplier));
-        routeSources.add(StreamRoutes.streamRoutes(nodeSupplier));
+        routeSources.add(StreamRoutes.streamRoutes(nodeSupplier,
+                                                   nodeSupplier.get().consumerGroupCoordinator(),
+                                                   nodeSupplier.get().consumerGroupRegistry()));
         routeSources.add(StorageRoutes.storageRoutes(nodeSupplier));
         routeSources.add(TaskRoutes.taskRoutes(nodeSupplier));
         dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm, nodeSupplier)));
@@ -461,10 +464,25 @@ class ManagementServerImpl implements ManagementServer {
         statusWsPublisher.start();
         eventWsPublisher.start();
         observability.registerTransportMetrics(() -> nodeSupplier.get().transportMetrics());
+        registerStreamMemoryMetrics();
         var transport = tls.isPresent()
                        ? "HTTPS"
                        : "HTTP";
         log.info("{} management server started on port {} (protocol: {}, dashboard at /)", transport, port, httpProtocol);
+    }
+
+    private void registerStreamMemoryMetrics() {
+        var spm = nodeSupplier.get().streamPartitionManager();
+        Supplier<Number> usedBytes = spm::totalAllocatedBytes;
+        Supplier<Number> usedRatio = () -> computeStreamMemoryRatio(spm);
+        observability.gauge("aether.streams.memory.used.bytes", usedBytes);
+        observability.gauge("aether.streams.memory.used.ratio", usedRatio);
+    }
+
+    private static double computeStreamMemoryRatio(StreamPartitionManager spm) {
+        return spm.maxTotalBytes() > 0
+              ? (double) spm.totalAllocatedBytes() / spm.maxTotalBytes()
+              : 0.0;
     }
 
     private static String escapeJson(String value) {

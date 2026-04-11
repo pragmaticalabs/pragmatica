@@ -7,6 +7,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Enable insecure TLS mode for development builds (self-signed certs)
+export AETHER_INSECURE_DEV_MODE=true
+
 # Run maven silently, fail on BUILD FAILURE
 mvn_quiet() {
     local output

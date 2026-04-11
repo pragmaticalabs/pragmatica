@@ -29,6 +29,7 @@ import org.pragmatica.aether.deployment.schema.SchemaPolicy;
 import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
 import org.pragmatica.aether.deployment.delegation.TaskAssignmentCoordinator;
 import org.pragmatica.aether.deployment.delegation.TaskGroupActivator;
+import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.delegation.TaskGroupAssignmentRegistry;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
@@ -71,8 +72,25 @@ import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
 import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.slice.*;
 import org.pragmatica.aether.storage.DelegatedStorageAdapter;
+import org.pragmatica.aether.storage.DhtStorageTier;
+import org.pragmatica.storage.MemoryTier;
+import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
+import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
+import org.pragmatica.aether.stream.StreamPublisherFactory;
 import org.pragmatica.aether.stream.StreamingCoordinator;
+import org.pragmatica.aether.stream.forward.StreamForwardClient;
+import org.pragmatica.aether.stream.forward.StreamForwardHandler;
+import org.pragmatica.aether.stream.forward.StreamForwardMessage;
+import org.pragmatica.aether.stream.forward.StreamForwardTransport;
+import org.pragmatica.aether.stream.replication.GovernorFailoverHandler;
+import org.pragmatica.aether.stream.replication.ReplicaRegistry;
+import org.pragmatica.aether.stream.replication.StreamPartitionRecovery;
+import org.pragmatica.aether.stream.replication.WatermarkTracker;
+import org.pragmatica.aether.stream.segment.RetentionEnforcer;
+import org.pragmatica.aether.stream.segment.SegmentIndex;
+import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -207,6 +225,8 @@ public interface AetherNode extends ManageableNode {
     ClusterEventAggregator eventAggregator();
     BackupService backupService();
     StreamPartitionManager streamPartitionManager();
+    ConsumerGroupCoordinator consumerGroupCoordinator();
+    ConsumerGroupRegistry consumerGroupRegistry();
     TaskAssignmentCoordinator taskAssignmentCoordinator();
     Map<String, StorageFactory.StorageSetup> storageSetups();
     Option<CertificateRenewalScheduler> certRenewalScheduler();
@@ -298,6 +318,19 @@ public interface AetherNode extends ManageableNode {
                            () -> Base64.getDecoder().decode(encoded.trim()));
     }
 
+    long DEFAULT_STREAM_RETENTION_MS = 24 * 60 * 60 * 1000L;
+
+    long DEFAULT_STREAM_MEMORY_BYTES = 16 * 1024 * 1024L;
+
+    private static StorageInstance createStreamStorage(Option<DHTClient> dhtClient) {
+        var memoryTier = MemoryTier.memoryTier(DEFAULT_STREAM_MEMORY_BYTES);
+        return dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "stream-segments")).map(dht -> StorageInstance.storageInstance("streams",
+                                                                                                                                            List.of(memoryTier,
+                                                                                                                                                    dht)))
+                            .or(StorageInstance.storageInstance("streams",
+                                                                List.of(memoryTier)));
+    }
+
     private static Result<AetherNode> assembleNode(AetherNodeConfig config,
                                                    MessageRouter.DelegateRouter delegateRouter,
                                                    KVStore<AetherKey, AetherValue> kvStore,
@@ -383,6 +416,8 @@ public interface AetherNode extends ManageableNode {
                           ClusterEventAggregator eventAggregator,
                           BackupService backupService,
                           StreamPartitionManager streamPartitionManager,
+                          ConsumerGroupCoordinator consumerGroupCoordinator,
+                          ConsumerGroupRegistry consumerGroupRegistry,
                           TaskAssignmentCoordinator taskAssignmentCoordinator,
                           TaskGroupAssignmentRegistry taskGroupAssignmentRegistry,
                           Map<String, StorageFactory.StorageSetup> storageSetups,
@@ -815,7 +850,8 @@ public interface AetherNode extends ManageableNode {
         taskGroupActivator.register(clusterDeploymentManager);
         loadBalancerManager.onPresent(taskGroupActivator::register);
         taskGroupActivator.register(DelegatedStorageAdapter.noOp());
-        taskGroupActivator.register(StreamingCoordinator.noOp());
+        var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
+        var consumerGroupCoordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode);
         var managementServerRef = new java.util.concurrent.atomic.AtomicReference<Option<ManagementServer>>(Option.empty());
         var aetherEntries = collectRouteEntries(kvStore,
                                                 nodeDeploymentManager,
@@ -853,6 +889,8 @@ public interface AetherNode extends ManageableNode {
                                                 taskGroupActivator,
                                                 taskAssignmentCoordinator,
                                                 taskGroupAssignmentRegistry,
+                                                consumerGroupCoordinator,
+                                                consumerGroupRegistry,
                                                 managementServerRef);
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetRequest.class,
                                                     request -> dhtNode.handleGetRequest(request,
@@ -934,7 +972,34 @@ public interface AetherNode extends ManageableNode {
                                                                                    rotatingEncryptor)));
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> swimHealthDetector.onNodeConnected(connection.nodeId())));
-        var streamPartitionManager = StreamPartitionManager.streamPartitionManager();
+        var streamMaxMemoryBytes = resolveStreamMaxMemoryBytes();
+        var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes);
+        var streamSegmentIndex = new SegmentIndex();
+        var streamWatermarkTracker = WatermarkTracker.watermarkTracker();
+        var streamStorage = createStreamStorage(dhtClientOption);
+        var streamSegmentReader = SegmentReader.segmentReader(streamStorage, streamSegmentIndex);
+        var streamRetentionEnforcer = RetentionEnforcer.retentionEnforcer(streamStorage,
+                                                                          streamSegmentIndex,
+                                                                          DEFAULT_STREAM_RETENTION_MS);
+        var streamFailoverHandler = GovernorFailoverHandler.governorFailoverHandler(ReplicaRegistry.replicaRegistry(),
+                                                                                    StreamPartitionRecovery.NOOP);
+        var streamingCoordinator = StreamingCoordinator.streamingCoordinator(streamFailoverHandler,
+                                                                             streamRetentionEnforcer,
+                                                                             streamPartitionManager,
+                                                                             streamWatermarkTracker,
+                                                                             streamSegmentIndex,
+                                                                             streamSegmentReader);
+        taskGroupActivator.register(streamingCoordinator);
+        var streamForwardTransport = createStreamForwardTransport(clusterNode.network());
+        var streamForwardClient = StreamForwardClient.streamForwardClient(config.self(), streamForwardTransport);
+        var streamForwardHandler = StreamForwardHandler.streamForwardHandler(config.self(),
+                                                                             streamPartitionManager,
+                                                                             streamForwardTransport);
+        allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.PublishForward.class,
+                                                 streamForwardHandler::onPublishForward));
+        allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.PublishForwardResponse.class,
+                                                 streamForwardClient::onPublishForwardResponse));
+        registerStreamForwardExtensions(resourceProviderSetup, streamForwardClient, taskGroupAssignmentRegistry);
         var certRenewalScheduler = createCertRenewalScheduler(config,
                                                               clusterNode,
                                                               appHttpServer,
@@ -980,6 +1045,8 @@ public interface AetherNode extends ManageableNode {
                                   eventAggregator,
                                   BackupService.disabled(),
                                   streamPartitionManager,
+                                  consumerGroupCoordinator,
+                                  consumerGroupRegistry,
                                   taskAssignmentCoordinator,
                                   taskGroupAssignmentRegistry,
                                   storageSetups,
@@ -1060,6 +1127,8 @@ public interface AetherNode extends ManageableNode {
                                                                               eventAggregator,
                                                                               BackupService.disabled(),
                                                                               streamPartitionManager,
+                                                                              consumerGroupCoordinator,
+                                                                              consumerGroupRegistry,
                                                                               taskAssignmentCoordinator,
                                                                               taskGroupAssignmentRegistry,
                                                                               storageSetups,
@@ -1341,6 +1410,12 @@ public interface AetherNode extends ManageableNode {
                                                                      cause.message()));
     }
 
+    private static long resolveStreamMaxMemoryBytes() {
+        return Option.option(System.getenv("STREAM_MAX_MEMORY_BYTES")).filter(s -> !s.isBlank())
+                            .flatMap(s -> Result.lift(() -> Long.parseLong(s)).option())
+                            .or(128 * 1024 * 1024L);
+    }
+
     private static String resolveHostname(AetherNodeConfig config) {
         return config.topology().coreNodes()
                               .stream()
@@ -1402,6 +1477,8 @@ public interface AetherNode extends ManageableNode {
                                                                     TaskGroupActivator taskGroupActivator,
                                                                     TaskAssignmentCoordinator taskAssignmentCoordinator,
                                                                     TaskGroupAssignmentRegistry taskGroupAssignmentRegistry,
+                                                                    ConsumerGroupCoordinator consumerGroupCoordinator,
+                                                                    ConsumerGroupRegistry consumerGroupRegistry,
                                                                     java.util.concurrent.atomic.AtomicReference<Option<ManagementServer>> managementServerRef) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
         var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
@@ -1512,6 +1589,8 @@ public interface AetherNode extends ManageableNode {
         kvRouterBuilder.onRemove(AetherKey.TaskAssignmentKey.class, taskGroupActivator::onTaskAssignmentRemove);
         kvRouterBuilder.onPut(AetherKey.TaskAssignmentKey.class, taskGroupAssignmentRegistry::onTaskAssignmentPut);
         kvRouterBuilder.onRemove(AetherKey.TaskAssignmentKey.class, taskGroupAssignmentRegistry::onTaskAssignmentRemove);
+        kvRouterBuilder.onPut(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupPut);
+        kvRouterBuilder.onRemove(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupRemove);
         entries.addAll(kvRouterBuilder.build().asRouteEntries());
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, controlLoop::onQuorumStateChange));
@@ -1522,6 +1601,8 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, appHttpServer::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               taskAssignmentCoordinator::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              consumerGroupCoordinator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> activateOnLeaderChange(change, clusterTopologyManager)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
@@ -1775,5 +1856,25 @@ public interface AetherNode extends ManageableNode {
         spi.registerExtension(TopicSubscriptionRegistry.class, topicSubscriptionRegistry);
         spi.registerExtension(SliceInvoker.class, sliceInvoker);
         spi.registerExtension(DHTClient.class, cacheDhtClient);
+    }
+
+    private static StreamForwardTransport createStreamForwardTransport(ClusterNetwork network) {
+        return network::send;
+    }
+
+    private static void registerStreamForwardExtensions(ResourceProviderSetup resourceProviderSetup,
+                                                        StreamForwardClient forwardClient,
+                                                        TaskGroupAssignmentRegistry registry) {
+        resourceProviderSetup.spiProvider()
+                                         .onPresent(spi -> registerForwardExtensionsOnSpi(spi, forwardClient, registry));
+    }
+
+    private static void registerForwardExtensionsOnSpi(SpiResourceProvider spi,
+                                                       StreamForwardClient forwardClient,
+                                                       TaskGroupAssignmentRegistry registry) {
+        spi.registerExtension(StreamForwardClient.class, forwardClient);
+        spi.registerExtension(StreamPublisherFactory.GovernorResolver.class,
+                              new StreamPublisherFactory.GovernorResolver(() -> registry.ownerFor(TaskGroup.STREAMING)
+                                                                                                 .option()));
     }
 }

@@ -2,12 +2,17 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.PartitionInfo;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamInfo;
+import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
+import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator.ConsumerInfo;
+import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.PathParameter;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
@@ -20,6 +25,7 @@ import org.pragmatica.lang.utils.Causes;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -35,13 +41,21 @@ public final class StreamRoutes implements RouteSource {
     private static final int DEFAULT_PARTITIONS = 4;
 
     private final Supplier<ManageableNode> nodeSupplier;
+    private final ConsumerGroupCoordinator coordinator;
+    private final ConsumerGroupRegistry registry;
 
-    private StreamRoutes(Supplier<ManageableNode> nodeSupplier) {
+    private StreamRoutes(Supplier<ManageableNode> nodeSupplier,
+                         ConsumerGroupCoordinator coordinator,
+                         ConsumerGroupRegistry registry) {
         this.nodeSupplier = nodeSupplier;
+        this.coordinator = coordinator;
+        this.registry = registry;
     }
 
-    public static StreamRoutes streamRoutes(Supplier<ManageableNode> nodeSupplier) {
-        return new StreamRoutes(nodeSupplier);
+    public static StreamRoutes streamRoutes(Supplier<ManageableNode> nodeSupplier,
+                                            ConsumerGroupCoordinator coordinator,
+                                            ConsumerGroupRegistry registry) {
+        return new StreamRoutes(nodeSupplier, coordinator, registry);
     }
 
     record StreamListResponse(List<StreamSummary> streams){}
@@ -82,6 +96,16 @@ public final class StreamRoutes implements RouteSource {
 
     record ReadEventsResponse(List<EventRecord> events){}
 
+    record StreamDeleteResponse(String name, String status){}
+
+    record StreamConsumersResponse(String name, List<PartitionInfo> partitions){}
+
+    record JoinGroupRequest(String groupId, String streamName, int partitionCount, String consumerId){}
+
+    record LeaveGroupRequest(String groupId, String streamName, String consumerId){}
+
+    record GroupStatusResponse(String groupId, Map<String, List<ConsumerInfo>> streams){}
+
     @Override public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<StreamCreateResponse>route(ManagementRoute.STREAM_CREATE)
                                          .withBody(StreamCreateRequest.class)
@@ -107,8 +131,29 @@ public final class StreamRoutes implements RouteSource {
                                          .withPath(PathParameter.aString(),
                                                    PathParameter.aInteger())
                                          .withQuery(QueryParameter.aLong("from"),
-                                                    QueryParameter.aInteger("max"))
-                                         .toValue(this::readEvents)
+                                                    QueryParameter.aInteger("max"),
+                                                    QueryParameter.aString("readPreference"))
+                                         .toResult(this::readEvents)
+                                         .asJson(),
+                         ManagementRoutes.<StreamDeleteResponse>route(ManagementRoute.STREAM_DELETE)
+                                         .withPath(PathParameter.aString())
+                                         .toResult(this::deleteStream)
+                                         .asJson(),
+                         ManagementRoutes.<StreamConsumersResponse>route(ManagementRoute.STREAM_CONSUMERS)
+                                         .withPath(PathParameter.aString())
+                                         .toResult(this::streamConsumers)
+                                         .asJson(),
+                         ManagementRoutes.<GroupStatusResponse>route(ManagementRoute.CONSUMER_GROUP_JOIN)
+                                         .withBody(JoinGroupRequest.class)
+                                         .toResult(this::joinGroup)
+                                         .asJson(),
+                         ManagementRoutes.<GroupStatusResponse>route(ManagementRoute.CONSUMER_GROUP_LEAVE)
+                                         .withBody(LeaveGroupRequest.class)
+                                         .toResult(this::leaveGroup)
+                                         .asJson(),
+                         ManagementRoutes.<GroupStatusResponse>route(ManagementRoute.CONSUMER_GROUP_STATUS)
+                                         .withPath(PathParameter.aString())
+                                         .toResult(this::groupStatus)
                                          .asJson());
     }
 
@@ -142,6 +187,10 @@ public final class StreamRoutes implements RouteSource {
     }
 
     private Result<PublishResponse> publishEvent(String name, PublishRequest request) {
+        return publishToPartition(name, request);
+    }
+
+    private Result<PublishResponse> publishToPartition(String name, PublishRequest request) {
         var payload = request.data().getBytes(StandardCharsets.UTF_8);
         ensureStreamExists(name);
         return streamManager().publishLocal(name, 0, payload, System.currentTimeMillis()).map(PublishResponse::new);
@@ -169,17 +218,62 @@ public final class StreamRoutes implements RouteSource {
                                                                "latest"));
     }
 
-    private ReadEventsResponse readEvents(String name,
-                                          Integer partition,
-                                          Option<Long> fromOpt,
-                                          Option<Integer> maxOpt) {
+    private Result<ReadEventsResponse> readEvents(String name,
+                                                  Integer partition,
+                                                  Option<Long> fromOpt,
+                                                  Option<Integer> maxOpt,
+                                                  Option<String> readPreferenceOpt) {
+        return readLocalEvents(name, partition, fromOpt, maxOpt);
+    }
+
+    private Result<ReadEventsResponse> readLocalEvents(String name,
+                                                       Integer partition,
+                                                       Option<Long> fromOpt,
+                                                       Option<Integer> maxOpt) {
         var fromOffset = fromOpt.or(0L);
         var maxEvents = maxOpt.or(DEFAULT_MAX_EVENTS);
-        var events = streamManager().readLocal(name, partition, fromOffset, maxEvents)
-                                  .map(list -> list.stream().map(EventRecord::fromRawEvent)
-                                                          .toList())
-                                  .or(List.of());
-        return new ReadEventsResponse(events);
+        return streamManager().readLocal(name, partition, fromOffset, maxEvents)
+                            .map(list -> list.stream().map(EventRecord::fromRawEvent)
+                                                    .toList())
+                            .map(ReadEventsResponse::new);
+    }
+
+    private static ReadPreference parseReadPreference(String value) {
+        return switch (value.toUpperCase()){
+            case "ANY_REPLICA", "ANY-REPLICA" -> ReadPreference.ANY_REPLICA;
+            case "NEAREST" -> ReadPreference.NEAREST;
+            default -> ReadPreference.GOVERNOR;
+        };
+    }
+
+    private Result<StreamDeleteResponse> deleteStream(String name) {
+        return streamManager().destroyStream(name).map(_ -> new StreamDeleteResponse(name, "deleted"));
+    }
+
+    private Result<StreamConsumersResponse> streamConsumers(String name) {
+        return streamManager().allPartitionInfo(name).map(partitions -> new StreamConsumersResponse(name, partitions));
+    }
+
+    private Result<GroupStatusResponse> joinGroup(JoinGroupRequest request) {
+        return coordinator.joinGroup(request.groupId(),
+                                     request.streamName(),
+                                     request.partitionCount(),
+                                     request.consumerId(),
+                                     nodeSupplier.get().self())
+        .map(_ -> new GroupStatusResponse(request.groupId(),
+                                          coordinator.groupStatus(request.groupId())));
+    }
+
+    private Result<GroupStatusResponse> leaveGroup(LeaveGroupRequest request) {
+        return coordinator.leaveGroup(request.groupId(),
+                                      request.streamName(),
+                                      request.consumerId())
+        .map(_ -> new GroupStatusResponse(request.groupId(),
+                                          coordinator.groupStatus(request.groupId())));
+    }
+
+    private Result<GroupStatusResponse> groupStatus(String groupId) {
+        return Result.success(new GroupStatusResponse(groupId, coordinator.groupStatus(groupId)));
     }
 
     private StreamPartitionManager streamManager() {

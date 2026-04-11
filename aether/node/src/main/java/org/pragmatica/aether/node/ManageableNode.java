@@ -22,6 +22,8 @@ import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
+import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.ttm.TTMManager;
 import org.pragmatica.aether.update.AbTestManager;
 import org.pragmatica.aether.update.DeploymentManager;
@@ -67,6 +69,8 @@ public interface ManageableNode {
     ClusterEventAggregator eventAggregator();
     BackupService backupService();
     StreamPartitionManager streamPartitionManager();
+    ConsumerGroupCoordinator consumerGroupCoordinator();
+    ConsumerGroupRegistry consumerGroupRegistry();
     TaskAssignmentCoordinator taskAssignmentCoordinator();
     TaskGroupAssignmentRegistry taskGroupAssignmentRegistry();
     Map<String, StorageFactory.StorageSetup> storageSetups();

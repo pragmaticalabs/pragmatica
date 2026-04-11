@@ -37,7 +37,7 @@ class HetznerCloudIT {
         client = HetznerClient.hetznerClient(config);
 
         var envConfig = HetznerEnvironmentConfig.hetznerEnvironmentConfig(
-            config, "cx22", "ubuntu-24.04", "fsn1",
+            config, "cax11", "ubuntu-24.04", "fsn1",
             List.of(), List.of(), List.of(), "").unwrap();
 
         provider = HetznerComputeProvider.hetznerComputeProvider(client, envConfig).unwrap();
