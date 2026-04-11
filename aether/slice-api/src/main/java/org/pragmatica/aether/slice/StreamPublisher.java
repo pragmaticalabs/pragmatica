@@ -3,6 +3,8 @@ package org.pragmatica.aether.slice;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+import java.util.List;
+
 
 /// Functional interface for publishing events to a stream partition.
 ///
@@ -22,6 +24,11 @@ import org.pragmatica.lang.Unit;
 ///
 /// static OrderService orderService(@OrderStream StreamPublisher<OrderEvent> stream) { ... }
 /// }```
-@FunctionalInterface public interface StreamPublisher<T> {
+public interface StreamPublisher<T> {
     Promise<Unit> publish(T event);
+
+    default Promise<Unit> publishBatch(List<T> events) {
+        return Promise.allOf(events.stream().map(this::publish)
+                                          .toList()).mapToUnit();
+    }
 }

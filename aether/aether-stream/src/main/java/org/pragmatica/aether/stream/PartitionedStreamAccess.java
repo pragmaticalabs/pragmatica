@@ -1,6 +1,10 @@
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.StreamAccess;
+import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
+import org.pragmatica.aether.stream.replication.ReplicaRegistry;
+import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.aether.stream.segment.CursorStore;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.lang.Option;
@@ -10,10 +14,12 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
+import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.stream.IntStream;
@@ -35,6 +41,8 @@ import static org.pragmatica.lang.Result.allOf;
 
     private static final CursorCheckpointWriter NOOP_WRITER = (_, _, _, _) -> Promise.unitPromise();
 
+    private static final System.Logger LOG = System.getLogger(PartitionedStreamAccess.class.getName());
+
     private final StreamPartitionManager partitionManager;
     private final Serializer serializer;
     private final Deserializer deserializer;
@@ -44,6 +52,8 @@ import static org.pragmatica.lang.Result.allOf;
     private final CursorCheckpointWriter cursorWriter;
     private final Option<TieredStreamReader> tieredReader;
     private final Option<CursorStore> cursorStore;
+    private final ReadPreference readPreference;
+    private final Option<ReplicaRegistry> replicaRegistry;
     private final AtomicLong roundRobinCounter;
     private final ConcurrentHashMap<ConsumerPartitionKey, Long> committedOffsets;
 
@@ -55,7 +65,9 @@ import static org.pragmatica.lang.Result.allOf;
                                     Option<Function<T, Object>> partitionKeyExtractor,
                                     CursorCheckpointWriter cursorWriter,
                                     Option<TieredStreamReader> tieredReader,
-                                    Option<CursorStore> cursorStore) {
+                                    Option<CursorStore> cursorStore,
+                                    ReadPreference readPreference,
+                                    Option<ReplicaRegistry> replicaRegistry) {
         this.partitionManager = partitionManager;
         this.serializer = serializer;
         this.deserializer = deserializer;
@@ -65,6 +77,8 @@ import static org.pragmatica.lang.Result.allOf;
         this.cursorWriter = cursorWriter;
         this.tieredReader = tieredReader;
         this.cursorStore = cursorStore;
+        this.readPreference = readPreference;
+        this.replicaRegistry = replicaRegistry;
         this.roundRobinCounter = new AtomicLong(0);
         this.committedOffsets = new ConcurrentHashMap<>();
     }
@@ -83,6 +97,8 @@ import static org.pragmatica.lang.Result.allOf;
                                              partitionKeyExtractor,
                                              NOOP_WRITER,
                                              Option.none(),
+                                             Option.none(),
+                                             ReadPreference.GOVERNOR,
                                              Option.none());
     }
 
@@ -101,6 +117,8 @@ import static org.pragmatica.lang.Result.allOf;
                                              partitionKeyExtractor,
                                              cursorWriter,
                                              Option.none(),
+                                             Option.none(),
+                                             ReadPreference.GOVERNOR,
                                              Option.none());
     }
 
@@ -120,6 +138,8 @@ import static org.pragmatica.lang.Result.allOf;
                                              partitionKeyExtractor,
                                              cursorWriter,
                                              Option.some(tieredReader),
+                                             Option.none(),
+                                             ReadPreference.GOVERNOR,
                                              Option.none());
     }
 
@@ -140,7 +160,33 @@ import static org.pragmatica.lang.Result.allOf;
                                              partitionKeyExtractor,
                                              cursorWriter,
                                              Option.some(tieredReader),
-                                             Option.some(cursorStore));
+                                             Option.some(cursorStore),
+                                             ReadPreference.GOVERNOR,
+                                             Option.none());
+    }
+
+    public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              String streamName,
+                                                              int partitionCount,
+                                                              Option<Function<T, Object>> partitionKeyExtractor,
+                                                              CursorCheckpointWriter cursorWriter,
+                                                              TieredStreamReader tieredReader,
+                                                              CursorStore cursorStore,
+                                                              ReadPreference readPreference,
+                                                              ReplicaRegistry replicaRegistry) {
+        return new PartitionedStreamAccess<>(partitionManager,
+                                             serializer,
+                                             deserializer,
+                                             streamName,
+                                             partitionCount,
+                                             partitionKeyExtractor,
+                                             cursorWriter,
+                                             Option.some(tieredReader),
+                                             Option.some(cursorStore),
+                                             readPreference,
+                                             Option.some(replicaRegistry));
     }
 
     @Override public Promise<Long> publish(T event) {
@@ -154,7 +200,16 @@ import static org.pragmatica.lang.Result.allOf;
     }
 
     @Override public Promise<List<StreamEvent<T>>> fetch(int partition, long fromOffset, int maxEvents) {
-        return readPartition(partition, fromOffset, maxEvents).async();
+        return readWithPreference(partition, fromOffset, maxEvents).async();
+    }
+
+    public Result<MemorySegment> readSlice(int partition, long offset) {
+        return partitionManager.partitionBuffer(streamName, partition).toResult(StreamError.General.PARTITION_NOT_LOCAL)
+                                               .flatMap(buffer -> buffer.readSlice(offset));
+    }
+
+    public ReadPreference readPreference() {
+        return readPreference;
     }
 
     @Override public Promise<Unit> commit(String consumerGroup, int partition, long offset) {
@@ -195,6 +250,40 @@ import static org.pragmatica.lang.Result.allOf;
                                                                                                                                 maxEvents))
                                                                                 .toList();
         return allOf(perPartitionResults).map(lists -> mergeAndLimit(lists, maxEvents)).async();
+    }
+
+    private Result<List<StreamEvent<T>>> readWithPreference(int partition, long fromOffset, int maxEvents) {
+        return switch (readPreference){
+            case GOVERNOR -> readPartition(partition, fromOffset, maxEvents);
+            case ANY_REPLICA, NEAREST -> readFromReplicaOrLocal(partition, fromOffset, maxEvents);
+        };
+    }
+
+    private Result<List<StreamEvent<T>>> readFromReplicaOrLocal(int partition, long fromOffset, int maxEvents) {
+        return replicaRegistry.map(registry -> selectReplicaAndRead(registry, partition, fromOffset, maxEvents))
+                                  .or(() -> readPartition(partition, fromOffset, maxEvents));
+    }
+
+    private Result<List<StreamEvent<T>>> selectReplicaAndRead(ReplicaRegistry registry,
+                                                              int partition,
+                                                              long fromOffset,
+                                                              int maxEvents) {
+        var caughtUpReplicas = registry.replicasFor(streamName, partition).stream()
+                                                   .filter(PartitionedStreamAccess::isCaughtUp)
+                                                   .toList();
+        if (caughtUpReplicas.isEmpty()) {return readPartition(partition, fromOffset, maxEvents);}
+        var selected = caughtUpReplicas.get(ThreadLocalRandom.current().nextInt(caughtUpReplicas.size()));
+        LOG.log(System.Logger.Level.DEBUG,
+                "ReadPreference {0}: selected replica {1} for {2}[{3}], falling back to local read (remote forwarding is Phase 2)",
+                readPreference,
+                selected.nodeId(),
+                streamName,
+                partition);
+        return readPartition(partition, fromOffset, maxEvents);
+    }
+
+    private static boolean isCaughtUp(ReplicaDescriptor descriptor) {
+        return descriptor.state() == ReplicationState.CAUGHT_UP;
     }
 
     private Result<List<StreamEvent<T>>> readPartition(int partition, long fromOffset, int maxEvents) {

@@ -7,6 +7,8 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.Deserializer;
 
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.util.function.Function;
 
 
@@ -23,6 +25,19 @@ import java.util.function.Function;
 
     static <T> ConsumerCallback singleEvent(Deserializer deserializer, Function<T, Promise<Unit>> handler) {
         return (offset, payload, timestamp) -> invokeHandler(deserializer, handler, payload);
+    }
+
+    static <T> ConsumerCallback zeroCopy(Deserializer deserializer, Function<T, Promise<Unit>> handler) {
+        return (offset, payload, timestamp) -> invokeHandler(deserializer, handler, payload);
+    }
+
+    static <T> Result<Unit> invokeFromSlice(Deserializer deserializer,
+                                            Function<T, Promise<Unit>> handler,
+                                            MemorySegment slice) {
+        var bytes = slice.toArray(ValueLayout.JAVA_BYTE);
+        T event = deserializer.decode(bytes);
+        return handler.apply(event).timeout(HANDLER_TIMEOUT)
+                            .await();
     }
 
     static <T> StreamConsumerRuntime.BatchConsumerCallback batch(Deserializer deserializer,
