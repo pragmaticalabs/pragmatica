@@ -89,6 +89,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Docker Compose random secret** — Fallback cluster secret uses `SecureRandom` 32-byte hex instead of hardcoded `"auto-generated-compose-secret"`
 - **SSH image name validation** — Docker image names validated against safe pattern before interpolation into SSH commands, preventing command injection
 - **API key file storage** — Bootstrap writes API key to `~/.aether/clusters/<name>/api-key` with 600 permissions instead of printing to stdout
+- **STRONG consistency eviction guard** — `REJECT_WHEN_FULL` eviction policy for STRONG streams prevents consensus-committed events from being silently evicted. AHSE required for STRONG stream creation
+- **Failover recovery wiring** — `StreamingCoordinator.activate()` triggers `GovernorFailoverHandler` for all streams on STREAMING task group activation. Replays events from AHSE segments + replica watermarks
+- **Cross-node stream publish forwarding** — Producers on any node can publish to any partition via direct QUIC messages (`StreamForwardMessage`). No HTTP overhead — binary protocol with correlation tracking and 5s timeout
+- **Consumer group coordination** — Automatic partition assignment using KV-Store-backed `ConsumerGroupCoordinator` (leader-side round-robin) + `ConsumerGroupRegistry` (read-side mirror). Join/leave/status management API endpoints
+- **Sync replication acknowledgment** — `replicateAndAwait(minSyncReplicas)` waits for N replica acks before resolving. Configurable via `StreamConfig.minSyncReplicas`
+- **Batch replication** — `ReplicationBatcher` accumulates events per partition (100 events or 1ms window) and sends single `ReplicateEvents` message. 10-50x reduction in QUIC message count
+- **Consumer read-preference** — `ReadPreference` enum (GOVERNOR, ANY_REPLICA, NEAREST) routes reads to replicas for load distribution
+- **Push notification for co-located consumers** — `OffHeapRingBuffer.appendListeners` invoke consumer callbacks immediately on append. Eliminates polling latency for same-JVM consumers (~1-10us)
+- **Adaptive polling** — Consumer poll interval adapts 1ms-50ms: doubles on empty poll, resets to 1ms on data. Replaces fixed 50ms
+- **Producer batching API** — `StreamPublisher.publishBatch(List<T>)` with `OffHeapRingBuffer.appendBatch()` for single eviction check and batch replication
+- **Zero-copy consumer** — `OffHeapRingBuffer.readSlice()` returns `MemorySegment` view into buffer. No `toArray()` copy for co-located consumers
+- **Push consumer cursor persistence** — `ConsumerRuntimeState` loads initial cursor from `CursorStore` and checkpoints every 1000 events or 30s
+- **Segment compression** — LZ4 and ZSTD compression for sealed segments via existing `CompressionCodec` infrastructure. Configured per stream via `StreamConfig.compression`
+- **Segment encryption** — AES-256-GCM encryption for sealed segments via existing `BlockEncryptor`. Configured per stream via `StreamConfig.encryptionKeyId`
+- **Transactional cursor commits** — `PgTransactionalCursorCommit` wraps cursor UPSERT + business logic in single PostgreSQL transaction for exactly-once semantics
+- **Compound retention policies** — `RetentionMode.ALL`/`ANY` combinators for time + count + size retention policies
+- **Stream deletion API** — `DELETE /api/streams/{name}` endpoint
+- **Consumer cursor/lag API** — `GET /api/streams/consumers/{name}` endpoint with partition offsets
+- **Stream memory configuration** — `STREAM_MAX_MEMORY_BYTES` env var (default 128MB) + `aether.streams.memory.used.ratio` Micrometer gauge
+- **Consumer timeout** — Auto-unsubscribe consumers idle for 60s
+- **QUIC auto-reconnect** — `TopologyObserver` re-adds configured core nodes removed from topology on each reconciliation cycle. Fixes LB losing connections to restarted nodes
+- **CTM env propagation** — `DockerComputeProvider` propagates `AETHER_INSECURE_DEV_MODE` and `AETHER_CLUSTER_SECRET` to provisioned containers
+
+### Changed
+- **`build.sh`** — Exports `AETHER_INSECURE_DEV_MODE=true` for development builds
 
 ## [1.0.0-alpha] - 2026-04-04
 
