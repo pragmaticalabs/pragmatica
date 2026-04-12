@@ -11,12 +11,13 @@ import org.pragmatica.aether.api.ManagementApiResponses.ScaleClusterResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ScaleRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.UpgradeRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.UpgradeResponse;
-import org.pragmatica.aether.config.cluster.ClusterConfigDiff;
-import org.pragmatica.aether.config.cluster.ClusterConfigDiff.ConfigChange;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigDiff;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigValidator;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
-import org.pragmatica.aether.config.cluster.ClusterConfigParser;
-import org.pragmatica.aether.config.cluster.ClusterConfigValidator;
-import org.pragmatica.aether.config.cluster.ClusterManagementConfig;
+import org.pragmatica.aether.config.cluster.DiffAction;
+import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.AetherNode;
@@ -177,29 +178,34 @@ import org.slf4j.LoggerFactory;
                                                                                                              request.tomlContent())));
     }
 
-    @SuppressWarnings("unchecked") private Promise<Object> storeInitialConfig(ClusterManagementConfig desired,
+    @SuppressWarnings("unchecked") private Promise<Object> storeInitialConfig(ClusterBootstrapConfig desired,
                                                                               String tomlContent) {
         var cluster = desired.cluster();
+        var coreCount = desired.derivedCoreCount();
+        var coreMin = desired.coreTopology().min().or(coreCount);
+        var coreMax = desired.coreTopology().max().or(coreCount);
+        var sourceType = desired.sources().values().stream()
+                                       .map(s -> s.type().value())
+                                       .findFirst().orElse("unknown");
         var configValue = new ClusterConfigValue(tomlContent,
                                                  cluster.name(),
                                                  cluster.version(),
-                                                 cluster.core().count(),
-                                                 cluster.core().min(),
-                                                 cluster.core().max(),
-                                                 desired.deployment().type()
-                                                                   .value(),
+                                                 coreCount,
+                                                 coreMin,
+                                                 coreMax,
+                                                 sourceType,
                                                  1,
                                                  System.currentTimeMillis());
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ClusterConfigKey.CURRENT, configValue);
         return nodeSupplier.get().<Object>apply(List.of(command))
                                .map(_ -> (Object) new ApplyConfigResponse(1,
                                                                           cluster.name(),
-                                                                          cluster.core().count(),
+                                                                          coreCount,
                                                                           configValue.updatedAt()));
     }
 
     private Promise<Object> processApply(ClusterConfigValue stored,
-                                         ClusterManagementConfig desired,
+                                         ClusterBootstrapConfig desired,
                                          ApplyConfigRequest request) {
         return checkVersionAsync(stored.configVersion(),
                                  request.expectedVersion()).flatMap(_ -> rebuildStoredConfigAsync(stored))
@@ -210,61 +216,71 @@ import org.slf4j.LoggerFactory;
     }
 
     private Promise<Object> executeDiff(ClusterConfigValue stored,
-                                        ClusterManagementConfig storedConfig,
-                                        ClusterManagementConfig desired,
+                                        ClusterBootstrapConfig storedConfig,
+                                        ClusterBootstrapConfig desired,
                                         String tomlContent) {
-        var diff = ClusterConfigDiff.diff(storedConfig, desired);
-        if (diff.hasImmutableChanges()) {return diff.validateAndExtractActions().async()
-                                                                              .map(actions -> (Object) actions);}
-        var actions = diff.actionableChanges();
-        if (actions.isEmpty()) {return buildDryRunResponse(stored, diff);}
-        return applier.apply(actions)
+        var plan = ClusterBootstrapConfigDiff.diff(storedConfig, desired);
+        if (plan.hasImmutableChanges()) {return buildImmutableChangeError(plan).promise();}
+        if (plan.isEmpty()) {return buildDryRunResponse(stored, plan);}
+        return applier.apply(plan.allActions())
                             .flatMap(_ -> storeUpdatedConfig(desired,
                                                              tomlContent,
                                                              stored.configVersion() + 1));
     }
 
-    private static Result<ClusterManagementConfig> parseAndValidateConfig(String tomlContent) {
-        return ClusterConfigParser.parse(tomlContent).flatMap(ClusterConfigValidator::validate);
+    private static ClusterConfigError.ValidationFailed buildImmutableChangeError(DiffPlan plan) {
+        var errors = plan.immutable().stream()
+                                   .map(a -> (ClusterConfigError) new ClusterConfigError.ImmutableFieldChange(a.description()))
+                                   .toList();
+        return new ClusterConfigError.ValidationFailed(errors);
     }
 
-    private static Promise<ClusterManagementConfig> rebuildStoredConfigAsync(ClusterConfigValue stored) {
-        return ClusterConfigParser.parse(stored.tomlContent()).async();
+    private static Result<ClusterBootstrapConfig> parseAndValidateConfig(String tomlContent) {
+        return ClusterBootstrapConfigParser.parse(tomlContent).flatMap(ClusterBootstrapConfigValidator::validate);
+    }
+
+    private static Promise<ClusterBootstrapConfig> rebuildStoredConfigAsync(ClusterConfigValue stored) {
+        return ClusterBootstrapConfigParser.parse(stored.tomlContent()).async();
     }
 
     private static Promise<Object> checkVersionAsync(long storedVersion, long expectedVersion) {
-        if (expectedVersion != 0 && storedVersion != expectedVersion) {return new org.pragmatica.aether.config.cluster.ClusterConfigError.VersionConflict(expectedVersion,
-                                                                                                                                                          storedVersion).promise();}
+        if (expectedVersion != 0 && storedVersion != expectedVersion) {return new ClusterConfigError.VersionConflict(expectedVersion,
+                                                                                                                      storedVersion).promise();}
         return Promise.unitPromise().map(u -> (Object) u);
     }
 
-    @SuppressWarnings("unchecked") private Promise<Object> storeUpdatedConfig(ClusterManagementConfig desired,
+    @SuppressWarnings("unchecked") private Promise<Object> storeUpdatedConfig(ClusterBootstrapConfig desired,
                                                                               String tomlContent,
                                                                               long newVersion) {
         var node = nodeSupplier.get();
         var cluster = desired.cluster();
+        var coreCount = desired.derivedCoreCount();
+        var coreMin = desired.coreTopology().min().or(coreCount);
+        var coreMax = desired.coreTopology().max().or(coreCount);
+        var sourceType = desired.sources().values().stream()
+                                       .map(s -> s.type().value())
+                                       .findFirst().orElse("unknown");
         var configValue = new ClusterConfigValue(tomlContent,
                                                  cluster.name(),
                                                  cluster.version(),
-                                                 cluster.core().count(),
-                                                 cluster.core().min(),
-                                                 cluster.core().max(),
-                                                 desired.deployment().type()
-                                                                   .value(),
+                                                 coreCount,
+                                                 coreMin,
+                                                 coreMax,
+                                                 sourceType,
                                                  newVersion,
                                                  System.currentTimeMillis());
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ClusterConfigKey.CURRENT, configValue);
         return node.<Object>apply(List.of(command))
                    .map(_ -> (Object) new ApplyConfigResponse(newVersion,
                                                               cluster.name(),
-                                                              cluster.core().count(),
+                                                              coreCount,
                                                               configValue.updatedAt()));
     }
 
-    private static Promise<Object> buildDryRunResponse(ClusterConfigValue stored, ClusterConfigDiff diff) {
-        var descriptions = diff.changes().stream()
-                                       .map(ClusterConfigRoutes::formatChange)
-                                       .toList();
+    private static Promise<Object> buildDryRunResponse(ClusterConfigValue stored, DiffPlan plan) {
+        var descriptions = plan.allActions().stream()
+                                          .map(ClusterConfigRoutes::formatAction)
+                                          .toList();
         return Promise.success((Object) new DryRunResponse(stored.clusterName(),
                                                            stored.configVersion(),
                                                            stored.configVersion(),
@@ -273,13 +289,8 @@ import org.slf4j.LoggerFactory;
                                                            0));
     }
 
-    private static String formatChange(ConfigChange change) {
-        var tag = change.isImmutable()
-                 ? "[REJECTED] "
-                 : change.requiresAction()
-                 ? "[ACTION]   "
-                 : "[NOOP]     ";
-        return tag + change.description();
+    private static String formatAction(DiffAction action) {
+        return action.symbol() + " " + action.description();
     }
 
     private Promise<ScaleClusterResponse> handleScale(ScaleRequest request) {
@@ -297,8 +308,9 @@ import org.slf4j.LoggerFactory;
     private Promise<ScaleClusterResponse> executeScale(ClusterConfigValue stored, ScaleRequest request) {
         var previousCount = stored.coreCount();
         var newVersion = stored.configVersion() + 1;
-        var scaleChange = new ConfigChange.ScaleCore(previousCount, request.coreCount());
-        return applier.apply(List.of(scaleChange)).flatMap(_ -> storeScaledConfig(stored,
+        var scaleAction = new DiffAction.ScaleUp("cluster", org.pragmatica.aether.config.cluster.NodeRole.CORE,
+                                                 previousCount, request.coreCount());
+        return applier.apply(List.of(scaleAction)).flatMap(_ -> storeScaledConfig(stored,
                                                                                   request.coreCount(),
                                                                                   newVersion))
                             .map(_ -> new ScaleClusterResponse(true,
