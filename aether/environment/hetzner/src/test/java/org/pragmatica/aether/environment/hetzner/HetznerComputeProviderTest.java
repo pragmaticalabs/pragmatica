@@ -10,6 +10,7 @@ import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.cloud.hetzner.HetznerError;
 import org.pragmatica.cloud.hetzner.api.Firewall;
+import org.pragmatica.cloud.hetzner.api.FloatingIp;
 import org.pragmatica.cloud.hetzner.api.LoadBalancer;
 import org.pragmatica.cloud.hetzner.api.Network;
 import org.pragmatica.cloud.hetzner.api.Server;
@@ -543,6 +544,21 @@ class HetznerComputeProviderTest {
                                                     new LoadBalancer.LbType(1, "lb11", "LB11"),
                                                     new LoadBalancer.Algorithm("round_robin"),
                                                     List.of()));
+        }
+
+        @Override
+        public Promise<List<FloatingIp>> listFloatingIps() {
+            return Promise.success(List.of());
+        }
+
+        @Override
+        public Promise<FloatingIp> getFloatingIp(long floatingIpId) {
+            return Promise.success(new FloatingIp(floatingIpId, "1.2.3.4", "ipv4", null, new FloatingIp.Location("fsn1", "Falkenstein", "DE"), Map.of()));
+        }
+
+        @Override
+        public Promise<Unit> assignFloatingIp(long floatingIpId, long serverId) {
+            return Promise.success(Unit.unit());
         }
     }
 }

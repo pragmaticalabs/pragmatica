@@ -37,10 +37,12 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_SCA
     @CommandLine.ParentCommand private ClusterCommand parent;
 
     @Override public Integer call() {
-        return resolveEffective().flatMap(pair -> validateCount(pair.count(), pair.role())
-                                                      .flatMap(this::fetchConfigVersion)
-                                                      .flatMap(version -> sendScaleRequest(version, pair.count(), pair.role())))
-                                .fold(ClusterScaleCommand::onFailure, this::onSuccess);
+        return resolveEffective().flatMap(pair -> validateCount(pair.count(),
+                                                                pair.role()).flatMap(this::fetchConfigVersion)
+                                                               .flatMap(version -> sendScaleRequest(version,
+                                                                                                    pair.count(),
+                                                                                                    pair.role())))
+                               .fold(ClusterScaleCommand::onFailure, this::onSuccess);
     }
 
     private Result<EffectiveScale> resolveEffective() {
@@ -49,7 +51,7 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_SCA
         return new ScaleError.MissingCount().result();
     }
 
-    private record EffectiveScale(int count, String role) {}
+    private record EffectiveScale(int count, String role){}
 
     private static Result<Integer> validateCount(int targetCount, String role) {
         if ("core".equals(role)) {return validateCoreCount(targetCount);}

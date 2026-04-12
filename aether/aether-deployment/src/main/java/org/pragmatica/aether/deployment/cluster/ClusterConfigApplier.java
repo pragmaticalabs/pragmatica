@@ -42,7 +42,7 @@ public sealed interface ClusterConfigApplier {
     }
 
     private Promise<Unit> applySingle(DiffAction action) {
-        return switch (action) {
+        return switch (action){
             case ScaleUp scale -> applyScaleUp(scale);
             case ScaleDown scale -> applyScaleDown(scale);
             default -> logApplied(action);

@@ -21,7 +21,8 @@ sealed interface NodeConfigTemplate {
                          List<String> allNodeIps) {
         var ports = config.operations().ports();
         var clusterName = config.cluster().name();
-        var tlsEnabled = config.operations().tls().autoGenerate();
+        var tlsEnabled = config.operations().tls()
+                                          .autoGenerate();
         var coreCount = config.derivedCoreCount();
         var peers = buildPeersList(clusterName, allNodeIps, ports.cluster());
         var sb = new StringBuilder();

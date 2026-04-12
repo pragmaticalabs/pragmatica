@@ -207,9 +207,9 @@ import static org.pragmatica.lang.Result.success;
 
     private static void extractInlineDatabases(Map<String, Object> sectionData, Map<String, String> databases) {
         sectionData.entrySet().stream()
-                              .filter(entry -> entry.getKey().startsWith(DATABASES_PREFIX))
-                              .forEach(entry -> databases.put(entry.getKey().substring(DATABASES_PREFIX.length()),
-                                                              entry.getValue().toString()));
+                            .filter(entry -> entry.getKey().startsWith(DATABASES_PREFIX))
+                            .forEach(entry -> databases.put(entry.getKey().substring(DATABASES_PREFIX.length()),
+                                                            entry.getValue().toString()));
     }
 
     private static Map<NodeRole, RoleSubTable> parseRoles(TomlDocument doc, String sourceName, SourceType type) {

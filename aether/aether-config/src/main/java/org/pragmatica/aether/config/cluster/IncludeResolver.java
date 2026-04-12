@@ -67,8 +67,7 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static TomlDocument stripIncludeKey(TomlDocument doc) {
-        return Option.option(doc.sections().get(""))
-                            .filter(root -> root.containsKey("include"))
+        return Option.option(doc.sections().get("")).filter(root -> root.containsKey("include"))
                             .map(root -> removeIncludeFromRoot(doc, root))
                             .or(doc);
     }

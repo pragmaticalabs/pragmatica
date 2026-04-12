@@ -121,6 +121,21 @@ public sealed interface ClusterHttpClient {
                                    .flatMap(envName -> option(System.getenv(envName)));
     }
 
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) static Result<String> getDirect(String url) {
+        var builder = HttpRequest.newBuilder().uri(URI.create(url))
+                                            .GET();
+        return HTTP_OPS.sendString(builder.build()).await()
+                                  .flatMap(ClusterHttpClient::extractBody);
+    }
+
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) static Result<String> postDirect(String url, String jsonBody) {
+        var builder = HttpRequest.newBuilder().uri(URI.create(url))
+                                            .header("Content-Type", "application/json")
+                                            .POST(HttpRequest.BodyPublishers.ofString(jsonBody));
+        return HTTP_OPS.sendString(builder.build()).await()
+                                  .flatMap(ClusterHttpClient::extractBody);
+    }
+
     sealed interface HttpError extends Cause {
         HttpError NO_ACTIVE_CLUSTER = new SimpleError("No active cluster context. Use 'aether cluster use <name>' to select one.");
 

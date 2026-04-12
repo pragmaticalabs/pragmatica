@@ -15,42 +15,36 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
 
 /// Resolves compute providers from source profile configuration via SPI. Section 11.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public final class ProviderResolver {
-    private static final BootstrapError.ProvisionFailed NO_PROVIDER =
-        new BootstrapError.ProvisionFailed("cloud", "No cloud provider specified in source profile");
+    private static final BootstrapError.ProvisionFailed NO_PROVIDER = new BootstrapError.ProvisionFailed("cloud",
+                                                                                                         "No cloud provider specified in source profile");
 
-    private static final BootstrapError.ProvisionFailed NO_COMPUTE =
-        new BootstrapError.ProvisionFailed("cloud", "Provider does not support compute operations");
+    private static final BootstrapError.ProvisionFailed NO_COMPUTE = new BootstrapError.ProvisionFailed("cloud",
+                                                                                                        "Provider does not support compute operations");
 
     private ProviderResolver() {}
 
-    /// Resolve a ComputeProvider for a cloud source profile via the EnvironmentIntegrationFactory SPI.
     public static Result<ComputeProvider> resolveCloudCompute(SourceProfile source) {
-        return source.provider()
-                     .toResult(NO_PROVIDER)
-                     .flatMap(provider -> lookupAndCreateCloud(provider.value(), source))
-                     .flatMap(ProviderResolver::extractCompute);
+        return source.provider().toResult(NO_PROVIDER)
+                              .flatMap(provider -> lookupAndCreateCloud(provider.value(),
+                                                                        source))
+                              .flatMap(ProviderResolver::extractCompute);
     }
 
-    /// Resolve a ComputeProvider for a docker source profile via the EnvironmentIntegrationFactory SPI.
     public static Result<ComputeProvider> resolveDockerCompute() {
-        return lookupFactory("docker")
-                   .flatMap(factory -> factory.create(dockerCloudConfig()))
-                   .flatMap(ProviderResolver::extractCompute);
+        return lookupFactory("docker").flatMap(factory -> factory.create(dockerCloudConfig()))
+                            .flatMap(ProviderResolver::extractCompute);
     }
 
     private static Result<EnvironmentIntegration> lookupAndCreateCloud(String providerName, SourceProfile source) {
-        return lookupFactory(providerName)
-                   .flatMap(factory -> factory.create(buildCloudConfig(providerName, source)));
+        return lookupFactory(providerName).flatMap(factory -> factory.create(buildCloudConfig(providerName, source)));
     }
 
     private static Result<EnvironmentIntegrationFactory> lookupFactory(String providerName) {
-        return EnvironmentIntegrationFactory.forProvider(providerName)
-                   .toResult(factoryNotFound(providerName));
+        return EnvironmentIntegrationFactory.forProvider(providerName).toResult(factoryNotFound(providerName));
     }
 
     private static Result<ComputeProvider> extractCompute(EnvironmentIntegration integration) {
-        return integration.compute()
-                          .toResult(NO_COMPUTE);
+        return integration.compute().toResult(NO_COMPUTE);
     }
 
     private static CloudConfig buildCloudConfig(String providerName, SourceProfile source) {
@@ -74,6 +68,6 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
 
     private static BootstrapError.ProvisionFailed factoryNotFound(String providerName) {
         return new BootstrapError.ProvisionFailed(providerName,
-                                                   "No EnvironmentIntegrationFactory found for provider '" + providerName + "'");
+                                                  "No EnvironmentIntegrationFactory found for provider '" + providerName + "'");
     }
 }

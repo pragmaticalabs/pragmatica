@@ -273,19 +273,35 @@ import static org.pragmatica.lang.Result.success;
         }
     }
 
-    private static void checkForgeRuntime(String sourceName, NodeRole role, String runtimeRef, RuntimeType runtimeType, List<String> errors) {
+    private static void checkForgeRuntime(String sourceName,
+                                          NodeRole role,
+                                          String runtimeRef,
+                                          RuntimeType runtimeType,
+                                          List<String> errors) {
         if (runtimeType != RuntimeType.EMBER) {errors.add("PF-19: Forge source '" + sourceName + "' role '" + role.value() + "' runtime '" + runtimeRef + "' must be EMBER type, got " + runtimeType.value());}
     }
 
-    private static void checkDockerRuntime(String sourceName, NodeRole role, String runtimeRef, RuntimeType runtimeType, List<String> errors) {
+    private static void checkDockerRuntime(String sourceName,
+                                           NodeRole role,
+                                           String runtimeRef,
+                                           RuntimeType runtimeType,
+                                           List<String> errors) {
         if (runtimeType != RuntimeType.DOCKER) {errors.add("PF-20: Docker source '" + sourceName + "' role '" + role.value() + "' runtime '" + runtimeRef + "' must be DOCKER type, got " + runtimeType.value());}
     }
 
-    private static void checkCloudRuntime(String sourceName, NodeRole role, String runtimeRef, RuntimeType runtimeType, List<String> errors) {
+    private static void checkCloudRuntime(String sourceName,
+                                          NodeRole role,
+                                          String runtimeRef,
+                                          RuntimeType runtimeType,
+                                          List<String> errors) {
         if (!CLOUD_RUNTIME_TYPES.contains(runtimeType)) {errors.add("PF-21: Cloud source '" + sourceName + "' role '" + role.value() + "' runtime '" + runtimeRef + "' must be CONTAINER or JVM, got " + runtimeType.value());}
     }
 
-    private static void checkSshRuntime(String sourceName, NodeRole role, String runtimeRef, RuntimeType runtimeType, List<String> errors) {
+    private static void checkSshRuntime(String sourceName,
+                                        NodeRole role,
+                                        String runtimeRef,
+                                        RuntimeType runtimeType,
+                                        List<String> errors) {
         if (!SSH_RUNTIME_TYPES.contains(runtimeType)) {errors.add("PF-22: SSH source '" + sourceName + "' role '" + role.value() + "' runtime '" + runtimeRef + "' must be CONTAINER, JVM, or EMBER, got " + runtimeType.value());}
     }
 
@@ -336,10 +352,10 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static void checkCoreCount(String name,
-                                        RoleSubTable coreRole,
-                                        int majority,
-                                        int totalCores,
-                                        List<String> warnings) {
+                                       RoleSubTable coreRole,
+                                       int majority,
+                                       int totalCores,
+                                       List<String> warnings) {
         var count = coreRole.count().or(0) + coreRole.hosts().map(List::size)
                                                            .or(0);
         if (count > majority) {warnings.add("CL-13: Source '" + name + "' holds " + count + " of " + totalCores + " cores (majority risk)");}

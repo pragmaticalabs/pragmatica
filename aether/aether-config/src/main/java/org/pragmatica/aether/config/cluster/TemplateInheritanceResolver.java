@@ -53,17 +53,22 @@ import static org.pragmatica.lang.Result.success;
                                                               int depth) {
         if (depth >= MAX_DEPTH) {return new ClusterConfigError.ParseFailed("Template inheritance depth exceeded " + MAX_DEPTH + " for section '" + sectionName + "' (REQ-5.3.2)").result();}
         var sectionData = doc.sections().get(sectionName);
-        return Option.option(sectionData.get(INHERIT_KEY))
-                            .map(Object::toString)
-                            .fold(() -> success(sectionData), templateName -> resolveWithTemplate(sectionName, templateName, sectionData, doc, visited, depth));
+        return Option.option(sectionData.get(INHERIT_KEY)).map(Object::toString)
+                            .fold(() -> success(sectionData),
+                                  templateName -> resolveWithTemplate(sectionName,
+                                                                      templateName,
+                                                                      sectionData,
+                                                                      doc,
+                                                                      visited,
+                                                                      depth));
     }
 
     private static Result<Map<String, Object>> resolveWithTemplate(String sectionName,
-                                                                    String templateName,
-                                                                    Map<String, Object> sectionData,
-                                                                    TomlDocument doc,
-                                                                    Set<String> visited,
-                                                                    int depth) {
+                                                                   String templateName,
+                                                                   Map<String, Object> sectionData,
+                                                                   TomlDocument doc,
+                                                                   Set<String> visited,
+                                                                   int depth) {
         var templateSection = TEMPLATE_PREFIX + templateName;
         if (!doc.hasSection(templateSection)) {return new ClusterConfigError.ParseFailed("Template '" + templateName + "' not found for section '" + sectionName + "' (REQ-5.3.3)").result();}
         if (!visited.add(templateName)) {return new ClusterConfigError.ParseFailed("Cyclic template inheritance detected: '" + templateName + "' in chain for '" + sectionName + "' (REQ-5.3.1)").result();}

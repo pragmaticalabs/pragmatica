@@ -15,8 +15,7 @@ import static org.pragmatica.lang.Result.success;
     private ApplyOrchestrator() {}
 
     public static Result<ApplyResult> apply(ClusterBootstrapConfig desired, ClusterBootstrapConfig currentStored) {
-        return computeValidPlan(desired, currentStored)
-                   .flatMap(plan -> executeOrEmpty(plan, currentStored, desired));
+        return computeValidPlan(desired, currentStored).flatMap(plan -> executeOrEmpty(plan, currentStored, desired));
     }
 
     public static Result<String> dryRun(ClusterBootstrapConfig desired, ClusterBootstrapConfig currentStored) {

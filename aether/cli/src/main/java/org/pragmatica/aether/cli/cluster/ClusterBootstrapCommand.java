@@ -78,21 +78,27 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
         System.out.println("Bootstrap plan:");
         System.out.printf("  Cluster:     %s%n", cluster.name());
         System.out.printf("  Version:     %s%n", cluster.version());
-        System.out.printf("  Sources:     %d%n", config.sources().size());
+        System.out.printf("  Sources:     %d%n",
+                          config.sources().size());
         config.sources().forEach(ClusterBootstrapCommand::printSourceEntry);
         System.out.printf("  Core nodes:  %d (derived)%n", config.derivedCoreCount());
         System.out.printf("  Ports:       cluster=%d, mgmt=%d, app=%d%n",
-                          ports.cluster(), ports.management(), ports.appHttp());
+                          ports.cluster(),
+                          ports.management(),
+                          ports.appHttp());
         System.out.println();
     }
 
     private static void printSourceEntry(String name, SourceProfile source) {
-        System.out.printf("    %s (%s)%n", name, source.type().value());
+        System.out.printf("    %s (%s)%n",
+                          name,
+                          source.type().value());
         source.roles().forEach(ClusterBootstrapCommand::printRoleEntry);
     }
 
     private static void printRoleEntry(NodeRole role, RoleSubTable sub) {
-        var size = sub.count().or(0) + sub.hosts().map(List::size).or(0);
+        var size = sub.count().or(0) + sub.hosts().map(List::size)
+                                                .or(0);
         System.out.printf("      %s: %d nodes%n", role.value(), size);
     }
 

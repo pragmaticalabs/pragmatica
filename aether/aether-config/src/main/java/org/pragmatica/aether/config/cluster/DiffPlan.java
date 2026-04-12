@@ -32,8 +32,7 @@ public record DiffPlan(List<DiffAction> additions,
     }
 
     public List<DiffAction> allActions() {
-        return Stream.of(additions, modifications, removals, immutable)
-                     .flatMap(List::stream)
-                     .toList();
+        return Stream.of(additions, modifications, removals, immutable).flatMap(List::stream)
+                        .toList();
     }
 }

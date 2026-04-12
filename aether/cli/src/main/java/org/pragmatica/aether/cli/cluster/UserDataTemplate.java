@@ -27,11 +27,12 @@ sealed interface UserDataTemplate {
                          String clusterSecret,
                          String clusterName) {
         var ports = config.operations().ports();
-        var tlsEnabled = config.operations().tls().autoGenerate();
+        var tlsEnabled = config.operations().tls()
+                                          .autoGenerate();
         var runtimeProfile = resolveRuntimeProfile(config, source, role);
         var isContainer = isContainerRuntime(runtimeProfile);
         var image = runtimeProfile.flatMap(RuntimeProfile::image)
-                                  .or("ghcr.io/pragmaticalabs/aether-node:" + config.cluster().version());
+                                          .or("ghcr.io/pragmaticalabs/aether-node:" + config.cluster().version());
         var instanceType = resolveInstanceType(source, role);
         var heap = deriveHeap(instanceType);
         var sb = new StringBuilder();
@@ -57,7 +58,8 @@ sealed interface UserDataTemplate {
                          heap);
             appendContainerRun(sb, clusterName, nodeId, ports.cluster(), ports.management(), ports.swim());
         } else {
-            appendJvmInstall(sb, config.cluster().version());
+            appendJvmInstall(sb,
+                             config.cluster().version());
             appendConfig(sb,
                          ports.management(),
                          ports.cluster(),
@@ -66,32 +68,27 @@ sealed interface UserDataTemplate {
                          config.derivedCoreCount(),
                          heap);
             appendJvmRun(sb,
-                         runtimeProfile.flatMap(RuntimeProfile::jvmArgs)
-                                       .or(""));
+                         runtimeProfile.flatMap(RuntimeProfile::jvmArgs).or(""));
         }
         appendReadinessSignal(sb, nodeId, ports.cluster(), ports.management());
         return sb.toString();
     }
 
     private static Option<RuntimeProfile> resolveRuntimeProfile(ClusterBootstrapConfig config,
-                                                                 SourceProfile source,
-                                                                 NodeRole role) {
+                                                                SourceProfile source,
+                                                                NodeRole role) {
         var roleTable = Option.option(source.roles().get(role));
-        return roleTable.map(rt -> rt.runtimeRef())
-                        .flatMap(ref -> Option.option(config.runtimes().get(ref)));
+        return roleTable.map(rt -> rt.runtimeRef()).flatMap(ref -> Option.option(config.runtimes().get(ref)));
     }
 
     private static boolean isContainerRuntime(Option<RuntimeProfile> profile) {
-        return profile.map(p -> p.type() == RuntimeType.CONTAINER
-                              || p.type() == RuntimeType.DOCKER
-                              || p.type() == RuntimeType.MANAGED_CONTAINER)
-                      .or(true);
+        return profile.map(p -> p.type() == RuntimeType.CONTAINER || p.type() == RuntimeType.DOCKER || p.type() == RuntimeType.MANAGED_CONTAINER)
+                          .or(true);
     }
 
     private static String resolveInstanceType(SourceProfile source, NodeRole role) {
-        return Option.option(source.roles().get(role))
-                     .flatMap(rt -> rt.instanceType())
-                     .or("cx21");
+        return Option.option(source.roles().get(role)).flatMap(rt -> rt.instanceType())
+                            .or("cx21");
     }
 
     private static void appendHeader(StringBuilder sb, String clusterName, String nodeId, NodeRole role) {

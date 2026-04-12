@@ -182,11 +182,15 @@ import org.slf4j.LoggerFactory;
                                                                               String tomlContent) {
         var cluster = desired.cluster();
         var coreCount = desired.derivedCoreCount();
-        var coreMin = desired.coreTopology().min().or(coreCount);
-        var coreMax = desired.coreTopology().max().or(coreCount);
-        var sourceType = desired.sources().values().stream()
-                                       .map(s -> s.type().value())
-                                       .findFirst().orElse("unknown");
+        var coreMin = desired.coreTopology().min()
+                                          .or(coreCount);
+        var coreMax = desired.coreTopology().max()
+                                          .or(coreCount);
+        var sourceType = desired.sources().values()
+                                        .stream()
+                                        .map(s -> s.type().value())
+                                        .findFirst()
+                                        .orElse("unknown");
         var configValue = new ClusterConfigValue(tomlContent,
                                                  cluster.name(),
                                                  cluster.version(),
@@ -245,7 +249,7 @@ import org.slf4j.LoggerFactory;
 
     private static Promise<Object> checkVersionAsync(long storedVersion, long expectedVersion) {
         if (expectedVersion != 0 && storedVersion != expectedVersion) {return new ClusterConfigError.VersionConflict(expectedVersion,
-                                                                                                                      storedVersion).promise();}
+                                                                                                                     storedVersion).promise();}
         return Promise.unitPromise().map(u -> (Object) u);
     }
 
@@ -255,11 +259,15 @@ import org.slf4j.LoggerFactory;
         var node = nodeSupplier.get();
         var cluster = desired.cluster();
         var coreCount = desired.derivedCoreCount();
-        var coreMin = desired.coreTopology().min().or(coreCount);
-        var coreMax = desired.coreTopology().max().or(coreCount);
-        var sourceType = desired.sources().values().stream()
-                                       .map(s -> s.type().value())
-                                       .findFirst().orElse("unknown");
+        var coreMin = desired.coreTopology().min()
+                                          .or(coreCount);
+        var coreMax = desired.coreTopology().max()
+                                          .or(coreCount);
+        var sourceType = desired.sources().values()
+                                        .stream()
+                                        .map(s -> s.type().value())
+                                        .findFirst()
+                                        .orElse("unknown");
         var configValue = new ClusterConfigValue(tomlContent,
                                                  cluster.name(),
                                                  cluster.version(),
@@ -308,8 +316,10 @@ import org.slf4j.LoggerFactory;
     private Promise<ScaleClusterResponse> executeScale(ClusterConfigValue stored, ScaleRequest request) {
         var previousCount = stored.coreCount();
         var newVersion = stored.configVersion() + 1;
-        var scaleAction = new DiffAction.ScaleUp("cluster", org.pragmatica.aether.config.cluster.NodeRole.CORE,
-                                                 previousCount, request.coreCount());
+        var scaleAction = new DiffAction.ScaleUp("cluster",
+                                                 org.pragmatica.aether.config.cluster.NodeRole.CORE,
+                                                 previousCount,
+                                                 request.coreCount());
         return applier.apply(List.of(scaleAction)).flatMap(_ -> storeScaledConfig(stored,
                                                                                   request.coreCount(),
                                                                                   newVersion))

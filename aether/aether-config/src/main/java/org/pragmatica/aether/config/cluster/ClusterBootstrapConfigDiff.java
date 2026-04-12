@@ -67,18 +67,17 @@ import static org.pragmatica.aether.config.cluster.DiffPlan.diffPlan;
     }
 
     private static void classifySourceDiff(String key,
-                                             Option<SourceProfile> stored,
-                                             Option<SourceProfile> desired,
-                                             List<DiffAction> additions,
-                                             List<DiffAction> modifications,
-                                             List<DiffAction> removals) {
-        if (stored.isEmpty()) {
-            desired.onPresent(d -> addNewSource(key, d, additions));
-        } else if (desired.isEmpty()) {
-            removals.add(new DiffAction.RemoveSource(key));
-        } else {
-            stored.onPresent(s -> desired.onPresent(d -> diffExistingSource(key, s, d, additions, modifications, removals)));
-        }
+                                           Option<SourceProfile> stored,
+                                           Option<SourceProfile> desired,
+                                           List<DiffAction> additions,
+                                           List<DiffAction> modifications,
+                                           List<DiffAction> removals) {
+        if (stored.isEmpty()) {desired.onPresent(d -> addNewSource(key, d, additions));} else if (desired.isEmpty()) {removals.add(new DiffAction.RemoveSource(key));} else {stored.onPresent(s -> desired.onPresent(d -> diffExistingSource(key,
+                                                                                                                                                                                                                                             s,
+                                                                                                                                                                                                                                             d,
+                                                                                                                                                                                                                                             additions,
+                                                                                                                                                                                                                                             modifications,
+                                                                                                                                                                                                                                             removals)));}
     }
 
     private static void addNewSource(String sourceName, SourceProfile source, List<DiffAction> additions) {
@@ -146,19 +145,21 @@ import static org.pragmatica.aether.config.cluster.DiffPlan.diffPlan;
     }
 
     private static void classifyRoleDiff(String sourceName,
-                                           NodeRole role,
-                                           Option<RoleSubTable> stored,
-                                           Option<RoleSubTable> desired,
-                                           List<DiffAction> additions,
-                                           List<DiffAction> modifications,
-                                           List<DiffAction> removals) {
-        if (stored.isEmpty()) {
-            desired.onPresent(d -> additions.add(new DiffAction.AddRole(sourceName, role, roleSize(d))));
-        } else if (desired.isEmpty()) {
-            stored.onPresent(s -> removals.add(new DiffAction.RemoveRole(sourceName, role, roleSize(s))));
-        } else {
-            stored.onPresent(s -> desired.onPresent(d -> diffExistingRole(sourceName, role, s, d, additions, modifications, removals)));
-        }
+                                         NodeRole role,
+                                         Option<RoleSubTable> stored,
+                                         Option<RoleSubTable> desired,
+                                         List<DiffAction> additions,
+                                         List<DiffAction> modifications,
+                                         List<DiffAction> removals) {
+        if (stored.isEmpty()) {desired.onPresent(d -> additions.add(new DiffAction.AddRole(sourceName, role, roleSize(d))));} else if (desired.isEmpty()) {stored.onPresent(s -> removals.add(new DiffAction.RemoveRole(sourceName,
+                                                                                                                                                                                                                        role,
+                                                                                                                                                                                                                        roleSize(s))));} else {stored.onPresent(s -> desired.onPresent(d -> diffExistingRole(sourceName,
+                                                                                                                                                                                                                                                                                                             role,
+                                                                                                                                                                                                                                                                                                             s,
+                                                                                                                                                                                                                                                                                                             d,
+                                                                                                                                                                                                                                                                                                             additions,
+                                                                                                                                                                                                                                                                                                             modifications,
+                                                                                                                                                                                                                                                                                                             removals)));}
     }
 
     private static void diffExistingRole(String sourceName,

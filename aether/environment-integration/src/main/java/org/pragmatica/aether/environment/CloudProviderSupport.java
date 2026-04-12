@@ -15,31 +15,30 @@ import static org.pragmatica.lang.Option.option;
 @SuppressWarnings("JBCT-UTIL-02") public final class CloudProviderSupport {
     private CloudProviderSupport() {}
 
-    public static Promise<List<ProvisionedNode>> provisionVia(ComputeProvider compute,
-                                                               NodeGroupConfig group) {
-        var provisions = IntStream.range(0, group.count())
-                                        .mapToObj(i -> provisionSingle(compute, group, i))
+    public static Promise<List<ProvisionedNode>> provisionVia(ComputeProvider compute, NodeGroupConfig group) {
+        var provisions = IntStream.range(0,
+                                         group.count()).mapToObj(i -> provisionSingle(compute, group, i))
                                         .toList();
         return Promise.allOf(provisions).flatMap(results -> Result.allOf(results).async());
     }
 
     public static Promise<Unit> destroyVia(ComputeProvider compute, List<String> nodeIds) {
-        var terminations = nodeIds.stream()
-                                        .map(id -> terminateSingle(compute, id))
-                                        .toList();
+        var terminations = nodeIds.stream().map(id -> terminateSingle(compute, id))
+                                         .toList();
         return Promise.allOf(terminations).flatMap(results -> Result.allOf(results).async())
                             .mapToUnit();
     }
 
     public static Promise<List<NodeAddress>> addressesVia(ComputeProvider compute, List<String> nodeIds) {
-        var lookups = nodeIds.stream()
-                                    .map(id -> lookupAddress(compute, id))
+        var lookups = nodeIds.stream().map(id -> lookupAddress(compute, id))
                                     .toList();
         return Promise.allOf(lookups).flatMap(results -> Result.allOf(results).async());
     }
 
     public static ProvisionedNode toProvisionedNode(String nodeId, InstanceInfo info) {
-        return ProvisionedNode.provisionedNode(nodeId, info.id().value(), firstAddress(info));
+        return ProvisionedNode.provisionedNode(nodeId,
+                                               info.id().value(),
+                                               firstAddress(info));
     }
 
     public static NodeAddress toNodeAddress(String nodeId, InstanceInfo info) {
@@ -58,21 +57,19 @@ import static org.pragmatica.lang.Option.option;
               : Option.none();
     }
 
-    private static Promise<ProvisionedNode> provisionSingle(ComputeProvider compute,
-                                                             NodeGroupConfig group,
-                                                             int index) {
+    private static Promise<ProvisionedNode> provisionSingle(ComputeProvider compute, NodeGroupConfig group, int index) {
         var nodeId = group.sourceName() + "-" + group.role() + "-" + index;
         return compute.provision(InstanceType.ON_DEMAND).map(info -> toProvisionedNode(nodeId, info));
     }
 
     private static Promise<Unit> terminateSingle(ComputeProvider compute, String nodeId) {
         return InstanceId.instanceId(nodeId).async()
-                                   .flatMap(compute::terminate);
+                                    .flatMap(compute::terminate);
     }
 
     private static Promise<NodeAddress> lookupAddress(ComputeProvider compute, String nodeId) {
         return InstanceId.instanceId(nodeId).async()
-                                   .flatMap(compute::instanceStatus)
-                                   .map(info -> toNodeAddress(nodeId, info));
+                                    .flatMap(compute::instanceStatus)
+                                    .map(info -> toNodeAddress(nodeId, info));
     }
 }

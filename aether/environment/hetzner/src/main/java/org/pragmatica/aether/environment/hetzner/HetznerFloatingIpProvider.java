@@ -24,41 +24,34 @@ import static org.pragmatica.lang.Option.option;
 /// ownership verification, and zone compatibility via the Hetzner Cloud API.
 public record HetznerFloatingIpProvider(HetznerClient client) implements FloatingIpProvider {
     private static final Logger log = LoggerFactory.getLogger(HetznerFloatingIpProvider.class);
+
     private static final EnvironmentError FLOATING_IP_NOT_FOUND = EnvironmentError.operationNotSupported("Floating IP not found in account");
 
     public static HetznerFloatingIpProvider hetznerFloatingIpProvider(HetznerClient client) {
         return new HetznerFloatingIpProvider(client);
     }
 
-    @Override
-    public Promise<Unit> attach(String floatingIp, String targetNodeId) {
-        return findFloatingIpByAddress(floatingIp)
-            .flatMap(fip -> assignToServer(fip.id(), targetNodeId));
+    @Override public Promise<Unit> attach(String floatingIp, String targetNodeId) {
+        return findFloatingIpByAddress(floatingIp).flatMap(fip -> assignToServer(fip.id(), targetNodeId));
     }
 
-    @Override
-    public Promise<IpOwnership> verify(String floatingIp) {
-        return client.listFloatingIps()
-                     .map(ips -> findMatchingIp(ips, floatingIp));
+    @Override public Promise<IpOwnership> verify(String floatingIp) {
+        return client.listFloatingIps().map(ips -> findMatchingIp(ips, floatingIp));
     }
 
-    @Override
-    public Promise<Set<String>> compatibleZones(String floatingIp) {
-        return findFloatingIpByAddress(floatingIp)
-            .map(HetznerFloatingIpProvider::extractHomeLocation);
+    @Override public Promise<Set<String>> compatibleZones(String floatingIp) {
+        return findFloatingIpByAddress(floatingIp).map(HetznerFloatingIpProvider::extractHomeLocation);
     }
 
     private Promise<FloatingIp> findFloatingIpByAddress(String floatingIp) {
-        return client.listFloatingIps()
-                     .flatMap(ips -> matchByAddress(ips, floatingIp));
+        return client.listFloatingIps().flatMap(ips -> matchByAddress(ips, floatingIp));
     }
 
     private static Promise<FloatingIp> matchByAddress(List<FloatingIp> ips, String address) {
-        return ips.stream()
-                  .filter(fip -> address.equals(fip.ip()))
-                  .findFirst()
-                  .map(Promise::success)
-                  .orElseGet(() -> logNotFound(address));
+        return ips.stream().filter(fip -> address.equals(fip.ip()))
+                         .findFirst()
+                         .map(Promise::success)
+                         .orElseGet(() -> logNotFound(address));
     }
 
     private static Promise<FloatingIp> logNotFound(String address) {
@@ -67,9 +60,8 @@ public record HetznerFloatingIpProvider(HetznerClient client) implements Floatin
     }
 
     private Promise<Unit> assignToServer(long floatingIpId, String targetNodeId) {
-        return Number.parseLong(targetNodeId)
-                     .async()
-                     .flatMap(serverId -> doAssign(floatingIpId, serverId));
+        return Number.parseLong(targetNodeId).async()
+                               .flatMap(serverId -> doAssign(floatingIpId, serverId));
     }
 
     private Promise<Unit> doAssign(long floatingIpId, long serverId) {
@@ -77,11 +69,10 @@ public record HetznerFloatingIpProvider(HetznerClient client) implements Floatin
     }
 
     private static IpOwnership findMatchingIp(List<FloatingIp> ips, String address) {
-        return ips.stream()
-                  .filter(fip -> address.equals(fip.ip()))
-                  .findFirst()
-                  .map(HetznerFloatingIpProvider::toOwnership)
-                  .orElseGet(HetznerFloatingIpProvider::notOwned);
+        return ips.stream().filter(fip -> address.equals(fip.ip()))
+                         .findFirst()
+                         .map(HetznerFloatingIpProvider::toOwnership)
+                         .orElseGet(HetznerFloatingIpProvider::notOwned);
     }
 
     private static IpOwnership toOwnership(FloatingIp fip) {
@@ -97,9 +88,8 @@ public record HetznerFloatingIpProvider(HetznerClient client) implements Floatin
     }
 
     private static Set<String> extractHomeLocation(FloatingIp fip) {
-        return option(fip.homeLocation())
-            .map(FloatingIp.Location::name)
-            .map(name -> Set.of(name))
-            .or(Set.of());
+        return option(fip.homeLocation()).map(FloatingIp.Location::name)
+                     .map(name -> Set.of(name))
+                     .or(Set.of());
     }
 }

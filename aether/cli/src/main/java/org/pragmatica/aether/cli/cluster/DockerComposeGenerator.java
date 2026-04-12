@@ -137,16 +137,17 @@ sealed interface DockerComposeGenerator {
     }
 
     private static String resolveImage(ClusterBootstrapConfig config) {
-        // Use the first runtime profile's image, or fallback to default
-        return config.runtimes().values().stream()
-                            .findFirst()
-                            .flatMap(rt -> rt.image().toOptional())
-                            .orElse("ghcr.io/pragmaticalabs/aether-node:" + config.cluster().version());
+        return config.runtimes().values()
+                              .stream()
+                              .findFirst()
+                              .flatMap(rt -> rt.image().toOptional())
+                              .orElse("ghcr.io/pragmaticalabs/aether-node:" + config.cluster().version());
     }
 
     private static String resolveClusterSecret(ClusterBootstrapConfig config) {
-        return config.operations().tls().clusterSecret()
-                                      .or(generateRandomSecret());
+        return config.operations().tls()
+                                .clusterSecret()
+                                .or(generateRandomSecret());
     }
 
     private static String generateRandomSecret() {

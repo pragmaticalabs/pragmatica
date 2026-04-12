@@ -17,9 +17,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
-import java.net.HttpURLConnection;
-import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
@@ -56,10 +53,9 @@ import static org.pragmatica.lang.Result.success;
     record unused() implements ClusterBootstrapOrchestrator{}
 
     int API_KEY_BYTES = 32;
-    int HTTP_TIMEOUT_MS = 5000;
-    int HTTP_POST_CONNECT_TIMEOUT_MS = 10_000;
-    int HTTP_POST_READ_TIMEOUT_MS = 30_000;
+
     int POLL_INTERVAL_MS = 5000;
+
     long DEFAULT_TIMEOUT_MS = 300_000;
 
     static Result<BootstrapResult> bootstrap(ClusterBootstrapConfig config) {
@@ -101,7 +97,7 @@ import static org.pragmatica.lang.Result.success;
 
     @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionSource(String sourceName,
                                                                                                   SourceProfile source) {
-        return switch (source.type()) {
+        return switch (source.type()){
             case CLOUD -> provisionCloudSource(sourceName, source);
             case DOCKER -> provisionDockerSource(sourceName, source);
             case SSH -> provisionSshSource(sourceName, source);
@@ -110,27 +106,26 @@ import static org.pragmatica.lang.Result.success;
     }
 
     @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionCloudSource(String sourceName,
-                                                                                                        SourceProfile source) {
+                                                                                                       SourceProfile source) {
         return ProviderResolver.resolveCloudCompute(source)
-                   .flatMap(compute -> provisionWithCompute(compute, sourceName, source));
+                                                   .flatMap(compute -> provisionWithCompute(compute, sourceName, source));
     }
 
     @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionDockerSource(String sourceName,
-                                                                                                         SourceProfile source) {
+                                                                                                        SourceProfile source) {
         return ProviderResolver.resolveDockerCompute()
-                   .flatMap(compute -> provisionWithCompute(compute, sourceName, source));
+                                                    .flatMap(compute -> provisionWithCompute(compute, sourceName, source));
     }
 
-    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
-    private static Result<List<ProvisionedNode>> provisionWithCompute(ComputeProvider compute,
-                                                                       String sourceName,
-                                                                       SourceProfile source) {
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"}) private static Result<List<ProvisionedNode>> provisionWithCompute(ComputeProvider compute,
+                                                                                                                       String sourceName,
+                                                                                                                       SourceProfile source) {
         var allNodes = new ArrayList<ProvisionedNode>();
         var roleOrder = List.of(NodeRole.CORE, NodeRole.WORKER, NodeRole.SPOT);
         for (var role : roleOrder) {
             var roleTable = option(source.roles().get(role));
             var result = roleTable.flatMap(rt -> rt.count())
-                                  .map(count -> provisionRoleGroup(compute, sourceName, role, count, source));
+                                          .map(count -> provisionRoleGroup(compute, sourceName, role, count, source));
             if (result.isPresent()) {
                 var provisionResult = result.unwrap();
                 if (provisionResult.isFailure()) {return provisionResult;}
@@ -140,15 +135,16 @@ import static org.pragmatica.lang.Result.success;
         return success(List.copyOf(allNodes));
     }
 
-    @SuppressWarnings("JBCT-EX-01")
-    private static Result<List<ProvisionedNode>> provisionRoleGroup(ComputeProvider compute,
-                                                                     String sourceName,
-                                                                     NodeRole role,
-                                                                     int count,
-                                                                     SourceProfile source) {
+    @SuppressWarnings("JBCT-EX-01") private static Result<List<ProvisionedNode>> provisionRoleGroup(ComputeProvider compute,
+                                                                                                    String sourceName,
+                                                                                                    NodeRole role,
+                                                                                                    int count,
+                                                                                                    SourceProfile source) {
         logProvisionRole(sourceName, source.type(), role, Option.some(count));
         var instanceType = source.roles().containsKey(role)
-                          ? source.roles().get(role).instanceType().or("default")
+                          ? source.roles().get(role)
+                                        .instanceType()
+                                        .or("default")
                           : "default";
         var zone = source.zone().or("default");
         var group = NodeGroupConfig.nodeGroupConfig(sourceName, role.value(), count, instanceType, zone, Map.of());
@@ -156,28 +152,32 @@ import static org.pragmatica.lang.Result.success;
     }
 
     @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionSshSource(String sourceName,
-                                                                                                      SourceProfile source) {
+                                                                                                     SourceProfile source) {
         var nodes = new ArrayList<ProvisionedNode>();
         for (var entry : source.roles().entrySet()) {
             var role = entry.getKey();
-            entry.getValue().hosts().onPresent(hosts -> addSshNodes(nodes, sourceName, role, hosts));
+            entry.getValue().hosts()
+                          .onPresent(hosts -> addSshNodes(nodes, sourceName, role, hosts));
         }
-        logProvisionRole(sourceName, source.type(), NodeRole.CORE, Option.some(nodes.size()));
+        logProvisionRole(sourceName,
+                         source.type(),
+                         NodeRole.CORE,
+                         Option.some(nodes.size()));
         return success(List.copyOf(nodes));
     }
 
     @Contract private static void addSshNodes(List<ProvisionedNode> nodes,
-                                               String sourceName,
-                                               NodeRole role,
-                                               List<String> hosts) {
-        for (int i = 0; i < hosts.size(); i++) {
+                                              String sourceName,
+                                              NodeRole role,
+                                              List<String> hosts) {
+        for (int i = 0;i <hosts.size();i++) {
             var nodeId = sourceName + "-" + role.value() + "-" + i;
             nodes.add(ProvisionedNode.provisionedNode(nodeId, "ssh", hosts.get(i)));
         }
     }
 
     @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionForgeSource(String sourceName,
-                                                                                                        SourceProfile source) {
+                                                                                                       SourceProfile source) {
         var nodes = new ArrayList<ProvisionedNode>();
         var portBase = 7000;
         var counter = 0;
@@ -185,7 +185,7 @@ import static org.pragmatica.lang.Result.success;
         for (var role : roleOrder) {
             var roleTable = option(source.roles().get(role));
             var count = roleTable.flatMap(rt -> rt.count()).or(0);
-            for (int i = 0; i < count; i++) {
+            for (int i = 0;i <count;i++) {
                 var nodeId = sourceName + "-" + role.value() + "-" + i;
                 nodes.add(ProvisionedNode.provisionedNode(nodeId, "forge", "127.0.0.1:" + (portBase + counter)));
                 counter++;
@@ -211,18 +211,18 @@ import static org.pragmatica.lang.Result.success;
                  "Collecting addresses from %d provisioned node(s)",
                  ctx.nodes().size());
         var addresses = ctx.nodes().stream()
-                                  .map(ClusterBootstrapOrchestrator::nodeToAddress)
-                                  .toList();
+                                 .map(ClusterBootstrapOrchestrator::nodeToAddress)
+                                 .toList();
         return success(ctx.withAddresses(addresses));
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    private static Result<BootstrapContext> phaseDeployRuntime(BootstrapContext ctx) {
+    @SuppressWarnings("JBCT-PAT-01") private static Result<BootstrapContext> phaseDeployRuntime(BootstrapContext ctx) {
         logPhase(DEPLOY_RUNTIME,
                  "Deploying runtime to %d node(s)",
                  ctx.addresses().size());
         var clusterSecret = generateClusterSecret();
-        for (var entry : ctx.config().sources().entrySet()) {
+        for (var entry : ctx.config().sources()
+                                   .entrySet()) {
             var sourceName = entry.getKey();
             var source = entry.getValue();
             var deployResult = deploySource(ctx, source, sourceName, clusterSecret);
@@ -231,12 +231,11 @@ import static org.pragmatica.lang.Result.success;
         return success(ctx);
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    private static Result<Unit> deploySource(BootstrapContext ctx,
-                                              SourceProfile source,
-                                              String sourceName,
-                                              String clusterSecret) {
-        return switch (source.type()) {
+    @SuppressWarnings("JBCT-PAT-01") private static Result<Unit> deploySource(BootstrapContext ctx,
+                                                                              SourceProfile source,
+                                                                              String sourceName,
+                                                                              String clusterSecret) {
+        return switch (source.type()){
             case CLOUD -> deployCloudSource(sourceName);
             case SSH -> deploySshSource(ctx, source, sourceName, clusterSecret);
             case FORGE -> deployForgeSource(sourceName);
@@ -259,14 +258,16 @@ import static org.pragmatica.lang.Result.success;
         return Result.unitResult();
     }
 
-    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
-    private static Result<Unit> deploySshSource(BootstrapContext ctx,
-                                                 SourceProfile source,
-                                                 String sourceName,
-                                                 String clusterSecret) {
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"}) private static Result<Unit> deploySshSource(BootstrapContext ctx,
+                                                                                                 SourceProfile source,
+                                                                                                 String sourceName,
+                                                                                                 String clusterSecret) {
         var sshConfig = buildSshConfig(source);
-        var allNodeIps = ctx.addresses().stream().map(NodeAddress::publicIp).toList();
-        var clusterName = ctx.config().cluster().name();
+        var allNodeIps = ctx.addresses().stream()
+                                      .map(NodeAddress::publicIp)
+                                      .toList();
+        var clusterName = ctx.config().cluster()
+                                    .name();
         var nodeIndex = 0;
         for (var node : ctx.nodes()) {
             if (!node.serverId().equals("ssh")) {
@@ -282,37 +283,39 @@ import static org.pragmatica.lang.Result.success;
         return Result.unitResult();
     }
 
-    @SuppressWarnings("JBCT-EX-01")
-    private static Result<Unit> deploySshNode(ProvisionedNode node, String nodeConfig, SshConfig sshConfig, String clusterName) {
-        return writeNodeConfigToTemp(node.nodeId(), nodeConfig)
-                   .flatMap(tempPath -> scpConfigToNode(tempPath, node.publicIp(), sshConfig))
-                   .flatMap(_ -> startRuntimeViaSsh(node.publicIp(), sshConfig, clusterName, node.nodeId()));
+    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> deploySshNode(ProvisionedNode node,
+                                                                              String nodeConfig,
+                                                                              SshConfig sshConfig,
+                                                                              String clusterName) {
+        return writeNodeConfigToTemp(node.nodeId(),
+                                     nodeConfig).flatMap(tempPath -> scpConfigToNode(tempPath,
+                                                                                     node.publicIp(),
+                                                                                     sshConfig))
+                                    .flatMap(_ -> startRuntimeViaSsh(node.publicIp(),
+                                                                     sshConfig,
+                                                                     clusterName,
+                                                                     node.nodeId()));
     }
 
-    @SuppressWarnings("JBCT-EX-01")
     private static Result<Path> writeNodeConfigToTemp(String nodeId, String content) {
-        return Result.lift(
-            e -> new BootstrapError.DeploymentFailed(nodeId, "Failed to write temp config: " + e.getMessage()),
-            () -> writeTempTomlFile(nodeId, content));
-    }
-
-    private static Path writeTempTomlFile(String nodeId, String content) throws Exception {
-        var tempFile = Files.createTempFile("aether-" + nodeId, ".toml");
-        Files.writeString(tempFile, content);
-        return tempFile;
+        return Result.lift(e -> new BootstrapError.DeploymentFailed(nodeId,
+                                                                    "Failed to write temp config: " + e.getMessage()),
+                           () -> {
+                               var tempFile = Files.createTempFile("aether-" + nodeId, ".toml");
+                               Files.writeString(tempFile, content);
+                               return tempFile;
+                           });
     }
 
     private static Result<Unit> scpConfigToNode(Path localPath, String host, SshConfig sshConfig) {
         return RemoteCommandRunner.scp(localPath.toString(), host, "/opt/aether/config/aether.toml", sshConfig);
     }
 
-    private static Result<Unit> startRuntimeViaSsh(String host, SshConfig sshConfig, String clusterName, String nodeId) {
-        var startCommand = "mkdir -p /opt/aether/config && docker pull ghcr.io/pragmaticalabs/aether-node:latest"
-                          + " && docker run -d --name aether-node --restart unless-stopped --network host"
-                          + " -e AETHER_NODE_ID=" + nodeId
-                          + " -l aether-cluster=" + clusterName
-                          + " -v /opt/aether/config:/config:ro"
-                          + " ghcr.io/pragmaticalabs/aether-node:latest --config /config/aether.toml";
+    private static Result<Unit> startRuntimeViaSsh(String host,
+                                                   SshConfig sshConfig,
+                                                   String clusterName,
+                                                   String nodeId) {
+        var startCommand = "mkdir -p /opt/aether/config && docker pull ghcr.io/pragmaticalabs/aether-node:latest" + " && docker run -d --name aether-node --restart unless-stopped --network host" + " -e AETHER_NODE_ID=" + nodeId + " -l aether-cluster=" + clusterName + " -v /opt/aether/config:/config:ro" + " ghcr.io/pragmaticalabs/aether-node:latest --config /config/aether.toml";
         return RemoteCommandRunner.ssh(host, startCommand, sshConfig).mapToUnit();
     }
 
@@ -326,7 +329,8 @@ import static org.pragmatica.lang.Result.success;
     private static String generateClusterSecret() {
         var bytes = new byte[API_KEY_BYTES];
         new SecureRandom().nextBytes(bytes);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        return Base64.getUrlEncoder().withoutPadding()
+                                   .encodeToString(bytes);
     }
 
     private static String buildPeerList(List<NodeAddress> addresses) {
@@ -343,13 +347,23 @@ import static org.pragmatica.lang.Result.success;
         logPhase(CLUSTER_FORMATION, "Establishing cluster quorum");
         var apiKey = generateApiKey();
         System.out.printf("  API key generated (%d bytes, Base64 URL-encoded)%n", API_KEY_BYTES);
-        var managementPort = ctx.config().operations().ports().management();
-        var healthTimeoutMs = parseDurationMs(ctx.config().operations().timeouts().healthCheck());
-        var quorumTimeoutMs = parseDurationMs(ctx.config().operations().timeouts().quorumFormation());
+        var managementPort = ctx.config().operations()
+                                       .ports()
+                                       .management();
+        var healthTimeoutMs = parseDurationMs(ctx.config().operations()
+                                                        .timeouts()
+                                                        .healthCheck());
+        var quorumTimeoutMs = parseDurationMs(ctx.config().operations()
+                                                        .timeouts()
+                                                        .quorumFormation());
         var requiredCores = ctx.config().derivedCoreCount();
-        return waitForHealth(ctx.addresses(), managementPort, healthTimeoutMs)
-                   .flatMap(_ -> waitForQuorum(ctx.addresses(), managementPort, quorumTimeoutMs, requiredCores))
-                   .map(_ -> finalizeClusterFormation(ctx, apiKey));
+        return waitForHealth(ctx.addresses(),
+                             managementPort,
+                             healthTimeoutMs).flatMap(_ -> waitForQuorum(ctx.addresses(),
+                                                                         managementPort,
+                                                                         quorumTimeoutMs,
+                                                                         requiredCores))
+                            .map(_ -> finalizeClusterFormation(ctx, apiKey));
     }
 
     private static BootstrapContext finalizeClusterFormation(BootstrapContext ctx, String apiKey) {
@@ -359,14 +373,15 @@ import static org.pragmatica.lang.Result.success;
         return updatedCtx;
     }
 
-    @SuppressWarnings("JBCT-EX-01")
-    private static Result<Unit> waitForHealth(List<NodeAddress> addresses, int managementPort, long timeoutMs) {
+    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> waitForHealth(List<NodeAddress> addresses,
+                                                                              int managementPort,
+                                                                              long timeoutMs) {
         if (addresses.isEmpty()) {return Result.unitResult();}
         var endpoint = addresses.getFirst().publicIp();
         var url = "http://" + endpoint + ":" + managementPort + "/health/live";
         System.out.printf("  Waiting for health check at %s (timeout: %ds)%n", url, timeoutMs / 1000);
         var deadline = System.currentTimeMillis() + timeoutMs;
-        while (System.currentTimeMillis() < deadline) {
+        while (System.currentTimeMillis() <deadline) {
             var response = httpGet(url);
             if (response.isSuccess()) {
                 System.out.println("  Health check passed");
@@ -377,18 +392,19 @@ import static org.pragmatica.lang.Result.success;
         return new BootstrapError.QuorumNotEstablished(0, 1).result();
     }
 
-    @SuppressWarnings("JBCT-EX-01")
-    private static Result<Unit> waitForQuorum(List<NodeAddress> addresses,
-                                               int managementPort,
-                                               long timeoutMs,
-                                               int requiredCores) {
+    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> waitForQuorum(List<NodeAddress> addresses,
+                                                                              int managementPort,
+                                                                              long timeoutMs,
+                                                                              int requiredCores) {
         if (addresses.isEmpty()) {return Result.unitResult();}
         var endpoint = addresses.getFirst().publicIp();
         var url = "http://" + endpoint + ":" + managementPort + "/health/ready";
         System.out.printf("  Waiting for quorum at %s (need %d core(s), timeout: %ds)%n",
-                          url, requiredCores, timeoutMs / 1000);
+                          url,
+                          requiredCores,
+                          timeoutMs / 1000);
         var deadline = System.currentTimeMillis() + timeoutMs;
-        while (System.currentTimeMillis() < deadline) {
+        while (System.currentTimeMillis() <deadline) {
             var response = httpGet(url);
             if (response.isSuccess()) {
                 System.out.printf("  Quorum established (%d core(s) required)%n", requiredCores);
@@ -405,7 +421,7 @@ import static org.pragmatica.lang.Result.success;
         var configJson = buildConfigJson(ctx.config());
         var result = httpPost(endpoint + "/api/cluster/config", configJson);
         var _ = result.onSuccess(_ -> System.out.println("  Cluster config stored in KV-Store"))
-                      .onFailure(cause -> System.err.println("  Warning: failed to store config: " + cause.message()));
+                                .onFailure(cause -> System.err.println("  Warning: failed to store config: " + cause.message()));
     }
 
     @Contract private static void storeApiKey(BootstrapContext ctx, String apiKey) {
@@ -414,61 +430,31 @@ import static org.pragmatica.lang.Result.success;
         var keyJson = "{\"apiKey\":\"" + apiKey + "\"}";
         var result = httpPost(endpoint + "/api/cluster/api-key", keyJson);
         var _ = result.onSuccess(_ -> System.out.println("  API key stored"))
-                      .onFailure(cause -> System.err.println("  Warning: failed to store API key: " + cause.message()));
+                                .onFailure(cause -> System.err.println("  Warning: failed to store API key: " + cause.message()));
     }
 
     private static String buildManagementEndpoint(BootstrapContext ctx) {
-        var port = ctx.config().operations().ports().management();
-        var ip = ctx.addresses().getFirst().publicIp();
+        var port = ctx.config().operations()
+                             .ports()
+                             .management();
+        var ip = ctx.addresses().getFirst()
+                              .publicIp();
         return "http://" + ip + ":" + port;
     }
 
     private static String buildConfigJson(ClusterBootstrapConfig config) {
-        // TODO: Full TOML serialization needed for production use
-        return "{\"clusterName\":\"" + config.cluster().name()
-              + "\",\"version\":\"" + config.cluster().version() + "\"}";
+        return "{\"clusterName\":\"" + config.cluster().name() + "\",\"version\":\"" + config.cluster().version() + "\"}";
     }
 
-    @SuppressWarnings("JBCT-EX-01")
     private static Result<String> httpPost(String url, String body) {
-        return Result.lift(
-            e -> new BootstrapError.ProvisionFailed("http-post", e.getMessage()),
-            () -> executeHttpPost(url, body));
+        return ClusterHttpClient.postDirect(url, body);
     }
 
-    private static String executeHttpPost(String url, String body) throws Exception {
-        var conn = (HttpURLConnection) URI.create(url).toURL().openConnection();
-        conn.setRequestMethod("POST");
-        conn.setRequestProperty("Content-Type", "application/json");
-        conn.setDoOutput(true);
-        conn.setConnectTimeout(HTTP_POST_CONNECT_TIMEOUT_MS);
-        conn.setReadTimeout(HTTP_POST_READ_TIMEOUT_MS);
-        try (var os = conn.getOutputStream()) {
-            os.write(body.getBytes(StandardCharsets.UTF_8));
-        }
-        try (var is = conn.getInputStream()) {
-            return new String(is.readAllBytes());
-        }
-    }
-
-    @SuppressWarnings("JBCT-EX-01")
     private static Result<String> httpGet(String url) {
-        return Result.lift(
-            e -> new BootstrapError.ProvisionFailed("http", e.getMessage()),
-            () -> executeHttpGet(url));
+        return ClusterHttpClient.getDirect(url);
     }
 
-    private static String executeHttpGet(String url) throws Exception {
-        var conn = URI.create(url).toURL().openConnection();
-        conn.setConnectTimeout(HTTP_TIMEOUT_MS);
-        conn.setReadTimeout(HTTP_TIMEOUT_MS);
-        try (var is = conn.getInputStream()) {
-            return new String(is.readAllBytes());
-        }
-    }
-
-    @SuppressWarnings("JBCT-EX-01")
-    @Contract private static void sleepQuietly(long millis) {
+    @SuppressWarnings("JBCT-EX-01") @Contract private static void sleepQuietly(long millis) {
         try {
             Thread.sleep(millis);
         } catch (InterruptedException e) {
@@ -484,8 +470,9 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static long parseNumericPrefix(String duration) {
-        return Result.lift(() -> Long.parseLong(duration.substring(0, duration.length() - 1)))
-                     .or(DEFAULT_TIMEOUT_MS / 1000);
+        return Result.lift(() -> Long.parseLong(duration.substring(0,
+                                                                   duration.length() - 1)))
+        .or(DEFAULT_TIMEOUT_MS / 1000);
     }
 
     static String generateApiKey() {
