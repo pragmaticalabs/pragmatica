@@ -4,6 +4,7 @@ import org.pragmatica.aether.environment.CachingSecretsProvider;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
+import org.pragmatica.aether.environment.FloatingIpProvider;
 import org.pragmatica.aether.environment.LoadBalancerProvider;
 import org.pragmatica.aether.environment.SecretsProvider;
 import org.pragmatica.cloud.azure.AzureClient;
@@ -95,6 +96,10 @@ public record AzureEnvironmentIntegration(AzureComputeProvider computeProvider,
 
     @Override public Option<CertificateProvider> certificateProvider() {
         return certProvider;
+    }
+
+    @Override public Option<FloatingIpProvider> floatingIp() {
+        return Option.empty();
     }
 
     private static Option<CertificateProvider> resolveCertificateProvider(AzureClient client,

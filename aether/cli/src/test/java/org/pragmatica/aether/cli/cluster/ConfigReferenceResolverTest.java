@@ -3,10 +3,14 @@ package org.pragmatica.aether.cli.cluster;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.environment.SecretsProvider;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.pragmatica.lang.Option.some;
 
 class ConfigReferenceResolverTest {
 
@@ -72,6 +76,48 @@ class ConfigReferenceResolverTest {
                                        // If it succeeds, AETHER_CLUSTER_SECRET is set in the env -- fine
                                    })
                                    .onFailure(cause -> assertTrue(cause.message().contains("AETHER_CLUSTER_SECRET")));
+        }
+    }
+
+    @Nested
+    class SecretsProviderDispatch {
+        @Test
+        void resolveAll_secretsWithProvider_resolvesViaProvider() {
+            SecretsProvider provider = path -> Promise.success("resolved-" + path);
+            var input = "secret = \"${secrets:db-password}\"";
+            ConfigReferenceResolver.resolveAll(input, some(provider))
+                                   .onFailureRun(Assertions::fail)
+                                   .onSuccess(result -> assertEquals("secret = \"resolved-db-password\"", result));
+        }
+
+        @Test
+        void resolveAll_secretsWithFailingProvider_fallsToError() {
+            SecretsProvider provider = path -> new org.pragmatica.aether.environment.EnvironmentError
+                .SecretResolutionFailed(path, new IllegalStateException("vault down")).promise();
+            var input = "secret = \"${secrets:db-password}\"";
+            ConfigReferenceResolver.resolveAll(input, some(provider))
+                                   .onSuccess(_ -> Assertions.fail("Expected failure"))
+                                   .onFailure(cause -> assertTrue(cause.message().contains("AETHER_DB_PASSWORD")));
+        }
+
+        @Test
+        void resolveAll_envRefWithProvider_stillResolvesFromEnv() {
+            SecretsProvider provider = path -> Promise.success("should-not-be-called");
+            var input = "home = \"${env:HOME}\"";
+            ConfigReferenceResolver.resolveAll(input, some(provider))
+                                   .onFailureRun(Assertions::fail)
+                                   .onSuccess(result -> {
+                                       assertFalse(result.contains("${env:HOME}"));
+                                       assertTrue(result.contains(System.getenv("HOME")));
+                                   });
+        }
+
+        @Test
+        void resolveAll_noProvider_delegatesToEnvVarOnly() {
+            var input = "secret = \"${secrets:nonexistent-secret-xyz}\"";
+            ConfigReferenceResolver.resolveAll(input, Option.empty())
+                                   .onSuccess(_ -> Assertions.fail("Expected failure"))
+                                   .onFailure(cause -> assertTrue(cause.message().contains("AETHER_NONEXISTENT_SECRET_XYZ")));
         }
     }
 

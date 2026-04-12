@@ -37,21 +37,25 @@ public interface EnvironmentIntegration {
         return empty();
     }
 
+    default Option<FloatingIpProvider> floatingIp() {
+        return empty();
+    }
+
     static EnvironmentIntegration withCompute(ComputeProvider compute) {
-        return environmentIntegration(some(compute), empty(), empty(), empty(), empty(), empty());
+        return environmentIntegration(some(compute), empty(), empty(), empty(), empty(), empty(), empty());
     }
 
     static EnvironmentIntegration environmentIntegration(Option<ComputeProvider> compute,
                                                          Option<SecretsProvider> secrets,
                                                          Option<LoadBalancerProvider> loadBalancer) {
-        return environmentIntegration(compute, secrets, loadBalancer, empty(), empty(), empty());
+        return environmentIntegration(compute, secrets, loadBalancer, empty(), empty(), empty(), empty());
     }
 
     static EnvironmentIntegration environmentIntegration(Option<ComputeProvider> compute,
                                                          Option<SecretsProvider> secrets,
                                                          Option<LoadBalancerProvider> loadBalancer,
                                                          Option<DiscoveryProvider> discovery) {
-        return environmentIntegration(compute, secrets, loadBalancer, discovery, empty(), empty());
+        return environmentIntegration(compute, secrets, loadBalancer, discovery, empty(), empty(), empty());
     }
 
     static EnvironmentIntegration environmentIntegration(Option<ComputeProvider> compute,
@@ -59,7 +63,7 @@ public interface EnvironmentIntegration {
                                                          Option<LoadBalancerProvider> loadBalancer,
                                                          Option<DiscoveryProvider> discovery,
                                                          Option<CertificateProvider> certificateProvider) {
-        return environmentIntegration(compute, secrets, loadBalancer, discovery, certificateProvider, empty());
+        return environmentIntegration(compute, secrets, loadBalancer, discovery, certificateProvider, empty(), empty());
     }
 
     static EnvironmentIntegration environmentIntegration(Option<ComputeProvider> compute,
@@ -68,7 +72,17 @@ public interface EnvironmentIntegration {
                                                          Option<DiscoveryProvider> discovery,
                                                          Option<CertificateProvider> certificateProvider,
                                                          Option<DnsProvider> dns) {
-        return FacetedEnvironment.facetedEnvironment(compute, secrets, loadBalancer, discovery, certificateProvider, dns)
+        return environmentIntegration(compute, secrets, loadBalancer, discovery, certificateProvider, dns, empty());
+    }
+
+    static EnvironmentIntegration environmentIntegration(Option<ComputeProvider> compute,
+                                                         Option<SecretsProvider> secrets,
+                                                         Option<LoadBalancerProvider> loadBalancer,
+                                                         Option<DiscoveryProvider> discovery,
+                                                         Option<CertificateProvider> certificateProvider,
+                                                         Option<DnsProvider> dns,
+                                                         Option<FloatingIpProvider> floatingIp) {
+        return FacetedEnvironment.facetedEnvironment(compute, secrets, loadBalancer, discovery, certificateProvider, dns, floatingIp)
                                                     .unwrap();
     }
 
@@ -77,14 +91,16 @@ public interface EnvironmentIntegration {
                               Option<LoadBalancerProvider> loadBalancer,
                               Option<DiscoveryProvider> discovery,
                               Option<CertificateProvider> certificateProvider,
-                              Option<DnsProvider> dns) implements EnvironmentIntegration {
+                              Option<DnsProvider> dns,
+                              Option<FloatingIpProvider> floatingIp) implements EnvironmentIntegration {
         public static Result<FacetedEnvironment> facetedEnvironment(Option<ComputeProvider> compute,
                                                                     Option<SecretsProvider> secrets,
                                                                     Option<LoadBalancerProvider> loadBalancer,
                                                                     Option<DiscoveryProvider> discovery,
                                                                     Option<CertificateProvider> certificateProvider,
-                                                                    Option<DnsProvider> dns) {
-            return success(new FacetedEnvironment(compute, secrets, loadBalancer, discovery, certificateProvider, dns));
+                                                                    Option<DnsProvider> dns,
+                                                                    Option<FloatingIpProvider> floatingIp) {
+            return success(new FacetedEnvironment(compute, secrets, loadBalancer, discovery, certificateProvider, dns, floatingIp));
         }
     }
 }

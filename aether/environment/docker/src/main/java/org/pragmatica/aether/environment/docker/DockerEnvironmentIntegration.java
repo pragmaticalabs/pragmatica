@@ -3,11 +3,14 @@ package org.pragmatica.aether.environment.docker;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
+import org.pragmatica.aether.environment.FloatingIpProvider;
 import org.pragmatica.aether.environment.LoadBalancerProvider;
+import org.pragmatica.aether.environment.NoopFloatingIpProvider;
 import org.pragmatica.aether.environment.SecretsProvider;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
+import static org.pragmatica.aether.environment.NoopFloatingIpProvider.noopFloatingIpProvider;
 import static org.pragmatica.lang.Option.empty;
 import static org.pragmatica.lang.Option.some;
 
@@ -39,5 +42,9 @@ public record DockerEnvironmentIntegration(DockerComputeProvider computeProvider
 
     @Override public Option<DiscoveryProvider> discovery() {
         return empty();
+    }
+
+    @Override public Option<FloatingIpProvider> floatingIp() {
+        return some(noopFloatingIpProvider());
     }
 }

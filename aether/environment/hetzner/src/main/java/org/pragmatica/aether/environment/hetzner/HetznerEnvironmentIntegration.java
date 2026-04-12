@@ -5,15 +5,17 @@ import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvSecretsProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
+import org.pragmatica.aether.environment.FloatingIpProvider;
 import org.pragmatica.aether.environment.LoadBalancerProvider;
 import org.pragmatica.aether.environment.SecretsProvider;
-import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.aether.environment.hetzner.HetznerComputeProvider.hetznerComputeProvider;
 import static org.pragmatica.aether.environment.hetzner.HetznerDiscoveryProvider.hetznerDiscoveryProvider;
+import static org.pragmatica.aether.environment.hetzner.HetznerFloatingIpProvider.hetznerFloatingIpProvider;
 import static org.pragmatica.aether.environment.hetzner.HetznerLoadBalancerProvider.hetznerLoadBalancerProvider;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
@@ -26,7 +28,8 @@ import static org.pragmatica.lang.Result.success;
 public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvider,
                                             Option<LoadBalancerProvider> loadBalancerProvider,
                                             Option<DiscoveryProvider> discoveryProvider,
-                                            Option<SecretsProvider> secretsProvider) implements EnvironmentIntegration {
+                                            Option<SecretsProvider> secretsProvider,
+                                            Option<FloatingIpProvider> floatingIpProvider) implements EnvironmentIntegration {
     public static Result<HetznerEnvironmentIntegration> hetznerEnvironmentIntegration(HetznerEnvironmentConfig config) {
         var client = HetznerClient.hetznerClient(config.hetznerConfig());
         return hetznerEnvironmentIntegration(client, config);
@@ -38,8 +41,9 @@ public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvid
         var lbProvider = resolveLbProvider(client, config);
         var discovery = resolveDiscoveryProvider(client, config);
         var secrets = resolveSecretsProvider();
+        var floatingIp = resolveFloatingIpProvider(client);
         return Result.all(compute, lbProvider)
-                         .map((cp, lb) -> new HetznerEnvironmentIntegration(cp, lb, discovery, secrets));
+                         .map((cp, lb) -> new HetznerEnvironmentIntegration(cp, lb, discovery, secrets, floatingIp));
     }
 
     private static Result<Option<LoadBalancerProvider>> resolveLbProvider(HetznerClient client,
@@ -80,5 +84,13 @@ public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvid
 
     @Override public Option<DiscoveryProvider> discovery() {
         return discoveryProvider;
+    }
+
+    @Override public Option<FloatingIpProvider> floatingIp() {
+        return floatingIpProvider;
+    }
+
+    private static Option<FloatingIpProvider> resolveFloatingIpProvider(HetznerClient client) {
+        return some(hetznerFloatingIpProvider(client));
     }
 }

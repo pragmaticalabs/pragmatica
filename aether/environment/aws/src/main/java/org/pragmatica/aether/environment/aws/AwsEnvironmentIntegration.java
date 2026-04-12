@@ -4,6 +4,7 @@ import org.pragmatica.aether.environment.CachingSecretsProvider;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
+import org.pragmatica.aether.environment.FloatingIpProvider;
 import org.pragmatica.aether.environment.LoadBalancerProvider;
 import org.pragmatica.aether.environment.SecretsProvider;
 import org.pragmatica.cloud.aws.AwsClient;
@@ -17,6 +18,7 @@ import static org.pragmatica.aether.environment.aws.AwsComputeProvider.awsComput
 import static org.pragmatica.aether.environment.aws.AwsDiscoveryProvider.awsDiscoveryProvider;
 import static org.pragmatica.aether.environment.aws.AwsLoadBalancerProvider.awsLoadBalancerProvider;
 import static org.pragmatica.aether.environment.aws.AwsSecretsProvider.awsSecretsProvider;
+import static org.pragmatica.lang.Option.empty;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
@@ -87,6 +89,10 @@ public record AwsEnvironmentIntegration(AwsComputeProvider computeProvider,
 
     @Override public Option<CertificateProvider> certificateProvider() {
         return certProvider;
+    }
+
+    @Override public Option<FloatingIpProvider> floatingIp() {
+        return empty();
     }
 
     private static Option<CertificateProvider> resolveCertificateProvider(AwsClient client,
