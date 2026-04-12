@@ -45,6 +45,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`@TerminalOperation` annotation** — Semantic suppression for `JBCT-PAT-03` on methods/classes where blocking is intentional (CLI, lifecycle, background threads)
 - **Streaming read forwarding** — `ReadPreference.ANY_REPLICA`/`NEAREST` now routes reads to caught-up replica nodes via QUIC `ReadForward`/`ReadForwardResponse` protocol. Retry policy: primary fails → one alternate replica → error (never silent fallback to leader). `StreamReadRouter`, `RawEventDto`, `StreamReadForwardMetrics` (5 counters). Configurable split timeouts via `[streaming]` config section (`publish_forward_timeout`, `read_forward_timeout`). Defensive 28MB response cap with truncation flag. REST layer (`StreamRoutes.readEvents`) now honors the preference end-to-end
 - **`ConsumerRuntimeState` async cursor loading** — eliminated blocking `.await()` in `subscribe()` by deferring cursor load to an async path; consumer starts after cursor resolves
+- **jOOQ XML schema export** — `JooqXmlExporter` generates jOOQ `XMLDatabase`-compatible XML from pg-tools' static `Schema` model. No jOOQ dependency. Covers tables, columns, PK/FK/unique/check constraints, sequences, indexes, enums, domains, identity/generated columns, multi-schema. Two Maven goals: `export-jooq-xml` (generate) and `check-jooq-xml` (CI drift detection). `JooqTypeMapper` maps 25+ PostgreSQL types to jOOQ's information_schema conventions
+
+### Changed
+- **jOOQ version bump** — 3.20.10/3.20.11 → 3.21.1 across root, integrations/db, and aether/resource (fixes version drift)
 - **Cluster bootstrap spec** — node-group-centric configuration model with named source/runtime profiles, multi-zone via multi-source, template inheritance (`[template.X]`), elected floating-IP load balancer, deferred database URL resolution, `config_version` field, firewall rules with TCP/UDP protocol support, three node roles (`core`/`worker`/`spot`)
 
 ### Changed

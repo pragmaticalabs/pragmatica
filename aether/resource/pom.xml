@@ -30,7 +30,7 @@
     </modules>
 
     <properties>
-        <jooq.version>3.20.10</jooq.version>
+        <jooq.version>3.21.1</jooq.version>
         <hikari.version>7.0.2</hikari.version>
         <r2dbc.version>1.0.0.RELEASE</r2dbc.version>
         <r2dbc-pool.version>1.0.2.RELEASE</r2dbc-pool.version>
