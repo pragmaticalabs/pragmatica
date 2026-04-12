@@ -201,14 +201,15 @@ import static org.pragmatica.lang.Result.success;
             doc.getSection(dbSection).forEach(databases::put);
             return databases;
         }
-        var sectionData = doc.sections().get(section);
-        if (sectionData == null) {return databases;}
-        for (var entry : sectionData.entrySet()) {if (entry.getKey().startsWith(DATABASES_PREFIX)) {
-            var dbName = entry.getKey().substring(DATABASES_PREFIX.length());
-            databases.put(dbName,
-                          entry.getValue().toString());
-        }}
+        option(doc.sections().get(section)).onPresent(data -> extractInlineDatabases(data, databases));
         return databases;
+    }
+
+    private static void extractInlineDatabases(Map<String, Object> sectionData, Map<String, String> databases) {
+        sectionData.entrySet().stream()
+                              .filter(entry -> entry.getKey().startsWith(DATABASES_PREFIX))
+                              .forEach(entry -> databases.put(entry.getKey().substring(DATABASES_PREFIX.length()),
+                                                              entry.getValue().toString()));
     }
 
     private static Map<NodeRole, RoleSubTable> parseRoles(TomlDocument doc, String sourceName, SourceType type) {

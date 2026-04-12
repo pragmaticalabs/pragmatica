@@ -2,12 +2,14 @@ package org.pragmatica.aether.config.cluster;
 
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.pragmatica.lang.Result.success;
@@ -65,8 +67,13 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static TomlDocument stripIncludeKey(TomlDocument doc) {
-        var rootSection = doc.sections().get("");
-        if (rootSection == null || !rootSection.containsKey("include")) {return doc;}
+        return Option.option(doc.sections().get(""))
+                            .filter(root -> root.containsKey("include"))
+                            .map(root -> removeIncludeFromRoot(doc, root))
+                            .or(doc);
+    }
+
+    private static TomlDocument removeIncludeFromRoot(TomlDocument doc, Map<String, Object> rootSection) {
         var cleaned = new LinkedHashMap<>(rootSection);
         cleaned.remove("include");
         var sections = new LinkedHashMap<>(doc.sections());

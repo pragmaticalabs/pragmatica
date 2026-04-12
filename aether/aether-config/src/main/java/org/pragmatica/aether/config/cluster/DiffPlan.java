@@ -1,7 +1,7 @@
 package org.pragmatica.aether.config.cluster;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 
 
 /// Diff plan with actions ordered into waves. S9.3
@@ -32,11 +32,8 @@ public record DiffPlan(List<DiffAction> additions,
     }
 
     public List<DiffAction> allActions() {
-        var all = new ArrayList<DiffAction>(additions.size() + modifications.size() + removals.size() + immutable.size());
-        all.addAll(additions);
-        all.addAll(modifications);
-        all.addAll(removals);
-        all.addAll(immutable);
-        return List.copyOf(all);
+        return Stream.of(additions, modifications, removals, immutable)
+                     .flatMap(List::stream)
+                     .toList();
     }
 }

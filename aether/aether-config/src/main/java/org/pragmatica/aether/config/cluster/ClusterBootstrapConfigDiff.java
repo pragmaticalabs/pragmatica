@@ -1,5 +1,7 @@
 package org.pragmatica.aether.config.cluster;
 
+import org.pragmatica.lang.Option;
+
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -58,14 +60,24 @@ import static org.pragmatica.aether.config.cluster.DiffPlan.diffPlan;
         allKeys.addAll(storedSources.keySet());
         allKeys.addAll(desiredSources.keySet());
         for (var key : allKeys) {
-            var storedSource = storedSources.get(key);
-            var desiredSource = desiredSources.get(key);
-            if (storedSource == null) {addNewSource(key, desiredSource, additions);} else if (desiredSource == null) {removals.add(new DiffAction.RemoveSource(key));} else {diffExistingSource(key,
-                                                                                                                                                                                                storedSource,
-                                                                                                                                                                                                desiredSource,
-                                                                                                                                                                                                additions,
-                                                                                                                                                                                                modifications,
-                                                                                                                                                                                                removals);}
+            var stored = Option.option(storedSources.get(key));
+            var desired = Option.option(desiredSources.get(key));
+            classifySourceDiff(key, stored, desired, additions, modifications, removals);
+        }
+    }
+
+    private static void classifySourceDiff(String key,
+                                             Option<SourceProfile> stored,
+                                             Option<SourceProfile> desired,
+                                             List<DiffAction> additions,
+                                             List<DiffAction> modifications,
+                                             List<DiffAction> removals) {
+        if (stored.isEmpty()) {
+            desired.onPresent(d -> addNewSource(key, d, additions));
+        } else if (desired.isEmpty()) {
+            removals.add(new DiffAction.RemoveSource(key));
+        } else {
+            stored.onPresent(s -> desired.onPresent(d -> diffExistingSource(key, s, d, additions, modifications, removals)));
         }
     }
 
@@ -127,17 +139,25 @@ import static org.pragmatica.aether.config.cluster.DiffPlan.diffPlan;
         allRoles.addAll(storedRoles.keySet());
         allRoles.addAll(desiredRoles.keySet());
         for (var role : allRoles) {
-            var storedRole = storedRoles.get(role);
-            var desiredRole = desiredRoles.get(role);
-            if (storedRole == null) {additions.add(new DiffAction.AddRole(sourceName, role, roleSize(desiredRole)));} else if (desiredRole == null) {removals.add(new DiffAction.RemoveRole(sourceName,
-                                                                                                                                                                                            role,
-                                                                                                                                                                                            roleSize(storedRole)));} else {diffExistingRole(sourceName,
-                                                                                                                                                                                                                                            role,
-                                                                                                                                                                                                                                            storedRole,
-                                                                                                                                                                                                                                            desiredRole,
-                                                                                                                                                                                                                                            additions,
-                                                                                                                                                                                                                                            modifications,
-                                                                                                                                                                                                                                            removals);}
+            var stored = Option.option(storedRoles.get(role));
+            var desired = Option.option(desiredRoles.get(role));
+            classifyRoleDiff(sourceName, role, stored, desired, additions, modifications, removals);
+        }
+    }
+
+    private static void classifyRoleDiff(String sourceName,
+                                           NodeRole role,
+                                           Option<RoleSubTable> stored,
+                                           Option<RoleSubTable> desired,
+                                           List<DiffAction> additions,
+                                           List<DiffAction> modifications,
+                                           List<DiffAction> removals) {
+        if (stored.isEmpty()) {
+            desired.onPresent(d -> additions.add(new DiffAction.AddRole(sourceName, role, roleSize(d))));
+        } else if (desired.isEmpty()) {
+            stored.onPresent(s -> removals.add(new DiffAction.RemoveRole(sourceName, role, roleSize(s))));
+        } else {
+            stored.onPresent(s -> desired.onPresent(d -> diffExistingRole(sourceName, role, s, d, additions, modifications, removals)));
         }
     }
 
@@ -189,8 +209,7 @@ import static org.pragmatica.aether.config.cluster.DiffPlan.diffPlan;
     private static int countByRole(ClusterBootstrapConfig config, NodeRole role) {
         return config.sources().values()
                              .stream()
-                             .map(s -> s.roles().get(role))
-                             .filter(Objects::nonNull)
+                             .flatMap(s -> Option.option(s.roles().get(role)).stream())
                              .mapToInt(ClusterBootstrapConfigDiff::roleSize)
                              .sum();
     }

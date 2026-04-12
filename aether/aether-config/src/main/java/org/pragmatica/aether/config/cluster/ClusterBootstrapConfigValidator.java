@@ -164,9 +164,7 @@ import static org.pragmatica.lang.Result.success;
                                                      List<String> errors) {
         switch (type){
             case SSH -> validateSshRole(name, role, sub, errors);
-            case CLOUD -> validateCloudOrForgeRole(name, role, sub, errors);
-            case FORGE -> validateCloudOrForgeRole(name, role, sub, errors);
-            case DOCKER -> validateCloudOrForgeRole(name, role, sub, errors);
+            case CLOUD, FORGE, DOCKER -> validateCloudOrForgeRole(name, role, sub, errors);
         }
     }
 
@@ -250,8 +248,11 @@ import static org.pragmatica.lang.Result.success;
     private static Option<RuntimeType> resolveRuntimeType(String runtimeRef,
                                                           SourceType sourceType,
                                                           Map<String, RuntimeProfile> runtimes) {
-        var profile = runtimes.get(runtimeRef);
-        if (profile != null) {return Option.some(profile.type());}
+        return Option.option(runtimes.get(runtimeRef)).map(RuntimeProfile::type)
+                            .orElse(() -> resolveImplicitRuntimeType(runtimeRef, sourceType));
+    }
+
+    private static Option<RuntimeType> resolveImplicitRuntimeType(String runtimeRef, SourceType sourceType) {
         if ("ember".equals(runtimeRef) && sourceType == SourceType.FORGE) {return Option.some(RuntimeType.EMBER);}
         if ("default".equals(runtimeRef) && sourceType == SourceType.FORGE) {return Option.some(RuntimeType.EMBER);}
         if ("default".equals(runtimeRef) && sourceType == SourceType.DOCKER) {return Option.some(RuntimeType.DOCKER);}
@@ -265,19 +266,27 @@ import static org.pragmatica.lang.Result.success;
                                                  RuntimeType runtimeType,
                                                  List<String> errors) {
         switch (sourceType){
-            case FORGE -> {
-                if (runtimeType != RuntimeType.EMBER) {errors.add("PF-19: Forge source '" + sourceName + "' role '" + role.value() + "' runtime '" + runtimeRef + "' must be EMBER type, got " + runtimeType.value());}
-            }
-            case DOCKER -> {
-                if (runtimeType != RuntimeType.DOCKER) {errors.add("PF-20: Docker source '" + sourceName + "' role '" + role.value() + "' runtime '" + runtimeRef + "' must be DOCKER type, got " + runtimeType.value());}
-            }
-            case CLOUD -> {
-                if (!CLOUD_RUNTIME_TYPES.contains(runtimeType)) {errors.add("PF-21: Cloud source '" + sourceName + "' role '" + role.value() + "' runtime '" + runtimeRef + "' must be CONTAINER or JVM, got " + runtimeType.value());}
-            }
-            case SSH -> {
-                if (!SSH_RUNTIME_TYPES.contains(runtimeType)) {errors.add("PF-22: SSH source '" + sourceName + "' role '" + role.value() + "' runtime '" + runtimeRef + "' must be CONTAINER, JVM, or EMBER, got " + runtimeType.value());}
-            }
+            case FORGE -> checkForgeRuntime(sourceName, role, runtimeRef, runtimeType, errors);
+            case DOCKER -> checkDockerRuntime(sourceName, role, runtimeRef, runtimeType, errors);
+            case CLOUD -> checkCloudRuntime(sourceName, role, runtimeRef, runtimeType, errors);
+            case SSH -> checkSshRuntime(sourceName, role, runtimeRef, runtimeType, errors);
         }
+    }
+
+    private static void checkForgeRuntime(String sourceName, NodeRole role, String runtimeRef, RuntimeType runtimeType, List<String> errors) {
+        if (runtimeType != RuntimeType.EMBER) {errors.add("PF-19: Forge source '" + sourceName + "' role '" + role.value() + "' runtime '" + runtimeRef + "' must be EMBER type, got " + runtimeType.value());}
+    }
+
+    private static void checkDockerRuntime(String sourceName, NodeRole role, String runtimeRef, RuntimeType runtimeType, List<String> errors) {
+        if (runtimeType != RuntimeType.DOCKER) {errors.add("PF-20: Docker source '" + sourceName + "' role '" + role.value() + "' runtime '" + runtimeRef + "' must be DOCKER type, got " + runtimeType.value());}
+    }
+
+    private static void checkCloudRuntime(String sourceName, NodeRole role, String runtimeRef, RuntimeType runtimeType, List<String> errors) {
+        if (!CLOUD_RUNTIME_TYPES.contains(runtimeType)) {errors.add("PF-21: Cloud source '" + sourceName + "' role '" + role.value() + "' runtime '" + runtimeRef + "' must be CONTAINER or JVM, got " + runtimeType.value());}
+    }
+
+    private static void checkSshRuntime(String sourceName, NodeRole role, String runtimeRef, RuntimeType runtimeType, List<String> errors) {
+        if (!SSH_RUNTIME_TYPES.contains(runtimeType)) {errors.add("PF-22: SSH source '" + sourceName + "' role '" + role.value() + "' runtime '" + runtimeRef + "' must be CONTAINER, JVM, or EMBER, got " + runtimeType.value());}
     }
 
     private static void validatePortConflictsOnSameHost(String name, SourceProfile source, List<String> errors) {
@@ -322,8 +331,15 @@ import static org.pragmatica.lang.Result.success;
                                                 int majority,
                                                 int totalCores,
                                                 List<String> warnings) {
-        var coreRole = source.roles().get(NodeRole.CORE);
-        if (coreRole == null) {return;}
+        Option.option(source.roles().get(NodeRole.CORE))
+                     .onPresent(coreRole -> checkCoreCount(name, coreRole, majority, totalCores, warnings));
+    }
+
+    private static void checkCoreCount(String name,
+                                        RoleSubTable coreRole,
+                                        int majority,
+                                        int totalCores,
+                                        List<String> warnings) {
         var count = coreRole.count().or(0) + coreRole.hosts().map(List::size)
                                                            .or(0);
         if (count > majority) {warnings.add("CL-13: Source '" + name + "' holds " + count + " of " + totalCores + " cores (majority risk)");}

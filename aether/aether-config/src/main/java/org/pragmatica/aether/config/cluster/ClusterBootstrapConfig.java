@@ -1,8 +1,9 @@
 package org.pragmatica.aether.config.cluster;
 
+import org.pragmatica.lang.Option;
+
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 
 
 /// Top-level cluster bootstrap configuration. S2.1
@@ -36,8 +37,7 @@ public record ClusterBootstrapConfig(String configVersion,
 
     public int derivedCoreCount() {
         return sources.values().stream()
-                             .map(s -> s.roles().get(NodeRole.CORE))
-                             .filter(Objects::nonNull)
+                             .flatMap(s -> Option.option(s.roles().get(NodeRole.CORE)).stream())
                              .mapToInt(ClusterBootstrapConfig::roleSize)
                              .sum();
     }

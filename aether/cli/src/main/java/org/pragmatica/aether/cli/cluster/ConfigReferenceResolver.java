@@ -35,7 +35,7 @@ sealed interface ConfigReferenceResolver {
     Pattern REFERENCE_PATTERN = Pattern.compile("\\$\\{(env|secrets):([^}]+)}");
 
     static Result<String> resolveAll(String tomlContent) {
-        return resolveAll(tomlContent, Option.empty());
+        return resolveAll(tomlContent, Option.none());
     }
 
     static Result<String> resolveAll(String tomlContent, Option<SecretsProvider> secretsProvider) {
