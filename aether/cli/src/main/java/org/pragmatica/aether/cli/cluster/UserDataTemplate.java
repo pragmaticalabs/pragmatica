@@ -1,7 +1,11 @@
 package org.pragmatica.aether.cli.cluster;
 
-import org.pragmatica.aether.config.cluster.ClusterManagementConfig;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.RuntimeProfile;
 import org.pragmatica.aether.config.cluster.RuntimeType;
+import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.lang.Option;
 
 
 /// Renders cloud-init user-data scripts for bootstrapping Aether nodes.
@@ -15,23 +19,25 @@ import org.pragmatica.aether.config.cluster.RuntimeType;
 sealed interface UserDataTemplate {
     record unused() implements UserDataTemplate{}
 
-    static String render(ClusterManagementConfig config,
+    static String render(ClusterBootstrapConfig config,
+                         SourceProfile source,
+                         NodeRole role,
                          String nodeId,
                          int nodeIndex,
                          String clusterSecret,
                          String clusterName) {
-        var deployment = config.deployment();
-        var cluster = config.cluster();
-        var ports = deployment.ports();
-        var tlsEnabled = deployment.tls().isPresent();
-        var isContainer = deployment.runtime().type() == RuntimeType.CONTAINER;
-        var image = deployment.runtime().image()
-                                      .or("ghcr.io/pragmaticalabs/aether-node:" + cluster.version());
-        var heap = deriveHeap(deployment.instances().getOrDefault("core", "cx21"));
+        var ports = config.operations().ports();
+        var tlsEnabled = config.operations().tls().autoGenerate();
+        var runtimeProfile = resolveRuntimeProfile(config, source, role);
+        var isContainer = isContainerRuntime(runtimeProfile);
+        var image = runtimeProfile.flatMap(RuntimeProfile::image)
+                                  .or("ghcr.io/pragmaticalabs/aether-node:" + config.cluster().version());
+        var instanceType = resolveInstanceType(source, role);
+        var heap = deriveHeap(instanceType);
         var sb = new StringBuilder();
-        appendHeader(sb, clusterName, nodeId);
+        appendHeader(sb, clusterName, nodeId, role);
         appendVariables(sb,
-                        cluster.version(),
+                        config.cluster().version(),
                         image,
                         nodeId,
                         clusterSecret,
@@ -39,7 +45,7 @@ sealed interface UserDataTemplate {
                         ports.management(),
                         ports.swim(),
                         tlsEnabled,
-                        cluster.core().count());
+                        config.derivedCoreCount());
         if (isContainer) {
             appendDockerInstall(sb);
             appendConfig(sb,
@@ -47,27 +53,48 @@ sealed interface UserDataTemplate {
                          ports.cluster(),
                          tlsEnabled,
                          clusterSecret,
-                         cluster.core().count(),
+                         config.derivedCoreCount(),
                          heap);
             appendContainerRun(sb, clusterName, nodeId, ports.cluster(), ports.management(), ports.swim());
         } else {
-            appendJvmInstall(sb, cluster.version());
+            appendJvmInstall(sb, config.cluster().version());
             appendConfig(sb,
                          ports.management(),
                          ports.cluster(),
                          tlsEnabled,
                          clusterSecret,
-                         cluster.core().count(),
+                         config.derivedCoreCount(),
                          heap);
             appendJvmRun(sb,
-                         deployment.runtime().jvmArgs()
-                                           .or(""));
+                         runtimeProfile.flatMap(RuntimeProfile::jvmArgs)
+                                       .or(""));
         }
         appendReadinessSignal(sb, nodeId, ports.cluster(), ports.management());
         return sb.toString();
     }
 
-    private static void appendHeader(StringBuilder sb, String clusterName, String nodeId) {
+    private static Option<RuntimeProfile> resolveRuntimeProfile(ClusterBootstrapConfig config,
+                                                                 SourceProfile source,
+                                                                 NodeRole role) {
+        var roleTable = Option.option(source.roles().get(role));
+        return roleTable.map(rt -> rt.runtimeRef())
+                        .flatMap(ref -> Option.option(config.runtimes().get(ref)));
+    }
+
+    private static boolean isContainerRuntime(Option<RuntimeProfile> profile) {
+        return profile.map(p -> p.type() == RuntimeType.CONTAINER
+                              || p.type() == RuntimeType.DOCKER
+                              || p.type() == RuntimeType.MANAGED_CONTAINER)
+                      .or(true);
+    }
+
+    private static String resolveInstanceType(SourceProfile source, NodeRole role) {
+        return Option.option(source.roles().get(role))
+                     .flatMap(rt -> rt.instanceType())
+                     .or("cx21");
+    }
+
+    private static void appendHeader(StringBuilder sb, String clusterName, String nodeId, NodeRole role) {
         sb.append("#!/bin/bash\n");
         sb.append("set -euo pipefail\n\n");
         sb.append("# --- Aether Node Cloud-Init ---\n");
@@ -76,7 +103,8 @@ sealed interface UserDataTemplate {
                  .append('\n');
         sb.append("# Node ID: ").append(nodeId)
                  .append('\n');
-        sb.append("# Role: core\n\n");
+        sb.append("# Role: ").append(role.value())
+                 .append("\n\n");
     }
 
     private static void appendVariables(StringBuilder sb,

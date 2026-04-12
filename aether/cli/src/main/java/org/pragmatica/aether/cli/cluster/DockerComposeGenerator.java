@@ -1,6 +1,6 @@
 package org.pragmatica.aether.cli.cluster;
 
-import org.pragmatica.aether.config.cluster.ClusterManagementConfig;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.PortMapping;
 
 import java.security.SecureRandom;
@@ -14,13 +14,12 @@ import java.security.SecureRandom;
 sealed interface DockerComposeGenerator {
     record unused() implements DockerComposeGenerator{}
 
-    static String generate(ClusterManagementConfig config, String apiKey) {
+    static String generate(ClusterBootstrapConfig config, String apiKey) {
         var sb = new StringBuilder();
         appendHeader(sb);
         appendNetworks(sb);
         appendServicesHeader(sb);
-        var coreCount = config.cluster().core()
-                                      .count();
+        var coreCount = config.derivedCoreCount();
         for (int i = 0;i <coreCount;i++) {appendNodeService(sb, config, i, coreCount, apiKey);}
         return sb.toString();
     }
@@ -40,7 +39,7 @@ sealed interface DockerComposeGenerator {
     }
 
     private static void appendNodeService(StringBuilder sb,
-                                          ClusterManagementConfig config,
+                                          ClusterBootstrapConfig config,
                                           int index,
                                           int totalNodes,
                                           String apiKey) {
@@ -48,7 +47,7 @@ sealed interface DockerComposeGenerator {
         var nodeId = "node-" + nodeNum;
         var hostname = "aether-node-" + nodeNum;
         var image = resolveImage(config);
-        var ports = config.deployment().ports();
+        var ports = config.operations().ports();
         var clusterName = config.cluster().name();
         var peers = buildComposePeers(clusterName, totalNodes, ports.cluster());
         var clusterSecret = resolveClusterSecret(config);
@@ -137,16 +136,17 @@ sealed interface DockerComposeGenerator {
         return sb.toString();
     }
 
-    private static String resolveImage(ClusterManagementConfig config) {
-        return config.deployment().runtime()
-                                .image()
-                                .or("ghcr.io/pragmaticalabs/aether-node:" + config.cluster().version());
+    private static String resolveImage(ClusterBootstrapConfig config) {
+        // Use the first runtime profile's image, or fallback to default
+        return config.runtimes().values().stream()
+                            .findFirst()
+                            .flatMap(rt -> rt.image().toOptional())
+                            .orElse("ghcr.io/pragmaticalabs/aether-node:" + config.cluster().version());
     }
 
-    private static String resolveClusterSecret(ClusterManagementConfig config) {
-        return config.deployment().tls()
-                                .flatMap(tls -> tls.clusterSecret())
-                                .or(generateRandomSecret());
+    private static String resolveClusterSecret(ClusterBootstrapConfig config) {
+        return config.operations().tls().clusterSecret()
+                                      .or(generateRandomSecret());
     }
 
     private static String generateRandomSecret() {

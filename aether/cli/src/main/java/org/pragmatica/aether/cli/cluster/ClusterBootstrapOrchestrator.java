@@ -5,6 +5,7 @@ import org.pragmatica.aether.config.cluster.LoadBalancerMode;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
+import org.pragmatica.aether.config.cluster.SshConfig;
 import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.NodeAddress;
@@ -16,7 +17,11 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+import java.net.HttpURLConnection;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -52,6 +57,8 @@ import static org.pragmatica.lang.Result.success;
 
     int API_KEY_BYTES = 32;
     int HTTP_TIMEOUT_MS = 5000;
+    int HTTP_POST_CONNECT_TIMEOUT_MS = 10_000;
+    int HTTP_POST_READ_TIMEOUT_MS = 30_000;
     int POLL_INTERVAL_MS = 5000;
     long DEFAULT_TIMEOUT_MS = 300_000;
 
@@ -209,13 +216,117 @@ import static org.pragmatica.lang.Result.success;
         return success(ctx.withAddresses(addresses));
     }
 
+    @SuppressWarnings("JBCT-PAT-01")
     private static Result<BootstrapContext> phaseDeployRuntime(BootstrapContext ctx) {
         logPhase(DEPLOY_RUNTIME,
                  "Deploying runtime to %d node(s)",
                  ctx.addresses().size());
-        var peerList = buildPeerList(ctx.addresses());
-        System.out.printf("  Peer list: %s%n", peerList);
+        var clusterSecret = generateClusterSecret();
+        for (var entry : ctx.config().sources().entrySet()) {
+            var sourceName = entry.getKey();
+            var source = entry.getValue();
+            var deployResult = deploySource(ctx, source, sourceName, clusterSecret);
+            if (deployResult.isFailure()) {return deployResult.map(_ -> ctx);}
+        }
         return success(ctx);
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private static Result<Unit> deploySource(BootstrapContext ctx,
+                                              SourceProfile source,
+                                              String sourceName,
+                                              String clusterSecret) {
+        return switch (source.type()) {
+            case CLOUD -> deployCloudSource(sourceName);
+            case SSH -> deploySshSource(ctx, source, sourceName, clusterSecret);
+            case FORGE -> deployForgeSource(sourceName);
+            case DOCKER -> deployDockerSource(sourceName);
+        };
+    }
+
+    private static Result<Unit> deployCloudSource(String sourceName) {
+        System.out.printf("  [%s/cloud] Cloud-init already applied during provisioning%n", sourceName);
+        return Result.unitResult();
+    }
+
+    private static Result<Unit> deployDockerSource(String sourceName) {
+        System.out.printf("  [%s/docker] Containers already started during provisioning%n", sourceName);
+        return Result.unitResult();
+    }
+
+    private static Result<Unit> deployForgeSource(String sourceName) {
+        System.out.printf("  [%s/forge] Ember nodes started in-process (managed separately)%n", sourceName);
+        return Result.unitResult();
+    }
+
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
+    private static Result<Unit> deploySshSource(BootstrapContext ctx,
+                                                 SourceProfile source,
+                                                 String sourceName,
+                                                 String clusterSecret) {
+        var sshConfig = buildSshConfig(source);
+        var allNodeIps = ctx.addresses().stream().map(NodeAddress::publicIp).toList();
+        var clusterName = ctx.config().cluster().name();
+        var nodeIndex = 0;
+        for (var node : ctx.nodes()) {
+            if (!node.serverId().equals("ssh")) {
+                nodeIndex++;
+                continue;
+            }
+            var nodeConfig = NodeConfigTemplate.render(ctx.config(), node.nodeId(), nodeIndex, clusterSecret, allNodeIps);
+            var result = deploySshNode(node, nodeConfig, sshConfig, clusterName);
+            if (result.isFailure()) {return result;}
+            nodeIndex++;
+        }
+        System.out.printf("  [%s/ssh] Deployed runtime to SSH nodes%n", sourceName);
+        return Result.unitResult();
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Unit> deploySshNode(ProvisionedNode node, String nodeConfig, SshConfig sshConfig, String clusterName) {
+        return writeNodeConfigToTemp(node.nodeId(), nodeConfig)
+                   .flatMap(tempPath -> scpConfigToNode(tempPath, node.publicIp(), sshConfig))
+                   .flatMap(_ -> startRuntimeViaSsh(node.publicIp(), sshConfig, clusterName, node.nodeId()));
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Path> writeNodeConfigToTemp(String nodeId, String content) {
+        return Result.lift(
+            e -> new BootstrapError.DeploymentFailed(nodeId, "Failed to write temp config: " + e.getMessage()),
+            () -> writeTempTomlFile(nodeId, content));
+    }
+
+    private static Path writeTempTomlFile(String nodeId, String content) throws Exception {
+        var tempFile = Files.createTempFile("aether-" + nodeId, ".toml");
+        Files.writeString(tempFile, content);
+        return tempFile;
+    }
+
+    private static Result<Unit> scpConfigToNode(Path localPath, String host, SshConfig sshConfig) {
+        return RemoteCommandRunner.scp(localPath.toString(), host, "/opt/aether/config/aether.toml", sshConfig);
+    }
+
+    private static Result<Unit> startRuntimeViaSsh(String host, SshConfig sshConfig, String clusterName, String nodeId) {
+        var startCommand = "mkdir -p /opt/aether/config && docker pull ghcr.io/pragmaticalabs/aether-node:latest"
+                          + " && docker run -d --name aether-node --restart unless-stopped --network host"
+                          + " -e AETHER_NODE_ID=" + nodeId
+                          + " -l aether-cluster=" + clusterName
+                          + " -v /opt/aether/config:/config:ro"
+                          + " ghcr.io/pragmaticalabs/aether-node:latest --config /config/aether.toml";
+        return RemoteCommandRunner.ssh(host, startCommand, sshConfig).mapToUnit();
+    }
+
+    private static SshConfig buildSshConfig(SourceProfile source) {
+        var user = source.user().or("root");
+        var keyPath = source.key().or("~/.ssh/id_rsa");
+        var port = source.sshPort().or(22);
+        return SshConfig.sshConfig(user, keyPath, port);
+    }
+
+    private static String generateClusterSecret() {
+        var bytes = new byte[API_KEY_BYTES];
+        new SecureRandom().nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
     private static String buildPeerList(List<NodeAddress> addresses) {
@@ -238,7 +349,14 @@ import static org.pragmatica.lang.Result.success;
         var requiredCores = ctx.config().derivedCoreCount();
         return waitForHealth(ctx.addresses(), managementPort, healthTimeoutMs)
                    .flatMap(_ -> waitForQuorum(ctx.addresses(), managementPort, quorumTimeoutMs, requiredCores))
-                   .map(_ -> ctx.withApiKey(apiKey));
+                   .map(_ -> finalizeClusterFormation(ctx, apiKey));
+    }
+
+    private static BootstrapContext finalizeClusterFormation(BootstrapContext ctx, String apiKey) {
+        var updatedCtx = ctx.withApiKey(apiKey);
+        storeClusterConfig(updatedCtx);
+        storeApiKey(updatedCtx, apiKey);
+        return updatedCtx;
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -279,6 +397,58 @@ import static org.pragmatica.lang.Result.success;
             sleepQuietly(POLL_INTERVAL_MS);
         }
         return new BootstrapError.QuorumNotEstablished(0, requiredCores).result();
+    }
+
+    @Contract private static void storeClusterConfig(BootstrapContext ctx) {
+        if (ctx.addresses().isEmpty()) {return;}
+        var endpoint = buildManagementEndpoint(ctx);
+        var configJson = buildConfigJson(ctx.config());
+        var result = httpPost(endpoint + "/api/cluster/config", configJson);
+        var _ = result.onSuccess(_ -> System.out.println("  Cluster config stored in KV-Store"))
+                      .onFailure(cause -> System.err.println("  Warning: failed to store config: " + cause.message()));
+    }
+
+    @Contract private static void storeApiKey(BootstrapContext ctx, String apiKey) {
+        if (ctx.addresses().isEmpty()) {return;}
+        var endpoint = buildManagementEndpoint(ctx);
+        var keyJson = "{\"apiKey\":\"" + apiKey + "\"}";
+        var result = httpPost(endpoint + "/api/cluster/api-key", keyJson);
+        var _ = result.onSuccess(_ -> System.out.println("  API key stored"))
+                      .onFailure(cause -> System.err.println("  Warning: failed to store API key: " + cause.message()));
+    }
+
+    private static String buildManagementEndpoint(BootstrapContext ctx) {
+        var port = ctx.config().operations().ports().management();
+        var ip = ctx.addresses().getFirst().publicIp();
+        return "http://" + ip + ":" + port;
+    }
+
+    private static String buildConfigJson(ClusterBootstrapConfig config) {
+        // TODO: Full TOML serialization needed for production use
+        return "{\"clusterName\":\"" + config.cluster().name()
+              + "\",\"version\":\"" + config.cluster().version() + "\"}";
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<String> httpPost(String url, String body) {
+        return Result.lift(
+            e -> new BootstrapError.ProvisionFailed("http-post", e.getMessage()),
+            () -> executeHttpPost(url, body));
+    }
+
+    private static String executeHttpPost(String url, String body) throws Exception {
+        var conn = (HttpURLConnection) URI.create(url).toURL().openConnection();
+        conn.setRequestMethod("POST");
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setDoOutput(true);
+        conn.setConnectTimeout(HTTP_POST_CONNECT_TIMEOUT_MS);
+        conn.setReadTimeout(HTTP_POST_READ_TIMEOUT_MS);
+        try (var os = conn.getOutputStream()) {
+            os.write(body.getBytes(StandardCharsets.UTF_8));
+        }
+        try (var is = conn.getInputStream()) {
+            return new String(is.readAllBytes());
+        }
     }
 
     @SuppressWarnings("JBCT-EX-01")

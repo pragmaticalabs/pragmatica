@@ -2,20 +2,22 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.config.cluster.AutoHealSpec;
-import org.pragmatica.aether.config.cluster.ClusterManagementConfig;
-import org.pragmatica.aether.config.cluster.ClusterSpec;
-import org.pragmatica.aether.config.cluster.CoreSpec;
-import org.pragmatica.aether.config.cluster.DeploymentSpec;
-import org.pragmatica.aether.config.cluster.DeploymentType;
-import org.pragmatica.aether.config.cluster.DistributionConfig;
-import org.pragmatica.aether.config.cluster.DistributionStrategy;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.config.cluster.ClusterIdentity;
+import org.pragmatica.aether.config.cluster.CoreTopology;
+import org.pragmatica.aether.config.cluster.InfrastructureConfig;
+import org.pragmatica.aether.config.cluster.LoadBalancerMode;
+import org.pragmatica.aether.config.cluster.NetworkingType;
+import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.OperationsConfig;
 import org.pragmatica.aether.config.cluster.PortMapping;
-import org.pragmatica.aether.config.cluster.RuntimeConfig;
+import org.pragmatica.aether.config.cluster.RoleSubTable;
+import org.pragmatica.aether.config.cluster.RuntimeProfile;
 import org.pragmatica.aether.config.cluster.RuntimeType;
-import org.pragmatica.aether.config.cluster.UpgradeSpec;
-import org.pragmatica.aether.config.cluster.UpgradeStrategy;
-import org.pragmatica.aether.config.cluster.WorkerSpec;
+import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.config.cluster.SourceType;
+import org.pragmatica.aether.config.cluster.TlsDeploymentConfig;
+import org.pragmatica.aether.config.cluster.TimeoutsConfig;
 import org.pragmatica.lang.Option;
 
 import java.util.List;
@@ -25,29 +27,30 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DockerComposeGeneratorTest {
 
-    private static ClusterManagementConfig fiveNodeConfig() {
-        return ClusterManagementConfig.clusterManagementConfig(
-            DeploymentSpec.deploymentSpec(
-                DeploymentType.ON_PREMISES,
-                Map.of("core", "bare-metal"),
-                RuntimeConfig.runtimeConfig(RuntimeType.CONTAINER,
-                                            Option.some("ghcr.io/pragmaticalabs/aether-node:1.0.0-alpha"),
-                                            Option.none()),
-                Map.of(),
-                PortMapping.portMapping(6000, 5150, 8070, 6100),
-                Option.none(),
-                Option.none()
-            ),
-            ClusterSpec.clusterSpec(
-                "test-cluster",
-                "1.0.0-alpha",
-                CoreSpec.coreSpec(5, 3, 9),
-                WorkerSpec.workerSpec(0),
-                DistributionConfig.distributionConfig(DistributionStrategy.BALANCED, List.of()),
-                AutoHealSpec.autoHealSpec(true, "60s", "15s"),
-                UpgradeSpec.upgradeSpec(UpgradeStrategy.ROLLING)
-            )
-        );
+    private static ClusterBootstrapConfig fiveNodeConfig() {
+        var ports = PortMapping.portMapping(6000, 5150, 8070, 6100);
+        var roleSubTable = RoleSubTable.roleSubTable(
+            NodeRole.CORE, Option.some(5), Option.none(), Option.some("bare-metal"), "default");
+        var source = SourceProfile.sourceProfile(
+            "docker-source", SourceType.DOCKER, Option.none(), Option.none(), Option.none(),
+            Option.none(), Option.none(), Option.none(), Option.none(),
+            LoadBalancerMode.NONE, List.of(), Option.none(), Map.of(),
+            Map.of(NodeRole.CORE, roleSubTable), List.of());
+        var runtime = RuntimeProfile.runtimeProfile(
+            "default", RuntimeType.CONTAINER,
+            Option.some("ghcr.io/pragmaticalabs/aether-node:1.0.0-alpha"), Option.none());
+        return ClusterBootstrapConfig.clusterBootstrapConfig(
+            "1",
+            ClusterIdentity.clusterIdentity("test-cluster", "1.0.0-alpha"),
+            CoreTopology.defaultCoreTopology(),
+            Map.of("docker-source", source),
+            Map.of("default", runtime),
+            InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
+            OperationsConfig.operationsConfig(
+                org.pragmatica.aether.config.cluster.AutoHealSpec.defaultAutoHealSpec(),
+                TlsDeploymentConfig.defaultTlsConfig(),
+                TimeoutsConfig.defaultTimeoutsConfig(),
+                ports));
     }
 
     @Nested
