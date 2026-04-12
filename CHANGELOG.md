@@ -43,6 +43,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Promise.allOrCancel()** — Cancels remaining promises on first failure; fixed instance `all()` from sequential to parallel
 - **JBCT lint rules (4 new)** — `JBCT-PAT-03` blocking `.await()` detection (WARNING), `JBCT-RET-07` discarded `Result`/`Promise`/`Option` value (ERROR), `JBCT-STY-07` unnecessary intermediate variable before return (WARNING), `JBCT-STY-08` simple if/else with return in both branches (WARNING)
 - **`@TerminalOperation` annotation** — Semantic suppression for `JBCT-PAT-03` on methods/classes where blocking is intentional (CLI, lifecycle, background threads)
+- **Streaming read forwarding** — `ReadPreference.ANY_REPLICA`/`NEAREST` now routes reads to caught-up replica nodes via QUIC `ReadForward`/`ReadForwardResponse` protocol. Retry policy: primary fails → one alternate replica → error (never silent fallback to leader). `StreamReadRouter`, `RawEventDto`, `StreamReadForwardMetrics` (5 counters). Configurable split timeouts via `[streaming]` config section (`publish_forward_timeout`, `read_forward_timeout`). Defensive 28MB response cap with truncation flag. REST layer (`StreamRoutes.readEvents`) now honors the preference end-to-end
+- **`ConsumerRuntimeState` async cursor loading** — eliminated blocking `.await()` in `subscribe()` by deferring cursor load to an async path; consumer starts after cursor resolves
+- **Cluster bootstrap spec** — node-group-centric configuration model with named source/runtime profiles, multi-zone via multi-source, template inheritance (`[template.X]`), elected floating-IP load balancer, deferred database URL resolution, `config_version` field, firewall rules with TCP/UDP protocol support, three node roles (`core`/`worker`/`spot`)
 
 ### Changed
 - **`HETZNER_API_TOKEN` → `HCLOUD_TOKEN`** — Standardized to Hetzner's official env var name across all Java code, docs, and specs
@@ -56,6 +59,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Dashboard** — Fixed empty panels (strategies store endpoints, template fields). Added 10s secondary polling for topology/governors/strategies/streams/observability. Fixed success rate display
 - **StreamAccessImpl → PartitionedStreamAccess** — JBCT naming compliance, removed Impl suffix
 - **Example scripts** — `run-forge.sh` scripts now extract version from POM dynamically instead of hardcoding
+- **JBCT-RET-07 rule refinements** — removed `onPresent` (Option side-effect, no error channel) and `timeout` (scheduling side-effect) from chain-terminal set; added string-literal stripping to prevent false positives on code-generation string content; added top-level assignment detection to exclude explicitly-typed local declarations
 
 ### Fixed
 - **Envelope format version** bumped to v8 for config update manifest entries
