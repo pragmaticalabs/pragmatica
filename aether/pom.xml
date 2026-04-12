@@ -55,7 +55,6 @@
         <module>aether-management-api</module>
         <module>aether-stream</module>
         <module>cli</module>
-        <module>lb</module>
         <module>ember</module>
         <module>forge</module>
         <!-- e2e-tests requires examples to be installed first, enabled via -Pwith-e2e profile -->
