@@ -14,53 +14,49 @@ import static org.pragmatica.lang.Result.success;
 
 
 /// Resolves `include = [...]` directives in TOML config files. Section 4.1
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
-public final class IncludeResolver {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public final class IncludeResolver {
     private IncludeResolver() {}
 
     private static final int MAX_DEPTH = 16;
 
-    /// Resolve all includes starting from the given document.
-    /// Include paths are relative to baseDir. Section 4.1 REQ-4.1.5
     public static Result<TomlDocument> resolve(TomlDocument doc, Path baseDir) {
         return resolve(doc, baseDir, new LinkedHashSet<>(), 0);
     }
 
     private static Result<TomlDocument> resolve(TomlDocument doc, Path baseDir, Set<Path> visited, int depth) {
-        if (depth > MAX_DEPTH) {
-            return new ClusterConfigError.ParseFailed("Include depth limit exceeded (max 16)").result();
-        }
-
-        return doc.getStringList("", "include")
-                  .map(includes -> resolveIncludes(doc, baseDir, visited, depth, includes))
-                  .or(success(doc));
+        if (depth > MAX_DEPTH) {return new ClusterConfigError.ParseFailed("Include depth limit exceeded (max 16)").result();}
+        return doc.getStringList("", "include").map(includes -> resolveIncludes(doc, baseDir, visited, depth, includes))
+                                .or(success(doc));
     }
 
-    private static Result<TomlDocument> resolveIncludes(TomlDocument doc, Path baseDir, Set<Path> visited,
-                                                        int depth, List<String> includes) {
+    private static Result<TomlDocument> resolveIncludes(TomlDocument doc,
+                                                        Path baseDir,
+                                                        Set<Path> visited,
+                                                        int depth,
+                                                        List<String> includes) {
         var accumulator = success(TomlDocument.EMPTY);
-
-        for (var path : includes) {
-            accumulator = accumulator.flatMap(acc -> resolveOneInclude(acc, baseDir, visited, depth, path));
-        }
-
+        for (var path : includes) {accumulator = accumulator.flatMap(acc -> resolveOneInclude(acc,
+                                                                                              baseDir,
+                                                                                              visited,
+                                                                                              depth,
+                                                                                              path));}
         return accumulator.map(merged -> mergeAndStripIncludes(merged, doc));
     }
 
-    private static Result<TomlDocument> resolveOneInclude(TomlDocument accumulator, Path baseDir, Set<Path> visited,
-                                                          int depth, String path) {
+    private static Result<TomlDocument> resolveOneInclude(TomlDocument accumulator,
+                                                          Path baseDir,
+                                                          Set<Path> visited,
+                                                          int depth,
+                                                          String path) {
         var resolved = baseDir.resolve(path).normalize();
-
-        if (visited.contains(resolved)) {
-            return new ClusterConfigError.ParseFailed("Circular include detected: " + resolved).result();
-        }
-
+        if (visited.contains(resolved)) {return new ClusterConfigError.ParseFailed("Circular include detected: " + resolved).result();}
         visited.add(resolved);
-
-        return TomlParser.parseFile(resolved)
-                         .mapError(cause -> new ClusterConfigError.ParseFailed(cause.message()))
-                         .flatMap(parsed -> resolve(parsed, resolved.getParent(), visited, depth + 1))
-                         .map(resolvedDoc -> TomlDocumentMerger.merge(accumulator, resolvedDoc));
+        return TomlParser.parseFile(resolved).mapError(cause -> new ClusterConfigError.ParseFailed(cause.message()))
+                                   .flatMap(parsed -> resolve(parsed,
+                                                              resolved.getParent(),
+                                                              visited,
+                                                              depth + 1))
+                                   .map(resolvedDoc -> TomlDocumentMerger.merge(accumulator, resolvedDoc));
     }
 
     private static TomlDocument mergeAndStripIncludes(TomlDocument includesMerged, TomlDocument mainDoc) {
@@ -70,17 +66,11 @@ public final class IncludeResolver {
 
     private static TomlDocument stripIncludeKey(TomlDocument doc) {
         var rootSection = doc.sections().get("");
-
-        if (rootSection == null || !rootSection.containsKey("include")) {
-            return doc;
-        }
-
+        if (rootSection == null || !rootSection.containsKey("include")) {return doc;}
         var cleaned = new LinkedHashMap<>(rootSection);
         cleaned.remove("include");
-
         var sections = new LinkedHashMap<>(doc.sections());
         sections.put("", cleaned);
-
         return new TomlDocument(sections, doc.tableArrays());
     }
 }

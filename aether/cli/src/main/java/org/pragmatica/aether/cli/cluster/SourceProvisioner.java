@@ -7,11 +7,11 @@ import org.pragmatica.aether.environment.CloudProvider;
 /// Each variant holds the provider reference needed for its source type.
 /// Actual provisioning logic will be added in the bootstrap orchestrator (Phase B).
 public sealed interface SourceProvisioner {
-    record CloudSourceProvisioner(CloudProvider cloudProvider) implements SourceProvisioner {}
+    record CloudSourceProvisioner(CloudProvider cloudProvider) implements SourceProvisioner{}
 
-    record SshSourceProvisioner() implements SourceProvisioner {}
+    record SshSourceProvisioner() implements SourceProvisioner{}
 
-    record ForgeSourceProvisioner() implements SourceProvisioner {}
+    record ForgeSourceProvisioner() implements SourceProvisioner{}
 
-    record DockerSourceProvisioner(CloudProvider dockerCloudProvider) implements SourceProvisioner {}
+    record DockerSourceProvisioner(CloudProvider dockerCloudProvider) implements SourceProvisioner{}
 }

@@ -3,8 +3,12 @@ package org.pragmatica.aether.config.cluster;
 import java.util.ArrayList;
 import java.util.List;
 
+
 /// Diff plan with actions ordered into waves. S9.3
-public record DiffPlan(List<DiffAction> additions, List<DiffAction> modifications, List<DiffAction> removals, List<DiffAction> immutable) {
+public record DiffPlan(List<DiffAction> additions,
+                       List<DiffAction> modifications,
+                       List<DiffAction> removals,
+                       List<DiffAction> immutable) {
     public DiffPlan {
         additions = List.copyOf(additions);
         modifications = List.copyOf(modifications);
@@ -24,7 +28,7 @@ public record DiffPlan(List<DiffAction> additions, List<DiffAction> modification
     }
 
     public boolean hasImmutableChanges() {
-        return !immutable.isEmpty();
+        return ! immutable.isEmpty();
     }
 
     public List<DiffAction> allActions() {

@@ -1,8 +1,9 @@
 package org.pragmatica.aether.config.cluster;
 
+import org.pragmatica.lang.Option;
+
 import java.util.List;
 
-import org.pragmatica.lang.Option;
 
 /// Role sub-table within a source profile. S5.1.6 REQ-5.1.6.1
 public record RoleSubTable(NodeRole role,

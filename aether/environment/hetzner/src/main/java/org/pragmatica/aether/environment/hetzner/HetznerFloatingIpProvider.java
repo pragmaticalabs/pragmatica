@@ -14,25 +14,21 @@ import java.util.Set;
 /// TODO: wire to Hetzner Floating IP API (POST /v1/floating_ips/{id}/actions/assign, GET /v1/floating_ips/{id})
 ///       when HetznerClient gains floating IP endpoints.
 public record HetznerFloatingIpProvider(HetznerClient client) implements FloatingIpProvider {
-    private static final EnvironmentError NOT_YET_IMPLEMENTED =
-        EnvironmentError.operationNotSupported("Hetzner FloatingIpProvider coming soon");
+    private static final EnvironmentError NOT_YET_IMPLEMENTED = EnvironmentError.operationNotSupported("Hetzner FloatingIpProvider coming soon");
 
     public static HetznerFloatingIpProvider hetznerFloatingIpProvider(HetznerClient client) {
         return new HetznerFloatingIpProvider(client);
     }
 
-    @Override
-    public Promise<Unit> attach(String floatingIp, String targetNodeId) {
+    @Override public Promise<Unit> attach(String floatingIp, String targetNodeId) {
         return NOT_YET_IMPLEMENTED.promise();
     }
 
-    @Override
-    public Promise<IpOwnership> verify(String floatingIp) {
+    @Override public Promise<IpOwnership> verify(String floatingIp) {
         return NOT_YET_IMPLEMENTED.promise();
     }
 
-    @Override
-    public Promise<Set<String>> compatibleZones(String floatingIp) {
+    @Override public Promise<Set<String>> compatibleZones(String floatingIp) {
         return NOT_YET_IMPLEMENTED.promise();
     }
 }

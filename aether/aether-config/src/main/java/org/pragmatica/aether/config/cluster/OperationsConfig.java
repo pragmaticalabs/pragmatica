@@ -1,7 +1,9 @@
 package org.pragmatica.aether.config.cluster;
 
-/// Operations configuration. S7
-public record OperationsConfig(AutoHealSpec autoHeal, TlsDeploymentConfig tls, TimeoutsConfig timeouts, PortMapping ports) {
+public record OperationsConfig(AutoHealSpec autoHeal,
+                               TlsDeploymentConfig tls,
+                               TimeoutsConfig timeouts,
+                               PortMapping ports) {
     public static OperationsConfig operationsConfig(AutoHealSpec autoHeal,
                                                     TlsDeploymentConfig tls,
                                                     TimeoutsConfig timeouts,
@@ -10,11 +12,9 @@ public record OperationsConfig(AutoHealSpec autoHeal, TlsDeploymentConfig tls, T
     }
 
     public static OperationsConfig defaultOperationsConfig() {
-        return new OperationsConfig(
-            AutoHealSpec.defaultAutoHealSpec(),
-            TlsDeploymentConfig.defaultTlsConfig(),
-            TimeoutsConfig.defaultTimeoutsConfig(),
-            PortMapping.defaultPortMapping()
-        );
+        return new OperationsConfig(AutoHealSpec.defaultAutoHealSpec(),
+                                    TlsDeploymentConfig.defaultTlsConfig(),
+                                    TimeoutsConfig.defaultTimeoutsConfig(),
+                                    PortMapping.defaultPortMapping());
     }
 }

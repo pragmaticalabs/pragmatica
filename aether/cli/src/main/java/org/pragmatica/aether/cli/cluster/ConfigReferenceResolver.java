@@ -59,31 +59,49 @@ sealed interface ConfigReferenceResolver {
         }
     }
 
-    private static void resolveReference(String type, String name, String fullRef,
+    private static void resolveReference(String type,
+                                         String name,
+                                         String fullRef,
                                          LinkedHashSet<String> unresolved,
                                          ArrayList<ResolvedMatch> resolved,
                                          Option<SecretsProvider> secretsProvider) {
         var envVarName = resolveEnvVarName(type, name);
         var envValue = option(System.getenv(envVarName));
-        if (envValue.isPresent()) {envValue.onPresent(value -> resolved.add(new ResolvedMatch(fullRef, value))); return;}
-        if ("secrets".equals(type)) {resolveViaProvider(secretsProvider, name, fullRef, envVarName, unresolved, resolved); return;}
+        if (envValue.isPresent()) {
+            envValue.onPresent(value -> resolved.add(new ResolvedMatch(fullRef, value)));
+            return;
+        }
+        if ("secrets".equals(type)) {
+            resolveViaProvider(secretsProvider, name, fullRef, envVarName, unresolved, resolved);
+            return;
+        }
         unresolved.add(fullRef + " -> env var " + envVarName + " not set");
     }
 
-    private static void resolveViaProvider(Option<SecretsProvider> secretsProvider, String name, String fullRef,
-                                           String envVarName, LinkedHashSet<String> unresolved,
+    private static void resolveViaProvider(Option<SecretsProvider> secretsProvider,
+                                           String name,
+                                           String fullRef,
+                                           String envVarName,
+                                           LinkedHashSet<String> unresolved,
                                            ArrayList<ResolvedMatch> resolved) {
-        secretsProvider.onPresent(provider -> attemptProviderResolve(provider, name, fullRef, envVarName, unresolved, resolved))
-                       .onEmpty(() -> unresolved.add(fullRef + " -> env var " + envVarName + " not set"));
+        secretsProvider.onPresent(provider -> attemptProviderResolve(provider,
+                                                                     name,
+                                                                     fullRef,
+                                                                     envVarName,
+                                                                     unresolved,
+                                                                     resolved))
+        .onEmpty(() -> unresolved.add(fullRef + " -> env var " + envVarName + " not set"));
     }
 
-    @Contract
-    private static void attemptProviderResolve(SecretsProvider provider, String name, String fullRef,
-                                               String envVarName, LinkedHashSet<String> unresolved,
-                                               ArrayList<ResolvedMatch> resolved) {
+    @Contract private static void attemptProviderResolve(SecretsProvider provider,
+                                                         String name,
+                                                         String fullRef,
+                                                         String envVarName,
+                                                         LinkedHashSet<String> unresolved,
+                                                         ArrayList<ResolvedMatch> resolved) {
         provider.resolveSecret(name).await()
-                .onSuccess(value -> resolved.add(new ResolvedMatch(fullRef, value)))
-                .onFailure(_ -> unresolved.add(fullRef + " -> env var " + envVarName + " not set"));
+                              .onSuccess(value -> resolved.add(new ResolvedMatch(fullRef, value)))
+                              .onFailure(_ -> unresolved.add(fullRef + " -> env var " + envVarName + " not set"));
     }
 
     private static String resolveEnvVarName(String type, String name) {

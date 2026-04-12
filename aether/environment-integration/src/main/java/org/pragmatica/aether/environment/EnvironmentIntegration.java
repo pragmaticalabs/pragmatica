@@ -82,8 +82,14 @@ public interface EnvironmentIntegration {
                                                          Option<CertificateProvider> certificateProvider,
                                                          Option<DnsProvider> dns,
                                                          Option<FloatingIpProvider> floatingIp) {
-        return FacetedEnvironment.facetedEnvironment(compute, secrets, loadBalancer, discovery, certificateProvider, dns, floatingIp)
-                                                    .unwrap();
+        return FacetedEnvironment.facetedEnvironment(compute,
+                                                     secrets,
+                                                     loadBalancer,
+                                                     discovery,
+                                                     certificateProvider,
+                                                     dns,
+                                                     floatingIp)
+        .unwrap();
     }
 
     record FacetedEnvironment(Option<ComputeProvider> compute,
@@ -100,7 +106,13 @@ public interface EnvironmentIntegration {
                                                                     Option<CertificateProvider> certificateProvider,
                                                                     Option<DnsProvider> dns,
                                                                     Option<FloatingIpProvider> floatingIp) {
-            return success(new FacetedEnvironment(compute, secrets, loadBalancer, discovery, certificateProvider, dns, floatingIp));
+            return success(new FacetedEnvironment(compute,
+                                                  secrets,
+                                                  loadBalancer,
+                                                  discovery,
+                                                  certificateProvider,
+                                                  dns,
+                                                  floatingIp));
         }
     }
 }
