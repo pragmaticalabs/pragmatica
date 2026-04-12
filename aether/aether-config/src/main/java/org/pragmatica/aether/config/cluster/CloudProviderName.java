@@ -1,0 +1,30 @@
+package org.pragmatica.aether.config.cluster;
+
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+
+import java.util.Arrays;
+
+
+/// Cloud provider names. §5.1.3
+public enum CloudProviderName {
+    HETZNER("hetzner"),
+    AWS("aws"),
+    GCP("gcp"),
+    AZURE("azure");
+    private static final Cause INVALID_TYPE = Causes.cause("Invalid cloud provider: must be 'hetzner', 'aws', 'gcp', or 'azure'");
+    private final String value;
+    CloudProviderName(String value) {
+        this.value = value;
+    }
+    public String value() {
+        return value;
+    }
+    public static Result<CloudProviderName> cloudProviderName(String raw) {
+        return Arrays.stream(values()).filter(cp -> cp.value.equals(raw))
+                            .findFirst()
+                            .map(Result::success)
+                            .orElseGet(INVALID_TYPE::result);
+    }
+}

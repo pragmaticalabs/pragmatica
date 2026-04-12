@@ -10,8 +10,11 @@ import java.util.Arrays;
 /// Supported runtime types for Aether node execution.
 public enum RuntimeType {
     CONTAINER("container"),
-    JVM("jvm");
-    private static final Cause INVALID_TYPE = Causes.cause("Invalid runtime type: must be 'container' or 'jvm'");
+    JVM("jvm"),
+    DOCKER("docker"),
+    EMBER("ember"),
+    MANAGED_CONTAINER("managed-container");
+    private static final Cause INVALID_TYPE = Causes.cause("Invalid runtime type: must be 'container', 'jvm', 'docker', 'ember', or 'managed-container'");
     private final String value;
     RuntimeType(String value) {
         this.value = value;
