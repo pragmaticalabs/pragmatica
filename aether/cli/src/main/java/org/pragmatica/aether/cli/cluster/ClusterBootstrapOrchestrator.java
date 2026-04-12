@@ -5,13 +5,18 @@ import org.pragmatica.aether.config.cluster.LoadBalancerMode;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
+import org.pragmatica.aether.environment.CloudProviderSupport;
+import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.NodeAddress;
+import org.pragmatica.aether.environment.NodeGroupConfig;
 import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
+import java.net.URI;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -46,6 +51,9 @@ import static org.pragmatica.lang.Result.success;
     record unused() implements ClusterBootstrapOrchestrator{}
 
     int API_KEY_BYTES = 32;
+    int HTTP_TIMEOUT_MS = 5000;
+    int POLL_INTERVAL_MS = 5000;
+    long DEFAULT_TIMEOUT_MS = 300_000;
 
     static Result<BootstrapResult> bootstrap(ClusterBootstrapConfig config) {
         return bootstrap(config, false);
@@ -86,11 +94,96 @@ import static org.pragmatica.lang.Result.success;
 
     @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionSource(String sourceName,
                                                                                                   SourceProfile source) {
-        var nodes = new ArrayList<ProvisionedNode>();
+        return switch (source.type()) {
+            case CLOUD -> provisionCloudSource(sourceName, source);
+            case DOCKER -> provisionDockerSource(sourceName, source);
+            case SSH -> provisionSshSource(sourceName, source);
+            case FORGE -> provisionForgeSource(sourceName, source);
+        };
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionCloudSource(String sourceName,
+                                                                                                        SourceProfile source) {
+        return ProviderResolver.resolveCloudCompute(source)
+                   .flatMap(compute -> provisionWithCompute(compute, sourceName, source));
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionDockerSource(String sourceName,
+                                                                                                         SourceProfile source) {
+        return ProviderResolver.resolveDockerCompute()
+                   .flatMap(compute -> provisionWithCompute(compute, sourceName, source));
+    }
+
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
+    private static Result<List<ProvisionedNode>> provisionWithCompute(ComputeProvider compute,
+                                                                       String sourceName,
+                                                                       SourceProfile source) {
+        var allNodes = new ArrayList<ProvisionedNode>();
         var roleOrder = List.of(NodeRole.CORE, NodeRole.WORKER, NodeRole.SPOT);
         for (var role : roleOrder) {
             var roleTable = option(source.roles().get(role));
-            roleTable.onPresent(rt -> logProvisionRole(sourceName, source.type(), role, rt.count()));
+            var result = roleTable.flatMap(rt -> rt.count())
+                                  .map(count -> provisionRoleGroup(compute, sourceName, role, count, source));
+            if (result.isPresent()) {
+                var provisionResult = result.unwrap();
+                if (provisionResult.isFailure()) {return provisionResult;}
+                var _ = provisionResult.onSuccess(allNodes::addAll);
+            }
+        }
+        return success(List.copyOf(allNodes));
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<List<ProvisionedNode>> provisionRoleGroup(ComputeProvider compute,
+                                                                     String sourceName,
+                                                                     NodeRole role,
+                                                                     int count,
+                                                                     SourceProfile source) {
+        logProvisionRole(sourceName, source.type(), role, Option.some(count));
+        var instanceType = source.roles().containsKey(role)
+                          ? source.roles().get(role).instanceType().or("default")
+                          : "default";
+        var zone = source.zone().or("default");
+        var group = NodeGroupConfig.nodeGroupConfig(sourceName, role.value(), count, instanceType, zone, Map.of());
+        return CloudProviderSupport.provisionVia(compute, group).await();
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionSshSource(String sourceName,
+                                                                                                      SourceProfile source) {
+        var nodes = new ArrayList<ProvisionedNode>();
+        for (var entry : source.roles().entrySet()) {
+            var role = entry.getKey();
+            entry.getValue().hosts().onPresent(hosts -> addSshNodes(nodes, sourceName, role, hosts));
+        }
+        logProvisionRole(sourceName, source.type(), NodeRole.CORE, Option.some(nodes.size()));
+        return success(List.copyOf(nodes));
+    }
+
+    @Contract private static void addSshNodes(List<ProvisionedNode> nodes,
+                                               String sourceName,
+                                               NodeRole role,
+                                               List<String> hosts) {
+        for (int i = 0; i < hosts.size(); i++) {
+            var nodeId = sourceName + "-" + role.value() + "-" + i;
+            nodes.add(ProvisionedNode.provisionedNode(nodeId, "ssh", hosts.get(i)));
+        }
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionForgeSource(String sourceName,
+                                                                                                        SourceProfile source) {
+        var nodes = new ArrayList<ProvisionedNode>();
+        var portBase = 7000;
+        var counter = 0;
+        var roleOrder = List.of(NodeRole.CORE, NodeRole.WORKER, NodeRole.SPOT);
+        for (var role : roleOrder) {
+            var roleTable = option(source.roles().get(role));
+            var count = roleTable.flatMap(rt -> rt.count()).or(0);
+            for (int i = 0; i < count; i++) {
+                var nodeId = sourceName + "-" + role.value() + "-" + i;
+                nodes.add(ProvisionedNode.provisionedNode(nodeId, "forge", "127.0.0.1:" + (portBase + counter)));
+                counter++;
+            }
+            if (count > 0) {logProvisionRole(sourceName, source.type(), role, Option.some(count));}
         }
         return success(List.copyOf(nodes));
     }
@@ -108,57 +201,12 @@ import static org.pragmatica.lang.Result.success;
 
     private static Result<BootstrapContext> phaseCollectAddresses(BootstrapContext ctx) {
         logPhase(COLLECT_ADDRESSES,
-                 "Collecting addresses from %d source(s)",
-                 ctx.config().sources()
-                           .size());
-        var allAddresses = new ArrayList<NodeAddress>();
-        for (var entry : ctx.config().sources()
-                                   .entrySet()) {
-            var result = collectAddressesForSource(entry.getKey(), entry.getValue());
-            if (result.isFailure()) {return result.map(_ -> ctx);}
-            var _ = result.onSuccess(allAddresses::addAll);
-        }
-        return success(ctx.withAddresses(List.copyOf(allAddresses)));
-    }
-
-    private static Result<List<NodeAddress>> collectAddressesForSource(String sourceName, SourceProfile source) {
-        return switch (source.type()){
-            case SSH -> collectSshAddresses(sourceName, source);
-            case FORGE -> collectForgeAddresses(sourceName, source);
-            case CLOUD, DOCKER -> logAndReturnEmpty(sourceName, source.type());
-        };
-    }
-
-    private static Result<List<NodeAddress>> collectSshAddresses(String sourceName, SourceProfile source) {
-        var addresses = new ArrayList<NodeAddress>();
-        for (var roleEntry : source.roles().entrySet()) {roleEntry.getValue().hosts()
-                                                                           .onPresent(hosts -> addHostAddresses(addresses,
-                                                                                                                sourceName,
-                                                                                                                hosts));}
-        return success(List.copyOf(addresses));
-    }
-
-    @Contract private static void addHostAddresses(List<NodeAddress> addresses, String sourceName, List<String> hosts) {
-        for (int i = 0;i <hosts.size();i++) {addresses.add(NodeAddress.nodeAddress(sourceName + "-" + (i + 1),
-                                                                                   hosts.get(i),
-                                                                                   none()));}
-    }
-
-    private static Result<List<NodeAddress>> collectForgeAddresses(String sourceName, SourceProfile source) {
-        var addresses = new ArrayList<NodeAddress>();
-        var portBase = 7000;
-        var coreRole = option(source.roles().get(NodeRole.CORE));
-        var count = coreRole.flatMap(rt -> rt.count()).or(3);
-        for (int i = 0;i <count;i++) {
-            var nodeId = sourceName + "-core-" + (i + 1);
-            addresses.add(NodeAddress.nodeAddress(nodeId, "127.0.0.1:" + (portBase + i), none()));
-        }
-        return success(List.copyOf(addresses));
-    }
-
-    private static Result<List<NodeAddress>> logAndReturnEmpty(String sourceName, SourceType type) {
-        System.out.printf("  [%s] %s address collection deferred to provider integration%n", sourceName, type.value());
-        return success(List.of());
+                 "Collecting addresses from %d provisioned node(s)",
+                 ctx.nodes().size());
+        var addresses = ctx.nodes().stream()
+                                  .map(ClusterBootstrapOrchestrator::nodeToAddress)
+                                  .toList();
+        return success(ctx.withAddresses(addresses));
     }
 
     private static Result<BootstrapContext> phaseDeployRuntime(BootstrapContext ctx) {
@@ -176,11 +224,98 @@ import static org.pragmatica.lang.Result.success;
                                            .toList());
     }
 
+    private static NodeAddress nodeToAddress(ProvisionedNode node) {
+        return NodeAddress.nodeAddress(node.nodeId(), node.publicIp(), none());
+    }
+
     private static Result<BootstrapContext> phaseClusterFormation(BootstrapContext ctx) {
         logPhase(CLUSTER_FORMATION, "Establishing cluster quorum");
         var apiKey = generateApiKey();
         System.out.printf("  API key generated (%d bytes, Base64 URL-encoded)%n", API_KEY_BYTES);
-        return success(ctx.withApiKey(apiKey));
+        var managementPort = ctx.config().operations().ports().management();
+        var healthTimeoutMs = parseDurationMs(ctx.config().operations().timeouts().healthCheck());
+        var quorumTimeoutMs = parseDurationMs(ctx.config().operations().timeouts().quorumFormation());
+        var requiredCores = ctx.config().derivedCoreCount();
+        return waitForHealth(ctx.addresses(), managementPort, healthTimeoutMs)
+                   .flatMap(_ -> waitForQuorum(ctx.addresses(), managementPort, quorumTimeoutMs, requiredCores))
+                   .map(_ -> ctx.withApiKey(apiKey));
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Unit> waitForHealth(List<NodeAddress> addresses, int managementPort, long timeoutMs) {
+        if (addresses.isEmpty()) {return Result.unitResult();}
+        var endpoint = addresses.getFirst().publicIp();
+        var url = "http://" + endpoint + ":" + managementPort + "/health/live";
+        System.out.printf("  Waiting for health check at %s (timeout: %ds)%n", url, timeoutMs / 1000);
+        var deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            var response = httpGet(url);
+            if (response.isSuccess()) {
+                System.out.println("  Health check passed");
+                return Result.unitResult();
+            }
+            sleepQuietly(POLL_INTERVAL_MS);
+        }
+        return new BootstrapError.QuorumNotEstablished(0, 1).result();
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Unit> waitForQuorum(List<NodeAddress> addresses,
+                                               int managementPort,
+                                               long timeoutMs,
+                                               int requiredCores) {
+        if (addresses.isEmpty()) {return Result.unitResult();}
+        var endpoint = addresses.getFirst().publicIp();
+        var url = "http://" + endpoint + ":" + managementPort + "/health/ready";
+        System.out.printf("  Waiting for quorum at %s (need %d core(s), timeout: %ds)%n",
+                          url, requiredCores, timeoutMs / 1000);
+        var deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            var response = httpGet(url);
+            if (response.isSuccess()) {
+                System.out.printf("  Quorum established (%d core(s) required)%n", requiredCores);
+                return Result.unitResult();
+            }
+            sleepQuietly(POLL_INTERVAL_MS);
+        }
+        return new BootstrapError.QuorumNotEstablished(0, requiredCores).result();
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<String> httpGet(String url) {
+        return Result.lift(
+            e -> new BootstrapError.ProvisionFailed("http", e.getMessage()),
+            () -> executeHttpGet(url));
+    }
+
+    private static String executeHttpGet(String url) throws Exception {
+        var conn = URI.create(url).toURL().openConnection();
+        conn.setConnectTimeout(HTTP_TIMEOUT_MS);
+        conn.setReadTimeout(HTTP_TIMEOUT_MS);
+        try (var is = conn.getInputStream()) {
+            return new String(is.readAllBytes());
+        }
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    @Contract private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static long parseDurationMs(String duration) {
+        if (duration.endsWith("s")) {return parseNumericPrefix(duration) * 1000;}
+        if (duration.endsWith("m")) {return parseNumericPrefix(duration) * 60_000;}
+        if (duration.endsWith("h")) {return parseNumericPrefix(duration) * 3_600_000;}
+        return DEFAULT_TIMEOUT_MS;
+    }
+
+    private static long parseNumericPrefix(String duration) {
+        return Result.lift(() -> Long.parseLong(duration.substring(0, duration.length() - 1)))
+                     .or(DEFAULT_TIMEOUT_MS / 1000);
     }
 
     static String generateApiKey() {
