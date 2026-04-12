@@ -33,6 +33,10 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CON
 
     @Option(names = "--yes", description = "Skip confirmation prompt") private boolean skipConfirmation;
 
+    @Option(names = "--resume", description = "Resume a halted apply from first unfinished wave") private boolean resume;
+
+    @Option(names = "--rollback", description = "Rollback completed waves to pre-apply state") private boolean rollback;
+
     @CommandLine.ParentCommand private ClusterCommand parent;
 
     @Override public Integer call() {

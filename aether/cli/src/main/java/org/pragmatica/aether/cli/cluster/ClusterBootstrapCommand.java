@@ -1,15 +1,19 @@
 package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.ExitCode;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
-import org.pragmatica.aether.config.cluster.ClusterConfigParser;
-import org.pragmatica.aether.config.cluster.ClusterManagementConfig;
+import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.RoleSubTable;
+import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
@@ -25,8 +29,6 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
 /// Reads `aether-cluster.toml`, validates the configuration, provisions cloud instances,
 /// waits for health and quorum, stores the cluster config and API key, and registers
 /// the cluster in the local registry.
-///
-/// Currently supports Hetzner Cloud only (Phase 1).
 @Command(name = "bootstrap", description = "Bootstrap a new cluster from config file") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterBootstrapCommand implements Callable<Integer> {
     private static final int POLL_INTERVAL_MS = 2000;
 
@@ -36,7 +38,7 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
 
     @Option(names = "--yes", description = "Skip confirmation prompt") private boolean skipConfirmation;
 
-    @Option(names = "--compose-only", description = "Generate docker-compose.yml and print to stdout, then exit") private boolean composeOnly;
+    @Option(names = "--resume", description = "Resume a failed bootstrap") private boolean resume;
 
     @Option(names = "--wait", description = "Wait for cluster to become healthy after bootstrap") private boolean waitForCompletion;
 
@@ -45,22 +47,14 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
     @CommandLine.ParentCommand private ClusterCommand parent;
 
     @Override public Integer call() {
-        if (composeOnly) {return parseConfig().map(this::generateCompose)
-                                            .fold(ClusterBootstrapCommand::onFailure, _ -> ExitCode.SUCCESS);}
         return parseConfig().flatMap(this::confirmAndBootstrap)
                           .fold(ClusterBootstrapCommand::onFailure, this::onSuccess);
     }
 
-    private String generateCompose(ClusterManagementConfig config) {
-        var compose = DockerComposeGenerator.generate(config, "");
-        System.out.print(compose);
-        return compose;
-    }
-
-    private Result<ClusterManagementConfig> parseConfig() {
+    private Result<ClusterBootstrapConfig> parseConfig() {
         System.out.printf("Reading config from %s...%n", configFile);
         return readFileContent(configFile).flatMap(ConfigReferenceResolver::resolveAll)
-                              .flatMap(ClusterConfigParser::parse);
+                              .flatMap(ClusterBootstrapConfigParser::parse);
     }
 
     @SuppressWarnings("JBCT-EX-01") private static Result<String> readFileContent(Path path) {
@@ -68,39 +62,38 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
                            () -> Files.readString(path));
     }
 
-    private Result<BootstrapOrchestrator.BootstrapResult> confirmAndBootstrap(ClusterManagementConfig config) {
+    private Result<ClusterBootstrapOrchestrator.BootstrapResult> confirmAndBootstrap(ClusterBootstrapConfig config) {
         printPlan(config);
         if (!skipConfirmation && !confirmBootstrap(config.cluster().name())) {
             System.out.println("Aborted.");
             return new AbortedError().result();
         }
-        return BootstrapOrchestrator.bootstrap(config);
+        return ClusterBootstrapOrchestrator.bootstrap(config, resume);
     }
 
-    private static void printPlan(ClusterManagementConfig config) {
+    private static void printPlan(ClusterBootstrapConfig config) {
         var cluster = config.cluster();
-        var deployment = config.deployment();
+        var ports = config.operations().ports();
         System.out.println();
         System.out.println("Bootstrap plan:");
-        System.out.printf("  Cluster:       %s%n", cluster.name());
-        System.out.printf("  Version:       %s%n", cluster.version());
-        System.out.printf("  Provider:      %s%n",
-                          deployment.type().value());
-        System.out.printf("  Instance type: %s%n",
-                          deployment.instances().getOrDefault("core", "?"));
-        System.out.printf("  Core nodes:    %d%n",
-                          cluster.core().count());
-        System.out.printf("  Runtime:       %s%n",
-                          deployment.runtime().type()
-                                            .name()
-                                            .toLowerCase());
-        deployment.runtime().image()
-                          .onPresent(img -> System.out.printf("  Image:         %s%n", img));
-        System.out.printf("  Ports:         cluster=%d, mgmt=%d, swim=%d%n",
-                          deployment.ports().cluster(),
-                          deployment.ports().management(),
-                          deployment.ports().swim());
+        System.out.printf("  Cluster:     %s%n", cluster.name());
+        System.out.printf("  Version:     %s%n", cluster.version());
+        System.out.printf("  Sources:     %d%n", config.sources().size());
+        config.sources().forEach(ClusterBootstrapCommand::printSourceEntry);
+        System.out.printf("  Core nodes:  %d (derived)%n", config.derivedCoreCount());
+        System.out.printf("  Ports:       cluster=%d, mgmt=%d, app=%d%n",
+                          ports.cluster(), ports.management(), ports.appHttp());
         System.out.println();
+    }
+
+    private static void printSourceEntry(String name, SourceProfile source) {
+        System.out.printf("    %s (%s)%n", name, source.type().value());
+        source.roles().forEach(ClusterBootstrapCommand::printRoleEntry);
+    }
+
+    private static void printRoleEntry(NodeRole role, RoleSubTable sub) {
+        var size = sub.count().or(0) + sub.hosts().map(List::size).or(0);
+        System.out.printf("      %s: %d nodes%n", role.value(), size);
     }
 
     private static boolean confirmBootstrap(String clusterName) {
@@ -120,7 +113,7 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
         }
     }
 
-    private int onSuccess(BootstrapOrchestrator.BootstrapResult result) {
+    private int onSuccess(ClusterBootstrapOrchestrator.BootstrapResult result) {
         System.out.println("Step 12/12: Done.");
         if (waitForCompletion) {return validateTimeoutAndPoll();}
         return ExitCode.SUCCESS;

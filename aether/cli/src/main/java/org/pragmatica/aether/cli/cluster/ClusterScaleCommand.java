@@ -11,43 +11,73 @@ import java.util.concurrent.Callable;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
+import picocli.CommandLine.Parameters;
 
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_GET;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_SCALE;
 
 
-/// Scales the cluster core node count via the management API.
+/// Scales the cluster node count via the management API.
 ///
-/// Thin wrapper around `POST /api/cluster/scale`. Validates quorum safety
-/// (N >= 3, odd) on the CLI side before sending the request.
-@Command(name = "scale", description = "Scale cluster core node count") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterScaleCommand implements Callable<Integer> {
+/// Supports scaling by source and role. The `--core` flag is a backward-compatible
+/// shortcut equivalent to source="" role="core".
+@Command(name = "scale", description = "Scale cluster node count") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterScaleCommand implements Callable<Integer> {
     private static final int MINIMUM_CORE_COUNT = 3;
 
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
-    @Option(names = "--core", required = true, description = "Target core node count (minimum 3, must be odd)") private int coreCount;
+    @Parameters(index = "0", description = "Source name", defaultValue = "") private String sourceName;
+
+    @Parameters(index = "1", description = "Role (core, worker, spot)", defaultValue = "core") private String roleName;
+
+    @Option(names = "--count", description = "Target node count") private int count;
+
+    @Option(names = "--core", description = "Legacy shortcut: scale core nodes across all sources") private int coreCount;
 
     @CommandLine.ParentCommand private ClusterCommand parent;
 
     @Override public Integer call() {
-        return validateCoreCount().flatMap(this::fetchConfigVersion)
-                                .flatMap(this::sendScaleRequest)
+        return resolveEffective().flatMap(pair -> validateCount(pair.count(), pair.role())
+                                                      .flatMap(this::fetchConfigVersion)
+                                                      .flatMap(version -> sendScaleRequest(version, pair.count(), pair.role())))
                                 .fold(ClusterScaleCommand::onFailure, this::onSuccess);
     }
 
-    private Result<Integer> validateCoreCount() {
-        if (coreCount <MINIMUM_CORE_COUNT) {return new ScaleError.QuorumSafety(coreCount, MINIMUM_CORE_COUNT).result();}
-        if (coreCount % 2 == 0) {return new ScaleError.MustBeOdd(coreCount).result();}
-        return Result.success(coreCount);
+    private Result<EffectiveScale> resolveEffective() {
+        if (coreCount > 0) {return Result.success(new EffectiveScale(coreCount, "core"));}
+        if (count > 0) {return Result.success(new EffectiveScale(count, roleName));}
+        return new ScaleError.MissingCount().result();
     }
 
-    private Result<Long> fetchConfigVersion(int count) {
+    private record EffectiveScale(int count, String role) {}
+
+    private static Result<Integer> validateCount(int targetCount, String role) {
+        if ("core".equals(role)) {return validateCoreCount(targetCount);}
+        return validateNonCoreCount(targetCount);
+    }
+
+    private static Result<Integer> validateCoreCount(int targetCount) {
+        if (targetCount <MINIMUM_CORE_COUNT) {return new ScaleError.QuorumSafety(targetCount, MINIMUM_CORE_COUNT).result();}
+        if (targetCount % 2 == 0) {return new ScaleError.MustBeOdd(targetCount).result();}
+        return Result.success(targetCount);
+    }
+
+    private static Result<Integer> validateNonCoreCount(int targetCount) {
+        if (targetCount <1) {return new ScaleError.MinimumCount(targetCount).result();}
+        return Result.success(targetCount);
+    }
+
+    private Result<Long> fetchConfigVersion(int validatedCount) {
         return ClusterHttpClient.fetch(CLUSTER_CONFIG_GET).flatMap(ClusterScaleCommand::extractConfigVersion);
     }
 
-    private Result<String> sendScaleRequest(long expectedVersion) {
-        var jsonBody = "{\"coreCount\":" + coreCount + ",\"expectedVersion\":" + expectedVersion + "}";
+    private Result<String> sendScaleRequest(long expectedVersion, int targetCount, String role) {
+        var jsonBody = buildScaleJson(targetCount, role, sourceName, expectedVersion);
         return ClusterHttpClient.post(CLUSTER_SCALE, jsonBody);
+    }
+
+    private static String buildScaleJson(int targetCount, String role, String source, long expectedVersion) {
+        return "{\"count\":" + targetCount + ",\"role\":\"" + role + "\",\"source\":\"" + source + "\",\"expectedVersion\":" + expectedVersion + "}";
     }
 
     private int onSuccess(String json) {
@@ -73,6 +103,18 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_SCA
         record MustBeOdd(int requested) implements ScaleError {
             @Override public String message() {
                 return "Core count must be odd for quorum safety, got " + requested;
+            }
+        }
+
+        record MinimumCount(int requested) implements ScaleError {
+            @Override public String message() {
+                return "Node count must be at least 1, got " + requested;
+            }
+        }
+
+        record MissingCount() implements ScaleError {
+            @Override public String message() {
+                return "Either --count or --core must be specified";
             }
         }
     }
