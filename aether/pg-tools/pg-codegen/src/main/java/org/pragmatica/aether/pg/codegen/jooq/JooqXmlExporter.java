@@ -240,7 +240,7 @@ public final class JooqXmlExporter {
         writeElement(w, "table_catalog", config.catalogName());
         writeElement(w, "table_schema", tw.schema());
         writeElement(w, "table_name", tw.table().name());
-        writeElement(w, "constraint_type", type.unwrap());
+        type.onPresent(t -> writeElementUnchecked(w, "constraint_type", t));
         writeElement(w, "enforced", "YES");
         w.writeEndElement();
     }
@@ -469,11 +469,11 @@ public final class JooqXmlExporter {
 
     private static Option<String> constraintType(Constraint constraint) {
         return switch (constraint) {
-            case PrimaryKey _ -> Option.present("PRIMARY KEY");
-            case ForeignKey _ -> Option.present("FOREIGN KEY");
-            case Unique _ -> Option.present("UNIQUE");
-            case Check _ -> Option.present("CHECK");
-            case Exclusion _ -> Option.empty();
+            case PrimaryKey _ -> Option.some("PRIMARY KEY");
+            case ForeignKey _ -> Option.some("FOREIGN KEY");
+            case Unique _ -> Option.some("UNIQUE");
+            case Check _ -> Option.some("CHECK");
+            case Exclusion _ -> Option.none();
         };
     }
 

@@ -153,7 +153,7 @@ class JooqTypeMapperTest {
     void maps_domain_as_user_defined() {
         var domain = new DomainType("email", "public",
                                     new BuiltinType("text", TypeCategory.STRING),
-                                    org.pragmatica.lang.Option.present("VALUE ~ '^.+@.+$'"));
+                                    org.pragmatica.lang.Option.some("VALUE ~ '^.+@.+$'"));
         var result = JooqTypeMapper.map(domain, "public");
         assertThat(result.dataType()).isEqualTo("USER-DEFINED");
         assertThat(result.udtName()).isEqualTo("email");

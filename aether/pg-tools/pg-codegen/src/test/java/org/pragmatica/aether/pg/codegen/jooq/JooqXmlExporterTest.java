@@ -54,7 +54,7 @@ class JooqXmlExporterTest {
 
     @Test
     void primary_key_constraint() {
-        var pk = new PrimaryKey(Option.present("users_pkey"), List.of("id"));
+        var pk = new PrimaryKey(Option.some("users_pkey"), List.of("id"));
         var table = Table.table("users", "public",
                                 List.of(Column.column("id", new BuiltinType("int8", TypeCategory.NUMERIC), false)),
                                 List.of(pk));
@@ -68,7 +68,7 @@ class JooqXmlExporterTest {
 
     @Test
     void foreign_key_with_cascade() {
-        var fk = new ForeignKey(Option.present("orders_user_fk"),
+        var fk = new ForeignKey(Option.some("orders_user_fk"),
                                 List.of("user_id"),
                                 "users",
                                 List.of("id"),
@@ -76,7 +76,7 @@ class JooqXmlExporterTest {
                                 FkAction.CASCADE);
         var usersTable = Table.table("users", "public",
                                      List.of(Column.column("id", new BuiltinType("int8", TypeCategory.NUMERIC), false)),
-                                     List.of(new PrimaryKey(Option.present("users_pkey"), List.of("id"))));
+                                     List.of(new PrimaryKey(Option.some("users_pkey"), List.of("id"))));
         var ordersTable = Table.table("orders", "public",
                                       List.of(Column.column("id", new BuiltinType("int8", TypeCategory.NUMERIC), false),
                                               Column.column("user_id", new BuiltinType("int8", TypeCategory.NUMERIC), false)),
@@ -91,7 +91,7 @@ class JooqXmlExporterTest {
 
     @Test
     void check_constraint() {
-        var check = new Check(Option.present("price_positive"), "price >= 0");
+        var check = new Check(Option.some("price_positive"), "price >= 0");
         var table = Table.table("products", "public",
                                 List.of(Column.column("price", new BuiltinType("numeric", TypeCategory.NUMERIC, List.of(19, 4)), false)),
                                 List.of(check));
@@ -136,13 +136,13 @@ class JooqXmlExporterTest {
     @Test
     void index_emitted() {
         var index = Index.index("idx_users_email", "users",
-                                List.of(new Index.IndexElement("email", Option.empty(), Option.empty())));
+                                List.of(new Index.IndexElement("email", Option.none(), Option.none())));
         var table = new Table("users", "public",
                               List.of(Column.column("email", new BuiltinType("text", TypeCategory.STRING), false)),
                               List.of(),
                               List.of(index),
-                              Option.empty(),
-                              Option.empty());
+                              Option.none(),
+                              Option.none());
         var schema = Schema.empty().withSchema("public").withTable(table);
         var result = JooqXmlExporter.toXml(schema, config);
         var xml = result.unwrap();
@@ -153,14 +153,14 @@ class JooqXmlExporterTest {
     @Test
     void sequence_emitted() {
         var seq = new Sequence("users_id_seq", "public",
-                               Option.present("bigint"),
-                               Option.present(1L),
-                               Option.present(1L),
-                               Option.present(1L),
-                               Option.present(9223372036854775807L),
-                               Option.present(1L),
+                               Option.some("bigint"),
+                               Option.some(1L),
+                               Option.some(1L),
+                               Option.some(1L),
+                               Option.some(9223372036854775807L),
+                               Option.some(1L),
                                false,
-                               Option.present("users.id"));
+                               Option.some("users.id"));
         var schema = Schema.empty().withSchema("public").withSequence(seq);
         var result = JooqXmlExporter.toXml(schema, config);
         var xml = result.unwrap();
@@ -176,7 +176,7 @@ class JooqXmlExporterTest {
                         .withDefault("nextval('users_id_seq')");
         var identityCol = new Column(col.name(), col.type(), col.nullable(), col.defaultExpr(),
                                      col.generatedExpr(),
-                                     Option.present(new Column.IdentitySpec(Column.IdentityKind.ALWAYS)),
+                                     Option.some(new Column.IdentitySpec(Column.IdentityKind.ALWAYS)),
                                      col.comment());
         var table = Table.table("users", "public", List.of(identityCol), List.of());
         var schema = Schema.empty().withSchema("public").withTable(table);
@@ -189,9 +189,9 @@ class JooqXmlExporterTest {
     @Test
     void generated_column() {
         var col = new Column("total", new BuiltinType("numeric", TypeCategory.NUMERIC),
-                             false, Option.empty(),
-                             Option.present("qty * price"),
-                             Option.empty(), Option.empty());
+                             false, Option.none(),
+                             Option.some("qty * price"),
+                             Option.none(), Option.none());
         var table = Table.table("line_items", "public", List.of(col), List.of());
         var schema = Schema.empty().withSchema("public").withTable(table);
         var result = JooqXmlExporter.toXml(schema, config);
@@ -227,7 +227,7 @@ class JooqXmlExporterTest {
 
     @Test
     void unnamed_constraint_gets_synthetic_name() {
-        var pk = new PrimaryKey(Option.empty(), List.of("id"));
+        var pk = new PrimaryKey(Option.none(), List.of("id"));
         var table = Table.table("users", "public",
                                 List.of(Column.column("id", new BuiltinType("int8", TypeCategory.NUMERIC), false)),
                                 List.of(pk));
@@ -240,7 +240,7 @@ class JooqXmlExporterTest {
 
     @Test
     void unique_constraint() {
-        var unique = new Unique(Option.present("users_email_key"), List.of("email"));
+        var unique = new Unique(Option.some("users_email_key"), List.of("email"));
         var table = Table.table("users", "public",
                                 List.of(Column.column("email", new BuiltinType("text", TypeCategory.STRING), false)),
                                 List.of(unique));
@@ -277,7 +277,7 @@ class JooqXmlExporterTest {
     void domain_type_emitted_as_user_defined() {
         var domain = new PgType.DomainType("email", "public",
                                            new BuiltinType("text", TypeCategory.STRING),
-                                           Option.present("VALUE ~ '^.+@.+$'"));
+                                           Option.some("VALUE ~ '^.+@.+$'"));
         var table = Table.table("users", "public",
                                 List.of(Column.column("email", domain, false)),
                                 List.of());
@@ -292,7 +292,7 @@ class JooqXmlExporterTest {
     void domain_section_emitted() {
         var domain = new PgType.DomainType("email", "public",
                                            new PgType.BuiltinType("text", PgType.TypeCategory.STRING),
-                                           Option.present("VALUE ~ '^.+@.+$'"));
+                                           Option.some("VALUE ~ '^.+@.+$'"));
         var schema = Schema.empty().withSchema("public").withDomainType(domain);
         var result = JooqXmlExporter.toXml(schema, config);
         var xml = result.unwrap();
@@ -304,7 +304,7 @@ class JooqXmlExporterTest {
 
     @Test
     void exclusion_constraint_skipped() {
-        var exclusion = new Exclusion(Option.present("no_overlap"), "gist", "tsrange USING &&");
+        var exclusion = new Exclusion(Option.some("no_overlap"), "gist", "tsrange USING &&");
         var table = Table.table("reservations", "public",
                                 List.of(Column.column("id", new BuiltinType("int8", TypeCategory.NUMERIC), false)),
                                 List.of(exclusion));

@@ -25,22 +25,22 @@ public final class JooqTypeMapper {
                               Option<Integer> datetimePrecision) {
         public static TypeMapping typeMapping(String dataType, String udtName, String udtSchema) {
             return new TypeMapping(dataType, udtName, udtSchema,
-                                  Option.empty(), Option.empty(), Option.empty(), Option.empty());
+                                  Option.none(), Option.none(), Option.none(), Option.none());
         }
 
         public TypeMapping withCharacterMaximumLength(int length) {
             return new TypeMapping(dataType, udtName, udtSchema,
-                                  Option.present(length), numericPrecision, numericScale, datetimePrecision);
+                                  Option.some(length), numericPrecision, numericScale, datetimePrecision);
         }
 
         public TypeMapping withNumericPrecision(int precision, int scale) {
             return new TypeMapping(dataType, udtName, udtSchema,
-                                  characterMaximumLength, Option.present(precision), Option.present(scale), datetimePrecision);
+                                  characterMaximumLength, Option.some(precision), Option.some(scale), datetimePrecision);
         }
 
         public TypeMapping withDatetimePrecision(int precision) {
             return new TypeMapping(dataType, udtName, udtSchema,
-                                  characterMaximumLength, numericPrecision, numericScale, Option.present(precision));
+                                  characterMaximumLength, numericPrecision, numericScale, Option.some(precision));
         }
     }
 
