@@ -74,12 +74,16 @@ public class ExportJooqXmlMojo extends AbstractMojo {
             return;
         }
         var scripts = readMigrationScripts(sqlFiles);
-        var schema = MigrationProcessor.create().processAll(scripts)
-                                       .onFailure(cause -> throwMojo("Schema parsing failed: " + cause.message()));
+        var schema = MigrationProcessor.create().processAll(scripts);
+        if (schema.isFailure()) {
+            throw new MojoExecutionException("Schema parsing failed: " + schema);
+        }
         var config = buildConfig();
-        schema.flatMap(s -> JooqXmlExporter.writeXml(s, config, outputFile.toPath()))
-              .onSuccess(_ -> logStats(schema.unwrap()))
-              .onFailure(cause -> throwMojo("XML export failed: " + cause.message()));
+        var result = JooqXmlExporter.writeXml(schema.unwrap(), config, outputFile.toPath());
+        if (result.isFailure()) {
+            throw new MojoExecutionException("XML export failed: " + result);
+        }
+        logStats(schema.unwrap());
     }
 
     private JooqXmlConfig buildConfig() {
@@ -104,7 +108,7 @@ public class ExportJooqXmlMojo extends AbstractMojo {
 
     private java.util.List<String> readMigrationScripts(File[] sqlFiles) throws MojoExecutionException {
         try {
-            return Arrays.stream(sqlFiles).map(f -> readFile(f))
+            return Arrays.stream(sqlFiles).map(ExportJooqXmlMojo::readFile)
                                          .toList();
         } catch (RuntimeException e) {
             throw new MojoExecutionException("Failed to read migration files", e);
@@ -117,9 +121,5 @@ public class ExportJooqXmlMojo extends AbstractMojo {
         } catch (IOException e) {
             throw new RuntimeException("Failed to read " + file, e);
         }
-    }
-
-    private static void throwMojo(String message) {
-        throw new RuntimeException(new MojoExecutionException(message));
     }
 }

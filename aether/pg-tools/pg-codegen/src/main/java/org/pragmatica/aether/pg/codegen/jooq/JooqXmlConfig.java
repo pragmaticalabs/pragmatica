@@ -14,7 +14,7 @@ public record JooqXmlConfig(String catalogName,
                             boolean emitComments,
                             boolean sortElements,
                             boolean prettyPrint) {
-    public static JooqXmlConfig defaults() {
+    public static JooqXmlConfig jooqXmlConfig() {
         return new JooqXmlConfig("",
                                  "public",
                                  Set.of("public"),

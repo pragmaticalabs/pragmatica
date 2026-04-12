@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class JooqXmlExporterTest {
 
-    private final JooqXmlConfig config = JooqXmlConfig.defaults();
+    private final JooqXmlConfig config = JooqXmlConfig.jooqXmlConfig();
 
     @Test
     void empty_schema_produces_valid_xml() {
@@ -286,6 +286,20 @@ class JooqXmlExporterTest {
         var xml = result.unwrap();
         assertThat(xml).contains("<data_type>USER-DEFINED</data_type>");
         assertThat(xml).contains("<udt_name>email</udt_name>");
+    }
+
+    @Test
+    void domain_section_emitted() {
+        var domain = new PgType.DomainType("email", "public",
+                                           new PgType.BuiltinType("text", PgType.TypeCategory.STRING),
+                                           Option.present("VALUE ~ '^.+@.+$'"));
+        var schema = Schema.empty().withSchema("public").withDomainType(domain);
+        var result = JooqXmlExporter.toXml(schema, config);
+        var xml = result.unwrap();
+        assertThat(xml).contains("<domains>");
+        assertThat(xml).contains("<domain_name>email</domain_name>");
+        assertThat(xml).contains("<data_type>text</data_type>");
+        assertThat(xml).contains("<domain_schema>public</domain_schema>");
     }
 
     @Test

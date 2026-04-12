@@ -23,7 +23,7 @@ public final class JooqTypeMapper {
                               Option<Integer> numericPrecision,
                               Option<Integer> numericScale,
                               Option<Integer> datetimePrecision) {
-        public static TypeMapping of(String dataType, String udtName, String udtSchema) {
+        public static TypeMapping typeMapping(String dataType, String udtName, String udtSchema) {
             return new TypeMapping(dataType, udtName, udtSchema,
                                   Option.empty(), Option.empty(), Option.empty(), Option.empty());
         }
@@ -59,46 +59,46 @@ public final class JooqTypeMapper {
     private static TypeMapping mapBuiltin(BuiltinType type) {
         var modifiers = type.modifiers();
         return switch (type.name()) {
-            case "int2", "smallint" -> TypeMapping.of("smallint", "int2", "pg_catalog");
-            case "int4", "integer", "int" -> TypeMapping.of("integer", "int4", "pg_catalog");
-            case "int8", "bigint" -> TypeMapping.of("bigint", "int8", "pg_catalog");
-            case "serial", "serial4" -> TypeMapping.of("integer", "int4", "pg_catalog");
-            case "bigserial", "serial8" -> TypeMapping.of("bigint", "int8", "pg_catalog");
-            case "smallserial", "serial2" -> TypeMapping.of("smallint", "int2", "pg_catalog");
-            case "float4", "real" -> TypeMapping.of("real", "float4", "pg_catalog");
-            case "float8", "double precision" -> TypeMapping.of("double precision", "float8", "pg_catalog");
+            case "int2", "smallint" -> TypeMapping.typeMapping("smallint", "int2", "pg_catalog");
+            case "int4", "integer", "int" -> TypeMapping.typeMapping("integer", "int4", "pg_catalog");
+            case "int8", "bigint" -> TypeMapping.typeMapping("bigint", "int8", "pg_catalog");
+            case "serial", "serial4" -> TypeMapping.typeMapping("integer", "int4", "pg_catalog");
+            case "bigserial", "serial8" -> TypeMapping.typeMapping("bigint", "int8", "pg_catalog");
+            case "smallserial", "serial2" -> TypeMapping.typeMapping("smallint", "int2", "pg_catalog");
+            case "float4", "real" -> TypeMapping.typeMapping("real", "float4", "pg_catalog");
+            case "float8", "double precision" -> TypeMapping.typeMapping("double precision", "float8", "pg_catalog");
             case "numeric", "decimal" -> mapNumeric(modifiers);
-            case "bool", "boolean" -> TypeMapping.of("boolean", "bool", "pg_catalog");
+            case "bool", "boolean" -> TypeMapping.typeMapping("boolean", "bool", "pg_catalog");
             case "varchar", "character varying" -> mapVarchar(modifiers);
             case "char", "character", "bpchar" -> mapChar(modifiers);
-            case "text" -> TypeMapping.of("text", "text", "pg_catalog");
-            case "uuid" -> TypeMapping.of("uuid", "uuid", "pg_catalog");
-            case "jsonb" -> TypeMapping.of("jsonb", "jsonb", "pg_catalog");
-            case "json" -> TypeMapping.of("json", "json", "pg_catalog");
-            case "bytea" -> TypeMapping.of("bytea", "bytea", "pg_catalog");
+            case "text" -> TypeMapping.typeMapping("text", "text", "pg_catalog");
+            case "uuid" -> TypeMapping.typeMapping("uuid", "uuid", "pg_catalog");
+            case "jsonb" -> TypeMapping.typeMapping("jsonb", "jsonb", "pg_catalog");
+            case "json" -> TypeMapping.typeMapping("json", "json", "pg_catalog");
+            case "bytea" -> TypeMapping.typeMapping("bytea", "bytea", "pg_catalog");
             case "timestamp", "timestamp without time zone" -> mapTimestamp("timestamp without time zone", "timestamp", modifiers);
             case "timestamptz", "timestamp with time zone" -> mapTimestamp("timestamp with time zone", "timestamptz", modifiers);
-            case "date" -> TypeMapping.of("date", "date", "pg_catalog");
+            case "date" -> TypeMapping.typeMapping("date", "date", "pg_catalog");
             case "time", "time without time zone" -> mapTimestamp("time without time zone", "time", modifiers);
             case "timetz", "time with time zone" -> mapTimestamp("time with time zone", "timetz", modifiers);
-            case "interval" -> TypeMapping.of("interval", "interval", "pg_catalog");
-            case "inet" -> TypeMapping.of("inet", "inet", "pg_catalog");
-            case "cidr" -> TypeMapping.of("cidr", "cidr", "pg_catalog");
-            case "macaddr" -> TypeMapping.of("macaddr", "macaddr", "pg_catalog");
-            case "macaddr8" -> TypeMapping.of("macaddr8", "macaddr8", "pg_catalog");
-            case "money" -> TypeMapping.of("money", "money", "pg_catalog");
-            case "xml" -> TypeMapping.of("xml", "xml", "pg_catalog");
+            case "interval" -> TypeMapping.typeMapping("interval", "interval", "pg_catalog");
+            case "inet" -> TypeMapping.typeMapping("inet", "inet", "pg_catalog");
+            case "cidr" -> TypeMapping.typeMapping("cidr", "cidr", "pg_catalog");
+            case "macaddr" -> TypeMapping.typeMapping("macaddr", "macaddr", "pg_catalog");
+            case "macaddr8" -> TypeMapping.typeMapping("macaddr8", "macaddr8", "pg_catalog");
+            case "money" -> TypeMapping.typeMapping("money", "money", "pg_catalog");
+            case "xml" -> TypeMapping.typeMapping("xml", "xml", "pg_catalog");
             case "bit" -> mapBit(modifiers);
             case "varbit", "bit varying" -> mapVarbit(modifiers);
-            case "tsvector" -> TypeMapping.of("tsvector", "tsvector", "pg_catalog");
-            case "tsquery" -> TypeMapping.of("tsquery", "tsquery", "pg_catalog");
-            case "oid" -> TypeMapping.of("oid", "oid", "pg_catalog");
-            default -> TypeMapping.of(type.name(), type.name(), "pg_catalog");
+            case "tsvector" -> TypeMapping.typeMapping("tsvector", "tsvector", "pg_catalog");
+            case "tsquery" -> TypeMapping.typeMapping("tsquery", "tsquery", "pg_catalog");
+            case "oid" -> TypeMapping.typeMapping("oid", "oid", "pg_catalog");
+            default -> TypeMapping.typeMapping(type.name(), type.name(), "pg_catalog");
         };
     }
 
     private static TypeMapping mapNumeric(List<Integer> modifiers) {
-        var mapping = TypeMapping.of("numeric", "numeric", "pg_catalog");
+        var mapping = TypeMapping.typeMapping("numeric", "numeric", "pg_catalog");
         if (modifiers.size() >= 2) {
             return mapping.withNumericPrecision(modifiers.get(0), modifiers.get(1));
         }
@@ -109,7 +109,7 @@ public final class JooqTypeMapper {
     }
 
     private static TypeMapping mapVarchar(List<Integer> modifiers) {
-        var mapping = TypeMapping.of("character varying", "varchar", "pg_catalog");
+        var mapping = TypeMapping.typeMapping("character varying", "varchar", "pg_catalog");
         if (!modifiers.isEmpty()) {
             return mapping.withCharacterMaximumLength(modifiers.getFirst());
         }
@@ -117,7 +117,7 @@ public final class JooqTypeMapper {
     }
 
     private static TypeMapping mapChar(List<Integer> modifiers) {
-        var mapping = TypeMapping.of("character", "bpchar", "pg_catalog");
+        var mapping = TypeMapping.typeMapping("character", "bpchar", "pg_catalog");
         if (!modifiers.isEmpty()) {
             return mapping.withCharacterMaximumLength(modifiers.getFirst());
         }
@@ -125,7 +125,7 @@ public final class JooqTypeMapper {
     }
 
     private static TypeMapping mapTimestamp(String dataType, String udtName, List<Integer> modifiers) {
-        var mapping = TypeMapping.of(dataType, udtName, "pg_catalog");
+        var mapping = TypeMapping.typeMapping(dataType, udtName, "pg_catalog");
         if (!modifiers.isEmpty()) {
             return mapping.withDatetimePrecision(modifiers.getFirst());
         }
@@ -133,7 +133,7 @@ public final class JooqTypeMapper {
     }
 
     private static TypeMapping mapBit(List<Integer> modifiers) {
-        var mapping = TypeMapping.of("bit", "bit", "pg_catalog");
+        var mapping = TypeMapping.typeMapping("bit", "bit", "pg_catalog");
         if (!modifiers.isEmpty()) {
             return mapping.withCharacterMaximumLength(modifiers.getFirst());
         }
@@ -141,7 +141,7 @@ public final class JooqTypeMapper {
     }
 
     private static TypeMapping mapVarbit(List<Integer> modifiers) {
-        var mapping = TypeMapping.of("bit varying", "varbit", "pg_catalog");
+        var mapping = TypeMapping.typeMapping("bit varying", "varbit", "pg_catalog");
         if (!modifiers.isEmpty()) {
             return mapping.withCharacterMaximumLength(modifiers.getFirst());
         }
@@ -150,11 +150,11 @@ public final class JooqTypeMapper {
 
     private static TypeMapping mapArray(ArrayType type) {
         var elementMapping = map(type.elementType(), "pg_catalog");
-        return TypeMapping.of("ARRAY", "_" + elementMapping.udtName(), elementMapping.udtSchema());
+        return TypeMapping.typeMapping("ARRAY", "_" + elementMapping.udtName(), elementMapping.udtSchema());
     }
 
     private static TypeMapping mapUserDefined(String name, String schema) {
-        return TypeMapping.of("USER-DEFINED", name, schema);
+        return TypeMapping.typeMapping("USER-DEFINED", name, schema);
     }
 
     private static String schemaOrDefault(String schema, String defaultSchema) {

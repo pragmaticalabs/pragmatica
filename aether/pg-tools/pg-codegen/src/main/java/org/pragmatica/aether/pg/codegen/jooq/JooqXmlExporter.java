@@ -2,6 +2,7 @@ package org.pragmatica.aether.pg.codegen.jooq;
 
 import org.pragmatica.aether.pg.schema.model.*;
 import org.pragmatica.aether.pg.schema.model.Constraint.*;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -83,6 +84,7 @@ public final class JooqXmlExporter {
         if (config.emitEnums()) {
             emitEnums(w, schema, defaultSchema);
         }
+        emitDomains(w, schema, defaultSchema, config);
 
         w.writeEndElement();
         w.writeEndDocument();
@@ -162,14 +164,8 @@ public final class JooqXmlExporter {
         writeElement(w, "is_nullable", col.nullable() ? "YES" : "NO");
         writeElement(w, "udt_schema", typeMapping.udtSchema());
         writeElement(w, "udt_name", typeMapping.udtName());
-        col.identity().onPresent(id -> {
-            writeElementUnchecked(w, "is_identity", "YES");
-            writeElementUnchecked(w, "identity_generation", id.kind() == Column.IdentityKind.ALWAYS ? "ALWAYS" : "BY DEFAULT");
-        });
-        col.generatedExpr().onPresent(expr -> {
-            writeElementUnchecked(w, "is_generated", "ALWAYS");
-            writeElementUnchecked(w, "generation_expression", expr);
-        });
+        col.identity().onPresent(id -> emitIdentity(w, id));
+        col.generatedExpr().onPresent(expr -> emitGeneratedExpr(w, expr));
         if (config.emitComments()) {
             col.comment().onPresent(c -> writeElementUnchecked(w, "comment", c));
         }
@@ -184,7 +180,7 @@ public final class JooqXmlExporter {
         // table_constraints
         w.writeStartElement("table_constraints");
         for (var tw : tables) {
-            for (var constraint : tw.table().constraints()) {
+            for (var constraint : sortConstraints(tw.table().constraints(), config)) {
                 emitTableConstraint(w, tw, constraint, constraintCounter, config);
             }
         }
@@ -193,7 +189,7 @@ public final class JooqXmlExporter {
         // key_column_usages (for PK, FK, Unique)
         w.writeStartElement("key_column_usages");
         for (var tw : tables) {
-            for (var constraint : tw.table().constraints()) {
+            for (var constraint : sortConstraints(tw.table().constraints(), config)) {
                 emitKeyColumnUsages(w, tw, constraint, config);
             }
         }
@@ -202,7 +198,7 @@ public final class JooqXmlExporter {
         // referential_constraints (FK only)
         w.writeStartElement("referential_constraints");
         for (var tw : tables) {
-            for (var constraint : tw.table().constraints()) {
+            for (var constraint : sortConstraints(tw.table().constraints(), config)) {
                 if (constraint instanceof ForeignKey fk) {
                     emitReferentialConstraint(w, tw, fk, config);
                 }
@@ -214,7 +210,7 @@ public final class JooqXmlExporter {
         if (config.emitCheckConstraints()) {
             w.writeStartElement("check_constraints");
             for (var tw : tables) {
-                for (var constraint : tw.table().constraints()) {
+                for (var constraint : sortConstraints(tw.table().constraints(), config)) {
                     if (constraint instanceof Check check) {
                         emitCheckConstraint(w, tw, check, config);
                     }
@@ -224,20 +220,27 @@ public final class JooqXmlExporter {
         }
     }
 
+    private static List<Constraint> sortConstraints(List<Constraint> constraints, JooqXmlConfig config) {
+        if (!config.sortElements()) return constraints;
+        return constraints.stream()
+                          .sorted(Comparator.comparing(c -> c.name().or("")))
+                          .toList();
+    }
+
     private static void emitTableConstraint(XMLStreamWriter w, TableWithSchema tw, Constraint constraint,
                                             AtomicInteger counter, JooqXmlConfig config) throws XMLStreamException {
-        var constraintName = constraintName(constraint, tw.table().name(), counter);
-        var constraintType = constraintType(constraint);
-        if (constraintType == null) return;
+        var type = constraintType(constraint);
+        if (type.isEmpty()) return;
 
+        var name = constraintName(constraint, tw.table().name(), counter);
         w.writeStartElement("table_constraint");
         writeElement(w, "constraint_catalog", config.catalogName());
         writeElement(w, "constraint_schema", tw.schema());
-        writeElement(w, "constraint_name", constraintName);
+        writeElement(w, "constraint_name", name);
         writeElement(w, "table_catalog", config.catalogName());
         writeElement(w, "table_schema", tw.schema());
         writeElement(w, "table_name", tw.table().name());
-        writeElement(w, "constraint_type", constraintType);
+        writeElement(w, "constraint_type", type.unwrap());
         writeElement(w, "enforced", "YES");
         w.writeEndElement();
     }
@@ -270,15 +273,17 @@ public final class JooqXmlExporter {
     private static void emitReferentialConstraint(XMLStreamWriter w, TableWithSchema tw,
                                                   ForeignKey fk, JooqXmlConfig config) throws XMLStreamException {
         var constraintName = fk.name().or(tw.table().name() + "_" + String.join("_", fk.columns()) + "_fkey");
-        // Derive the unique constraint name on the referenced table
-        var uniqueConstraintName = fk.refTable() + "_pkey";
+        // Derive the unique constraint name and schema from the referenced table
+        var refTableName = fk.refTable().contains(".") ? fk.refTable().substring(fk.refTable().lastIndexOf('.') + 1) : fk.refTable();
+        var refSchema = fk.refTable().contains(".") ? fk.refTable().substring(0, fk.refTable().lastIndexOf('.')) : tw.schema();
+        var uniqueConstraintName = refTableName + "_pkey";
 
         w.writeStartElement("referential_constraint");
         writeElement(w, "constraint_catalog", config.catalogName());
         writeElement(w, "constraint_schema", tw.schema());
         writeElement(w, "constraint_name", constraintName);
         writeElement(w, "unique_constraint_catalog", config.catalogName());
-        writeElement(w, "unique_constraint_schema", tw.schema());
+        writeElement(w, "unique_constraint_schema", refSchema);
         writeElement(w, "unique_constraint_name", uniqueConstraintName);
         writeElement(w, "update_rule", fkActionToString(fk.onUpdate()));
         writeElement(w, "delete_rule", fkActionToString(fk.onDelete()));
@@ -389,6 +394,34 @@ public final class JooqXmlExporter {
         w.writeEndElement();
     }
 
+    // === Domains ===
+
+    private static void emitDomains(XMLStreamWriter w, Schema schema, String defaultSchema,
+                                    JooqXmlConfig config) throws XMLStreamException {
+        var domains = schema.domainTypes().values().stream()
+                            .filter(d -> isIncluded(d.schema(), config))
+                            .sorted(Comparator.comparing(PgType.DomainType::name))
+                            .toList();
+        if (domains.isEmpty()) return;
+
+        w.writeStartElement("domains");
+        for (var domain : domains) {
+            var domainSchema = domain.schema().isEmpty() ? defaultSchema : domain.schema();
+            var baseMapping = JooqTypeMapper.map(domain.baseType(), defaultSchema);
+            w.writeStartElement("domain");
+            writeElement(w, "domain_catalog", config.catalogName());
+            writeElement(w, "domain_schema", domainSchema);
+            writeElement(w, "domain_name", domain.name());
+            writeElement(w, "data_type", baseMapping.dataType());
+            baseMapping.characterMaximumLength().onPresent(v -> writeElementUnchecked(w, "character_maximum_length", String.valueOf(v)));
+            baseMapping.numericPrecision().onPresent(v -> writeElementUnchecked(w, "numeric_precision", String.valueOf(v)));
+            baseMapping.numericScale().onPresent(v -> writeElementUnchecked(w, "numeric_scale", String.valueOf(v)));
+            domain.checkExpression().onPresent(expr -> writeElementUnchecked(w, "domain_default", expr));
+            w.writeEndElement();
+        }
+        w.writeEndElement();
+    }
+
     // === Helpers ===
 
     private static List<TableWithSchema> collectTables(Schema schema, JooqXmlConfig config) {
@@ -423,13 +456,24 @@ public final class JooqXmlExporter {
         return constraint.name().or(() -> tableName + "_constraint_" + counter.incrementAndGet());
     }
 
-    private static String constraintType(Constraint constraint) {
+    private static void emitIdentity(XMLStreamWriter w, Column.IdentitySpec id) {
+        writeElementUnchecked(w, "is_identity", "YES");
+        writeElementUnchecked(w, "identity_generation",
+                              id.kind() == Column.IdentityKind.ALWAYS ? "ALWAYS" : "BY DEFAULT");
+    }
+
+    private static void emitGeneratedExpr(XMLStreamWriter w, String expr) {
+        writeElementUnchecked(w, "is_generated", "ALWAYS");
+        writeElementUnchecked(w, "generation_expression", expr);
+    }
+
+    private static Option<String> constraintType(Constraint constraint) {
         return switch (constraint) {
-            case PrimaryKey _ -> "PRIMARY KEY";
-            case ForeignKey _ -> "FOREIGN KEY";
-            case Unique _ -> "UNIQUE";
-            case Check _ -> "CHECK";
-            case Exclusion _ -> null;
+            case PrimaryKey _ -> Option.present("PRIMARY KEY");
+            case ForeignKey _ -> Option.present("FOREIGN KEY");
+            case Unique _ -> Option.present("UNIQUE");
+            case Check _ -> Option.present("CHECK");
+            case Exclusion _ -> Option.empty();
         };
     }
 
