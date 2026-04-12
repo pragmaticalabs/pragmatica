@@ -15,7 +15,8 @@ import static org.pragmatica.lang.Result.success;
     private ApplyOrchestrator() {}
 
     public static Result<ApplyResult> apply(ClusterBootstrapConfig desired, ClusterBootstrapConfig currentStored) {
-        return computeValidPlan(desired, currentStored).flatMap(ApplyOrchestrator::executeOrEmpty);
+        return computeValidPlan(desired, currentStored)
+                   .flatMap(plan -> executeOrEmpty(plan, currentStored, desired));
     }
 
     public static Result<String> dryRun(ClusterBootstrapConfig desired, ClusterBootstrapConfig currentStored) {
@@ -36,9 +37,11 @@ import static org.pragmatica.lang.Result.success;
               : success(plan);
     }
 
-    private static Result<ApplyResult> executeOrEmpty(DiffPlan plan) {
+    private static Result<ApplyResult> executeOrEmpty(DiffPlan plan,
+                                                      ClusterBootstrapConfig stored,
+                                                      ClusterBootstrapConfig desired) {
         return plan.isEmpty()
               ? success(applyResult(plan, 0, 0, 0))
-              : WaveExecutor.execute(plan);
+              : WaveExecutor.execute(plan, stored, desired);
     }
 }
