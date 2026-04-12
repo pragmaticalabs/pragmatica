@@ -50,8 +50,8 @@ The configuration is structured around a **3D matrix**:
 
 | Dimension            | Description                                      | Config Expression                   |
 |----------------------|--------------------------------------------------|-------------------------------------|
-| Unit of Deployment   | What runs on a node (container, JVM, ember)      | `[runtime.X]` profiles              |
-| Environment          | Where nodes come from (cloud, SSH, local)        | `[source.X]` profiles               |
+| Unit of Deployment   | What runs on a node (container, JVM, ember, docker) | `[runtime.X]` profiles              |
+| Environment          | Where nodes come from (cloud, SSH, forge, docker) | `[source.X]` profiles               |
 | Topology             | How nodes are organized (cores, workers, spot)   | `[source.X.<role>]` sub-tables      |
 
 These three dimensions are expressed through a **source-centric** configuration model: a source defines a failure domain (provider + region + zone + credentials + databases + load balancer + firewall), and role sub-tables attached to the source carry per-role sizing and runtime selection.
@@ -306,7 +306,7 @@ A source profile defines **a failure domain**: where nodes come from, in which p
 
 | Field     | Type   | Required | Values                               |
 |-----------|--------|----------|--------------------------------------|
-| `type`    | string | Yes      | `"cloud"`, `"ssh"`, `"forge"`        |
+| `type`    | string | Yes      | `"cloud"`, `"ssh"`, `"forge"`, `"docker"` |
 | `inherit` | string | No       | Name of a `[template.X]` to merge (see §5.3) |
 
 #### 5.1.2 Database URL Passthrough
@@ -399,7 +399,7 @@ runtime = "ember"
 
 #### 5.1.5 Forge Source (`type = "forge"`)
 
-No `zone` field (local machine). The default load balancer mode is `"elected"` backed by a NOOP floating-IP provider (localhost is always attached).
+Forge runs all nodes in a single JVM via Ember — a lightweight in-process cluster simulator with built-in dashboard, chaos testing, and load generation. No container provisioning occurs. No `zone` field (local machine). The default load balancer mode is `"elected"` backed by a NOOP floating-IP provider (localhost is always attached).
 
 | Field            | Type | Required | Default      | Description                    |
 |------------------|------|----------|--------------|--------------------------------|
@@ -412,10 +412,39 @@ databases.default = "postgresql://forge:forge@localhost:5432/forge"
 
 [source.default.core]
 count = 3
-runtime = "default"
 ```
 
-Forge sources are for local development. Provisioning uses Docker Compose locally. Elected LB election is still performed so dev-time behavior matches production.
+**REQ-5.1.5.1**: The `runtime` field on forge role sub-tables is implicit (`ember`). If specified, only `"ember"` is accepted; any other value is a pre-flight error. No `[runtime.X]` profile is needed for forge sources — the runtime is built into the Forge binary.
+
+**REQ-5.1.5.2**: Forge sources do not support the `spot` role (PF-15).
+
+Elected LB election is still performed so dev-time behavior matches production.
+
+#### 5.1.5a Docker Source (`type = "docker"`)
+
+Docker sources provision individual containers on a local or remote Docker daemon via `DockerComputeProvider`. Each node runs as a separate container with its own port mappings. No `zone` field. Useful for integration testing and local multi-container clusters where real container isolation is needed (unlike Forge, which runs everything in-process).
+
+| Field            | Type | Required | Default      | Description                    |
+|------------------|------|----------|--------------|--------------------------------|
+| `load_balancer`  | string | No     | `"none"`     | `"none"` / `"elected"`         |
+
+```toml
+[source.local]
+type = "docker"
+databases.default = "postgresql://aether:aether@host.docker.internal:5432/aether"
+
+[source.local.core]
+count = 3
+
+[source.local.worker]
+count = 2
+```
+
+**REQ-5.1.5a.1**: The `runtime` field on docker role sub-tables is implicit (`docker`). If specified, only `"docker"` is accepted; any other value is a pre-flight error. No `[runtime.X]` profile is needed for docker sources.
+
+**REQ-5.1.5a.2**: Docker sources do not support the `spot` role (PF-15).
+
+**REQ-5.1.5a.3**: Docker source provisioning requires: Docker daemon running, container image pullable. Pre-flight checks PF-07 (Docker daemon) and PF-06 (image availability) apply.
 
 #### 5.1.6 Role Sub-Tables `[source.X.<role>]`
 
@@ -457,16 +486,17 @@ The `spot` role carries specific restrictions because spot/preemptible instances
 
 | Constraint                           | core | worker | spot |
 |--------------------------------------|------|--------|------|
+| Valid on `cloud` sources             | Yes  | Yes    | Yes  |
 | Valid on `ssh` sources               | Yes  | Yes    | **No** |
 | Valid on `forge` sources             | Yes  | Yes    | **No** |
-| Valid on `cloud` sources             | Yes  | Yes    | Yes  |
+| Valid on `docker` sources            | Yes  | Yes    | **No** |
 | Participates in quorum               | Yes  | No     | No   |
 | Eligible as elected LB candidate     | Yes  | Yes    | **No** |
 | Eligible as floating-IP holder       | Yes  | Yes    | **No** |
 | Hosts stateful slices                | Yes  | Yes    | **No** (stateless only) |
 | Auto-heal policy on failure          | Replace | Replace | Silent preemption replacement |
 
-**REQ-5.1.7.1**: Spot sub-tables on `ssh` or `forge` sources are a pre-flight error (PF-15).
+**REQ-5.1.7.1**: Spot sub-tables on `ssh`, `forge`, or `docker` sources are a pre-flight error (PF-15).
 
 **REQ-5.1.7.2**: Cloud providers that do not support preemptible instances reject spot sub-tables at pre-flight via `CloudProvider.supportsPreemptible()` (PF-16). Hetzner returns `false` and therefore rejects spot at pre-flight. AWS / GCP / Azure are schema-recognized in v1 but `provisionSpot` remains a stub that errors during Phase 2 execution (see KL-10).
 
@@ -516,7 +546,7 @@ A runtime profile defines **how a node is packaged and executed**. Runtime profi
 
 | Field     | Type   | Required | Values                                                |
 |-----------|--------|----------|-------------------------------------------------------|
-| `type`    | string | Yes      | `"container"`, `"compose"`, `"ember"`, `"jvm"`, `"managed-container"` (future) |
+| `type`    | string | Yes      | `"container"`, `"docker"`, `"ember"`, `"jvm"`, `"managed-container"` (future) |
 | `inherit` | string | No       | Name of a `[template.X]` to merge                     |
 
 #### 5.2.2 Container Runtime (`type = "container"`)
@@ -533,17 +563,21 @@ image = "ghcr.io/pragmaticalabs/aether-node:1.0.0"
 jvm_args = "-Xmx2g -XX:+UseZGC"
 ```
 
-#### 5.2.3 Compose Runtime (`type = "compose"`)
+#### 5.2.3 Docker Runtime (`type = "docker"`)
+
+Multiple containers managed on one host. Used by `docker` source types for local multi-container clusters and integration testing. Each node runs as an individual Docker container provisioned via `DockerComputeProvider`.
 
 | Field   | Type   | Required | Description                    |
 |---------|--------|----------|--------------------------------|
-| `image` | string | Yes      | Container image for compose    |
+| `image` | string | Yes      | Container image reference      |
 
 ```toml
-[runtime.compose]
-type = "compose"
+[runtime.docker]
+type = "docker"
 image = "aether-node:local"
 ```
+
+Note: Docker sources use this runtime implicitly — operators do not need to declare a `[runtime.X]` profile for docker sources unless they want to override the image.
 
 #### 5.2.4 Ember Runtime (`type = "ember"`)
 
@@ -661,6 +695,7 @@ Defaults by source type:
 | `cloud`     | `"none"`                |
 | `ssh`       | `"none"`                |
 | `forge`     | `"elected"` (NOOP floating IP) |
+| `docker`    | `"none"`                |
 
 **REQ-6.3.1**: Elected LB binds to a CDM-managed task group. The CDM applies **hard anti-affinity**: nodes currently holding an LB task are excluded from ALL slice assignment — both stateful and stateless. The LB node is a dedicated ingress node with no application workload, minimizing attack surface and reserving its full resource budget for traffic forwarding.
 
@@ -803,7 +838,8 @@ The bootstrap command `aether cluster bootstrap --config <file>` executes six se
 |-------------|-----------------------------------------------------------------------------------------|
 | Cloud       | For each role sub-table, call `CloudProvider.provision` (or `provisionSpot` for spot). Wait for `running` status. Then create firewall rules (see below). |
 | SSH         | No-op for node provisioning. Hosts already exist.                                        |
-| Forge       | No-op for node provisioning. Local Docker environment.                                   |
+| Forge       | No-op for node provisioning. Ember nodes are created in-process during Phase 4.          |
+| Docker      | For each role sub-table, create containers via `DockerComputeProvider`. Wait for `running` status. |
 
 **Firewall step (per source, after node provisioning)**:
 
@@ -825,7 +861,8 @@ The bootstrap command `aether cluster bootstrap --config <file>` executes six se
 |-------------|-------------------------------------------------------|
 | Cloud       | Read public/private IPs from provider API             |
 | SSH         | IPs from `hosts` field in each role sub-table         |
-| Forge       | Docker DNS names (container names)                    |
+| Forge       | In-process addresses (localhost with port offsets)     |
+| Docker      | Container IPs from Docker daemon                      |
 
 **Output**: Complete peer list mapping `(source, role, index)` to `(addresses[])` for every node.
 
@@ -836,8 +873,8 @@ The bootstrap command `aether cluster bootstrap --config <file>` executes six se
 | Runtime Type       | Deployment Steps                                              |
 |--------------------|---------------------------------------------------------------|
 | `container`        | Pull image on target host. Start container with peer list, database URLs from source, port bindings, JVM args. |
-| `compose`          | Generate `docker-compose.yml` from template. Deploy via SSH or locally. Start with `docker compose up -d`. |
-| `ember`            | Transfer ember binary/config to target. Start ember process.  |
+| `docker`           | Start containers via `DockerComputeProvider` with peer list, database URLs from source, port bindings, environment variables. Each node is a separate container on the same Docker network. |
+| `ember`            | Start Ember nodes in-process (forge source). Configure peer list, database URLs, ports within the single JVM. |
 | `jvm`              | Transfer Aether JAR to target via SSH. Start JVM process with args and peer list. |
 | `managed-container`| Apply Kubernetes manifests. (FUTURE)                          |
 
@@ -1057,16 +1094,18 @@ public record IpOwnership(boolean ownedByAccount, String currentAttachment) {}
 | Provider  | Module                         | Compute          | FloatingIp | Spot              |
 |-----------|--------------------------------|------------------|------------|-------------------|
 | Hetzner   | `aether/environment/hetzner`   | Full             | Full       | Rejected (pre-flight, unsupported) |
-| AWS       | `aether/environment/aws`       | Stub             | Stub       | Stub (KL-10)      |
-| GCP       | `aether/environment/gcp`       | Stub             | Stub       | Stub (KL-10)      |
-| Azure     | `aether/environment/azure`     | Stub             | Stub       | Stub (KL-10)      |
+| AWS       | `aether/environment/aws`       | Full             | Stub       | Stub (KL-10)      |
+| GCP       | `aether/environment/gcp`       | Full             | Stub       | Stub (KL-10)      |
+| Azure     | `aether/environment/azure`     | Full             | Stub       | Stub (KL-10)      |
+| Docker    | `aether/environment/docker`    | Full             | NOOP       | N/A               |
 
 ### 11.3 Non-Cloud Provisioning
 
-SSH and Forge sources do NOT use the `CloudProvider` SPI:
+SSH, Forge, and Docker sources do NOT use the `CloudProvider` SPI:
 
 - **SSH**: Uses `RemoteCommandRunner` (existing in `aether/cloud-tests`) to execute commands on target hosts. No `FloatingIpProvider` is wired — elected LB is rejected at pre-flight.
-- **Forge**: Generates Docker Compose files and runs `docker compose` locally. A NOOP `FloatingIpProvider` is registered so that elected LB election logic runs unchanged in dev mode.
+- **Forge**: Runs all nodes in-process via Ember (single JVM). A NOOP `FloatingIpProvider` is registered so that elected LB election logic runs unchanged in dev mode.
+- **Docker**: Uses `DockerComputeProvider` (existing in `aether/environment/docker`) to manage individual containers on a Docker daemon. A NOOP `FloatingIpProvider` is registered for elected LB support.
 
 ### 11.4 Existing Environment Integration
 
@@ -1105,10 +1144,14 @@ The `CloudProvider` SPI in §11.1 is a **new, higher-level** interface specifica
 | PF-12  | Floating IPs owned by account (elected LB sources)                    | Cloud       | Error    |
 | PF-13  | Floating IPs compatible with the source's zone                        | Cloud       | Error    |
 | PF-14  | Elected LB source has at least one non-spot sub-table                 | All         | Error    |
-| PF-15  | `spot` sub-table only allowed on cloud sources                        | SSH/Forge   | Error    |
+| PF-15  | `spot` sub-table only allowed on cloud sources                        | SSH/Forge/Docker | Error |
 | PF-16  | Cloud provider supports preemptible instances when spot is declared   | Cloud       | Error    |
 | PF-17  | Elected LB not declared on SSH source                                 | SSH         | Error    |
 | PF-18  | Firewall rules have valid port range and CIDR                         | All         | Error    |
+| PF-19  | Forge sub-tables: `runtime` must be `"ember"` or omitted             | Forge       | Error    |
+| PF-20  | Docker sub-tables: `runtime` must be `"docker"` or omitted           | Docker      | Error    |
+| PF-21  | Cloud sub-tables: `runtime` must be `"container"` or `"jvm"`         | Cloud       | Error    |
+| PF-22  | SSH sub-tables: `runtime` must be `"container"`, `"jvm"`, or `"ember"` | SSH       | Error    |
 
 ### 12.2 Cluster-Level Checks
 
@@ -1133,7 +1176,7 @@ CL-03, CL-05, CL-10, and CL-12 are removed: counts are derived (CL-03, CL-12), `
 |--------|------------------------------------------------------------|----------|
 | XG-01  | Pairwise reachability (TCP probe on cluster port)          | Error    |
 
-**REQ-12.3.1**: XG-01 is skipped for Forge sources (local networking is assumed reachable).
+**REQ-12.3.1**: XG-01 is skipped for Forge and Docker sources (local networking is assumed reachable).
 
 **REQ-12.3.2**: XG-01 is only performed between sources that already have addressable nodes at validation time (SSH sources with `hosts`). Cloud sources' addresses are not known until Phase 2.
 
@@ -1208,6 +1251,8 @@ Each bootstrap phase records completion state to enable resume on failure.
 ### 14.1 Minimal Forge (Local Development)
 
 ```toml
+config_version = "1.0.0"
+
 [cluster]
 name = "local-dev"
 version = "1.0.0"
@@ -1217,25 +1262,47 @@ min = 3
 
 [source.default]
 type = "forge"
-databases.default = "postgresql://forge:forge@forge-postgres:5432/forge"
+databases.default = "postgresql://forge:forge@localhost:5432/forge"
 
 [source.default.core]
 count = 3
-runtime = "default"
-
-[runtime.default]
-type = "compose"
-image = "aether-node:local"
 
 [infrastructure.networking]
 type = "manual"
 ```
 
-Forge sources default to `load_balancer = "elected"` with a NOOP floating-IP provider, so no explicit LB configuration is required for local dev.
+Forge sources use Ember implicitly — no `[runtime.X]` section is needed. Forge defaults to `load_balancer = "elected"` with a NOOP floating-IP provider, so no explicit LB configuration is required for local dev.
+
+### 14.1a Minimal Docker (Local Multi-Container)
+
+```toml
+config_version = "1.0.0"
+
+[cluster]
+name = "local-docker"
+version = "1.0.0"
+
+[cluster.core]
+min = 3
+
+[source.local]
+type = "docker"
+databases.default = "postgresql://aether:aether@host.docker.internal:5432/aether"
+
+[source.local.core]
+count = 3
+
+[infrastructure.networking]
+type = "manual"
+```
+
+Docker sources use the `docker` runtime implicitly. Each node runs as a separate container managed by `DockerComputeProvider`. Useful for integration testing where real container isolation is needed.
 
 ### 14.2 Single Cloud (Hetzner Production, Single Zone)
 
 ```toml
+config_version = "1.0.0"
+
 [cluster]
 name = "production"
 version = "1.0.0"
@@ -1282,6 +1349,8 @@ tls_auto_generate = true
 Shared infrastructure fields factored into `[template.X]` blocks; two Hetzner zones share the same base, AWS has its own template, and on-prem office workers use SSH.
 
 ```toml
+config_version = "1.0.0"
+
 [cluster]
 name = "global-prod"
 version = "1.0.0"
@@ -1377,6 +1446,8 @@ Derived core count: 3 (1 per Hetzner zone + 1 AWS) — odd, quorum-safe, spread 
 ### 14.4 On-Prem SSH
 
 ```toml
+config_version = "1.0.0"
+
 [cluster]
 name = "datacenter"
 version = "1.0.0"
@@ -1414,6 +1485,8 @@ SSH sources must use `load_balancer = "external"` or `"none"` (KL-13).
 ### 14.5 Full Reference (All Sections)
 
 ```toml
+config_version = "1.0.0"
+
 include = ["profiles/runtimes.toml"]
 
 [cluster]
@@ -1493,13 +1566,19 @@ databases.default = "postgresql://user@office-pg:5432/app"
 hosts = ["10.0.1.10", "10.0.1.11", "10.0.1.12"]
 runtime = "ember"
 
-[source.dev]
+[source.dev-forge]
 type = "forge"
 databases.default = "postgresql://forge:forge@localhost:5432/forge"
 
-[source.dev.core]
+[source.dev-forge.core]
 count = 3
-runtime = "compose"
+
+[source.dev-docker]
+type = "docker"
+databases.default = "postgresql://aether:aether@host.docker.internal:5432/aether"
+
+[source.dev-docker.core]
+count = 3
 
 [infrastructure.networking]
 type = "manual"
@@ -1563,6 +1642,7 @@ This model supports only a **single deployment type** and a **single runtime** p
 | `DeploymentType.AWS`                        | `[source.X] type = "cloud", provider = "aws"`                         |
 | `DeploymentType.ON_PREMISES`                | `[source.X] type = "ssh"`                                             |
 | `DeploymentType.EMBEDDED`                   | `[source.X] type = "forge"`                                           |
+| `DeploymentType.DOCKER`                     | `[source.X] type = "docker"`                                          |
 | `RuntimeType.CONTAINER`                     | `[runtime.X] type = "container"`                                      |
 | `RuntimeType.JVM`                           | `[runtime.X] type = "jvm"`                                            |
 | `[[groups]]` array                          | `[source.X.core]` / `[source.X.worker]` / `[source.X.spot]` sub-tables |
