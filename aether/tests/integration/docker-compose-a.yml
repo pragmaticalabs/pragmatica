@@ -1,0 +1,128 @@
+# Cluster A -- Non-destructive test suites (parallel execution)
+#
+# 5-node Aether cluster + shared PostgreSQL.
+# PostgreSQL is connected to both aether-a-network and aether-b-network
+# so Cluster B can share the same database.
+#
+# Usage:
+#   docker compose -f docker-compose-a.yml up -d
+#   docker compose -f docker-compose-a.yml down -v
+
+x-node-common: &node-common
+  image: aether-node:local
+  networks:
+    - aether-a-network
+  group_add:
+    - "${DOCKER_GID:-984}"
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+  environment: &node-env
+    CLUSTER_PORT: "6000"
+    MANAGEMENT_PORT: "8080"
+    PEERS: "node-1:aether-a-node-1:6000,node-2:aether-a-node-2:6000,node-3:aether-a-node-3:6000,node-4:aether-a-node-4:6000,node-5:aether-a-node-5:6000"
+    CORE_MAX: "5"
+    DOCKER_GID: "${DOCKER_GID:-984}"
+    JAVA_OPTS: "-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
+    AETHER_INSECURE_DEV_MODE: "true"
+  healthcheck:
+    test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
+    interval: 10s
+    timeout: 5s
+    retries: 6
+    start_period: 30s
+  restart: unless-stopped
+
+services:
+  # --- PostgreSQL (shared with Cluster B via dual network) ---
+  postgres:
+    image: postgres:17-alpine
+    container_name: forge-postgres
+    hostname: forge-postgres
+    networks:
+      - aether-a-network
+      - aether-b-network
+    environment:
+      POSTGRES_USER: forge
+      POSTGRES_PASSWORD: forge
+      POSTGRES_DB: forge
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- 5-node Aether Cluster A ---
+  aether-a-node-1:
+    <<: *node-common
+    container_name: aether-a-node-1
+    hostname: aether-a-node-1
+    environment:
+      <<: *node-env
+      NODE_ID: "node-1"
+    ports:
+      - "5150:8080"   # Management API
+      - "8070:8070"   # App HTTP
+      - "9090:8070"   # LB app port
+      - "9091:8080"   # LB mgmt port
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  aether-a-node-2:
+    <<: *node-common
+    container_name: aether-a-node-2
+    hostname: aether-a-node-2
+    environment:
+      <<: *node-env
+      NODE_ID: "node-2"
+    ports:
+      - "5151:8080"
+      - "8071:8070"
+
+  aether-a-node-3:
+    <<: *node-common
+    container_name: aether-a-node-3
+    hostname: aether-a-node-3
+    environment:
+      <<: *node-env
+      NODE_ID: "node-3"
+    ports:
+      - "5152:8080"
+      - "8072:8070"
+
+  aether-a-node-4:
+    <<: *node-common
+    container_name: aether-a-node-4
+    hostname: aether-a-node-4
+    environment:
+      <<: *node-env
+      NODE_ID: "node-4"
+    ports:
+      - "5153:8080"
+      - "8073:8070"
+
+  aether-a-node-5:
+    <<: *node-common
+    container_name: aether-a-node-5
+    hostname: aether-a-node-5
+    environment:
+      <<: *node-env
+      NODE_ID: "node-5"
+    ports:
+      - "5154:8080"
+      - "8074:8070"
+
+networks:
+  aether-a-network:
+    name: aether-a-network
+    driver: bridge
+  aether-b-network:
+    name: aether-b-network
+    driver: bridge
+
+volumes:
+  pgdata:

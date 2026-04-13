@@ -1,0 +1,44 @@
+# Cluster B -- Remote SSH (destructive test suites)
+#
+# 5-node cluster deployed via SSH to a remote host.
+# Requires TARGET_HOST and AETHER_SSH_KEY environment variables.
+
+config_version = "1.0.0"
+
+[cluster]
+name = "test-b"
+version = "1.0.0-rc1"
+
+[cluster.core]
+min = 3
+max = 15
+max_unavailable = 1
+
+[source.remote]
+type = "ssh"
+user = "root"
+key = "${env:AETHER_SSH_KEY}"
+load_balancer = "external"
+load_balancer_endpoint = "${env:TARGET_HOST}"
+databases.forge = "jdbc:postgresql://forge-postgres:5432/forge?user=forge&password=forge"
+
+[source.remote.core]
+hosts = ["${env:TARGET_HOST}", "${env:TARGET_HOST}", "${env:TARGET_HOST}", "${env:TARGET_HOST}", "${env:TARGET_HOST}"]
+
+[infrastructure.networking]
+type = "manual"
+
+[operations.ports]
+cluster = 6000
+management = 8080
+app_http = 8070
+swim = 6100
+
+[operations.auto_heal]
+enabled = true
+retry_interval = "30s"
+startup_cooldown = "15s"
+
+[runtime.default]
+type = "docker"
+image = "aether-node:local"

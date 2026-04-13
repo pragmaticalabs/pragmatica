@@ -1,0 +1,98 @@
+# Cluster B -- Destructive test suites (sequential execution)
+#
+# 5-node Aether cluster. No PostgreSQL -- uses Cluster A's postgres
+# which is connected to aether-b-network.
+#
+# Usage:
+#   docker compose -f docker-compose-b.yml up -d
+#   docker compose -f docker-compose-b.yml down -v
+#
+# NOTE: Start docker-compose-a.yml first (provides PostgreSQL and aether-b-network).
+
+x-node-common: &node-common
+  image: aether-node:local
+  networks:
+    - aether-b-network
+  group_add:
+    - "${DOCKER_GID:-984}"
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+  environment: &node-env
+    CLUSTER_PORT: "6000"
+    MANAGEMENT_PORT: "8080"
+    PEERS: "node-1:aether-b-node-1:6000,node-2:aether-b-node-2:6000,node-3:aether-b-node-3:6000,node-4:aether-b-node-4:6000,node-5:aether-b-node-5:6000"
+    CORE_MAX: "5"
+    DOCKER_GID: "${DOCKER_GID:-984}"
+    JAVA_OPTS: "-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
+    AETHER_INSECURE_DEV_MODE: "true"
+  healthcheck:
+    test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
+    interval: 10s
+    timeout: 5s
+    retries: 6
+    start_period: 30s
+  restart: unless-stopped
+
+services:
+  # --- 5-node Aether Cluster B ---
+  aether-b-node-1:
+    <<: *node-common
+    container_name: aether-b-node-1
+    hostname: aether-b-node-1
+    environment:
+      <<: *node-env
+      NODE_ID: "node-1"
+    ports:
+      - "5160:8080"   # Management API
+      - "8080:8070"   # App HTTP
+      - "9092:8070"   # LB app port
+      - "9093:8080"   # LB mgmt port
+
+  aether-b-node-2:
+    <<: *node-common
+    container_name: aether-b-node-2
+    hostname: aether-b-node-2
+    environment:
+      <<: *node-env
+      NODE_ID: "node-2"
+    ports:
+      - "5161:8080"
+      - "8081:8070"
+
+  aether-b-node-3:
+    <<: *node-common
+    container_name: aether-b-node-3
+    hostname: aether-b-node-3
+    environment:
+      <<: *node-env
+      NODE_ID: "node-3"
+    ports:
+      - "5162:8080"
+      - "8082:8070"
+
+  aether-b-node-4:
+    <<: *node-common
+    container_name: aether-b-node-4
+    hostname: aether-b-node-4
+    environment:
+      <<: *node-env
+      NODE_ID: "node-4"
+    ports:
+      - "5163:8080"
+      - "8083:8070"
+
+  aether-b-node-5:
+    <<: *node-common
+    container_name: aether-b-node-5
+    hostname: aether-b-node-5
+    environment:
+      <<: *node-env
+      NODE_ID: "node-5"
+    ports:
+      - "5164:8080"
+      - "8084:8070"
+
+networks:
+  aether-b-network:
+    external: true
+    name: aether-b-network

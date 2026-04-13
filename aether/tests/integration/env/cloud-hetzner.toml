@@ -1,0 +1,49 @@
+# Cluster A -- Hetzner Cloud (non-destructive test suites)
+#
+# 5-node cluster on Hetzner cx22 instances.
+# Requires HCLOUD_TOKEN and PG_URL environment variables.
+
+config_version = "1.0.0"
+
+[cluster]
+name = "cloud-test-a"
+version = "1.0.0-rc1"
+
+[cluster.core]
+min = 3
+max = 9
+max_unavailable = 1
+
+[source.hetzner-eu]
+type = "cloud"
+provider = "hetzner"
+zone = "fsn1-dc14"
+region = "eu-central"
+credentials = "${env:HCLOUD_TOKEN}"
+load_balancer = "none"
+databases.forge = "${env:PG_URL}"
+
+[source.hetzner-eu.core]
+count = 5
+instance_type = "cx22"
+
+[infrastructure.networking]
+type = "manual"
+
+[operations]
+tls_auto_generate = true
+
+[operations.ports]
+cluster = 6000
+management = 8080
+app_http = 8070
+swim = 6100
+
+[operations.auto_heal]
+enabled = true
+retry_interval = "30s"
+startup_cooldown = "15s"
+
+[runtime.default]
+type = "container"
+image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1"
