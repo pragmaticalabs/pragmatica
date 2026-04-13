@@ -32,8 +32,6 @@ IMAGE_TAG="aether-node:local"
 NODE_JAR="${REPO_ROOT}/aether/node/target/aether-node.jar"
 DOCKERFILE="${REPO_ROOT}/aether/docker/aether-node/Dockerfile"
 AETHER_TOML="${REPO_ROOT}/aether/docker/aether-node/aether.toml"
-LB_JAR="${REPO_ROOT}/aether/lb/target/aether-lb.jar"
-LB_DOCKERFILE="${REPO_ROOT}/aether/docker/aether-lb/Dockerfile"
 COMPOSE_FILE="${ROOT_DIR}/docker-compose.yml"
 
 SKIP_BUILD=false
@@ -84,13 +82,11 @@ log_info "JAR checksum: $LOCAL_MD5"
 # ---------------------------------------------------------------------------
 log_step "Transferring artifacts to ${HOST}"
 
-ssh_exec "mkdir -p ${REMOTE_DIR}/node/target ${REMOTE_DIR}/lb/target ${REMOTE_DIR}/docker/aether-node ${REMOTE_DIR}/docker/aether-lb"
+ssh_exec "mkdir -p ${REMOTE_DIR}/node/target ${REMOTE_DIR}/docker/aether-node"
 
 scp_file "$NODE_JAR"       "${REMOTE_DIR}/node/target/aether-node.jar"
 scp_file "$DOCKERFILE"     "${REMOTE_DIR}/Dockerfile"
 scp_file "$AETHER_TOML"    "${REMOTE_DIR}/docker/aether-node/aether.toml"
-scp_file "$LB_JAR"         "${REMOTE_DIR}/lb/target/aether-lb.jar"
-scp_file "$LB_DOCKERFILE"  "${REMOTE_DIR}/Dockerfile.lb"
 scp_file "$COMPOSE_FILE"   "${REMOTE_DIR}/docker-compose.yml"
 
 # Verify checksum on remote
@@ -110,7 +106,7 @@ if [ "$CLEAN" = true ]; then
     log_info "Cleaning old containers and images..."
     # compose down handles named services; auto-provisioned containers from CTM
     # (aether-core-node-*) are not tracked by compose, so we nuke them explicitly.
-    ssh_exec "cd ${REMOTE_DIR} && docker compose down --remove-orphans 2>/dev/null; docker rm -f \$(docker ps -aq --filter 'name=aether-core') 2>/dev/null; docker rm -f \$(docker ps -aq --filter 'name=aether-node') 2>/dev/null; docker rmi ${IMAGE_TAG} aether-lb:local 2>/dev/null" || true
+    ssh_exec "cd ${REMOTE_DIR} && docker compose down --remove-orphans 2>/dev/null; docker rm -f \$(docker ps -aq --filter 'name=aether-core') 2>/dev/null; docker rm -f \$(docker ps -aq --filter 'name=aether-node') 2>/dev/null; docker rmi ${IMAGE_TAG} 2>/dev/null" || true
 fi
 
 # Always kill auto-provisioned CTM containers before starting, even without --clean.
@@ -120,25 +116,19 @@ ssh_exec "docker rm -f \$(docker ps -aq --filter 'name=aether-core') 2>/dev/null
 ssh_exec "cd ${REMOTE_DIR} && docker build --no-cache -t ${IMAGE_TAG} -f Dockerfile . 2>&1 | tail -3"
 log_pass "Docker image built: ${IMAGE_TAG}"
 
-ssh_exec "cd ${REMOTE_DIR} && docker build --no-cache -t aether-lb:local -f Dockerfile.lb . 2>&1 | tail -3"
-log_pass "Docker image built: aether-lb:local"
-
 # ---------------------------------------------------------------------------
 # Step 4: Start cluster
 # ---------------------------------------------------------------------------
-log_step "Starting 5-node cluster + passive LB"
+log_step "Starting 5-node cluster"
 
 ssh_exec "cd ${REMOTE_DIR} && docker compose down --remove-orphans 2>/dev/null; docker compose up -d 2>&1 | tail -5"
 
 # ---------------------------------------------------------------------------
-# Step 5: Wait for cluster + LB health
+# Step 5: Wait for cluster health
 # ---------------------------------------------------------------------------
 log_step "Waiting for cluster to form"
 # Wait for at least one core node to be healthy (direct access)
 wait_for_cluster_direct 120
-
-log_step "Waiting for passive LB"
-wait_for "LB healthy" "curl -sf http://${HOST}:${LB_PORT}/health/live >/dev/null 2>&1" 60
 
 LEADER=$(cluster_leader 2>/dev/null || echo "pending")
 COUNT=$(cluster_node_count 2>/dev/null || echo "?")

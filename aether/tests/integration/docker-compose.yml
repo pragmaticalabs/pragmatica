@@ -67,6 +67,8 @@ services:
     ports:
       - "5150:8080"   # Management API
       - "8070:8070"   # App HTTP
+      - "9090:8070"   # LB app port (node-1 serves directly)
+      - "9091:8080"   # LB mgmt port (node-1 serves directly)
     depends_on:
       postgres:
         condition: service_healthy
@@ -114,32 +116,6 @@ services:
     ports:
       - "5154:8080"
       - "8074:8070"
-
-  # --- Passive load balancer ---
-  aether-lb:
-    image: aether-lb:local
-    container_name: aether-lb
-    hostname: aether-lb
-    networks:
-      - aether-network
-    environment:
-      LB_HTTP_PORT: "8080"
-      LB_MANAGEMENT_PORT: "8081"
-      LB_MANAGEMENT_MAX_CONTENT_LENGTH: "16777216"
-      LB_CLUSTER_PORT: "7000"
-      PEERS: "node-1:aether-node-1:6000,node-2:aether-node-2:6000,node-3:aether-node-3:6000,node-4:aether-node-4:6000,node-5:aether-node-5:6000"
-      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
-      AETHER_INSECURE_DEV_MODE: "true"
-    ports:
-      - "9090:8080"   # Public app HTTP (forwarded via Pipeline.APP)
-      - "9091:8081"   # Management API (forwarded via Pipeline.MANAGEMENT)
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
-      interval: 5s
-      timeout: 3s
-      retries: 6
-      start_period: 15s
-    restart: unless-stopped
 
 networks:
   aether-network:
