@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.maven;
 
 import org.pragmatica.jbct.slice.SliceConfig;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.jbct.slice.SliceManifest;
 import org.pragmatica.jbct.slice.SliceManifest.SliceDependency;
 import org.pragmatica.lang.Option;
@@ -34,6 +35,7 @@ import org.codehaus.plexus.archiver.jar.JarArchiver;
 
 /// Generates Blueprint.toml from slice manifests and their transitive dependencies.
 /// The blueprint lists all slices in topological order (dependencies before dependents).
+@Contract
 @Mojo(name = "generate-blueprint",
  defaultPhase = LifecyclePhase.PACKAGE,
  requiresDependencyResolution = ResolutionScope.COMPILE)
@@ -83,11 +85,12 @@ public class GenerateBlueprintMojo extends AbstractMojo {
             return;
         }
         var localManifests = loadLocalManifests();
-        if (localManifests.isEmpty()) {
-            getLog().info("No slice manifests found - skipping blueprint generation");
+        var dependencyManifests = loadDependencyManifests(localManifests);
+        if (localManifests.isEmpty() && dependencyManifests.isEmpty()) {
+            getLog().info("No slice manifests found (local or dependency) - skipping blueprint generation");
             return;
         }
-        var graph = buildDependencyGraph(localManifests);
+        var graph = buildDependencyGraph(localManifests, dependencyManifests);
         topologicalSort(graph);
         generateBlueprint();
         getLog().info("Generated blueprint: " + blueprintFile);
@@ -118,7 +121,45 @@ public class GenerateBlueprintMojo extends AbstractMojo {
         return manifests;
     }
 
-    private Map<String, SliceEntry> buildDependencyGraph(List<SliceManifest> localManifests)
+    /// Scans compile-scope dependency JARs for slice manifests not already discovered locally.
+    /// This enables blueprint-only assembly projects with zero local slices.
+    private List<DependencyManifest> loadDependencyManifests(List<SliceManifest> localManifests) {
+        // Collect local slice interface names to avoid duplicating local slices found in dependency JARs
+        var localInterfaces = new HashSet<String>();
+        for (var m : localManifests) {
+            localInterfaces.add(m.slicePackage() + "." + m.sliceName());
+        }
+        var result = new ArrayList<DependencyManifest>();
+        for (var artifact : project.getArtifacts()) {
+            if (!"compile".equals(artifact.getScope()) && !"runtime".equals(artifact.getScope())) {
+                continue;
+            }
+            var jar = artifact.getFile();
+            if (jar == null || !jar.exists() || !jar.getName().endsWith(".jar")) {
+                continue;
+            }
+            loadManifestFromJar(jar).onPresent(manifest -> addIfNotLocal(manifest, artifact, localInterfaces, result));
+        }
+        if (!result.isEmpty()) {
+            getLog().info("Discovered " + result.size() + " external slice manifest(s) from dependencies");
+        }
+        return result;
+    }
+
+    private void addIfNotLocal(SliceManifest manifest,
+                               org.apache.maven.artifact.Artifact artifact,
+                               Set<String> localInterfaces,
+                               List<DependencyManifest> result) {
+        var iface = manifest.slicePackage() + "." + manifest.sliceName();
+        if (!localInterfaces.contains(iface)) {
+            var coords = artifact.getGroupId() + ":" + artifact.getArtifactId() + ":" + artifact.getVersion();
+            result.add(new DependencyManifest(coords, manifest));
+            getLog().debug("Discovered external slice manifest: " + iface + " from " + coords);
+        }
+    }
+
+    private Map<String, SliceEntry> buildDependencyGraph(List<SliceManifest> localManifests,
+                                                         List<DependencyManifest> dependencyManifests)
     throws MojoExecutionException {
         var graph = new LinkedHashMap<String, SliceEntry>();
         // First pass: register all local slices and build interface-to-artifact map
@@ -131,8 +172,20 @@ public class GenerateBlueprintMojo extends AbstractMojo {
             var sliceInterface = manifest.slicePackage() + "." + manifest.sliceName();
             interfaceToArtifact.put(sliceInterface, artifact);
         }
-        // Second pass: resolve external dependencies from JAR files
-        for (var manifest : localManifests) {
+        // Register external dependency manifests as top-level entries
+        for (var dep : dependencyManifests) {
+            if (!graph.containsKey(dep.artifact())) {
+                var entry = new SliceEntry(dep.artifact(), dep.manifest(), SliceConfig.defaultConfig(), true);
+                graph.put(dep.artifact(), entry);
+                var iface = dep.manifest().slicePackage() + "." + dep.manifest().sliceName();
+                interfaceToArtifact.put(iface, dep.artifact());
+            }
+        }
+        // Third pass: resolve transitive external dependencies from JAR files
+        var allManifests = new ArrayList<SliceManifest>();
+        localManifests.forEach(allManifests::add);
+        dependencyManifests.stream().map(DependencyManifest::manifest).forEach(allManifests::add);
+        for (var manifest : allManifests) {
             resolveExternalDependencies(manifest, graph);
         }
         return graph;
@@ -167,28 +220,15 @@ public class GenerateBlueprintMojo extends AbstractMojo {
                 getLog().warn("Skipping UNRESOLVED dependency: " + dep.artifact() + " - not found in local graph");
                 continue;
             }
-            loadManifestFromDependency(dep.artifact(),
-                                       dep.version()).onPresent(depManifest -> {
-                                                                    // External dependencies use default config
-            var entry = new SliceEntry(depArtifact,
-                                       depManifest,
-                                       SliceConfig.defaultConfig(),
-                                       true);
-                                                                    graph.put(depArtifact, entry);
-                                                                    try{
-                                                                        resolveExternalDependencies(depManifest, graph);
-                                                                    } catch (MojoExecutionException e) {
-                                                                        throw new RuntimeException(e);
-                                                                    }
-                                                                })
-                                      .onEmpty(() -> {
-                                                   graph.put(depArtifact,
-                                                             new SliceEntry(depArtifact,
-                                                                            null,
-                                                                            SliceConfig.defaultConfig(),
-                                                                            true));
-                                                   getLog().debug("No manifest found for dependency: " + depArtifact);
-                                               });
+            var depManifestOpt = loadManifestFromDependency(dep.artifact(), dep.version());
+            if (depManifestOpt.isPresent()) {
+                var depManifest = depManifestOpt.unwrap();
+                graph.put(depArtifact, new SliceEntry(depArtifact, depManifest, SliceConfig.defaultConfig(), true));
+                resolveExternalDependencies(depManifest, graph);
+            } else {
+                graph.put(depArtifact, new SliceEntry(depArtifact, null, SliceConfig.defaultConfig(), true));
+                getLog().debug("No manifest found for dependency: " + depArtifact);
+            }
         }
     }
 
@@ -453,4 +493,6 @@ public class GenerateBlueprintMojo extends AbstractMojo {
     }
 
     private record SliceEntry(String artifact, SliceManifest manifest, SliceConfig config, boolean isDependency) {}
+
+    private record DependencyManifest(String artifact, SliceManifest manifest) {}
 }
