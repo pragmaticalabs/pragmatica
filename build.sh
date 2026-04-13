@@ -36,23 +36,30 @@ echo "=== Pragmatica Build ==="
 
 # Step 1: Bootstrap annotation processors and Maven plugins
 echo ""
-echo "Step 1/4: Bootstrap annotation processors and Maven plugins..."
+echo "Step 1/5: Bootstrap annotation processors and Maven plugins..."
 mvn_quiet install -DskipTests -Djbct.skip=true -pl jbct,jbct/slice-processor,aether/pg-tools/pg-codegen -am
 
 # Step 2: Format and lint all non-jbct modules
 echo ""
-echo "Step 2/4: Format and lint..."
+echo "Step 2/5: Format and lint..."
 mvn_lint org.pragmatica-lite:jbct-maven-plugin:format org.pragmatica-lite:jbct-maven-plugin:lint -pl '!jbct'
 
 # Step 3: Install all main modules (includes examples)
 echo ""
-echo "Step 3/4: Install all modules..."
+echo "Step 3/5: Install all modules..."
 mvn_quiet install -DskipTests
 
 # Step 4: Build e2e and forge tests (compile only)
 echo ""
-echo "Step 4/4: Build e2e and forge tests..."
+echo "Step 4/5: Build e2e and forge tests..."
 mvn_quiet compile test-compile -Pwith-e2e -pl aether/e2e-tests,aether/forge/forge-tests
+
+# Step 5: Build test blueprints
+echo ""
+echo "Step 5/5: Build test blueprints..."
+for bp in aether/tests/blueprints/test-echo aether/tests/blueprints/test-persistence aether/tests/blueprints/test-full; do
+    mvn_quiet -f "$bp/pom.xml" install -DskipTests
+done
 
 echo ""
 echo "=== Build Complete ==="
