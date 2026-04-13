@@ -24,9 +24,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param type              Rate limiter type: "local" (per-node) or "distributed" (future, via DHT)
 public record RateGuardConfig(int requestsPerSecond, int burst, String type) {
     public static Result<RateGuardConfig> rateGuardConfig(int requestsPerSecond, int burst) {
-        var validRate = ensure(requestsPerSecond, Verify.Is::positive);
-        var validBurst = ensure(burst, Verify.Is::nonNegative);
-        return all(validRate, validBurst).map((r, b) -> new RateGuardConfig(r, b, "local"));
+        return rateGuardConfig(requestsPerSecond, burst, "local");
     }
 
     public static Result<RateGuardConfig> rateGuardConfig(int requestsPerSecond, int burst, String type) {

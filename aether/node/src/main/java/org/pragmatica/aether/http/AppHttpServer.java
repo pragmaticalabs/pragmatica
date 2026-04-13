@@ -856,16 +856,14 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private void handleLocalRouteFailure(ResponseWriter response, String path, String requestId, Cause cause) {
-        if (cause instanceof RateGuardError.LimitExceeded exceeded) {
-            sendRateLimitResponse(response, path, requestId, exceeded);
-            return;
+        switch (cause) {
+            case RateGuardError.LimitExceeded exceeded -> sendRateLimitResponse(response, path, requestId, exceeded);
+            default -> {
+                log.error("Failed to handle local route [{}]: {}", requestId, cause.message());
+                sendProblem(response, HttpStatus.INTERNAL_SERVER_ERROR,
+                            "Request processing failed: " + cause.message(), path, requestId);
+            }
         }
-        log.error("Failed to handle local route [{}]: {}", requestId, cause.message());
-        sendProblem(response,
-                    HttpStatus.INTERNAL_SERVER_ERROR,
-                    "Request processing failed: " + cause.message(),
-                    path,
-                    requestId);
     }
 
     private void sendRateLimitResponse(ResponseWriter response, String path, String requestId,
