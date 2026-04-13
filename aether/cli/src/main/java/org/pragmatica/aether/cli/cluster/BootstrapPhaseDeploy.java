@@ -3,6 +3,7 @@ package org.pragmatica.aether.cli.cluster;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
 import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.config.cluster.SshConfig;
 import org.pragmatica.aether.environment.NodeAddress;
 import org.pragmatica.aether.environment.ProvisionedNode;
@@ -32,7 +33,30 @@ import static org.pragmatica.lang.Result.success;
             var deployResult = deploySource(ctx, source, sourceName, clusterSecret);
             if (deployResult.isFailure()) {return deployResult.map(_ -> ctx);}
         }
-        return success(ctx);
+        return verifyForgeReachable(ctx).map(_ -> ctx);
+    }
+
+    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> verifyForgeReachable(BootstrapContext ctx) {
+        var hasForge = ctx.config().sources()
+                                 .values()
+                                 .stream()
+                                 .anyMatch(s -> s.type() == SourceType.FORGE);
+        if (!hasForge) {return Result.unitResult();}
+        var mgmtPort = ctx.config().operations()
+                                 .ports()
+                                 .management();
+        var url = "http://127.0.0.1:" + mgmtPort + "/health/live";
+        System.out.printf("  Verifying forge is reachable at %s%n", url);
+        var deadline = System.currentTimeMillis() + 10_000;
+        while (System.currentTimeMillis() <deadline) {
+            if (ClusterBootstrapOrchestrator.httpGet(url).isSuccess()) {
+                System.out.println("  Forge is reachable");
+                return Result.unitResult();
+            }
+            ClusterBootstrapOrchestrator.sleepQuietly(1000);
+        }
+        return new BootstrapError.DeploymentFailed("forge",
+                                                   "Forge source detected but not reachable at " + url + ". Ensure 'aether forge' is running.").result();
     }
 
     @SuppressWarnings("JBCT-PAT-01") private static Result<Unit> deploySource(BootstrapContext ctx,
@@ -68,6 +92,9 @@ import static org.pragmatica.lang.Result.success;
                                                                                                  String sourceName,
                                                                                                  String clusterSecret) {
         var sshConfig = buildSshConfig(source);
+        var allNodeIds = ctx.nodes().stream()
+                                  .map(ProvisionedNode::nodeId)
+                                  .toList();
         var allNodeIps = ctx.addresses().stream()
                                       .map(NodeAddress::publicIp)
                                       .toList();
@@ -79,7 +106,12 @@ import static org.pragmatica.lang.Result.success;
                 nodeIndex++;
                 continue;
             }
-            var nodeConfig = NodeConfigTemplate.render(ctx.config(), node.nodeId(), nodeIndex, clusterSecret, allNodeIps);
+            var nodeConfig = NodeConfigTemplate.render(ctx.config(),
+                                                       node.nodeId(),
+                                                       nodeIndex,
+                                                       clusterSecret,
+                                                       allNodeIds,
+                                                       allNodeIps);
             var result = deploySshNode(node, nodeConfig, sshConfig, clusterName);
             if (result.isFailure()) {return result;}
             nodeIndex++;

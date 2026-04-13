@@ -3,6 +3,8 @@ package org.pragmatica.aether.cli.cluster;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapResult;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
+import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.environment.FloatingIpProvider;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -23,9 +25,41 @@ import static org.pragmatica.lang.Result.success;
     }
 
     @Contract private static void activateElectedLoadBalancers(BootstrapContext ctx) {
-        for (var source : ctx.config().sources()
-                                    .values()) {if (source.loadBalancer() == LoadBalancerMode.ELECTED) {System.out.printf("  Activating elected load balancer for source '%s'%n",
-                                                                                                                          source.name());}}
+        for (var entry : ctx.config().sources()
+                                   .entrySet()) {
+            var source = entry.getValue();
+            if (source.loadBalancer() == LoadBalancerMode.ELECTED) {attachFloatingIp(entry.getKey(), source, ctx);}
+        }
+    }
+
+    @SuppressWarnings("JBCT-EX-01") @Contract private static void attachFloatingIp(String sourceName,
+                                                                                   SourceProfile source,
+                                                                                   BootstrapContext ctx) {
+        var _ = ProviderResolver.resolveFloatingIpProvider(source).onSuccess(fip -> attachFirstCoreNode(fip,
+                                                                                                        sourceName,
+                                                                                                        source,
+                                                                                                        ctx))
+                                                          .onFailure(cause -> System.out.printf("  WARN: %s: floating IP provider not available: %s%n",
+                                                                                                sourceName,
+                                                                                                cause.message()));
+    }
+
+    @Contract private static void attachFirstCoreNode(FloatingIpProvider fip,
+                                                      String sourceName,
+                                                      SourceProfile source,
+                                                      BootstrapContext ctx) {
+        var targetNode = ctx.nodes().stream()
+                                  .filter(n -> n.nodeId().startsWith(sourceName + "-core-"))
+                                  .findFirst();
+        targetNode.ifPresent(node -> attachLoadBalancerIps(fip, source, node.nodeId()));
+    }
+
+    @Contract private static void attachLoadBalancerIps(FloatingIpProvider fip, SourceProfile source, String nodeId) {
+        for (var ip : source.loadBalancerIps()) {var _ = fip.attach(ip, nodeId).await()
+                                                                   .onSuccess(_ -> System.out.printf("  Floating IP %s attached to %s%n",
+                                                                                                     ip,
+                                                                                                     nodeId))
+                                                                   .onFailure(c -> System.err.println("  Warning: floating IP attach failed: " + c.message()));}
     }
 
     @Contract private static void registerClusterLocally(BootstrapContext ctx) {

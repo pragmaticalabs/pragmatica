@@ -1047,6 +1047,8 @@ import static org.pragmatica.lang.Result.success;
 
         @SuppressWarnings("JBCT-VO-02") public static final ClusterConfigKey CURRENT = new ClusterConfigKey(0);
 
+        @SuppressWarnings("JBCT-VO-02") public static final ClusterConfigKey TEMPLATE = new ClusterConfigKey(- 1);
+
         @SuppressWarnings("JBCT-VO-02") public static ClusterConfigKey clusterConfigKey(long configVersion) {
             return new ClusterConfigKey(configVersion);
         }

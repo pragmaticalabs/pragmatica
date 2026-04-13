@@ -20,7 +20,10 @@ import static org.pragmatica.lang.Result.success;
         var addresses = ctx.nodes().stream()
                                  .map(BootstrapPhaseCollect::nodeToAddress)
                                  .toList();
-        return success(ctx.withAddresses(addresses));
+        var addressStrings = addresses.stream().map(NodeAddress::publicIp)
+                                             .toList();
+        var updatedState = ctx.state().withCollectedAddresses(addressStrings);
+        return success(ctx.withAddresses(addresses).withState(updatedState));
     }
 
     private static NodeAddress nodeToAddress(ProvisionedNode node) {
