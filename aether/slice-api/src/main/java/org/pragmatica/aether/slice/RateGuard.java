@@ -35,7 +35,5 @@ import java.util.function.Supplier;
 /// type = "local"
 /// ```
 public interface RateGuard {
-    /// Guard an operation. Returns the result if within limits,
-    /// or RateGuardError.LimitExceeded if rate exceeded.
     <T> Promise<T> guard(Supplier<Promise<T>> operation);
 }

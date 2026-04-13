@@ -38,7 +38,6 @@ public record RateGuardConfig(int requestsPerSecond, int burst, String type) {
         return rateGuardConfig(100, 20);
     }
 
-    /// Convert to core RateLimiter parameters.
     public TimeSpan window() {
         return timeSpan(1).seconds();
     }
