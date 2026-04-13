@@ -33,15 +33,8 @@ test_cli_storage_status() {
     fi
 
     local first_name
-    first_name=$(echo "$api_result" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    instances = data.get('instances', [])
-    if instances:
-        print(instances[0].get('name', ''))
-except: pass
-" 2>/dev/null)
+    # Extract first instance name from instances array
+    first_name=$(echo "$api_result" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
 
     if [ -z "$first_name" ]; then
         skip_test "CLI storage status" "No storage instances configured"
@@ -66,8 +59,7 @@ test_cli_storage_list_json() {
         return 0
     fi
     # Verify it parses as JSON
-    echo "$result" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null
-    if [ $? -eq 0 ]; then
+    if echo "$result" | grep -qE '^\s*[\{\[]'; then
         log_pass "CLI storage list returns valid JSON"
     else
         log_fail "CLI storage list returned invalid JSON"

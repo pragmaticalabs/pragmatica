@@ -27,14 +27,13 @@ test_expires_at_field() {
     fi
 
     local expires_at
-    expires_at=$(echo "$cert" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    print(data.get('expiresAt', data.get('expiry', data.get('notAfter', ''))))
-except:
-    print('')
-" 2>/dev/null)
+    expires_at=$(json_value "$cert" "expiresAt")
+    if [ -z "$expires_at" ]; then
+        expires_at=$(json_value "$cert" "expiry")
+    fi
+    if [ -z "$expires_at" ]; then
+        expires_at=$(json_value "$cert" "notAfter")
+    fi
     if [ -n "$expires_at" ]; then
         log_pass "expiresAt field present: ${expires_at}"
     else
@@ -52,21 +51,20 @@ test_seconds_until_expiry() {
     fi
 
     local seconds
-    seconds=$(echo "$cert" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    v = data.get('secondsUntilExpiry', data.get('ttlSeconds', data.get('remainingSeconds', -1)))
-    print(v)
-except:
-    print(-1)
-" 2>/dev/null)
+    seconds=$(json_value "$cert" "secondsUntilExpiry")
+    if [ -z "$seconds" ]; then
+        seconds=$(json_value "$cert" "ttlSeconds")
+    fi
+    if [ -z "$seconds" ]; then
+        seconds=$(json_value "$cert" "remainingSeconds")
+    fi
+    seconds="${seconds:--1}"
     if [ "$seconds" -gt 0 ] 2>/dev/null; then
         log_pass "secondsUntilExpiry > 0: ${seconds}s"
     elif [ "$seconds" = "0" ]; then
         # TLS may be disabled — check renewalStatus for NOT_CONFIGURED
         local renewal
-        renewal=$(echo "$cert" | python3 -c "import sys,json; print(json.load(sys.stdin).get('renewalStatus',''))" 2>/dev/null)
+        renewal=$(json_value "$cert" "renewalStatus")
         if [ "$renewal" = "NOT_CONFIGURED" ]; then
             log_pass "TLS disabled — no certificate expiry (NOT_CONFIGURED)"
         else
@@ -88,14 +86,13 @@ test_renewal_status_field() {
     fi
 
     local renewal
-    renewal=$(echo "$cert" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    print(data.get('renewalStatus', data.get('renewal', data.get('autoRenew', ''))))
-except:
-    print('')
-" 2>/dev/null)
+    renewal=$(json_value "$cert" "renewalStatus")
+    if [ -z "$renewal" ]; then
+        renewal=$(json_value "$cert" "renewal")
+    fi
+    if [ -z "$renewal" ]; then
+        renewal=$(json_value "$cert" "autoRenew")
+    fi
     if [ -n "$renewal" ]; then
         log_pass "renewalStatus field present: ${renewal}"
     else
@@ -112,17 +109,19 @@ test_certificate_not_expired() {
         return 0
     fi
 
-    local is_valid
-    is_valid=$(echo "$cert" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    seconds = data.get('secondsUntilExpiry', data.get('ttlSeconds', 1))
-    expired = data.get('expired', False)
-    print('no' if expired or seconds <= 0 else 'yes')
-except:
-    print('unknown')
-" 2>/dev/null)
+    local is_valid="unknown"
+    local cert_seconds cert_expired
+    cert_seconds=$(json_value "$cert" "secondsUntilExpiry")
+    if [ -z "$cert_seconds" ]; then
+        cert_seconds=$(json_value "$cert" "ttlSeconds")
+    fi
+    cert_seconds="${cert_seconds:-1}"
+    cert_expired=$(json_value "$cert" "expired")
+    if [ "$cert_expired" = "true" ] || [ "$cert_seconds" -le 0 ] 2>/dev/null; then
+        is_valid="no"
+    elif [ "$cert_seconds" -gt 0 ] 2>/dev/null; then
+        is_valid="yes"
+    fi
     if [ "$is_valid" = "yes" ]; then
         log_pass "Certificate is not expired"
     elif [ "$is_valid" = "unknown" ]; then
@@ -131,7 +130,7 @@ except:
     else
         # Check if TLS is simply not configured
         local renewal
-        renewal=$(echo "$cert" | python3 -c "import sys,json; print(json.load(sys.stdin).get('renewalStatus',''))" 2>/dev/null)
+        renewal=$(json_value "$cert" "renewalStatus")
         if [ "$renewal" = "NOT_CONFIGURED" ]; then
             log_pass "TLS disabled — no expiry check needed (NOT_CONFIGURED)"
         else

@@ -27,18 +27,11 @@ test_task_last_execution_advances() {
     fi
 
     local ts_before
-    ts_before=$(echo "$tasks_before" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    tasks = data if isinstance(data, list) else data.get('tasks', [])
-    if tasks:
-        print(tasks[0].get('lastExecutionTime', tasks[0].get('lastRun', '0')))
-    else:
-        print('0')
-except:
-    print('0')
-" 2>/dev/null)
+    ts_before=$(json_value "$tasks_before" "lastExecutionTime")
+    if [ -z "$ts_before" ]; then
+        ts_before=$(json_value "$tasks_before" "lastRun")
+    fi
+    ts_before="${ts_before:-0}"
 
     # Wait for at least one execution cycle
     log_info "Waiting 30s for scheduled task to execute"
@@ -46,18 +39,11 @@ except:
 
     tasks_after=$(api_get "/api/scheduled-tasks")
     local ts_after
-    ts_after=$(echo "$tasks_after" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    tasks = data if isinstance(data, list) else data.get('tasks', [])
-    if tasks:
-        print(tasks[0].get('lastExecutionTime', tasks[0].get('lastRun', '0')))
-    else:
-        print('0')
-except:
-    print('0')
-" 2>/dev/null)
+    ts_after=$(json_value "$tasks_after" "lastExecutionTime")
+    if [ -z "$ts_after" ]; then
+        ts_after=$(json_value "$tasks_after" "lastRun")
+    fi
+    ts_after="${ts_after:-0}"
 
     if [ "$ts_before" = "0" ] && [ "$ts_after" = "0" ]; then
         log_warn "No task execution times available"
@@ -74,18 +60,10 @@ test_pause_task() {
     local tasks
     tasks=$(api_get "/api/scheduled-tasks")
     local task_id
-    task_id=$(echo "$tasks" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    tasks = data if isinstance(data, list) else data.get('tasks', [])
-    if tasks:
-        print(tasks[0].get('taskId', tasks[0].get('id', '')))
-    else:
-        print('')
-except:
-    print('')
-" 2>/dev/null)
+    task_id=$(json_value "$tasks" "taskId")
+    if [ -z "$task_id" ]; then
+        task_id=$(json_value "$tasks" "id")
+    fi
 
     if [ -z "$task_id" ]; then
         log_warn "No task ID found — skipping pause test"
@@ -107,18 +85,10 @@ test_resume_task() {
     local tasks
     tasks=$(api_get "/api/scheduled-tasks")
     local task_id
-    task_id=$(echo "$tasks" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    tasks = data if isinstance(data, list) else data.get('tasks', [])
-    if tasks:
-        print(tasks[0].get('taskId', tasks[0].get('id', '')))
-    else:
-        print('')
-except:
-    print('')
-" 2>/dev/null)
+    task_id=$(json_value "$tasks" "taskId")
+    if [ -z "$task_id" ]; then
+        task_id=$(json_value "$tasks" "id")
+    fi
 
     if [ -z "$task_id" ]; then
         log_warn "No task ID found — skipping resume test"

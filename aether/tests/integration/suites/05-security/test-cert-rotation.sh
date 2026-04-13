@@ -33,7 +33,7 @@ test_rotation_under_load() {
     local cert_info
     cert_info=$(api_get "/api/certificate" 2>/dev/null)
     local renewal_status
-    renewal_status=$(echo "$cert_info" | python3 -c "import sys,json; print(json.load(sys.stdin).get('renewalStatus',''))" 2>/dev/null)
+    renewal_status=$(json_value "$cert_info" "renewalStatus")
     if [ "$renewal_status" = "NOT_CONFIGURED" ]; then
         log_info "TLS not configured — skipping rotation trigger"
     else

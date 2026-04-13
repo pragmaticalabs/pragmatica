@@ -22,16 +22,18 @@ test_swim_detection_time() {
     local nodes
     nodes=$(cluster_node_list)
     local victim
-    victim=$(echo "$nodes" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-leader = '${leader}'
-for n in (data if isinstance(data, list) else data.get('nodes', [])):
-    nid = n.get('nodeId', n.get('id', ''))
-    if nid != leader:
-        print(nid)
-        break
-" 2>/dev/null)
+    # Extract nodeId/id values, pick one that is not the leader
+    victim=""
+    for field in nodeId id; do
+        local candidates
+        candidates=$(echo "$nodes" | grep -o "\"${field}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed "s/.*\"${field}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/")
+        while IFS= read -r nid; do
+            if [ -n "$nid" ] && [ "$nid" != "$leader" ]; then
+                victim="$nid"
+                break 2
+            fi
+        done <<< "$candidates"
+    done
 
     if [ -z "$victim" ]; then
         victim="node-4"

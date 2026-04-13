@@ -31,7 +31,8 @@ collect_stats() {
         local status_json
         status_json=$(curl -s -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${mgmt_port}/api/status" 2>/dev/null)
         local uptime
-        uptime=$(echo "$status_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('uptimeSeconds',0))" 2>/dev/null)
+        uptime=$(json_value "$status_json" "uptimeSeconds")
+        uptime="${uptime:-0}"
         log_info "  ${node_name} (port ${mgmt_port}): uptime=${uptime}s"
         echo "  ${node_name}: uptime=${uptime}s" >> "$STATS_FILE"
     done

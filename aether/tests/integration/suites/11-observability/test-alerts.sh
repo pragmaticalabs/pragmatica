@@ -47,15 +47,12 @@ test_check_alerts_fired() {
     alerts=$(api_get "/api/alerts")
     if [ -n "$alerts" ]; then
         local count
-        count=$(echo "$alerts" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    entries = data if isinstance(data, list) else data.get('alerts', [])
-    print(len(entries))
-except:
-    print(0)
-" 2>/dev/null)
+        # Count alert entries: count opening braces in alerts array or top-level array
+        if echo "$alerts" | grep -q "\"alerts\""; then
+            count=$(json_array_length "$alerts" "alerts")
+        else
+            count=$(json_array_length "$alerts")
+        fi
         if [ "$count" -gt 0 ] 2>/dev/null; then
             log_pass "Alerts fired: ${count} alert(s)"
         else
@@ -76,22 +73,10 @@ test_alerts_have_fields() {
         return 0
     fi
 
-    local has_fields
-    has_fields=$(echo "$alerts" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    entries = data if isinstance(data, list) else data.get('alerts', [])
-    if entries:
-        first = entries[0]
-        has_name = 'name' in first or 'alertName' in first or 'metric' in first
-        has_severity = 'severity' in first or 'level' in first
-        print('yes' if has_name else 'no')
-    else:
-        print('no')
-except:
-    print('no')
-" 2>/dev/null)
+    local has_fields="no"
+    if echo "$alerts" | grep -qE '"(name|alertName|metric)"[[:space:]]*:'; then
+        has_fields="yes"
+    fi
     if [ "$has_fields" = "yes" ]; then
         log_pass "Alert entries contain expected fields"
     else

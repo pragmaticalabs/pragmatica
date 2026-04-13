@@ -39,16 +39,15 @@ test_schema_status_after_retry() {
     local status
     status=$(schema_status "$DATASOURCE")
     if [ -n "$status" ]; then
-        local has_error
-        has_error=$(echo "$status" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    state = data.get('state', data.get('status', ''))
-    print('yes' if 'FAILED' in str(state).upper() or 'ERROR' in str(state).upper() else 'no')
-except:
-    print('no')
-" 2>/dev/null)
+        local has_error="no"
+        local schema_state
+        schema_state=$(json_value "$status" "state")
+        if [ -z "$schema_state" ]; then
+            schema_state=$(json_value "$status" "status")
+        fi
+        if echo "$schema_state" | grep -qiE 'FAILED|ERROR'; then
+            has_error="yes"
+        fi
         if [ "$has_error" = "yes" ]; then
             log_warn "Schema still in error state after retry"
             log_pass "Schema retry was attempted (state may require manual fix)"

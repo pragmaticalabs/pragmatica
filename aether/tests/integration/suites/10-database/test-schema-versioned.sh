@@ -29,20 +29,17 @@ test_migrations_applied() {
     fi
 
     local applied_count
-    applied_count=$(echo "$status" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    migrations = data.get('migrations', data.get('history', []))
-    if isinstance(migrations, list):
-        print(len(migrations))
-    elif isinstance(data, dict) and 'appliedCount' in data:
-        print(data['appliedCount'])
-    else:
-        print(0)
-except:
-    print(0)
-" 2>/dev/null)
+    applied_count=$(json_value "$status" "appliedCount")
+    if [ -z "$applied_count" ]; then
+        # Count migration entries by counting occurrences of objects in the migrations/history array
+        if echo "$status" | grep -q "\"migrations\""; then
+            applied_count=$(echo "$status" | grep -o '"version"' | wc -l | tr -d ' ')
+        elif echo "$status" | grep -q "\"history\""; then
+            applied_count=$(echo "$status" | grep -o '"version"' | wc -l | tr -d ' ')
+        else
+            applied_count=0
+        fi
+    fi
 
     if [ "$applied_count" -gt 0 ] 2>/dev/null; then
         log_pass "Migrations applied: ${applied_count}"
@@ -60,21 +57,11 @@ test_schema_history_entries() {
         return 0
     fi
 
-    local has_history
-    has_history=$(echo "$status" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    migrations = data.get('migrations', data.get('history', []))
-    if isinstance(migrations, list) and len(migrations) > 0:
-        first = migrations[0]
-        has_version = 'version' in first or 'script' in first or 'name' in first
-        print('yes' if has_version else 'no')
-    else:
-        print('no')
-except:
-    print('no')
-" 2>/dev/null)
+    local has_history="no"
+    # Check if any migration/history entries contain version, script, or name fields
+    if echo "$status" | grep -qE '"(version|script|name)"[[:space:]]*:'; then
+        has_history="yes"
+    fi
 
     if [ "$has_history" = "yes" ]; then
         log_pass "Schema history contains versioned entries"

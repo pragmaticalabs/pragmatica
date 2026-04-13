@@ -14,18 +14,14 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 # ---------------------------------------------------------------------------
 get_different_node() {
     local exclude="$1"
-    cluster_tasks | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    for a in data.get('assignments', []):
-        node = a.get('assignedTo', '')
-        if node and node != '${exclude}':
-            print(node)
-            sys.exit(0)
-except:
-    pass
-" 2>/dev/null
+    local tasks_json
+    tasks_json=$(cluster_tasks)
+    echo "$tasks_json" | grep -o '"assignedTo"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/' | while IFS= read -r node; do
+        if [ -n "$node" ] && [ "$node" != "$exclude" ]; then
+            echo "$node"
+            break
+        fi
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -34,7 +30,7 @@ except:
 test_prerequisite() {
     wait_for_cluster 120
     wait_for "all task groups ACTIVE" \
-        "[ \$(cluster_tasks | python3 -c \"import sys,json; data=json.load(sys.stdin); print(sum(1 for a in data.get('assignments',[]) if a.get('status')=='ACTIVE'))\" 2>/dev/null) -ge 6 ]" \
+        "[ \$(cluster_tasks | grep -o '\"status\"[[:space:]]*:[[:space:]]*\"ACTIVE\"' | wc -l | tr -d ' ') -ge 6 ]" \
         60
     log_pass "All task groups active — ready for reassignment tests"
 }

@@ -35,14 +35,11 @@ test_schema_status_after_baseline() {
     status=$(schema_status "$DATASOURCE")
     if [ -n "$status" ]; then
         local state
-        state=$(echo "$status" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    print(data.get('state', data.get('status', 'UNKNOWN')))
-except:
-    print('UNKNOWN')
-" 2>/dev/null)
+        state=$(json_value "$status" "state")
+        if [ -z "$state" ]; then
+            state=$(json_value "$status" "status")
+        fi
+        state="${state:-UNKNOWN}"
         log_info "Schema state after baseline: ${state}"
         log_pass "Schema status available after baseline"
     else

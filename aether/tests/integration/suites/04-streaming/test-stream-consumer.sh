@@ -31,20 +31,14 @@ test_publish_and_verify_count() {
 
     # Verify messages are tracked — endpoint may return flat object or {streams: [...]} array
     local msg_count
-    msg_count=$(echo "$info" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-if 'totalEvents' in data:
-    print(data['totalEvents'])
-elif 'streams' in data:
-    for s in data['streams']:
-        if s.get('name') == '${STREAM_NAME}':
-            print(s.get('totalEvents', 0)); break
-    else:
-        print(0)
-else:
-    print(0)
-" 2>/dev/null)
+    msg_count=$(json_value "$info" "totalEvents")
+    if [ -z "$msg_count" ]; then
+        # Try extracting from streams array — look for totalEvents near stream name
+        if echo "$info" | grep -q "\"streams\""; then
+            msg_count=$(echo "$info" | grep -o "\"totalEvents\"[[:space:]]*:[[:space:]]*[0-9]*" | head -1 | sed 's/.*:[[:space:]]*//')
+        fi
+    fi
+    msg_count="${msg_count:-0}"
 
     assert_gt "$msg_count" "0" "Stream has messages: ${msg_count}"
 }
@@ -54,16 +48,11 @@ test_stream_metadata() {
     info=$(stream_info "$STREAM_NAME")
     assert_ne "$info" "" "Stream metadata retrievable"
     local name
-    name=$(echo "$info" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-if 'name' in data:
-    print(data['name'])
-elif 'streams' in data and data['streams']:
-    print(data['streams'][0].get('name', ''))
-else:
-    print('')
-" 2>/dev/null)
+    name=$(json_value "$info" "name")
+    if [ -z "$name" ] && echo "$info" | grep -q "\"streams\""; then
+        # Extract first name from streams array
+        name=$(echo "$info" | grep -o "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    fi
     assert_ne "$name" "" "Stream name in metadata"
 }
 

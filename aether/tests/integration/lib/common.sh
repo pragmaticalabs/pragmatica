@@ -1,5 +1,9 @@
 #!/bin/bash
 # common.sh — Shared functions for Aether integration tests
+
+LIB_DIR_COMMON="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${LIB_DIR_COMMON}/json.sh"
+
 # Colors
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
@@ -235,21 +239,21 @@ assert_http_status() {
 assert_json_field() {
     local json="$1" field="$2" expected="$3" desc="$4"
     local actual
-    actual=$(echo "$json" | jq -r "${field}" 2>/dev/null)
+    actual=$(json_value "$json" "$field")
     assert_eq "$actual" "$expected" "$desc"
 }
 
 # ---------------------------------------------------------------------------
-# JSON helpers (jq-based)
+# JSON helpers (shell-based, see lib/json.sh)
 # ---------------------------------------------------------------------------
 json_field() {
     local json="$1" field="$2"
-    echo "$json" | jq -r "${field}" 2>/dev/null
+    json_value "$json" "$field"
 }
 
 json_len() {
     local json="$1"
-    echo "$json" | jq 'length' 2>/dev/null
+    json_array_length "$json"
 }
 
 # ---------------------------------------------------------------------------

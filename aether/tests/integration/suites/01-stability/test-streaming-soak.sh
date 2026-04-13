@@ -27,7 +27,7 @@ test_sustained_publish() {
 
     local end_time=$(($(now_epoch) + STREAM_DURATION))
     local interval
-    interval=$(python3 -c "print(1.0 / ${STREAM_RPS})" 2>/dev/null || echo "0.2")
+    interval=$(awk "BEGIN {printf \"%.4f\", 1.0/${STREAM_RPS}}" 2>/dev/null || echo "0.2")
     local success=0 failure=0 count=0
 
     while [ "$(now_epoch)" -lt "$end_time" ]; do

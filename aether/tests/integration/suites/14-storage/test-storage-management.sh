@@ -20,7 +20,7 @@ test_storage_list() {
         return 0
     fi
     # Response may be {} (no storage configured) or {"instances": [...]}
-    if echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print('ok' if 'instances' in d or d == {} else 'fail')" 2>/dev/null | grep -q "ok"; then
+    if echo "$result" | grep -qE '"instances"|^\s*\{\s*\}'; then
         log_pass "Storage list returns valid response"
     else
         log_fail "Storage list returns instances array: unexpected format"
@@ -60,15 +60,7 @@ test_storage_instance_detail() {
 
     # Extract the first instance name from the list
     local first_name
-    first_name=$(echo "$result" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    instances = data.get('instances', [])
-    if instances:
-        print(instances[0].get('name', ''))
-except: pass
-" 2>/dev/null)
+    first_name=$(echo "$result" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
 
     if [ -z "$first_name" ]; then
         skip_test "Instance detail" "No storage instances configured"
@@ -92,15 +84,7 @@ test_storage_snapshot() {
     fi
 
     local first_name
-    first_name=$(echo "$result" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    instances = data.get('instances', [])
-    if instances:
-        print(instances[0].get('name', ''))
-except: pass
-" 2>/dev/null)
+    first_name=$(echo "$result" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
 
     if [ -z "$first_name" ]; then
         skip_test "Snapshot trigger" "No storage instances configured"
@@ -137,15 +121,7 @@ test_cluster_storage_detail() {
     fi
 
     local first_name
-    first_name=$(echo "$list_result" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    instances = data.get('instances', [])
-    if instances:
-        print(instances[0].get('name', ''))
-except: pass
-" 2>/dev/null)
+    first_name=$(echo "$list_result" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
 
     if [ -z "$first_name" ]; then
         skip_test "Cluster storage detail" "No storage instances configured"

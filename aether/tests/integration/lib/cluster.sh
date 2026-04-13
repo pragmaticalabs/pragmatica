@@ -10,9 +10,9 @@ source "${LIB_DIR}/common.sh"
 cluster_node_count() {
     # Query core node topology directly — LB's topology may not see provisioned nodes.
     # Uses coreCount which excludes passive nodes (LB).
-    direct_api_get "/api/cluster/topology" \
-        | jq -r '.coreCount // 0' 2>/dev/null \
-        || echo "0"
+    local response
+    response=$(direct_api_get "/api/cluster/topology" 2>/dev/null)
+    json_value "$response" "coreCount" 2>/dev/null || echo "0"
 }
 
 cluster_leader() {
@@ -32,7 +32,7 @@ cluster_events() {
 }
 
 cluster_node_list() {
-    aether_json status | jq '.cluster.nodes // []' 2>/dev/null
+    aether_json status 2>/dev/null
 }
 
 # Pick a non-leader node ID from the known set (integration-test-1..5)
@@ -95,8 +95,8 @@ discover_endpoints() {
     status=$(curl -sf -H "X-API-Key: ${API_KEY}" "${cluster_endpoint}/api/cluster/status" 2>/dev/null)
 
     if [ -n "$status" ]; then
-        LB_APP_ENDPOINT=$(echo "$status" | jq -r '.loadBalancer.appEndpoint // empty' 2>/dev/null)
-        LB_MGMT_ENDPOINT=$(echo "$status" | jq -r '.loadBalancer.mgmtEndpoint // empty' 2>/dev/null)
+        LB_APP_ENDPOINT=$(json_value "$status" "appEndpoint")
+        LB_MGMT_ENDPOINT=$(json_value "$status" "mgmtEndpoint")
     fi
 
     # Fallback to direct node access if no LB
@@ -124,7 +124,7 @@ wait_for_cluster() {
 # Wait for cluster using direct node access (before LB is available)
 wait_for_cluster_direct() {
     wait_for "cluster healthy (direct)" \
-        "[ \$(curl -sf -H 'X-API-Key: ${API_KEY}' http://${TARGET_HOST}:${MGMT_PORT}/api/health 2>/dev/null | jq -r '.connectedPeers // 0' 2>/dev/null || echo 0) -ge 2 ]" \
+        "[ \$(json_value \"\$(curl -sf -H 'X-API-Key: ${API_KEY}' http://${TARGET_HOST}:${MGMT_PORT}/api/health 2>/dev/null)\" connectedPeers 2>/dev/null || echo 0) -ge 2 ]" \
         "${1:-120}"
 }
 
@@ -149,12 +149,10 @@ wait_for_slices_active() {
 slices_total_instances() {
     local slices
     slices=$(cluster_slices)
-    echo "$slices" | jq '
-        if type == "object" and .slices then
-            [.slices[]? | .instances[]? | select(.state == "LOADED" or .state == "ACTIVE")] | length
-        elif type == "array" then length
-        else 0 end
-    ' 2>/dev/null || echo "0"
+    # Count running instances (LOADED or ACTIVE state)
+    local count
+    count=$(printf '%s' "$slices" | grep -o '"state"[[:space:]]*:[[:space:]]*"[LA][CO][AT][DI][EV][DE]*"' | wc -l | tr -d ' ')
+    echo "${count:-0}"
 }
 
 push_blueprint() {
@@ -307,7 +305,9 @@ seed_cluster_config() {
     local toml_content
     toml_content=$(cat "$config_file")
     local json_body
-    json_body=$(jq -n --arg toml "$toml_content" '{"tomlContent": $toml, "expectedVersion": 0}')
+    local escaped_toml
+    escaped_toml=$(escape_json "$toml_content")
+    json_body="{\"tomlContent\":\"${escaped_toml}\",\"expectedVersion\":0}"
     # Must hit the leader — CTM only runs on leader
     leader_api_post "/api/cluster/config" "$json_body"
 }
@@ -441,21 +441,22 @@ cluster_tasks() {
 task_assignment_count() {
     local tasks
     tasks=$(cluster_tasks)
-    echo "$tasks" | jq '.assignments | length' 2>/dev/null || echo "0"
+    printf '%s' "$tasks" | grep -o '"group"' | wc -l | tr -d ' '
 }
 
 task_group_status() {
     local group="$1"
     local tasks
     tasks=$(cluster_tasks)
-    echo "$tasks" | jq -r --arg g "$group" '.assignments[]? | select(.group == $g) | .status // "UNKNOWN"' 2>/dev/null | head -1 || echo "UNASSIGNED"
+    # Extract status for the matching group from JSON
+    printf '%s' "$tasks" | grep -o "\"group\"[[:space:]]*:[[:space:]]*\"${group}\"[^}]*\"status\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"status"[[:space:]]*:[[:space:]]*"//' | sed 's/"$//' || echo "UNASSIGNED"
 }
 
 task_group_node() {
     local group="$1"
     local tasks
     tasks=$(cluster_tasks)
-    echo "$tasks" | jq -r --arg g "$group" '.assignments[]? | select(.group == $g) | .assignedTo // empty' 2>/dev/null | head -1
+    printf '%s' "$tasks" | grep -o "\"group\"[[:space:]]*:[[:space:]]*\"${group}\"[^}]*\"assignedTo\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | grep -o '"assignedTo"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"assignedTo"[[:space:]]*:[[:space:]]*"//' | sed 's/"$//'
 }
 
 reassign_task_group() {
@@ -478,7 +479,7 @@ reassign_task_group() {
 wait_for_all_tasks_active() {
     local timeout="${1:-60}"
     wait_for "all task groups ACTIVE" \
-        "[ \$(cluster_tasks | jq '[.assignments[]? | select(.status == \"ACTIVE\")] | length' 2>/dev/null || echo 0) -ge 6 ]" \
+        "[ \$(json_count_matching \"\$(cluster_tasks)\" assignments status ACTIVE 2>/dev/null || echo 0) -ge 6 ]" \
         "$timeout"
 }
 
@@ -568,11 +569,14 @@ deploy_cleanup() {
     # Complete or rollback any active deployments via the LB management endpoint.
     local deployments
     deployments=$(deploy_list 2>/dev/null)
-    echo "$deployments" | jq -r '
-        (if type == "array" then . else .deployments // [] end)[]
-        | select(.state != "COMPLETED" and .state != "ROLLED_BACK" and .state != "FAILED")
-        | .deploymentId // empty
-    ' 2>/dev/null | while read -r did; do
+    # Extract deployment IDs that are not in terminal states
+    printf '%s' "$deployments" | grep -o '"deploymentId"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"deploymentId"[[:space:]]*:[[:space:]]*"//' | sed 's/"$//' | while read -r did; do
+        # Skip if in terminal state (check the surrounding context)
+        printf '%s' "$deployments" | grep -q "\"deploymentId\"[[:space:]]*:[[:space:]]*\"${did}\"[^}]*\"state\"[[:space:]]*:[[:space:]]*\"COMPLETED\"" && continue
+        printf '%s' "$deployments" | grep -q "\"deploymentId\"[[:space:]]*:[[:space:]]*\"${did}\"[^}]*\"state\"[[:space:]]*:[[:space:]]*\"ROLLED_BACK\"" && continue
+        printf '%s' "$deployments" | grep -q "\"deploymentId\"[[:space:]]*:[[:space:]]*\"${did}\"[^}]*\"state\"[[:space:]]*:[[:space:]]*\"FAILED\"" && continue
+        echo "$did"
+    done | while read -r did; do
         deploy_complete "$did" > /dev/null 2>&1 || \
         deploy_rollback "$did" > /dev/null 2>&1 || true
     done
@@ -582,7 +586,7 @@ deploy_cleanup() {
 # Extract deployment ID from the most recent entry in deploy list
 deploy_extract_id() {
     local deployments="$1"
-    echo "$deployments" | jq -r '(if type == "array" then . else .deployments // [] end) | first | .deploymentId // empty' 2>/dev/null
+    json_value "$deployments" "deploymentId"
 }
 
 # ---------------------------------------------------------------------------
@@ -596,7 +600,7 @@ wait_for_node_count_on() {
     local timeout="${3:-120}"
 
     wait_for "${expected} nodes on ${endpoint}" \
-        "[ \$(curl -sf -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null | jq -r '.coreCount // 0' 2>/dev/null || echo 0) -ge ${expected} ]" \
+        "[ \$(json_value \"\$(curl -sf -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null)\" coreCount 2>/dev/null || echo 0) -ge ${expected} ]" \
         "$timeout"
 }
 
@@ -606,7 +610,7 @@ wait_for_leader_on() {
     local timeout="${2:-30}"
 
     wait_for "leader elected on ${endpoint}" \
-        "[ -n \"\$(curl -sf -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null | jq -r '.nodes[]? | select(.role == \"ACTIVE\") | .nodeId' 2>/dev/null | head -1)\" ]" \
+        "json_contains \"\$(curl -sf -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null)\" role ACTIVE" \
         "$timeout"
 }
 

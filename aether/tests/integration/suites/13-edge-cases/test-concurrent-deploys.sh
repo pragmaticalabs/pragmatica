@@ -115,15 +115,12 @@ test_artifact_isolation() {
     assert_ne "$slices" "" "Slices data available for isolation check"
 
     local slice_count
-    slice_count=$(echo "$slices" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    entries = data if isinstance(data, list) else data.get('slices', [])
-    print(len(entries))
-except:
-    print(0)
-" 2>/dev/null)
+    # Count slice entries in the response
+    if echo "$slices" | grep -q "\"slices\""; then
+        slice_count=$(json_array_length "$slices" "slices")
+    else
+        slice_count=$(json_array_length "$slices")
+    fi
     log_info "Total slice types: ${slice_count}"
     if [ "$slice_count" -ge 1 ] 2>/dev/null; then
         log_pass "Slice types present (${slice_count}) — artifacts isolated"

@@ -77,22 +77,14 @@ test_reactivate_nodes() {
     lifecycle=$(get_node_lifecycle)
     if [ -n "$lifecycle" ]; then
         log_info "Reactivating drained nodes"
-        echo "$lifecycle" | python3 -c "
-import sys, json, re
-try:
-    data = json.load(sys.stdin)
-    nodes = data if isinstance(data, list) else data.get('nodes', [])
-    for n in nodes:
-        state = str(n.get('state', n.get('lifecycle', '')))
-        if re.search(r'drain(ing|ed)?', state, re.IGNORECASE):
-            print(n.get('nodeId', n.get('id', '')))
-except:
-    pass
-" 2>/dev/null | while read -r nid; do
-            if [ -n "$nid" ]; then
-                activate_node "$nid" 2>/dev/null || true
-            fi
-        done
+        # If lifecycle JSON contains any drain-related state, reactivate all known nodes
+        if echo "$lifecycle" | grep -qiE 'drain'; then
+            echo "$lifecycle" | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/' | while read -r nid; do
+                if [ -n "$nid" ]; then
+                    activate_node "$nid" 2>/dev/null || true
+                fi
+            done
+        fi
     fi
     sleep 5
     assert_cluster_healthy "Cluster healthy after reactivation"

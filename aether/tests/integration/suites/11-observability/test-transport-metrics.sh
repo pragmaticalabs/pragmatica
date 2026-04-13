@@ -24,16 +24,8 @@ test_active_connections_metric() {
         log_pass "Active connections metric present"
     else
         local connections
-        connections=$(echo "$metrics" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    keys = list(data.keys()) if isinstance(data, dict) else []
-    conn = [k for k in keys if 'connect' in k.lower()]
-    print(', '.join(conn) if conn else '')
-except:
-    print('')
-" 2>/dev/null)
+        # Extract keys containing "connect" (case-insensitive)
+        connections=$(echo "$metrics" | grep -oi '"[^"]*connect[^"]*"[[:space:]]*:' | sed 's/"//g; s/[[:space:]]*://; ' | paste -sd', ' -)
         if [ -n "$connections" ]; then
             log_pass "Connection metrics found: ${connections}"
         else
@@ -68,23 +60,13 @@ test_messages_received_metric() {
 test_transport_metrics_non_zero() {
     local metrics
     metrics=$(api_get "/api/metrics/transport")
-    local has_nonzero
-    has_nonzero=$(echo "$metrics" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    if isinstance(data, dict):
-        for v in data.values():
-            if isinstance(v, (int, float)) and v > 0:
-                print('yes')
-                break
-        else:
-            print('no')
-    else:
-        print('unknown')
-except:
-    print('unknown')
-" 2>/dev/null)
+    local has_nonzero="unknown"
+    # Check if any numeric value > 0 exists in the metrics JSON
+    if echo "$metrics" | grep -qE ':[[:space:]]*[1-9][0-9]*(\.[0-9]+)?' 2>/dev/null; then
+        has_nonzero="yes"
+    elif echo "$metrics" | grep -qE ':[[:space:]]*0(\.0+)?' 2>/dev/null; then
+        has_nonzero="no"
+    fi
     if [ "$has_nonzero" = "yes" ]; then
         log_pass "Transport metrics contain non-zero values"
     else

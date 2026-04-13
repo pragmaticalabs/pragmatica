@@ -26,19 +26,22 @@ test_gossip_encryption_active_via_config() {
         return 0
     fi
 
-    local encryption_enabled
-    encryption_enabled=$(echo "$config" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    # Check various possible config paths for gossip encryption
-    tls = data.get('tls', data.get('security', {}))
-    gossip = data.get('gossip', {})
-    enc = tls.get('enabled', tls.get('gossipEncryption', gossip.get('encrypted', 'unknown')))
-    print(str(enc).lower())
-except:
-    print('unknown')
-" 2>/dev/null)
+    local encryption_enabled="unknown"
+    # Check various config paths for gossip encryption
+    local enc_val
+    enc_val=$(json_path "$config" "tls.enabled")
+    if [ -z "$enc_val" ]; then
+        enc_val=$(json_path "$config" "tls.gossipEncryption")
+    fi
+    if [ -z "$enc_val" ]; then
+        enc_val=$(json_path "$config" "security.enabled")
+    fi
+    if [ -z "$enc_val" ]; then
+        enc_val=$(json_path "$config" "gossip.encrypted")
+    fi
+    if [ -n "$enc_val" ]; then
+        encryption_enabled=$(echo "$enc_val" | tr '[:upper:]' '[:lower:]')
+    fi
 
     if [ "$encryption_enabled" = "true" ]; then
         log_pass "Gossip encryption confirmed enabled in config"

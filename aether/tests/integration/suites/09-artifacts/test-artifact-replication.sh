@@ -41,19 +41,18 @@ test_identify_second_node() {
     local nodes
     nodes=$(cluster_node_list)
     local second_host
-    second_host=$(echo "$nodes" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    nodes = data if isinstance(data, list) else data.get('nodes', [])
-    for n in nodes:
-        addr = n.get('address', n.get('host', ''))
-        if addr and addr != '${TARGET_HOST}':
-            print(addr)
-            break
-except:
-    pass
-" 2>/dev/null)
+    # Extract addresses from node list, find one different from TARGET_HOST
+    second_host=""
+    for field in address host; do
+        local candidates
+        candidates=$(echo "$nodes" | grep -o "\"${field}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed "s/.*\"${field}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/")
+        while IFS= read -r addr; do
+            if [ -n "$addr" ] && [ "$addr" != "${TARGET_HOST}" ]; then
+                second_host="$addr"
+                break 2
+            fi
+        done <<< "$candidates"
+    done
 
     if [ -n "$second_host" ]; then
         NODE2_ENDPOINT="http://${second_host}:${MGMT_PORT}"

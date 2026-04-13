@@ -14,7 +14,7 @@ LOAD_PIDS=()
 start_load() {
     local rps="$1" duration="$2" method="$3" path="$4" body="${5:-}"
     local interval
-    interval=$(echo "scale=4; 1.0 / ${rps}" | bc 2>/dev/null || echo "0.1")
+    interval=$(awk "BEGIN {printf \"%.4f\", 1.0/${rps}}" 2>/dev/null || echo "0.1")
     local end_time=$(($(now_epoch) + duration))
 
     log_info "Starting load: ${rps} rps for ${duration}s — ${method} ${path}"
@@ -49,7 +49,7 @@ start_load() {
 start_mgmt_load() {
     local rps="$1" duration="$2" path="$3"
     local interval
-    interval=$(echo "scale=4; 1.0 / ${rps}" | bc 2>/dev/null || echo "0.5")
+    interval=$(awk "BEGIN {printf \"%.4f\", 1.0/${rps}}" 2>/dev/null || echo "0.5")
     local end_time=$(($(now_epoch) + duration))
 
     log_info "Starting management load: ${rps} rps for ${duration}s — GET ${path}"
@@ -109,7 +109,7 @@ load_error_rate() {
         echo "0"
         return
     fi
-    echo "scale=2; ${failure} * 100.0 / ${total}" | bc
+    awk "BEGIN {printf \"%.2f\", ${failure} * 100.0 / ${total}}"
 }
 
 # Assert error rate is below threshold
@@ -118,7 +118,7 @@ assert_error_rate_below() {
     local rate
     rate=$(load_error_rate "$result")
     local ok
-    ok=$(echo "${rate} < ${threshold}" | bc -l | grep -q 1 && echo "yes" || echo "no")
+    ok=$(awk "BEGIN {print (${rate} < ${threshold}) ? \"yes\" : \"no\"}")
     if [ "$ok" = "yes" ]; then
         log_pass "${desc} (error rate: ${rate}%)"
         return 0
@@ -133,7 +133,7 @@ assert_error_rate_below() {
 start_sustained_load() {
     local rps="$1" duration="$2" method="$3" path="$4" body="${5:-}" log_file="${6:-/tmp/sustained_load.log}"
     local interval
-    interval=$(echo "scale=4; 1.0 / ${rps}" | bc 2>/dev/null || echo "0.1")
+    interval=$(awk "BEGIN {printf \"%.4f\", 1.0/${rps}}" 2>/dev/null || echo "0.1")
     local end_time=$(($(now_epoch) + duration))
 
     log_info "Starting sustained load: ${rps} rps for ${duration}s — log: ${log_file}"

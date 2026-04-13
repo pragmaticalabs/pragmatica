@@ -34,7 +34,7 @@ test_resolve_short_url() {
     local create_result
     create_result=$(app_post "/api/v1/urls/" "$payload")
     local short_code
-    short_code=$(echo "$create_result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('shortCode',''))" 2>/dev/null)
+    short_code=$(json_value "$create_result" "shortCode")
     if [ -z "$short_code" ]; then
         log_fail "Could not extract shortCode from create response"
         return 1

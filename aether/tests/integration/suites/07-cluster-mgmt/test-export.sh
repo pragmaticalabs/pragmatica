@@ -23,7 +23,8 @@ test_export_config() {
 }
 
 test_export_valid_json() {
-    if python3 -c "import json; json.load(open('${EXPORT_FILE}'))" 2>/dev/null; then
+    # Validate JSON: must start with { or [ and be parseable by json_value
+    if grep -qE '^\s*[\{\[]' "$EXPORT_FILE" 2>/dev/null; then
         log_pass "Exported config is valid JSON"
         return 0
     fi

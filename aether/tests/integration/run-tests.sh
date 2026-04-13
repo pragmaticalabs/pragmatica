@@ -393,11 +393,11 @@ print_results() {
     while IFS= read -r line; do
         [ -z "$line" ] && continue
         local suite status pass fail dur
-        suite=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin)['suite'])" 2>/dev/null)
-        status=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" 2>/dev/null)
-        pass=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin)['pass'])" 2>/dev/null)
-        fail=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin)['fail'])" 2>/dev/null)
-        dur=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin)['duration'])" 2>/dev/null)
+        suite=$(json_value "$line" "suite")
+        status=$(json_value "$line" "status")
+        pass=$(json_value "$line" "pass")
+        fail=$(json_value "$line" "fail")
+        dur=$(json_value "$line" "duration")
 
         total=$((total + 1))
         case "$status" in

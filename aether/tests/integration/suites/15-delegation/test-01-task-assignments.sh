@@ -44,7 +44,7 @@ test_all_groups_assigned() {
 test_all_groups_active() {
     local timeout=60
     wait_for "all task groups ACTIVE" \
-        "[ \$(cluster_tasks | python3 -c \"import sys,json; data=json.load(sys.stdin); print(sum(1 for a in data.get('assignments',[]) if a.get('status')=='ACTIVE'))\" 2>/dev/null) -ge 6 ]" \
+        "[ \$(cluster_tasks | grep -o '\"status\"[[:space:]]*:[[:space:]]*\"ACTIVE\"' | wc -l | tr -d ' ') -ge 6 ]" \
         "$timeout"
 
     for group in METRICS SCALING STRATEGIES DEPLOYMENT STORAGE STREAMING; do
@@ -61,15 +61,7 @@ test_tasks_distributed() {
     local tasks
     tasks=$(cluster_tasks)
     local unique_nodes
-    unique_nodes=$(echo "$tasks" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    nodes = set(a.get('assignedTo','') for a in data.get('assignments',[]))
-    print(len(nodes))
-except:
-    print(0)
-" 2>/dev/null)
+    unique_nodes=$(echo "$tasks" | grep -o '"assignedTo"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/' | sort -u | wc -l | tr -d ' ')
     # With 5 nodes and 6 groups, we should have assignments on at least 2 nodes
     # (initial election assigns all to leader, then redistributes)
     assert_ge "$unique_nodes" "1" "Tasks distributed across at least 1 node (got ${unique_nodes})"
@@ -82,17 +74,12 @@ test_assignments_point_to_valid_nodes() {
     local tasks
     tasks=$(cluster_tasks)
     local invalid
-    invalid=$(echo "$tasks" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    for a in data.get('assignments', []):
-        node = a.get('assignedTo', '')
-        if not node:
-            print(a.get('group', 'UNKNOWN'))
-except:
-    pass
-" 2>/dev/null)
+    # Check if any assignment has an empty assignedTo — look for "assignedTo":""
+    invalid=""
+    if echo "$tasks" | grep -q '"assignedTo"[[:space:]]*:[[:space:]]*""'; then
+        # Extract group names of unassigned tasks
+        invalid=$(echo "$tasks" | grep -B5 '"assignedTo"[[:space:]]*:[[:space:]]*""' | grep -o '"group"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/')
+    fi
     assert_eq "$invalid" "" "All assignments point to valid nodes"
 }
 

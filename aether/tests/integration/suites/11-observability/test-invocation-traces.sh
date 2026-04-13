@@ -36,21 +36,10 @@ test_traces_contain_request_id() {
         return 0
     fi
 
-    local has_request_id
-    has_request_id=$(echo "$traces" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    entries = data if isinstance(data, list) else data.get('traces', [])
-    for e in entries:
-        if 'requestId' in e or 'traceId' in e or 'id' in e:
-            print('yes')
-            break
-    else:
-        print('no')
-except:
-    print('no')
-" 2>/dev/null)
+    local has_request_id="no"
+    if echo "$traces" | grep -qE '"(requestId|traceId|id)"[[:space:]]*:'; then
+        has_request_id="yes"
+    fi
     if [ "$has_request_id" = "yes" ]; then
         log_pass "Traces contain requestId/traceId"
     else
@@ -67,21 +56,10 @@ test_traces_contain_duration() {
         return 0
     fi
 
-    local has_duration
-    has_duration=$(echo "$traces" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    entries = data if isinstance(data, list) else data.get('traces', [])
-    for e in entries:
-        if 'duration' in e or 'durationMs' in e or 'elapsed' in e:
-            print('yes')
-            break
-    else:
-        print('no')
-except:
-    print('no')
-" 2>/dev/null)
+    local has_duration="no"
+    if echo "$traces" | grep -qE '"(duration|durationMs|elapsed)"[[:space:]]*:'; then
+        has_duration="yes"
+    fi
     if [ "$has_duration" = "yes" ]; then
         log_pass "Traces contain duration info"
     else
@@ -98,21 +76,10 @@ test_traces_contain_depth() {
         return 0
     fi
 
-    local has_depth
-    has_depth=$(echo "$traces" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    entries = data if isinstance(data, list) else data.get('traces', [])
-    for e in entries:
-        if 'depth' in e or 'spanCount' in e or 'spans' in e:
-            print('yes')
-            break
-    else:
-        print('no')
-except:
-    print('no')
-" 2>/dev/null)
+    local has_depth="no"
+    if echo "$traces" | grep -qE '"(depth|spanCount|spans)"[[:space:]]*:'; then
+        has_depth="yes"
+    fi
     if [ "$has_depth" = "yes" ]; then
         log_pass "Traces contain depth/span info"
     else

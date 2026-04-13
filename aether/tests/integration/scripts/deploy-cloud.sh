@@ -218,7 +218,7 @@ wait_for_cluster 180
 LEADER=$(cluster_leader 2>/dev/null || echo "pending")
 COUNT=$(cluster_node_count 2>/dev/null || echo "?")
 
-BUILD_TS=$(api_get "/api/status" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('buildTimestamp','N/A'))" 2>/dev/null || echo "N/A")
+BUILD_TS=$(json_value "$(api_get "/api/status" 2>/dev/null)" "buildTimestamp" 2>/dev/null || echo "N/A")
 
 echo ""
 echo "========================================"

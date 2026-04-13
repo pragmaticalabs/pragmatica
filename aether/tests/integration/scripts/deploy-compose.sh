@@ -136,7 +136,7 @@ COUNT=$(cluster_node_count 2>/dev/null || echo "?")
 log_pass "Cluster healthy: ${COUNT} nodes, leader: ${LEADER}"
 
 # Check build timestamp if available
-BUILD_TS=$(api_get "/api/status" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('buildTimestamp','N/A'))" 2>/dev/null || echo "N/A")
+BUILD_TS=$(json_value "$(api_get "/api/status" 2>/dev/null)" "buildTimestamp" 2>/dev/null || echo "N/A")
 log_info "Build timestamp: ${BUILD_TS}"
 
 echo ""

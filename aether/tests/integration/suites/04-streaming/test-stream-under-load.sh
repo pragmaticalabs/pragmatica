@@ -27,7 +27,7 @@ test_sustained_stream_publish() {
     log_info "Sustained stream publish: ${STREAM_RPS} rps for ${STREAM_DURATION}s"
 
     local interval
-    interval=$(python3 -c "print(1.0 / ${STREAM_RPS})" 2>/dev/null || echo "0.05")
+    interval=$(awk "BEGIN {printf \"%.4f\", 1.0/${STREAM_RPS}}" 2>/dev/null || echo "0.05")
     local end_time=$(($(now_epoch) + $STREAM_DURATION))
     local success=0 failure=0 count=0
 

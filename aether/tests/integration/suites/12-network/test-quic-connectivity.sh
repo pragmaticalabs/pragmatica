@@ -23,25 +23,16 @@ test_all_nodes_connected() {
     fi
 
     local connections
-    connections=$(echo "$metrics" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    if isinstance(data, dict):
-        for k, v in data.items():
-            if 'connect' in k.lower() and 'active' in k.lower():
-                print(v)
-                break
-            if 'connectionCount' in k or 'connections' == k:
-                print(v)
-                break
-        else:
-            print(-1)
-    else:
-        print(-1)
-except:
-    print(-1)
-" 2>/dev/null)
+    # Try to find active connection count from transport metrics
+    connections=$(json_value "$metrics" "connectionCount")
+    if [ -z "$connections" ]; then
+        connections=$(json_value "$metrics" "connections")
+    fi
+    if [ -z "$connections" ]; then
+        # Look for any key containing "connect" and "active"
+        connections=$(echo "$metrics" | grep -oi '"[^"]*connect[^"]*active[^"]*"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+    fi
+    connections="${connections:--1}"
 
     if [ "$connections" -gt 0 ] 2>/dev/null; then
         log_pass "Active QUIC connections: ${connections}"
@@ -63,16 +54,17 @@ test_kill_node_and_detect_drop() {
     local nodes
     nodes=$(cluster_node_list)
     local victim
-    victim=$(echo "$nodes" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-leader = '${leader}'
-for n in (data if isinstance(data, list) else data.get('nodes', [])):
-    nid = n.get('nodeId', n.get('id', ''))
-    if nid != leader:
-        print(nid)
-        break
-" 2>/dev/null)
+    victim=""
+    for field in nodeId id; do
+        local candidates
+        candidates=$(echo "$nodes" | grep -o "\"${field}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed "s/.*\"${field}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/")
+        while IFS= read -r nid; do
+            if [ -n "$nid" ] && [ "$nid" != "$leader" ]; then
+                victim="$nid"
+                break 2
+            fi
+        done <<< "$candidates"
+    done
 
     if [ -z "$victim" ]; then
         victim="node-3"
