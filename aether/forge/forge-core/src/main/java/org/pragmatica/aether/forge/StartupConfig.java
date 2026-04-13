@@ -3,11 +3,12 @@ package org.pragmatica.aether.forge;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
+import static org.pragmatica.lang.io.FileOps.exists;
+import static org.pragmatica.lang.io.FileOps.isReadable;
 import static org.pragmatica.lang.Option.option;
 
 
@@ -83,8 +84,8 @@ public record StartupConfig(Option<Path> forgeConfig,
     }
 
     private static Result<Option<Path>> validateSinglePath(Path path, String name) {
-        if (!Files.exists(path)) {return StartupError.fileNotFound(name, path).result();}
-        if (!Files.isReadable(path)) {return StartupError.fileNotReadable(name, path).result();}
+        if (!exists(path)) {return StartupError.fileNotFound(name, path).result();}
+        if (!isReadable(path)) {return StartupError.fileNotReadable(name, path).result();}
         return Result.success(Option.some(path));
     }
 

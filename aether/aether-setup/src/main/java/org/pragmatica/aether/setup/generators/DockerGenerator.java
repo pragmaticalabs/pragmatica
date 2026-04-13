@@ -5,9 +5,7 @@ import org.pragmatica.aether.config.DockerConfig;
 import org.pragmatica.aether.config.Environment;
 import org.pragmatica.lang.Result;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -16,6 +14,9 @@ import java.util.stream.IntStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.io.FileOps.createDirectories;
+import static org.pragmatica.lang.io.FileOps.setPosixPermissions;
+import static org.pragmatica.lang.io.FileOps.writeString;
 import static org.pragmatica.lang.Result.success;
 
 
@@ -43,7 +44,7 @@ public final class DockerGenerator implements Generator {
     }
 
     @SuppressWarnings("JBCT-EX-01") private GeneratorOutput generateArtifacts(AetherConfig config, Path outputDir) throws Exception {
-        Files.createDirectories(outputDir);
+        createDirectories(outputDir).unwrap();
         var generatedFiles = new ArrayList<Path>();
         writeFile(outputDir, "docker-compose.yml", generateDockerCompose(config), generatedFiles);
         writeFile(outputDir, ".env", generateEnvFile(config), generatedFiles);
@@ -55,13 +56,13 @@ public final class DockerGenerator implements Generator {
     }
 
     @SuppressWarnings("JBCT-EX-01") private void writeFile(Path dir, String name, String content, List<Path> files) throws Exception {
-        Files.writeString(dir.resolve(name), content);
+        writeString(dir.resolve(name), content).unwrap();
         files.add(Path.of(name));
     }
 
     @SuppressWarnings("JBCT-EX-01") private Path writeScript(Path dir, String name, String content, List<Path> files) throws Exception {
         var path = dir.resolve(name);
-        Files.writeString(path, content);
+        writeString(path, content).unwrap();
         makeExecutable(path);
         files.add(Path.of(name));
         return path;
@@ -335,13 +336,9 @@ public final class DockerGenerator implements Generator {
     }
 
     @SuppressWarnings("JBCT-SEQ-01") private void makeExecutable(Path path) {
-        try {
-            Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rwxr-xr-x"));
-        } catch (UnsupportedOperationException e) {
-            log.debug("Cannot set POSIX permissions on {}: {}", path, e.getMessage());
-        } catch (Exception e) {
-            log.debug("Failed to set permissions on {}: {}", path, e.getMessage());
-        }
+        setPosixPermissions(path, "rwxr-xr-x").onFailure(cause -> log.debug("Failed to set permissions on {}: {}",
+                                                                            path,
+                                                                            cause.message()));
     }
 
     private static GeneratorError toIoError(Throwable throwable) {

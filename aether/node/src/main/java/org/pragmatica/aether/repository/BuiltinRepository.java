@@ -8,11 +8,11 @@ import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 
-import java.nio.file.Files;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.io.FileOps.createTempFile;
+import static org.pragmatica.lang.io.FileOps.writeBytes;
 import static org.pragmatica.aether.slice.repository.Location.location;
 
 
@@ -27,19 +27,19 @@ public interface BuiltinRepository extends Repository {
     }
 
     private static Promise<Location> writeToTempFile(Artifact artifact, ResolvedArtifact resolved) {
-        return Promise.lift(cause -> new RepositoryError.WriteFailed(artifact, cause),
-                            () -> {
-                                var tempFile = Files.createTempFile("aether-" + artifact.artifactId().id() + "-",
-                                                                    ".jar");
-                                Files.write(tempFile,
-                                            resolved.content());
-                                log.info("Resolved artifact {} (SHA1={}, {} bytes)",
-                                         artifact.asString(),
-                                         resolved.metadata().sha1(),
-                                         resolved.metadata().size());
-                                return tempFile.toUri().toURL();
-                            })
-        .flatMap(url -> location(artifact, url).async());
+        return createTempFile("aether-" + artifact.artifactId().id() + "-",
+                              ".jar").flatMap(tempFile -> writeBytes(tempFile,
+                                                                     resolved.content()).map(_ -> tempFile))
+                             .mapError(e -> new RepositoryError.WriteFailed(artifact,
+                                                                            new RuntimeException(e.message())))
+                             .async()
+                             .onSuccess(_ -> log.info("Resolved artifact {} (SHA1={}, {} bytes)",
+                                                      artifact.asString(),
+                                                      resolved.metadata().sha1(),
+                                                      resolved.metadata().size()))
+                             .flatMap(tempFile -> Promise.lift(cause -> new RepositoryError.WriteFailed(artifact, cause),
+                                                               () -> tempFile.toUri().toURL()))
+                             .flatMap(url -> location(artifact, url).async());
     }
 
     sealed interface RepositoryError extends Cause {

@@ -4,13 +4,13 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+import static org.pragmatica.lang.io.FileOps.exists;
 import static org.pragmatica.lang.Result.success;
 
 
@@ -129,7 +129,7 @@ public final class ConfigValidator {
     }
 
     private static void fileExistsError(Path path, String fileType, List<String> errors) {
-        if (!Files.exists(path)) {errors.add(fileType + " not found: " + path);}
+        if (!exists(path)) {errors.add(fileType + " not found: " + path);}
     }
 
     public sealed interface ConfigError extends Cause {

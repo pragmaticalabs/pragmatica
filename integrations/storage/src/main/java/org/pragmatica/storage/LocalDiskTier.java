@@ -1,8 +1,8 @@
 package org.pragmatica.storage;
 
-import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
+
+import org.pragmatica.lang.io.FileOps;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.lang.Functions.Fn1;
@@ -36,7 +36,7 @@ public final class LocalDiskTier implements StorageTier {
     }
 
     public static Result<LocalDiskTier> localDiskTier(Path basePath, long maxBytes) {
-        return Result.lift(() -> Files.createDirectories(basePath))
+        return FileOps.createDirectories(basePath)
                      .map(_ -> new LocalDiskTier(basePath, maxBytes))
                      .onSuccess(LocalDiskTier::calculateUsedBytes);
     }
@@ -79,7 +79,7 @@ public final class LocalDiskTier implements StorageTier {
 
     @Override
     public Promise<Boolean> exists(BlockId id) {
-        return Promise.success(Files.exists(blockPath(id)));
+        return Promise.success(FileOps.exists(blockPath(id)));
     }
 
     @Override
@@ -97,20 +97,20 @@ public final class LocalDiskTier implements StorageTier {
         return maxBytes;
     }
 
-    private Option<byte[]> readBlock(BlockId id) throws IOException {
+    private Option<byte[]> readBlock(BlockId id) {
         var path = blockPath(id);
 
-        return Files.exists(path)
-               ? some(Files.readAllBytes(path))
+        return FileOps.exists(path)
+               ? some(FileOps.readBytes(path).unwrap())
                : none();
     }
 
-    private Unit writeBlock(BlockId id, byte[] content) throws IOException {
+    private Unit writeBlock(BlockId id, byte[] content) {
         var path = blockPath(id);
-        Files.createDirectories(path.getParent());
+        FileOps.createDirectories(path.getParent()).unwrap();
 
-        var previousSize = Files.exists(path) ? Files.size(path) : 0;
-        Files.write(path, content);
+        var previousSize = FileOps.exists(path) ? FileOps.size(path).unwrap() : 0L;
+        FileOps.writeBytes(path, content).unwrap();
 
         // Capacity was pre-reserved for content.length. Correct for overwrites.
         if (previousSize > 0) {
@@ -120,13 +120,13 @@ public final class LocalDiskTier implements StorageTier {
         return unit();
     }
 
-    private Unit deleteBlock(BlockId id) throws IOException {
+    private Unit deleteBlock(BlockId id) {
         var path = blockPath(id);
 
-        if (Files.exists(path)) {
-            var size = Files.size(path);
-            Files.delete(path);
-            usedBytes.addAndGet(-size);
+        if (FileOps.exists(path)) {
+            var fileSize = FileOps.size(path).unwrap();
+            FileOps.delete(path).unwrap();
+            usedBytes.addAndGet(-fileSize);
         }
 
         return unit();
@@ -141,22 +141,18 @@ public final class LocalDiskTier implements StorageTier {
     }
 
     private void calculateUsedBytes() {
-        try (var stream = Files.walk(basePath)) {
-            var total = stream.filter(Files::isRegularFile)
-                              .mapToLong(LocalDiskTier::fileSizeOrZero)
-                              .sum();
-            usedBytes.set(total);
-            log.info("LocalDiskTier at {} initialized: {} bytes in use", basePath, total);
-        } catch (IOException e) {
-            log.warn("Failed to calculate used bytes at {}: {}", basePath, e.getMessage());
-        }
+        FileOps.walk(basePath, FileOps::isRegularFile)
+                            .map(paths -> paths.stream().mapToLong(LocalDiskTier::fileSizeOrZero).sum())
+                            .onSuccess(this::recordUsedBytes)
+                            .onFailure(cause -> log.warn("Failed to calculate used bytes at {}: {}", basePath, cause.message()));
+    }
+
+    private void recordUsedBytes(long total) {
+        usedBytes.set(total);
+        log.info("LocalDiskTier at {} initialized: {} bytes in use", basePath, total);
     }
 
     private static long fileSizeOrZero(Path path) {
-        try {
-            return Files.size(path);
-        } catch (IOException _) {
-            return 0;
-        }
+        return FileOps.size(path).or(0L);
     }
 }

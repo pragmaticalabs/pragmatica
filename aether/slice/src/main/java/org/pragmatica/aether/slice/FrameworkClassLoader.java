@@ -6,15 +6,16 @@ import org.pragmatica.lang.utils.Causes;
 import java.io.IOException;
 import java.net.URL;
 import java.net.URLClassLoader;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.io.FileOps.exists;
+import static org.pragmatica.lang.io.FileOps.isDirectory;
+import static org.pragmatica.lang.io.FileOps.list;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
 
@@ -69,24 +70,26 @@ import static org.pragmatica.lang.utils.Causes.cause;
     }
 
     public static Result<FrameworkClassLoader> fromDirectory(Path frameworkDir) {
-        if (!Files.isDirectory(frameworkDir)) {return cause("Framework directory does not exist: " + frameworkDir).result();}
-        try (Stream<Path> jarStream = Files.list(frameworkDir)) {
-            var jarUrls = jarStream.filter(path -> path.toString().endsWith(".jar")).map(FrameworkClassLoader::toUrl)
-                                          .filter(Result::isSuccess)
-                                          .map(Result::unwrap)
-                                          .toArray(URL[]::new);
-            if (jarUrls.length == 0) {return cause("No JAR files found in framework directory: " + frameworkDir).result();}
-            return success(new FrameworkClassLoader(jarUrls));
-        } catch (IOException e) {
-            return cause("Failed to scan framework directory: " + e.getMessage()).result();
-        }
+        if (!isDirectory(frameworkDir)) {return cause("Framework directory does not exist: " + frameworkDir).result();}
+        return list(frameworkDir).mapError(e -> cause("Failed to scan framework directory: " + e.message()))
+                   .flatMap(paths -> toFrameworkClassLoader(paths, frameworkDir));
+    }
+
+    private static Result<FrameworkClassLoader> toFrameworkClassLoader(java.util.List<Path> paths, Path frameworkDir) {
+        var jarUrls = paths.stream().filter(path -> path.toString().endsWith(".jar"))
+                                  .map(FrameworkClassLoader::toUrl)
+                                  .filter(Result::isSuccess)
+                                  .map(Result::unwrap)
+                                  .toArray(URL[]::new);
+        if (jarUrls.length == 0) {return cause("No JAR files found in framework directory: " + frameworkDir).result();}
+        return success(new FrameworkClassLoader(jarUrls));
     }
 
     public static Result<FrameworkClassLoader> fromJars(Path... jarPaths) {
         var urls = new ArrayList<URL>();
         var errors = new ArrayList<String>();
         for (var jarPath : jarPaths) {
-            if (!Files.exists(jarPath)) {
+            if (!exists(jarPath)) {
                 errors.add("JAR not found: " + jarPath);
                 continue;
             }

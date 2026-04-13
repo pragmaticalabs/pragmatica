@@ -2,8 +2,9 @@ package org.pragmatica.aether.environment;
 
 import org.pragmatica.lang.Promise;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
+
+import static org.pragmatica.lang.io.FileOps.readString;
 
 
 /// SecretsProvider that reads secrets from files in a base directory.
@@ -20,8 +21,10 @@ public record FileSecretsProvider(Path baseDir) implements SecretsProvider {
     }
 
     @Override public Promise<String> resolveSecret(String secretPath) {
-        return Promise.lift(cause -> EnvironmentError.secretResolutionFailed(secretPath, cause),
-                            () -> Files.readString(toFilePath(secretPath)).trim());
+        return readString(toFilePath(secretPath)).map(String::trim)
+                         .mapError(cause -> EnvironmentError.secretResolutionFailed(secretPath,
+                                                                                    new RuntimeException(cause.message())))
+                         .async();
     }
 
     private Path toFilePath(String secretPath) {

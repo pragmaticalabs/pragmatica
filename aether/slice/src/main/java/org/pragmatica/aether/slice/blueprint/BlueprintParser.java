@@ -11,14 +11,13 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
-import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static org.pragmatica.lang.io.FileOps.readString;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
@@ -73,12 +72,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
     }
 
     static Result<Blueprint> parseFile(Path path) {
-        try {
-            var content = Files.readString(path);
-            return parse(content);
-        } catch (IOException e) {
-            return FILE_ERROR.apply(e.getMessage()).result();
-        }
+        return readString(path).mapError(e -> FILE_ERROR.apply(e.message())).flatMap(BlueprintParser::parse);
     }
 
     private static Result<Blueprint> parseDocument(TomlDocument doc) {

@@ -6,9 +6,7 @@ import org.pragmatica.aether.config.KubernetesConfig;
 import org.pragmatica.aether.config.ResourcesConfig;
 import org.pragmatica.lang.Result;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.IntStream;
@@ -16,6 +14,9 @@ import java.util.stream.IntStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.io.FileOps.createDirectories;
+import static org.pragmatica.lang.io.FileOps.setPosixPermissions;
+import static org.pragmatica.lang.io.FileOps.writeString;
 import static org.pragmatica.lang.Result.success;
 
 
@@ -45,7 +46,7 @@ public final class KubernetesGenerator implements Generator {
 
     @SuppressWarnings("JBCT-EX-01") private GeneratorOutput generateManifests(AetherConfig config, Path outputDir) throws Exception {
         var manifestsDir = outputDir.resolve("manifests");
-        Files.createDirectories(manifestsDir);
+        createDirectories(manifestsDir).unwrap();
         var generatedFiles = new ArrayList<Path>();
         writeManifest(manifestsDir, "namespace.yaml", generateNamespace(config), generatedFiles);
         writeManifest(manifestsDir, "configmap.yaml", generateConfigMap(config), generatedFiles);
@@ -62,13 +63,13 @@ public final class KubernetesGenerator implements Generator {
                                                                String name,
                                                                String content,
                                                                List<Path> files) throws Exception {
-        Files.writeString(dir.resolve(name), content);
+        writeString(dir.resolve(name), content).unwrap();
         files.add(Path.of("manifests/" + name));
     }
 
     @SuppressWarnings("JBCT-EX-01") private void writeScript(Path dir, String name, String content, List<Path> files) throws Exception {
         var path = dir.resolve(name);
-        Files.writeString(path, content);
+        writeString(path, content).unwrap();
         makeExecutable(path);
         files.add(Path.of(name));
     }
@@ -380,13 +381,9 @@ public final class KubernetesGenerator implements Generator {
     }
 
     @SuppressWarnings("JBCT-SEQ-01") private void makeExecutable(Path path) {
-        try {
-            Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rwxr-xr-x"));
-        } catch (UnsupportedOperationException e) {
-            log.debug("Cannot set POSIX permissions on {}: {}", path, e.getMessage());
-        } catch (Exception e) {
-            log.debug("Failed to set permissions on {}: {}", path, e.getMessage());
-        }
+        setPosixPermissions(path, "rwxr-xr-x").onFailure(cause -> log.debug("Failed to set permissions on {}: {}",
+                                                                            path,
+                                                                            cause.message()));
     }
 
     private static GeneratorError toIoError(Throwable throwable) {

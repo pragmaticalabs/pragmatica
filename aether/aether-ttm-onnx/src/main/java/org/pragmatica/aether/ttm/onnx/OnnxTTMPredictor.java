@@ -10,7 +10,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import java.nio.FloatBuffer;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -23,6 +22,7 @@ import ai.onnxruntime.OrtSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.io.FileOps.exists;
 import static org.pragmatica.lang.Unit.unit;
 
 
@@ -127,7 +127,7 @@ import static org.pragmatica.lang.Unit.unit;
 
     private static Result<TtmConfig> checkModelExists(TtmConfig config) {
         var modelPath = Path.of(config.modelPath());
-        return Files.exists(modelPath)
+        return exists(modelPath)
               ? Result.success(config)
               : new TTMError.ModelLoadFailed(config.modelPath(), "File not found").result();
     }

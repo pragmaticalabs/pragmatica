@@ -10,7 +10,6 @@ import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.parse.Text;
 import org.pragmatica.lang.utils.Causes;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
@@ -22,6 +21,9 @@ import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.io.FileOps.exists;
+import static org.pragmatica.lang.io.FileOps.readString;
+import static org.pragmatica.lang.io.FileOps.writeString;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
@@ -360,11 +362,11 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
     }
 
     public static Result<SimulatorConfig> simulatorConfig(Path path, Cause errorCause) {
-        return Result.lift(errorCause, () -> simulatorConfig(Files.readString(path), true));
+        return readString(path).mapError(_ -> errorCause).map(content -> simulatorConfig(content, true));
     }
 
     public static SimulatorConfig simulatorConfig(Path path) {
-        if (!Files.exists(path)) {
+        if (!exists(path)) {
             log.info("Config file not found at {}, using defaults", path);
             return simulatorConfig();
         }
@@ -418,9 +420,6 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
     }
 
     public Result<Unit> saveToFile(Path path) {
-        return Result.lift(Causes.forOneValue("Failed to save config to " + path),
-                           () -> Files.writeString(path,
-                                                   toJson()))
-        .mapToUnit();
+        return writeString(path, toJson()).mapError(_ -> Causes.cause("Failed to save config to " + path));
     }
 }

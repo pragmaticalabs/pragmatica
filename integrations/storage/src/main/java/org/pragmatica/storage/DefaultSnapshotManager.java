@@ -1,7 +1,6 @@
 package org.pragmatica.storage;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -19,6 +18,12 @@ import java.util.stream.Collectors;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
+import static org.pragmatica.lang.io.FileOps.createDirectories;
+import static org.pragmatica.lang.io.FileOps.deleteIfExists;
+import static org.pragmatica.lang.io.FileOps.readString;
+import static org.pragmatica.lang.io.FileOps.writeString;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -116,8 +121,8 @@ final class DefaultSnapshotManager implements SnapshotManager {
     }
 
     private Result<Path> ensureDirectory() {
-        return Result.lift(SnapshotError.DirectoryCreateFailed::new,
-                           () -> Files.createDirectories(config.snapshotPath()));
+        return createDirectories(config.snapshotPath())
+                            .mapError(e -> new SnapshotError.DirectoryCreateFailed(new RuntimeException(e.message())));
     }
 
     private Result<Path> serializeAndWrite(MetadataSnapshot snapshot) {
@@ -125,15 +130,17 @@ final class DefaultSnapshotManager implements SnapshotManager {
         var filePath = config.snapshotPath().resolve(fileName);
         var content = serializeSnapshot(snapshot);
 
-        return Result.lift(SnapshotError.WriteFailed::new, () -> Files.writeString(filePath, content, StandardCharsets.UTF_8))
-                     .flatMap(_ -> updateLatestLink(filePath));
+        return writeString(filePath, content)
+                     .mapError(e -> new SnapshotError.WriteFailed(new RuntimeException(e.message())))
+                     .flatMap(_ -> updateLatestLink(filePath))
+                     .map(_ -> filePath);
     }
 
-    private Result<Path> updateLatestLink(Path snapshotFile) {
+    private Result<Unit> updateLatestLink(Path snapshotFile) {
         var latestPath = config.snapshotPath().resolve(LATEST_LINK);
 
-        return Result.lift(SnapshotError.WriteFailed::new,
-                           () -> Files.writeString(latestPath, snapshotFile.getFileName().toString(), StandardCharsets.UTF_8));
+        return writeString(latestPath, snapshotFile.getFileName().toString())
+                            .mapError(e -> new SnapshotError.WriteFailed(new RuntimeException(e.message())));
     }
 
     // --- Disk read ---
@@ -141,7 +148,8 @@ final class DefaultSnapshotManager implements SnapshotManager {
     private Option<Path> readLatestSnapshotPath() {
         var latestPath = config.snapshotPath().resolve(LATEST_LINK);
 
-        return Result.lift(SnapshotError.ReadFailed::new, () -> Files.readString(latestPath, StandardCharsets.UTF_8))
+        return readString(latestPath)
+                     .mapError(e -> new SnapshotError.ReadFailed(new RuntimeException(e.message())))
                      .map(String::trim)
                      .map(name -> config.snapshotPath().resolve(name))
                      .onFailure(cause -> LOG.debug("No LATEST snapshot file: {}", cause.message()))
@@ -149,7 +157,8 @@ final class DefaultSnapshotManager implements SnapshotManager {
     }
 
     private Option<MetadataSnapshot> readAndValidateSnapshot(Path path) {
-        return Result.lift(SnapshotError.ReadFailed::new, () -> Files.readString(path, StandardCharsets.UTF_8))
+        return readString(path)
+                     .mapError(e -> new SnapshotError.ReadFailed(new RuntimeException(e.message())))
                      .flatMap(DefaultSnapshotManager::parseSnapshot)
                      .filter(SnapshotError.INTEGRITY_CHECK_FAILED, MetadataSnapshot::isValid)
                      .onFailure(cause -> LOG.warn("Snapshot restore failed: {}", cause.message()))
@@ -172,7 +181,7 @@ final class DefaultSnapshotManager implements SnapshotManager {
 
         var toDelete = snapshots.subList(0, snapshots.size() - config.retentionCount());
         for (var file : toDelete) {
-            Files.deleteIfExists(file);
+            deleteIfExists(file);
         }
     }
 

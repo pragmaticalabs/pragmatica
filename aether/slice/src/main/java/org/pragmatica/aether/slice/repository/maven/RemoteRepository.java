@@ -12,19 +12,22 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Causes;
 
-import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.time.Duration;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.io.FileOps.createDirectories;
+import static org.pragmatica.lang.io.FileOps.createTempFile;
+import static org.pragmatica.lang.io.FileOps.deleteIfExists;
+import static org.pragmatica.lang.io.FileOps.exists;
+import static org.pragmatica.lang.io.FileOps.moveReplace;
+import static org.pragmatica.lang.io.FileOps.writeBytes;
 import static org.pragmatica.aether.slice.repository.Location.location;
 
 
@@ -59,7 +62,7 @@ import static org.pragmatica.aether.slice.repository.Location.location;
                                                      Path localRepo,
                                                      Duration httpTimeout) {
         var cachedPath = localPath(artifact, localRepo);
-        if (Files.exists(cachedPath)) {
+        if (exists(cachedPath)) {
             log.debug("Cache hit for {} at {}", artifact.asString(), cachedPath);
             return toLocation(artifact, cachedPath);
         }
@@ -189,10 +192,10 @@ import static org.pragmatica.aether.slice.repository.Location.location;
                             () -> cacheAndReturnPath(targetPath, jarBytes, artifact));
     }
 
-    private static Path cacheAndReturnPath(Path targetPath, byte[] jarBytes, Artifact artifact) throws IOException {
-        cacheArtifact(targetPath, jarBytes);
+    private static Path cacheAndReturnPath(Path targetPath, byte[] jarBytes, Artifact artifact) {
+        var result = cacheArtifact(targetPath, jarBytes);
         log.info("Cached {} to {}", artifact.asString(), targetPath);
-        return targetPath;
+        return result;
     }
 
     private static HttpRequest buildRequest(String url,
@@ -213,16 +216,12 @@ import static org.pragmatica.aether.slice.repository.Location.location;
         return sb.toString();
     }
 
-    private static void cacheArtifact(Path targetPath, byte[] content) throws IOException {
-        Files.createDirectories(targetPath.getParent());
-        var tempFile = Files.createTempFile(targetPath.getParent(), ".download-", ".tmp");
-        try {
-            Files.write(tempFile, content);
-            Files.move(tempFile, targetPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (Exception e) {
-            Files.deleteIfExists(tempFile);
-            throw e;
-        }
+    private static Path cacheArtifact(Path targetPath, byte[] content) {
+        return createDirectories(targetPath.getParent()).flatMap(_ -> createTempFile(".download-", ".tmp"))
+                                .flatMap(tempFile -> writeBytes(tempFile, content).flatMap(_ -> moveReplace(tempFile,
+                                                                                                            targetPath))
+                                                               .onFailure(_ -> deleteIfExists(tempFile)))
+                                .unwrap();
     }
 
     private static Path localPath(Artifact artifact, Path localRepo) {

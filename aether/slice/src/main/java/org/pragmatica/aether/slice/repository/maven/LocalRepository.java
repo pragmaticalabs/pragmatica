@@ -10,9 +10,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 
+import static org.pragmatica.lang.io.FileOps.exists;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.aether.slice.repository.Location.location;
 
@@ -48,8 +48,7 @@ import static org.pragmatica.aether.slice.repository.Location.location;
 
             private Result<Location> resolveLocation(Artifact artifact, String classifier) {
                 var jarPath = resolvePath(artifact, classifier);
-                if (!Files.exists(jarPath)) {return ARTIFACT_NOT_FOUND.apply(artifact.asString() + " at " + jarPath)
-                                                                            .result();}
+                if (!exists(jarPath)) {return ARTIFACT_NOT_FOUND.apply(artifact.asString() + " at " + jarPath).result();}
                 return Result.lift(Causes::fromThrowable,
                                    () -> jarPath.toUri().toURL())
                 .flatMap(url -> location(artifact, url));
