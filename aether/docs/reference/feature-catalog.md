@@ -177,7 +177,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 143 | Segment encryption | Complete | AES-256-GCM encryption for sealed segments via `BlockEncryptor`. Per-stream `StreamConfig.encryptionKeyId`. IV prepended to ciphertext |
 | 144 | Transactional cursor commits | Complete | `PgTransactionalCursorCommit` wraps cursor UPSERT + business logic in single PostgreSQL transaction. Exactly-once semantics |
 | 145 | Compound retention | Complete | `RetentionMode.ALL`/`ANY` combinators for time + count + size policies. TOML-configurable via `retention-mode` |
-| 147 | Declarative cluster management | Complete (Phase 1) | TOML-based cluster config, 12-step bootstrap orchestrator, cluster registry, CLI commands, Management API |
+| 147 | Declarative cluster management | Complete | TOML-based cluster config, 6-phase bootstrap orchestrator with state persistence/resume/cleanup, pre-flight validation with `--full-check`, dual KV-Store entries (TEMPLATE/CURRENT), parallel health checks, VM tagging, forge health gate, floating IP attachment, apply orchestrator with rolling restart, replace-before-retire, `--resume`/`--rollback`, terraform-style plan confirmation |
 | 58 | Web dashboard | Critical | Forge dashboard complete (cluster visualization, load generation, chaos injection, metrics, scaling events, deployment timing). **Node management dashboard requires significant work** — missing: observability depth UI, invocation trace viewer, log level management UI, storage management UI, streaming dashboard, worker pool visualization. **Requires major development effort.** |
 
 ## Developer Tooling
@@ -307,6 +307,11 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 191 | PostgreSQL stream backend | Complete | `PgStreamStore`, `PgSegmentSink`, `PgCursorStore` provide cold-tier storage and persistent cursor commits for streams. Phase 3 backend. `aether-stream/pg/`, tests `PgStreamStoreTest`, `PgSegmentSinkTest`, `PgCursorStoreTest` |
 | 192 | Stream consensus publish path | Complete | STRONG-consistency publish via Rabia consensus: `ConsensusPublishPath`, `ConsensusProposer`, `StreamConsensusCommand`. Test: `ConsensusPublishPathTest`. `aether-stream/consensus/` |
 | 193 | Stream dead-letter handling | Complete | `DeadLetterHandler` SPI with in-memory default for events exceeding retry limits or failing decode. Test: `DeadLetterHandlerTest`. `aether-stream/` |
+| 194 | API key rotation | Complete | `aether cluster rotate-key` generates new key, pushes to KV-Store, marks old REVOKED with grace period, updates local file. Multi-key auth via `KvStoreApiKeyValidator`. Zero-downtime rotation |
+| 195 | API key revocation | Complete | `aether cluster revoke-key <keyId> [--immediate]`. Grace period (default 5m) for in-flight requests. `aether cluster list-keys [--audit]` for status and history |
+| 196 | API key audit trail | Complete | All key operations (create, rotate, revoke, expire) logged as `ApiKeyAuditValue` entries in KV-Store. Periodic expiration sweep (60s) on leader |
+| 197 | Bootstrap resource tracking | Complete | `CreatedResource` sealed interface tracks VMs, firewall rules, floating IPs, containers, SSH configs. LIFO cleanup on failure. State persisted to `~/.aether/clusters/<name>/bootstrap-state.json` |
+| 198 | Pre-flight validation | Complete | Static validation (30+ checks from §12). Default cloud credential ping. `--full-check` for SSH reachability, Docker CLI, floating IP ownership |
 
 ---
 
@@ -315,7 +320,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 24 |
-| Complete | 143 |
+| Complete | 148 |
 | Critical | 1 |
 | Partial | 3 |
 | Planned | 6 |

@@ -1226,6 +1226,80 @@ If the cluster is already at the target version:
 Already at version 0.26.0. No upgrade needed.
 ```
 
+### `aether cluster bootstrap`
+
+Bootstrap a new cluster from a configuration file.
+
+```bash
+aether cluster bootstrap <config-file> [--yes] [--resume] [--full-check] [--wait --timeout <seconds>]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--yes` | Skip confirmation prompt |
+| `--resume` | Resume a failed bootstrap from last completed phase |
+| `--full-check` | Run full network pre-flight checks (SSH, Docker, floating IP) |
+| `--wait` | Wait for cluster to become healthy after bootstrap |
+| `--timeout` | Timeout in seconds when using `--wait` |
+
+Six-phase flow: Validate → Provision → Collect Addresses → Deploy Runtime → Cluster Formation → Post-Bootstrap. State persisted to `~/.aether/clusters/<name>/bootstrap-state.json` after each phase. On failure, all created resources (VMs, firewall rules, floating IPs) are cleaned up automatically.
+
+### `aether cluster apply`
+
+Apply cluster configuration changes with desired-state reconciliation.
+
+```bash
+aether cluster apply <config-file> [--dry-run] [--yes] [--resume] [--rollback] [--full-check]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--dry-run` | Show planned changes without executing |
+| `--yes` | Skip confirmation prompt |
+| `--resume` | Resume a halted apply from first unfinished wave |
+| `--rollback` | Rollback completed waves to pre-apply state |
+| `--full-check` | Run full network pre-flight checks |
+
+Computes diff against stored config, presents terraform-style plan (`[+]`/`[~]`/`[-]`), then executes in waves: additions → modifications → removals. Rolling restart respects `maxUnavailable` budget for core nodes.
+
+### `aether cluster rotate-key`
+
+Rotate the cluster API key with zero-downtime grace period.
+
+```bash
+aether cluster rotate-key [--grace-period <duration>]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--grace-period` | Grace period for old key (default: `5m`). Accepts `s`, `m`, `h` suffixes |
+
+Generates new key, pushes to cluster, marks old key REVOKED with grace period, updates local `~/.aether/clusters/<name>/api-key`.
+
+### `aether cluster revoke-key`
+
+Revoke an API key by ID.
+
+```bash
+aether cluster revoke-key <keyId> [--immediate]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--immediate` | Skip grace period, revoke immediately |
+
+### `aether cluster list-keys`
+
+List cluster API keys and optionally show audit trail.
+
+```bash
+aether cluster list-keys [--audit]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--audit` | Show full key operation history (create, rotate, revoke, expire) |
+
 ---
 
 ## Exit Codes

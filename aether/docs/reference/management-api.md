@@ -1712,6 +1712,98 @@ Initiate a cluster version upgrade. Phase 1 updates the version in the KV-Store 
 
 ---
 
+## API Key Management
+
+### POST /api/cluster/keys
+
+Create or update an API key entry. Used by `aether cluster rotate-key` to push new keys.
+
+**RBAC:** ADMIN
+
+**Request:**
+```json
+{
+  "keyId": "ak_1a2b3c4d",
+  "keyHash": "<SHA-256 hex>",
+  "status": "ACTIVE",
+  "expiresAt": -1,
+  "gracePeriodMs": 300000
+}
+```
+
+**Response:**
+```json
+{
+  "status": "stored",
+  "keyId": "ak_1a2b3c4d"
+}
+```
+
+### GET /api/cluster/keys
+
+List all API keys with status.
+
+**RBAC:** ADMIN
+
+**Response:**
+```json
+{
+  "keys": [
+    {
+      "keyId": "ak_1a2b3c4d",
+      "status": "ACTIVE",
+      "createdAt": 1712000000000,
+      "expiresAt": -1,
+      "revokedAt": -1
+    }
+  ]
+}
+```
+
+### POST /api/cluster/keys/{keyId}/revoke
+
+Revoke an API key. The key remains valid during its grace period.
+
+**RBAC:** ADMIN
+
+**Request:**
+```json
+{
+  "immediate": false
+}
+```
+
+**Response:**
+```json
+{
+  "status": "revoked",
+  "keyId": "ak_1a2b3c4d",
+  "gracePeriodMs": 300000
+}
+```
+
+### GET /api/cluster/keys/audit
+
+List API key audit trail (create, rotate, revoke, expire events).
+
+**RBAC:** ADMIN
+
+**Response:**
+```json
+{
+  "entries": [
+    {
+      "keyId": "ak_1a2b3c4d",
+      "action": "CREATED",
+      "timestamp": 1712000000000,
+      "operatorHint": "bootstrap"
+    }
+  ]
+}
+```
+
+---
+
 ## Topology
 
 ### GET /api/topology

@@ -47,6 +47,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`ConsumerRuntimeState` async cursor loading** — eliminated blocking `.await()` in `subscribe()` by deferring cursor load to an async path; consumer starts after cursor resolves
 - **jOOQ XML schema export** — `JooqXmlExporter` generates jOOQ `XMLDatabase`-compatible XML from pg-tools' static `Schema` model. No jOOQ dependency. Covers tables, columns, PK/FK/unique/check constraints, sequences, indexes, enums, domains, identity/generated columns, multi-schema. Two Maven goals: `export-jooq-xml` (generate) and `check-jooq-xml` (CI drift detection). `JooqTypeMapper` maps 25+ PostgreSQL types to jOOQ's information_schema conventions
 
+- **Bootstrap phase extraction** — `ClusterBootstrapOrchestrator` refactored from 627-line monolith into 6 focused phase files (`BootstrapPhaseValidate`, `BootstrapPhaseProvision`, `BootstrapPhaseCollect`, `BootstrapPhaseDeploy`, `BootstrapPhaseFormation`, `BootstrapPhasePost`) plus thin orchestration skeleton
+- **Pre-flight validation** — `ClusterBootstrapConfigValidator` wired into Phase 1 with warning emission. `PreflightChecker` runs cloud credential pings by default; `--full-check` flag enables SSH reachability, Docker CLI, and floating IP ownership checks in parallel per source
+- **Bootstrap state persistence** — `BootstrapState` extended with `CreatedResource` tracking (VMs, firewall rules, floating IPs, containers, SSH configs), JSON serialization, file persistence to `~/.aether/clusters/<name>/bootstrap-state.json`. SHA-256 config hash. Resume from last completed phase with `--resume` flag. LIFO cleanup of all tracked resources on failure via `BootstrapCleanup`
+- **Bootstrap Phase 2 enhancements** — VM tagging with `aether-cluster`/`aether-source`/`aether-role` labels. All provisioned resources tracked in state for cleanup
+- **Parallel health checks** — Phase 5 polls ALL node addresses concurrently via `Promise.allOf()` instead of sequential single-node polling. Required for clusters with 50+ nodes
+- **Dual KV-Store config entries** — `ClusterConfigKey.TEMPLATE` (configVersion=-1) stores original TOML with `${...}` placeholders intact for export roundtrip; `ClusterConfigKey.CURRENT` stores CLI-resolved config
+- **API key file persistence** — Phase 5 saves API key to `~/.aether/clusters/<name>/api-key` with `0600` permissions
+- **Floating IP attachment** — Phase 6 resolves `FloatingIpProvider` for elected LB sources and calls `attach()` for each configured floating IP
+- **Forge health gate** — Phase 4 verifies forge process is reachable before proceeding to cluster formation (10s timeout with actionable error)
+- **Node ID peer list fix** — `NodeConfigTemplate.buildPeersList()` uses real provisioned node IDs instead of generating sequential `clusterName-N` IDs
+- **Full apply orchestrator** — `ApplyOrchestrator` with pre-flight cluster health check, terraform-style plan confirmation (`--yes` to skip), `ApplyState` persistence with `--resume`/`--rollback` support
+- **Rolling restart** — `WaveExecutor` executes `RuntimeChange` via drain → destroy → provision → wait-for-ready, respecting `maxUnavailable` budget for core nodes. Workers restarted in parallel
+- **Replace-before-retire** — `SourceFieldChange` provisions new nodes first, waits for cluster join, then drains and destroys old nodes
+- **SSH drain** — SSH source removals drain via management API then `docker stop` via SSH. Hosts are preserved (not destroyed)
+- **API key rotation** — `aether cluster rotate-key [--grace-period 5m]` generates new key, pushes to KV-Store, marks old key REVOKED with configurable grace period, updates local key file
+- **API key revocation** — `aether cluster revoke-key <keyId> [--immediate]` revokes by ID with optional immediate effect
+- **API key listing** — `aether cluster list-keys [--audit]` shows all keys with status; `--audit` includes full operation history
+- **Multi-key auth** — `KvStoreApiKeyValidator` supports multiple concurrent ACTIVE keys with grace period for revoked keys. Enables zero-downtime rotation
+- **API key audit trail** — All key operations (create, rotate, revoke, expire) logged in KV-Store as `ApiKeyAuditValue` entries
+- **API key expiration sweep** — Periodic background task on leader (60s interval) marks expired keys
+
 ### Changed
 - **jOOQ version bump** — 3.20.10/3.20.11 → 3.21.1 across root, integrations/db, and aether/resource (fixes version drift)
 - **Cluster bootstrap spec** — node-group-centric configuration model with named source/runtime profiles, multi-zone via multi-source, template inheritance (`[template.X]`), elected floating-IP load balancer, deferred database URL resolution, `config_version` field, firewall rules with TCP/UDP protocol support, three node roles (`core`/`worker`/`spot`)
@@ -87,6 +108,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Auth on forwarded requests** — QUIC-forwarded management requests now enforce the same `validateManagementSecurity` check as direct HTTP. Prevents auth bypass via LB management port
 - **RequestRouter walk-back** — `findRoute()` iterates descending headMap entries instead of single `floorEntry`, fixing route resolution when sibling prefixes (e.g. `/api/streams/publish/`, `/api/streams/read/`) shadow the parent (`/api/streams/`)
 - **Unknown route fallback** — LB forwards unmatched management routes to any core node (legacy/Maven repository routes) instead of returning 502. Node-side returns proper 404 `HttpResponseData` for truly unknown paths
+- **Hetzner IT test safety** — Explicit surefire exclusion of `*IT.java` in hetzner environment module prevents accidental cloud server creation during `mvn verify`
+- **JBCT suppressions for jOOQ XML** — `IndentingXmlStreamWriter`, `JooqXmlExporter` (javax.xml interface implementations), `ExportJooqXmlMojo`, `CheckJooqXmlMojo` (Maven API contract) properly annotated with `@Contract`/`@SuppressWarnings`
 - **Deploy-compose CTM cleanup** — `deploy-compose.sh` explicitly kills `aether-core-*` containers before every deploy. Auto-provisioned containers from CTM survive `docker compose down` and previously broke consensus on subsequent runs
 - **Integration test deploy helpers** — Deploy start/promote/rollback/complete/list/status use LB-routed `api_post`/`api_get` instead of `aether_failover` (which silently returned error JSON on wrong-owner nodes). Strategy tests baseline v1 first, then publish v2 for upgrade
 - **SecurityPolicy deny-by-default** — Unrecognized security policy values now default to `apiKeyRequired()` instead of silently falling through to `publicRoute()`. Prevents config typos from creating unauthenticated routes
