@@ -37,6 +37,8 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CON
 
     @Option(names = "--rollback", description = "Rollback completed waves to pre-apply state") private boolean rollback;
 
+    @Option(names = "--full-check", description = "Run full network pre-flight checks before apply") private boolean fullCheck;
+
     @CommandLine.ParentCommand private ClusterCommand parent;
 
     @Override public Integer call() {

@@ -40,6 +40,8 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
 
     @Option(names = "--resume", description = "Resume a failed bootstrap") private boolean resume;
 
+    @Option(names = "--full-check", description = "Run full network pre-flight checks before bootstrap") private boolean fullCheck;
+
     @Option(names = "--wait", description = "Wait for cluster to become healthy after bootstrap") private boolean waitForCompletion;
 
     @Option(names = "--timeout", description = "Timeout in seconds when waiting") private int timeoutSeconds = 0;
@@ -68,7 +70,7 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
             System.out.println("Aborted.");
             return new AbortedError().result();
         }
-        return ClusterBootstrapOrchestrator.bootstrap(config, resume);
+        return ClusterBootstrapOrchestrator.bootstrap(config, resume, fullCheck);
     }
 
     private static void printPlan(ClusterBootstrapConfig config) {

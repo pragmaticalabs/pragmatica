@@ -5,6 +5,7 @@ import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
+import org.pragmatica.aether.environment.FloatingIpProvider;
 import org.pragmatica.lang.Result;
 
 import java.util.HashMap;
@@ -21,6 +22,9 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
     private static final BootstrapError.ProvisionFailed NO_COMPUTE = new BootstrapError.ProvisionFailed("cloud",
                                                                                                         "Provider does not support compute operations");
 
+    private static final BootstrapError.ProvisionFailed NO_FLOATING_IP = new BootstrapError.ProvisionFailed("cloud",
+                                                                                                            "Provider does not support floating IP operations");
+
     private ProviderResolver() {}
 
     public static Result<ComputeProvider> resolveCloudCompute(SourceProfile source) {
@@ -28,6 +32,18 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
                               .flatMap(provider -> lookupAndCreateCloud(provider.value(),
                                                                         source))
                               .flatMap(ProviderResolver::extractCompute);
+    }
+
+    public static Result<FloatingIpProvider> resolveFloatingIpProvider(SourceProfile source) {
+        return source.provider().toResult(NO_PROVIDER)
+                              .flatMap(provider -> lookupAndCreateCloud(provider.value(),
+                                                                        source))
+                              .flatMap(ProviderResolver::extractFloatingIp);
+    }
+
+    public static Result<ComputeProvider> resolveCloudCompute(String providerName) {
+        return lookupFactory(providerName).flatMap(factory -> factory.create(minimalCloudConfig(providerName)))
+                            .flatMap(ProviderResolver::extractCompute);
     }
 
     public static Result<ComputeProvider> resolveDockerCompute() {
@@ -47,6 +63,10 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
         return integration.compute().toResult(NO_COMPUTE);
     }
 
+    private static Result<FloatingIpProvider> extractFloatingIp(EnvironmentIntegration integration) {
+        return integration.floatingIp().toResult(NO_FLOATING_IP);
+    }
+
     private static CloudConfig buildCloudConfig(String providerName, SourceProfile source) {
         var credentials = new HashMap<String, String>();
         source.credentials().onPresent(c -> credentials.put("credentials_file", c));
@@ -60,6 +80,10 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
                                Map.of(),
                                Map.of(),
                                Map.of());
+    }
+
+    private static CloudConfig minimalCloudConfig(String providerName) {
+        return new CloudConfig(providerName, Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of());
     }
 
     private static CloudConfig dockerCloudConfig() {
