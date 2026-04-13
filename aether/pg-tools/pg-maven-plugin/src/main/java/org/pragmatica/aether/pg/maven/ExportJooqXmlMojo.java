@@ -23,43 +23,30 @@ import org.apache.maven.plugins.annotations.Parameter;
 /// Usage: `mvn pg:export-jooq-xml`
 ///
 /// The output XML can be fed to jOOQ's `org.jooq.meta.xml.XMLDatabase` for offline code generation.
-@Contract
-@Mojo(name = "export-jooq-xml", threadSafe = true)
-public class ExportJooqXmlMojo extends AbstractMojo {
-    @Parameter(defaultValue = "${project.basedir}/src/main/resources/schema", property = "pg.schemaDir")
-    private File schemaDir;
+@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) @Contract@Mojo(name = "export-jooq-xml", threadSafe = true) public class ExportJooqXmlMojo extends AbstractMojo {
+    @Parameter(defaultValue = "${project.basedir}/src/main/resources/schema", property = "pg.schemaDir") private File schemaDir;
 
-    @Parameter(defaultValue = "${project.basedir}/src/main/resources/jooq/jooq-schema.xml", property = "pg.jooq.outputFile")
-    private File outputFile;
+    @Parameter(defaultValue = "${project.basedir}/src/main/resources/jooq/jooq-schema.xml", property = "pg.jooq.outputFile") private File outputFile;
 
-    @Parameter(defaultValue = "public", property = "pg.jooq.defaultSchema")
-    private String defaultSchemaName;
+    @Parameter(defaultValue = "public", property = "pg.jooq.defaultSchema") private String defaultSchemaName;
 
-    @Parameter(defaultValue = "public", property = "pg.jooq.includedSchemas")
-    private String includedSchemas;
+    @Parameter(defaultValue = "public", property = "pg.jooq.includedSchemas") private String includedSchemas;
 
-    @Parameter(defaultValue = "", property = "pg.jooq.catalog")
-    private String catalogName;
+    @Parameter(defaultValue = "", property = "pg.jooq.catalog") private String catalogName;
 
-    @Parameter(defaultValue = "true", property = "pg.jooq.emitEnums")
-    private boolean emitEnums;
+    @Parameter(defaultValue = "true", property = "pg.jooq.emitEnums") private boolean emitEnums;
 
-    @Parameter(defaultValue = "true", property = "pg.jooq.emitIndexes")
-    private boolean emitIndexes;
+    @Parameter(defaultValue = "true", property = "pg.jooq.emitIndexes") private boolean emitIndexes;
 
-    @Parameter(defaultValue = "true", property = "pg.jooq.emitCheckConstraints")
-    private boolean emitCheckConstraints;
+    @Parameter(defaultValue = "true", property = "pg.jooq.emitCheckConstraints") private boolean emitCheckConstraints;
 
-    @Parameter(defaultValue = "true", property = "pg.jooq.emitComments")
-    private boolean emitComments;
+    @Parameter(defaultValue = "true", property = "pg.jooq.emitComments") private boolean emitComments;
 
-    @Parameter(defaultValue = "true", property = "pg.jooq.prettyPrint")
-    private boolean prettyPrint;
+    @Parameter(defaultValue = "true", property = "pg.jooq.prettyPrint") private boolean prettyPrint;
 
-    @Parameter(property = "pg.jooq.skip", defaultValue = "false")
-    private boolean skip;
+    @Parameter(property = "pg.jooq.skip", defaultValue = "false") private boolean skip;
 
-    @Override public void execute() throws MojoExecutionException {
+    @Contract@SuppressWarnings("JBCT-EX-01") @Override public void execute() throws MojoExecutionException {
         if (skip) {
             getLog().info("pg:export-jooq-xml skipped");
             return;
@@ -75,28 +62,30 @@ public class ExportJooqXmlMojo extends AbstractMojo {
         }
         var scripts = readMigrationScripts(sqlFiles);
         var schema = MigrationProcessor.create().processAll(scripts);
-        if (schema.isFailure()) {
-            throw new MojoExecutionException("Schema parsing failed: " + schema);
-        }
+        if (schema.isFailure()) {throw new MojoExecutionException("Schema parsing failed: " + schema);}
         var config = buildConfig();
         var result = JooqXmlExporter.writeXml(schema.unwrap(), config, outputFile.toPath());
-        if (result.isFailure()) {
-            throw new MojoExecutionException("XML export failed: " + result);
-        }
+        if (result.isFailure()) {throw new MojoExecutionException("XML export failed: " + result);}
         logStats(schema.unwrap());
     }
 
     private JooqXmlConfig buildConfig() {
         var schemas = Set.of(includedSchemas.split(","));
-        return new JooqXmlConfig(catalogName, defaultSchemaName, schemas,
-                                 "POSTGRES", emitEnums, emitIndexes,
-                                 emitCheckConstraints, emitComments, true, prettyPrint);
+        return new JooqXmlConfig(catalogName,
+                                 defaultSchemaName,
+                                 schemas,
+                                 "POSTGRES",
+                                 emitEnums,
+                                 emitIndexes,
+                                 emitCheckConstraints,
+                                 emitComments,
+                                 true,
+                                 prettyPrint);
     }
 
     private void logStats(org.pragmatica.aether.pg.schema.model.Schema schema) {
-        getLog().info("Exported jOOQ XML: " + schema.tables().size() + " tables, "
-                      + schema.sequences().size() + " sequences, "
-                      + schema.enumTypes().size() + " enums → " + outputFile);
+        getLog().info("Exported jOOQ XML: " + schema.tables().size() + " tables, " + schema.sequences().size() + " sequences, " + schema.enumTypes()
+                                                                                                                                                  .size() + " enums → " + outputFile);
     }
 
     private File[] findMigrationFiles() {
@@ -106,16 +95,16 @@ public class ExportJooqXmlMojo extends AbstractMojo {
         return files;
     }
 
-    private java.util.List<String> readMigrationScripts(File[] sqlFiles) throws MojoExecutionException {
+    @SuppressWarnings("JBCT-EX-01") private java.util.List<String> readMigrationScripts(File[] sqlFiles) throws MojoExecutionException {
         try {
             return Arrays.stream(sqlFiles).map(ExportJooqXmlMojo::readFile)
-                                         .toList();
+                                .toList();
         } catch (RuntimeException e) {
             throw new MojoExecutionException("Failed to read migration files", e);
         }
     }
 
-    private static String readFile(File file) {
+    @SuppressWarnings("JBCT-EX-01") private static String readFile(File file) {
         try {
             return Files.readString(file.toPath());
         } catch (IOException e) {

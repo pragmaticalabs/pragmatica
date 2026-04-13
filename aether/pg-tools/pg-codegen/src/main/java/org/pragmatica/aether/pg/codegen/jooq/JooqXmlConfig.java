@@ -15,25 +15,32 @@ public record JooqXmlConfig(String catalogName,
                             boolean sortElements,
                             boolean prettyPrint) {
     public static JooqXmlConfig jooqXmlConfig() {
-        return new JooqXmlConfig("",
-                                 "public",
-                                 Set.of("public"),
-                                 "POSTGRES",
-                                 true,
-                                 true,
-                                 true,
-                                 true,
-                                 true,
-                                 true);
+        return new JooqXmlConfig("", "public", Set.of("public"), "POSTGRES", true, true, true, true, true, true);
     }
 
     public JooqXmlConfig withDefaultSchemaName(String name) {
-        return new JooqXmlConfig(catalogName, name, includedSchemas, dialect, emitEnums, emitIndexes,
-                                 emitCheckConstraints, emitComments, sortElements, prettyPrint);
+        return new JooqXmlConfig(catalogName,
+                                 name,
+                                 includedSchemas,
+                                 dialect,
+                                 emitEnums,
+                                 emitIndexes,
+                                 emitCheckConstraints,
+                                 emitComments,
+                                 sortElements,
+                                 prettyPrint);
     }
 
     public JooqXmlConfig withIncludedSchemas(Set<String> schemas) {
-        return new JooqXmlConfig(catalogName, defaultSchemaName, schemas, dialect, emitEnums, emitIndexes,
-                                 emitCheckConstraints, emitComments, sortElements, prettyPrint);
+        return new JooqXmlConfig(catalogName,
+                                 defaultSchemaName,
+                                 schemas,
+                                 dialect,
+                                 emitEnums,
+                                 emitIndexes,
+                                 emitCheckConstraints,
+                                 emitComments,
+                                 sortElements,
+                                 prettyPrint);
     }
 }

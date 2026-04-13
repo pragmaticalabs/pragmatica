@@ -86,7 +86,9 @@ import static org.pragmatica.lang.Result.success;
                  ctx.config().sources()
                            .size());
         var allNodes = new ArrayList<ProvisionedNode>();
-        var mgmtPort = ctx.config().operations().ports().management();
+        var mgmtPort = ctx.config().operations()
+                                 .ports()
+                                 .management();
         for (var entry : ctx.config().sources()
                                    .entrySet()) {
             var result = provisionSource(entry.getKey(), entry.getValue(), mgmtPort);
@@ -178,10 +180,6 @@ import static org.pragmatica.lang.Result.success;
         }
     }
 
-    /// §5.1.5 Forge provisions virtual nodes for an in-process EmberCluster.
-    /// The actual cluster is started by `aether forge` (ForgeServer) — not the CLI bootstrap.
-    /// The bootstrap creates node entries so that address collection, health polling, and
-    /// config push work against the locally-running forge instance.
     @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionForgeSource(String sourceName,
                                                                                                        SourceProfile source,
                                                                                                        int managementPort) {
@@ -192,7 +190,7 @@ import static org.pragmatica.lang.Result.success;
         var roleOrder = List.of(NodeRole.CORE, NodeRole.WORKER, NodeRole.SPOT);
         for (var role : roleOrder) {
             var count = option(source.roles().get(role)).flatMap(rt -> rt.count()).or(0);
-            for (int i = 0; i < count; i++) {
+            for (int i = 0;i <count;i++) {
                 var nodeId = sourceName + "-" + role.value() + "-" + i;
                 var nodePort = managementPort + counter;
                 nodes.add(ProvisionedNode.provisionedNode(nodeId, "forge", "127.0.0.1"));
@@ -261,8 +259,6 @@ import static org.pragmatica.lang.Result.success;
         return Result.unitResult();
     }
 
-    /// §5.1.5 Forge runtime is managed by the ForgeServer binary, not the CLI.
-    /// The CLI waits for the forge to become reachable in Phase 5 (health polling).
     private static Result<Unit> deployForgeSource(String sourceName) {
         System.out.printf("  [%s/forge] Ember cluster managed by forge binary — skipping runtime deploy%n", sourceName);
         System.out.println("  Ensure 'aether forge' is running before cluster formation begins");

@@ -6,13 +6,17 @@ import javax.xml.stream.XMLStreamWriter;
 
 
 /// Delegating XMLStreamWriter that adds indentation for human-readable output.
-final class IndentingXmlStreamWriter implements XMLStreamWriter {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) final class IndentingXmlStreamWriter implements XMLStreamWriter {
     private static final String INDENT = "  ";
+
     private static final String NEWLINE = "\n";
 
     private final XMLStreamWriter delegate;
+
     private int depth = 0;
+
     private boolean hasChildElement = false;
+
     private boolean hasText = false;
 
     IndentingXmlStreamWriter(XMLStreamWriter delegate) {
@@ -29,9 +33,7 @@ final class IndentingXmlStreamWriter implements XMLStreamWriter {
 
     @Override public void writeEndElement() throws XMLStreamException {
         depth--;
-        if (hasChildElement) {
-            writeIndent();
-        }
+        if (hasChildElement) {writeIndent();}
         delegate.writeEndElement();
         hasChildElement = true;
         hasText = false;
@@ -78,8 +80,6 @@ final class IndentingXmlStreamWriter implements XMLStreamWriter {
         delegate.writeCharacters(NEWLINE);
         delegate.writeCharacters(INDENT.repeat(depth));
     }
-
-    // === Delegated methods ===
 
     @Override public void writeStartElement(String namespaceURI, String localName) throws XMLStreamException {
         writeIndent();

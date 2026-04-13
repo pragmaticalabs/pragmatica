@@ -15,7 +15,6 @@ import java.util.List;
 public final class JooqTypeMapper {
     private JooqTypeMapper() {}
 
-    /// Result of mapping a PgType to jOOQ XML fields.
     public record TypeMapping(String dataType,
                               String udtName,
                               String udtSchema,
@@ -24,29 +23,48 @@ public final class JooqTypeMapper {
                               Option<Integer> numericScale,
                               Option<Integer> datetimePrecision) {
         public static TypeMapping typeMapping(String dataType, String udtName, String udtSchema) {
-            return new TypeMapping(dataType, udtName, udtSchema,
-                                  Option.none(), Option.none(), Option.none(), Option.none());
+            return new TypeMapping(dataType,
+                                   udtName,
+                                   udtSchema,
+                                   Option.none(),
+                                   Option.none(),
+                                   Option.none(),
+                                   Option.none());
         }
 
         public TypeMapping withCharacterMaximumLength(int length) {
-            return new TypeMapping(dataType, udtName, udtSchema,
-                                  Option.some(length), numericPrecision, numericScale, datetimePrecision);
+            return new TypeMapping(dataType,
+                                   udtName,
+                                   udtSchema,
+                                   Option.some(length),
+                                   numericPrecision,
+                                   numericScale,
+                                   datetimePrecision);
         }
 
         public TypeMapping withNumericPrecision(int precision, int scale) {
-            return new TypeMapping(dataType, udtName, udtSchema,
-                                  characterMaximumLength, Option.some(precision), Option.some(scale), datetimePrecision);
+            return new TypeMapping(dataType,
+                                   udtName,
+                                   udtSchema,
+                                   characterMaximumLength,
+                                   Option.some(precision),
+                                   Option.some(scale),
+                                   datetimePrecision);
         }
 
         public TypeMapping withDatetimePrecision(int precision) {
-            return new TypeMapping(dataType, udtName, udtSchema,
-                                  characterMaximumLength, numericPrecision, numericScale, Option.some(precision));
+            return new TypeMapping(dataType,
+                                   udtName,
+                                   udtSchema,
+                                   characterMaximumLength,
+                                   numericPrecision,
+                                   numericScale,
+                                   Option.some(precision));
         }
     }
 
-    /// Map a PgType to jOOQ XML type fields.
     public static TypeMapping map(PgType type, String defaultSchema) {
-        return switch (type) {
+        return switch (type){
             case BuiltinType b -> mapBuiltin(b);
             case ArrayType a -> mapArray(a);
             case EnumType e -> mapUserDefined(e.name(), schemaOrDefault(e.schema(), defaultSchema));
@@ -58,7 +76,7 @@ public final class JooqTypeMapper {
 
     private static TypeMapping mapBuiltin(BuiltinType type) {
         var modifiers = type.modifiers();
-        return switch (type.name()) {
+        return switch (type.name()){
             case "int2", "smallint" -> TypeMapping.typeMapping("smallint", "int2", "pg_catalog");
             case "int4", "integer", "int" -> TypeMapping.typeMapping("integer", "int4", "pg_catalog");
             case "int8", "bigint" -> TypeMapping.typeMapping("bigint", "int8", "pg_catalog");
@@ -76,8 +94,12 @@ public final class JooqTypeMapper {
             case "jsonb" -> TypeMapping.typeMapping("jsonb", "jsonb", "pg_catalog");
             case "json" -> TypeMapping.typeMapping("json", "json", "pg_catalog");
             case "bytea" -> TypeMapping.typeMapping("bytea", "bytea", "pg_catalog");
-            case "timestamp", "timestamp without time zone" -> mapTimestamp("timestamp without time zone", "timestamp", modifiers);
-            case "timestamptz", "timestamp with time zone" -> mapTimestamp("timestamp with time zone", "timestamptz", modifiers);
+            case "timestamp", "timestamp without time zone" -> mapTimestamp("timestamp without time zone",
+                                                                            "timestamp",
+                                                                            modifiers);
+            case "timestamptz", "timestamp with time zone" -> mapTimestamp("timestamp with time zone",
+                                                                           "timestamptz",
+                                                                           modifiers);
             case "date" -> TypeMapping.typeMapping("date", "date", "pg_catalog");
             case "time", "time without time zone" -> mapTimestamp("time without time zone", "time", modifiers);
             case "timetz", "time with time zone" -> mapTimestamp("time with time zone", "timetz", modifiers);
@@ -99,52 +121,38 @@ public final class JooqTypeMapper {
 
     private static TypeMapping mapNumeric(List<Integer> modifiers) {
         var mapping = TypeMapping.typeMapping("numeric", "numeric", "pg_catalog");
-        if (modifiers.size() >= 2) {
-            return mapping.withNumericPrecision(modifiers.get(0), modifiers.get(1));
-        }
-        if (modifiers.size() == 1) {
-            return mapping.withNumericPrecision(modifiers.getFirst(), 0);
-        }
+        if (modifiers.size() >= 2) {return mapping.withNumericPrecision(modifiers.get(0), modifiers.get(1));}
+        if (modifiers.size() == 1) {return mapping.withNumericPrecision(modifiers.getFirst(), 0);}
         return mapping;
     }
 
     private static TypeMapping mapVarchar(List<Integer> modifiers) {
         var mapping = TypeMapping.typeMapping("character varying", "varchar", "pg_catalog");
-        if (!modifiers.isEmpty()) {
-            return mapping.withCharacterMaximumLength(modifiers.getFirst());
-        }
+        if (!modifiers.isEmpty()) {return mapping.withCharacterMaximumLength(modifiers.getFirst());}
         return mapping;
     }
 
     private static TypeMapping mapChar(List<Integer> modifiers) {
         var mapping = TypeMapping.typeMapping("character", "bpchar", "pg_catalog");
-        if (!modifiers.isEmpty()) {
-            return mapping.withCharacterMaximumLength(modifiers.getFirst());
-        }
+        if (!modifiers.isEmpty()) {return mapping.withCharacterMaximumLength(modifiers.getFirst());}
         return mapping.withCharacterMaximumLength(1);
     }
 
     private static TypeMapping mapTimestamp(String dataType, String udtName, List<Integer> modifiers) {
         var mapping = TypeMapping.typeMapping(dataType, udtName, "pg_catalog");
-        if (!modifiers.isEmpty()) {
-            return mapping.withDatetimePrecision(modifiers.getFirst());
-        }
+        if (!modifiers.isEmpty()) {return mapping.withDatetimePrecision(modifiers.getFirst());}
         return mapping;
     }
 
     private static TypeMapping mapBit(List<Integer> modifiers) {
         var mapping = TypeMapping.typeMapping("bit", "bit", "pg_catalog");
-        if (!modifiers.isEmpty()) {
-            return mapping.withCharacterMaximumLength(modifiers.getFirst());
-        }
+        if (!modifiers.isEmpty()) {return mapping.withCharacterMaximumLength(modifiers.getFirst());}
         return mapping.withCharacterMaximumLength(1);
     }
 
     private static TypeMapping mapVarbit(List<Integer> modifiers) {
         var mapping = TypeMapping.typeMapping("bit varying", "varbit", "pg_catalog");
-        if (!modifiers.isEmpty()) {
-            return mapping.withCharacterMaximumLength(modifiers.getFirst());
-        }
+        if (!modifiers.isEmpty()) {return mapping.withCharacterMaximumLength(modifiers.getFirst());}
         return mapping;
     }
 
@@ -158,6 +166,8 @@ public final class JooqTypeMapper {
     }
 
     private static String schemaOrDefault(String schema, String defaultSchema) {
-        return schema.isEmpty() ? defaultSchema : schema;
+        return schema.isEmpty()
+              ? defaultSchema
+              : schema;
     }
 }
