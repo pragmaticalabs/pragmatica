@@ -43,6 +43,7 @@ public record MethodModel(String name,
     private static final String STREAM_SUBSCRIBER_TYPE = "org.pragmatica.aether.slice.StreamSubscriber";
     private static final String PG_NOTIFICATION_SUBSCRIBER_TYPE = "org.pragmatica.aether.slice.PgNotificationSubscriber";
     private static final String CONFIGURATION_SECTION_TYPE = "org.pragmatica.aether.slice.annotation.ConfigurationSection";
+    private static final String RATE_GUARD_TYPE = "org.pragmatica.aether.slice.RateGuard";
     private static final String PRINCIPAL_TYPE = "org.pragmatica.aether.http.handler.security.Principal";
     private static final String SECURITY_CONTEXT_TYPE = "org.pragmatica.aether.http.handler.security.SecurityContext";
 
@@ -419,6 +420,7 @@ public record MethodModel(String name,
             case STREAM_SUBSCRIBER_TYPE -> "stream";
             case PG_NOTIFICATION_SUBSCRIBER_TYPE -> "pg-notification";
             case CONFIGURATION_SECTION_TYPE -> "config-update";
+            case RATE_GUARD_TYPE -> "rate-guard";
             default -> null;  // Not reactive — it's an interceptor
         };
     }

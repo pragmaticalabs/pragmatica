@@ -1,5 +1,6 @@
 package org.pragmatica.aether.http;
 
+import org.pragmatica.aether.slice.RateGuardError;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.AppHttpConfig;
@@ -855,10 +856,28 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private void handleLocalRouteFailure(ResponseWriter response, String path, String requestId, Cause cause) {
+        if (cause instanceof RateGuardError.LimitExceeded exceeded) {
+            sendRateLimitResponse(response, path, requestId, exceeded);
+            return;
+        }
         log.error("Failed to handle local route [{}]: {}", requestId, cause.message());
         sendProblem(response,
                     HttpStatus.INTERNAL_SERVER_ERROR,
                     "Request processing failed: " + cause.message(),
+                    path,
+                    requestId);
+    }
+
+    private void sendRateLimitResponse(ResponseWriter response, String path, String requestId,
+                                       RateGuardError.LimitExceeded exceeded) {
+        log.debug("Rate limit exceeded for [{}]: retry after {}ms", requestId, exceeded.retryAfterMs());
+        response.header("Retry-After", String.valueOf(exceeded.retryAfterSeconds()));
+        response.header("X-RateLimit-Limit", String.valueOf(exceeded.limit()));
+        response.header("X-RateLimit-Remaining", String.valueOf(exceeded.remaining()));
+        response.header("X-RateLimit-Reset", String.valueOf(exceeded.resetAtEpochSeconds()));
+        sendProblem(response,
+                    HttpStatus.TOO_MANY_REQUESTS,
+                    exceeded.message(),
                     path,
                     requestId);
     }
