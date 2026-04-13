@@ -11,7 +11,7 @@ cluster_node_count() {
     # Query core node topology directly — LB's topology may not see provisioned nodes.
     # Uses coreCount which excludes passive nodes (LB).
     direct_api_get "/api/cluster/topology" \
-        | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('coreCount',0))" 2>/dev/null \
+        | jq -r '.coreCount // 0' 2>/dev/null \
         || echo "0"
 }
 
@@ -32,15 +32,7 @@ cluster_events() {
 }
 
 cluster_node_list() {
-    aether_json status | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    nodes = data.get('cluster', {}).get('nodes', [])
-    json.dump(nodes, sys.stdout)
-except:
-    print('[]')
-" 2>/dev/null
+    aether_json status | jq '.cluster.nodes // []' 2>/dev/null
 }
 
 # Pick a non-leader node ID from the known set (integration-test-1..5)
@@ -103,8 +95,8 @@ discover_endpoints() {
     status=$(curl -sf -H "X-API-Key: ${API_KEY}" "${cluster_endpoint}/api/cluster/status" 2>/dev/null)
 
     if [ -n "$status" ]; then
-        LB_APP_ENDPOINT=$(echo "$status" | python3 -c "import sys,json; d=json.load(sys.stdin); lb=d.get('loadBalancer'); print(lb.get('appEndpoint','') if lb else '')" 2>/dev/null)
-        LB_MGMT_ENDPOINT=$(echo "$status" | python3 -c "import sys,json; d=json.load(sys.stdin); lb=d.get('loadBalancer'); print(lb.get('mgmtEndpoint','') if lb else '')" 2>/dev/null)
+        LB_APP_ENDPOINT=$(echo "$status" | jq -r '.loadBalancer.appEndpoint // empty' 2>/dev/null)
+        LB_MGMT_ENDPOINT=$(echo "$status" | jq -r '.loadBalancer.mgmtEndpoint // empty' 2>/dev/null)
     fi
 
     # Fallback to direct node access if no LB
@@ -132,7 +124,7 @@ wait_for_cluster() {
 # Wait for cluster using direct node access (before LB is available)
 wait_for_cluster_direct() {
     wait_for "cluster healthy (direct)" \
-        "curl -sf -H 'X-API-Key: ${API_KEY}' http://${TARGET_HOST}:${MGMT_PORT}/api/health 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); exit(0 if d.get(\"connectedPeers\",0)+1 >= 3 else 1)' 2>/dev/null" \
+        "[ \$(curl -sf -H 'X-API-Key: ${API_KEY}' http://${TARGET_HOST}:${MGMT_PORT}/api/health 2>/dev/null | jq -r '.connectedPeers // 0' 2>/dev/null || echo 0) -ge 2 ]" \
         "${1:-120}"
 }
 
@@ -157,25 +149,12 @@ wait_for_slices_active() {
 slices_total_instances() {
     local slices
     slices=$(cluster_slices)
-    echo "$slices" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    if isinstance(data, dict) and 'slices' in data:
-        sl = data['slices']
-        if sl and isinstance(sl[0], dict):
-            # Cluster-wide format: count running instances (LOADED or ACTIVE)
-            print(sum(len([i for i in s.get('instances', []) if i.get('state') in ('LOADED', 'ACTIVE')]) for s in sl))
-        else:
-            # Flat string list (per-node format)
-            print(len(sl))
-    elif isinstance(data, list):
-        print(len(data))
-    else:
-        print(0)
-except:
-    print(0)
-" 2>/dev/null
+    echo "$slices" | jq '
+        if type == "object" and .slices then
+            [.slices[]? | .instances[]? | select(.state == "LOADED" or .state == "ACTIVE")] | length
+        elif type == "array" then length
+        else 0 end
+    ' 2>/dev/null || echo "0"
 }
 
 push_blueprint() {
@@ -328,7 +307,7 @@ seed_cluster_config() {
     local toml_content
     toml_content=$(cat "$config_file")
     local json_body
-    json_body=$(python3 -c "import sys,json; print(json.dumps({'tomlContent': sys.stdin.read(), 'expectedVersion': 0}))" <<< "$toml_content")
+    json_body=$(jq -n --arg toml "$toml_content" '{"tomlContent": $toml, "expectedVersion": 0}')
     # Must hit the leader — CTM only runs on leader
     leader_api_post "/api/cluster/config" "$json_body"
 }
@@ -462,53 +441,21 @@ cluster_tasks() {
 task_assignment_count() {
     local tasks
     tasks=$(cluster_tasks)
-    echo "$tasks" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    print(len(data.get('assignments', [])))
-except:
-    print(0)
-" 2>/dev/null
+    echo "$tasks" | jq '.assignments | length' 2>/dev/null || echo "0"
 }
 
 task_group_status() {
     local group="$1"
     local tasks
     tasks=$(cluster_tasks)
-    echo "$tasks" | python3 -c "
-import sys, json
-result = 'ERROR'
-try:
-    data = json.load(sys.stdin)
-    result = 'UNASSIGNED'
-    for a in data.get('assignments', []):
-        if a.get('group') == '${group}':
-            result = a.get('status', 'UNKNOWN')
-            break
-except Exception:
-    pass
-print(result, end='')
-" 2>/dev/null
+    echo "$tasks" | jq -r --arg g "$group" '.assignments[]? | select(.group == $g) | .status // "UNKNOWN"' 2>/dev/null | head -1 || echo "UNASSIGNED"
 }
 
 task_group_node() {
     local group="$1"
     local tasks
     tasks=$(cluster_tasks)
-    echo "$tasks" | python3 -c "
-import sys, json
-result = ''
-try:
-    data = json.load(sys.stdin)
-    for a in data.get('assignments', []):
-        if a.get('group') == '${group}':
-            result = a.get('assignedTo', '')
-            break
-except Exception:
-    pass
-print(result, end='')
-" 2>/dev/null
+    echo "$tasks" | jq -r --arg g "$group" '.assignments[]? | select(.group == $g) | .assignedTo // empty' 2>/dev/null | head -1
 }
 
 reassign_task_group() {
@@ -531,7 +478,7 @@ reassign_task_group() {
 wait_for_all_tasks_active() {
     local timeout="${1:-60}"
     wait_for "all task groups ACTIVE" \
-        "[ \$(cluster_tasks | python3 -c \"import sys,json; data=json.load(sys.stdin); print(sum(1 for a in data.get('assignments',[]) if a.get('status')=='ACTIVE'))\" 2>/dev/null) -ge 6 ]" \
+        "[ \$(cluster_tasks | jq '[.assignments[]? | select(.status == \"ACTIVE\")] | length' 2>/dev/null || echo 0) -ge 6 ]" \
         "$timeout"
 }
 
@@ -621,17 +568,11 @@ deploy_cleanup() {
     # Complete or rollback any active deployments via the LB management endpoint.
     local deployments
     deployments=$(deploy_list 2>/dev/null)
-    echo "$deployments" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    for d in data if isinstance(data, list) else data.get('deployments', []):
-        did = d.get('deploymentId', '')
-        state = d.get('state', '')
-        if did and state not in ('COMPLETED', 'ROLLED_BACK', 'FAILED'):
-            print(did)
-except: pass
-" 2>/dev/null | while read -r did; do
+    echo "$deployments" | jq -r '
+        (if type == "array" then . else .deployments // [] end)[]
+        | select(.state != "COMPLETED" and .state != "ROLLED_BACK" and .state != "FAILED")
+        | .deploymentId // empty
+    ' 2>/dev/null | while read -r did; do
         deploy_complete "$did" > /dev/null 2>&1 || \
         deploy_rollback "$did" > /dev/null 2>&1 || true
     done
@@ -641,15 +582,7 @@ except: pass
 # Extract deployment ID from the most recent entry in deploy list
 deploy_extract_id() {
     local deployments="$1"
-    echo "$deployments" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    entries = data if isinstance(data, list) else data.get('deployments', [])
-    if entries:
-        print(entries[0].get('deploymentId', ''))
-except: pass
-" 2>/dev/null
+    echo "$deployments" | jq -r '(if type == "array" then . else .deployments // [] end) | first | .deploymentId // empty' 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -663,7 +596,7 @@ wait_for_node_count_on() {
     local timeout="${3:-120}"
 
     wait_for "${expected} nodes on ${endpoint}" \
-        "[ \$(curl -sf -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin).get(\"coreCount\",0))' 2>/dev/null || echo 0) -ge ${expected} ]" \
+        "[ \$(curl -sf -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null | jq -r '.coreCount // 0' 2>/dev/null || echo 0) -ge ${expected} ]" \
         "$timeout"
 }
 
@@ -673,7 +606,7 @@ wait_for_leader_on() {
     local timeout="${2:-30}"
 
     wait_for "leader elected on ${endpoint}" \
-        "curl -sf -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null | python3 -c 'import sys,json; nodes=json.load(sys.stdin).get(\"nodes\",[]); exit(0 if any(n.get(\"role\")==\"ACTIVE\" for n in nodes) else 1)' 2>/dev/null" \
+        "[ -n \"\$(curl -sf -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null | jq -r '.nodes[]? | select(.role == \"ACTIVE\") | .nodeId' 2>/dev/null | head -1)\" ]" \
         "$timeout"
 }
 

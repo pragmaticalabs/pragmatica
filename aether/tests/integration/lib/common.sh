@@ -31,9 +31,10 @@ NODE_COUNT="${NODE_COUNT:-5}"
 # Try CLI command against available nodes (failover on connection failure)
 # Tries ports MGMT_PORT, MGMT_PORT+1, ... MGMT_PORT+NODE_COUNT-1
 aether_failover() {
-    if [ "$CLOUD_MODE" = "true" ]; then
-        # Cloud: use the Aether LB directly — it handles task-group routing
-        aether -c "${TARGET_HOST}:${MGMT_PORT}" --api-key "${API_KEY}" "$@" 2>/dev/null
+    # If LB endpoint is known, use it directly
+    if [ -n "${LB_MGMT_ENDPOINT:-}" ]; then
+        local lb_host_port="${LB_MGMT_ENDPOINT#http://}"
+        aether -c "${lb_host_port}" --api-key "${API_KEY}" "$@" 2>/dev/null
         return $?
     fi
     local base_port="${MGMT_PORT}"
@@ -103,8 +104,7 @@ api_delete() {
 # Tries ports MGMT_PORT through MGMT_PORT+NODE_COUNT-1 with failover
 direct_api_get() {
     local path="$1"
-    if [ "$CLOUD_MODE" = "true" ]; then
-        # Cloud: no direct node access — use LB (handles task-group routing)
+    if [ -n "${LB_MGMT_ENDPOINT:-}" ] && [ -z "${DIRECT_ENDPOINT:-}" ]; then
         api_get "$path"
         return $?
     fi
@@ -120,7 +120,7 @@ direct_api_get() {
 direct_api_post() {
     local path="$1"
     local body="${2:-"{}"}"
-    if [ "$CLOUD_MODE" = "true" ]; then
+    if [ -n "${LB_MGMT_ENDPOINT:-}" ] && [ -z "${DIRECT_ENDPOINT:-}" ]; then
         api_post "$path" "$body"
         return $?
     fi
@@ -235,21 +235,21 @@ assert_http_status() {
 assert_json_field() {
     local json="$1" field="$2" expected="$3" desc="$4"
     local actual
-    actual=$(echo "$json" | python3 -c "import sys,json; print(json.load(sys.stdin)${field})" 2>/dev/null)
+    actual=$(echo "$json" | jq -r "${field}" 2>/dev/null)
     assert_eq "$actual" "$expected" "$desc"
 }
 
 # ---------------------------------------------------------------------------
-# JSON helpers (retained for suites that parse raw JSON responses)
+# JSON helpers (jq-based)
 # ---------------------------------------------------------------------------
 json_field() {
     local json="$1" field="$2"
-    echo "$json" | python3 -c "import sys,json; print(json.load(sys.stdin)${field})" 2>/dev/null
+    echo "$json" | jq -r "${field}" 2>/dev/null
 }
 
 json_len() {
     local json="$1"
-    echo "$json" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null
+    echo "$json" | jq 'length' 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -263,9 +263,11 @@ remote_exec() {
 }
 
 # ---------------------------------------------------------------------------
-# Cloud mode: SSH to private-network nodes via bastion jump host
+# Environment type and cloud access
 # ---------------------------------------------------------------------------
-CLOUD_MODE="${CLOUD_MODE:-false}"
+ENV_TYPE="${ENV_TYPE:-docker}"
+CLOUD_MODE="${CLOUD_MODE:-false}"   # backward compat: true maps to ENV_TYPE=cloud
+if [ "$CLOUD_MODE" = "true" ]; then ENV_TYPE="cloud"; fi
 BASTION_IP="${BASTION_IP:-}"
 CLOUD_TIMEOUT_MULTIPLIER="${CLOUD_TIMEOUT_MULTIPLIER:-1}"
 
