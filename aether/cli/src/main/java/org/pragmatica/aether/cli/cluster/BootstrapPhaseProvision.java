@@ -1,0 +1,158 @@
+package org.pragmatica.aether.cli.cluster;
+
+import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
+import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.config.cluster.SourceType;
+import org.pragmatica.aether.environment.CloudProviderSupport;
+import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.NodeGroupConfig;
+import org.pragmatica.aether.environment.ProvisionedNode;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+import static org.pragmatica.aether.cli.cluster.BootstrapPhase.PROVISION;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
+
+
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) sealed interface BootstrapPhaseProvision {
+    record unused() implements BootstrapPhaseProvision{}
+
+    static Result<BootstrapContext> execute(BootstrapContext ctx) {
+        ClusterBootstrapOrchestrator.logPhase(PROVISION,
+                                              "Provisioning infrastructure for %d source(s)",
+                                              ctx.config().sources()
+                                                        .size());
+        var allNodes = new ArrayList<ProvisionedNode>();
+        var mgmtPort = ctx.config().operations()
+                                 .ports()
+                                 .management();
+        for (var entry : ctx.config().sources()
+                                   .entrySet()) {
+            var result = provisionSource(entry.getKey(), entry.getValue(), mgmtPort);
+            if (result.isFailure()) {return result.map(_ -> ctx);}
+            var _ = result.onSuccess(allNodes::addAll);
+        }
+        return success(ctx.withNodes(List.copyOf(allNodes)));
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionSource(String sourceName,
+                                                                                                  SourceProfile source,
+                                                                                                  int managementPort) {
+        return switch (source.type()){
+            case CLOUD -> provisionCloudSource(sourceName, source);
+            case DOCKER -> provisionDockerSource(sourceName, source);
+            case SSH -> provisionSshSource(sourceName, source);
+            case FORGE -> provisionForgeSource(sourceName, source, managementPort);
+        };
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionCloudSource(String sourceName,
+                                                                                                       SourceProfile source) {
+        return ProviderResolver.resolveCloudCompute(source)
+                                                   .flatMap(compute -> provisionWithCompute(compute, sourceName, source));
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionDockerSource(String sourceName,
+                                                                                                        SourceProfile source) {
+        return ProviderResolver.resolveDockerCompute()
+                                                    .flatMap(compute -> provisionWithCompute(compute, sourceName, source));
+    }
+
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"}) private static Result<List<ProvisionedNode>> provisionWithCompute(ComputeProvider compute,
+                                                                                                                       String sourceName,
+                                                                                                                       SourceProfile source) {
+        var allNodes = new ArrayList<ProvisionedNode>();
+        var roleOrder = List.of(NodeRole.CORE, NodeRole.WORKER, NodeRole.SPOT);
+        for (var role : roleOrder) {
+            var roleTable = option(source.roles().get(role));
+            var result = roleTable.flatMap(rt -> rt.count())
+                                          .map(count -> provisionRoleGroup(compute, sourceName, role, count, source));
+            if (result.isPresent()) {
+                var provisionResult = result.unwrap();
+                if (provisionResult.isFailure()) {return provisionResult;}
+                var _ = provisionResult.onSuccess(allNodes::addAll);
+            }
+        }
+        return success(List.copyOf(allNodes));
+    }
+
+    @SuppressWarnings("JBCT-EX-01") private static Result<List<ProvisionedNode>> provisionRoleGroup(ComputeProvider compute,
+                                                                                                    String sourceName,
+                                                                                                    NodeRole role,
+                                                                                                    int count,
+                                                                                                    SourceProfile source) {
+        logProvisionRole(sourceName, source.type(), role, Option.some(count));
+        var instanceType = source.roles().containsKey(role)
+                          ? source.roles().get(role)
+                                        .instanceType()
+                                        .or("default")
+                          : "default";
+        var zone = source.zone().or("default");
+        var group = NodeGroupConfig.nodeGroupConfig(sourceName, role.value(), count, instanceType, zone, Map.of());
+        return CloudProviderSupport.provisionVia(compute, group).await();
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionSshSource(String sourceName,
+                                                                                                     SourceProfile source) {
+        var nodes = new ArrayList<ProvisionedNode>();
+        for (var entry : source.roles().entrySet()) {
+            var role = entry.getKey();
+            entry.getValue().hosts()
+                          .onPresent(hosts -> addSshNodes(nodes, sourceName, role, hosts));
+        }
+        logProvisionRole(sourceName,
+                         source.type(),
+                         NodeRole.CORE,
+                         Option.some(nodes.size()));
+        return success(List.copyOf(nodes));
+    }
+
+    @Contract private static void addSshNodes(List<ProvisionedNode> nodes,
+                                              String sourceName,
+                                              NodeRole role,
+                                              List<String> hosts) {
+        for (int i = 0;i <hosts.size();i++) {
+            var nodeId = sourceName + "-" + role.value() + "-" + i;
+            nodes.add(ProvisionedNode.provisionedNode(nodeId, "ssh", hosts.get(i)));
+        }
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionForgeSource(String sourceName,
+                                                                                                       SourceProfile source,
+                                                                                                       int managementPort) {
+        System.out.println("  Forge source: nodes are virtual (in-process via EmberCluster)");
+        System.out.println("  Start the forge binary separately: aether forge --config <forge.toml>");
+        var nodes = new ArrayList<ProvisionedNode>();
+        var counter = 0;
+        var roleOrder = List.of(NodeRole.CORE, NodeRole.WORKER, NodeRole.SPOT);
+        for (var role : roleOrder) {
+            var count = option(source.roles().get(role)).flatMap(rt -> rt.count()).or(0);
+            for (int i = 0;i <count;i++) {
+                var nodeId = sourceName + "-" + role.value() + "-" + i;
+                var nodePort = managementPort + counter;
+                nodes.add(ProvisionedNode.provisionedNode(nodeId, "forge", "127.0.0.1"));
+                counter++;
+            }
+            if (count > 0) {logProvisionRole(sourceName, source.type(), role, Option.some(count));}
+        }
+        return success(List.copyOf(nodes));
+    }
+
+    @Contract private static void logProvisionRole(String sourceName,
+                                                   SourceType type,
+                                                   NodeRole role,
+                                                   Option<Integer> count) {
+        count.onPresent(c -> System.out.printf("  [%s/%s] %s: provisioning %d node(s)%n",
+                                               sourceName,
+                                               type.value(),
+                                               role.value(),
+                                               c));
+    }
+}
