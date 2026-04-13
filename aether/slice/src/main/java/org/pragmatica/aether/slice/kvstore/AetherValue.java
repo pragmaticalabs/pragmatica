@@ -879,6 +879,85 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
+    record ApiKeyValue(String keyId,
+                       String keyHash,
+                       long createdAt,
+                       long expiresAt,
+                       String status,
+                       long revokedAt,
+                       long gracePeriodMs) implements AetherValue {
+        static final String ACTIVE = "ACTIVE";
+
+        static final String REVOKED = "REVOKED";
+
+        static final String EXPIRED = "EXPIRED";
+
+        public static ApiKeyValue apiKeyValue(String keyId, String keyHash, long gracePeriodMs) {
+            return new ApiKeyValue(keyId, keyHash, System.currentTimeMillis(), - 1, ACTIVE, - 1, gracePeriodMs);
+        }
+
+        public static ApiKeyValue apiKeyValue(String keyId,
+                                              String keyHash,
+                                              long createdAt,
+                                              long expiresAt,
+                                              String status,
+                                              long revokedAt,
+                                              long gracePeriodMs) {
+            return new ApiKeyValue(keyId, keyHash, createdAt, expiresAt, status, revokedAt, gracePeriodMs);
+        }
+
+        public boolean isActive() {
+            return ACTIVE.equals(status);
+        }
+
+        public boolean isRevoked() {
+            return REVOKED.equals(status);
+        }
+
+        public boolean isInGracePeriod() {
+            return isRevoked() && revokedAt > 0 && System.currentTimeMillis() <revokedAt + gracePeriodMs;
+        }
+
+        public boolean isValidForAuth() {
+            return isActive() || isInGracePeriod();
+        }
+
+        public ApiKeyValue withRevoked(long gracePeriod) {
+            return new ApiKeyValue(keyId,
+                                   keyHash,
+                                   createdAt,
+                                   expiresAt,
+                                   REVOKED,
+                                   System.currentTimeMillis(),
+                                   gracePeriod);
+        }
+
+        public ApiKeyValue withExpired() {
+            return new ApiKeyValue(keyId, keyHash, createdAt, expiresAt, EXPIRED, revokedAt, gracePeriodMs);
+        }
+    }
+
+    record ApiKeyAuditValue(String keyId, String action, long timestamp, String operatorHint) implements AetherValue {
+        public static final String ACTION_CREATED = "CREATED";
+
+        public static final String ACTION_ROTATED = "ROTATED";
+
+        public static final String ACTION_REVOKED = "REVOKED";
+
+        public static final String ACTION_EXPIRED = "EXPIRED";
+
+        public static ApiKeyAuditValue apiKeyAuditValue(String keyId, String action, String operatorHint) {
+            return new ApiKeyAuditValue(keyId, action, System.currentTimeMillis(), operatorHint);
+        }
+
+        public static ApiKeyAuditValue apiKeyAuditValue(String keyId,
+                                                        String action,
+                                                        long timestamp,
+                                                        String operatorHint) {
+            return new ApiKeyAuditValue(keyId, action, timestamp, operatorHint);
+        }
+    }
+
     record CloudCredentialsValue(byte[] encryptedToken, String provider, long storedAt) implements AetherValue {
         public static CloudCredentialsValue cloudCredentialsValue(byte[] encryptedToken, String provider) {
             return new CloudCredentialsValue(encryptedToken.clone(), provider, System.currentTimeMillis());

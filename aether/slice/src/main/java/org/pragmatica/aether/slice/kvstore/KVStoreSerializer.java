@@ -157,6 +157,8 @@ import static org.pragmatica.lang.Result.success;
             case TaskAssignmentKey _ -> "task-assignment";
             case CloudCredentialsKey _ -> "cloud-credentials";
             case ConsumerGroupKey _ -> "consumer-group";
+            case ApiKeyKey _ -> "api-key";
+            case ApiKeyAuditKey _ -> "api-key-audit";
         };
     }
 
@@ -217,6 +219,8 @@ import static org.pragmatica.lang.Result.success;
             case TaskAssignmentValue v -> serializeTaskAssignment(v);
             case CloudCredentialsValue v -> serializeCloudCredentials(v);
             case ConsumerGroupValue v -> serializeConsumerGroup(v);
+            case ApiKeyValue v -> serializeApiKey(v);
+            case ApiKeyAuditValue v -> serializeApiKeyAudit(v);
         };
     }
 
@@ -375,6 +379,8 @@ import static org.pragmatica.lang.Result.success;
             case "task-assignment" -> parseTaskAssignmentEntry(identity, rawValue);
             case "cloud-credentials" -> parseCloudCredentialsEntry(identity, rawValue);
             case "consumer-group" -> parseConsumerGroupEntry(identity, rawValue);
+            case "api-key" -> parseApiKeyEntry(identity, rawValue);
+            case "api-key-audit" -> parseApiKeyAuditEntry(identity, rawValue);
             default -> new SerializationError.UnknownKeyType(section).result();
         };
     }
@@ -956,6 +962,39 @@ import static org.pragmatica.lang.Result.success;
         var key = new AetherKey.CloudCredentialsKey(provider);
         var value = new AetherValue.CloudCredentialsValue(encryptedToken, provider, storedAt);
         return Result.success(Map.entry(key, value));
+    }
+
+    private static String serializeApiKey(ApiKeyValue v) {
+        return v.keyId() + PIPE + v.keyHash() + PIPE + v.createdAt() + PIPE + v.expiresAt() + PIPE + v.status() + PIPE + v.revokedAt() + PIPE + v.gracePeriodMs();
+    }
+
+    private static String serializeApiKeyAudit(ApiKeyAuditValue v) {
+        return v.keyId() + PIPE + v.action() + PIPE + v.timestamp() + PIPE + v.operatorHint();
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseApiKeyEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 7) {return parseFailure("api-key value requires 7 fields, got " + parts.length);}
+        return ApiKeyKey.parseApiKeyKey("api-key/" + identity)
+                                       .map(key -> entry(key,
+                                                         new ApiKeyValue(parts[0],
+                                                                         parts[1],
+                                                                         Long.parseLong(parts[2]),
+                                                                         Long.parseLong(parts[3]),
+                                                                         parts[4],
+                                                                         Long.parseLong(parts[5]),
+                                                                         Long.parseLong(parts[6]))));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseApiKeyAuditEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 4) {return parseFailure("api-key-audit value requires 4 fields, got " + parts.length);}
+        return ApiKeyAuditKey.parseApiKeyAuditKey("api-key-audit/" + identity)
+                                                 .map(key -> entry(key,
+                                                                   new ApiKeyAuditValue(parts[0],
+                                                                                        parts[1],
+                                                                                        Long.parseLong(parts[2]),
+                                                                                        parts[3])));
     }
 
     private static <T> Result<T> parseFailure(String detail) {

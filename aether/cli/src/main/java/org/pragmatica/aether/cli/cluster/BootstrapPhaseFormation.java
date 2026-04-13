@@ -141,10 +141,16 @@ import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION
     @Contract private static void storeApiKey(BootstrapContext ctx, String apiKey) {
         if (ctx.addresses().isEmpty()) {return;}
         var endpoint = buildManagementEndpoint(ctx);
-        var keyJson = "{\"apiKey\":\"" + apiKey + "\"}";
-        var result = ClusterBootstrapOrchestrator.httpPost(endpoint + "/api/cluster/api-key", keyJson);
-        var _ = result.onSuccess(_ -> System.out.println("  API key stored"))
-                                .onFailure(cause -> System.err.println("  Warning: failed to store API key: " + cause.message()));
+        var keyHash = KvStoreApiKeyHasher.hashKey(apiKey);
+        var keyId = "ak_" + keyHash.substring(0, 8);
+        var keyJson = "{\"keyId\":\"" + keyId + "\",\"keyHash\":\"" + keyHash + "\",\"gracePeriodMs\":300000,\"auditAction\":\"CREATED\",\"operatorHint\":\"bootstrap\"}";
+        var result = ClusterBootstrapOrchestrator.httpPost(endpoint + "/api/cluster/keys", keyJson);
+        var _ = result.onSuccess(_ -> System.out.printf("  API key stored (keyId=%s)%n",
+                                                        keyId))
+        .onFailure(cause -> System.err.println("  Warning: failed to store API key: " + cause.message()));
+        var legacyJson = "{\"apiKey\":\"" + apiKey + "\"}";
+        var legacyResult = ClusterBootstrapOrchestrator.httpPost(endpoint + "/api/cluster/api-key", legacyJson);
+        var _ = legacyResult.onFailure(cause -> System.err.println("  Warning: failed to store legacy API key: " + cause.message()));
     }
 
     private static String buildManagementEndpoint(BootstrapContext ctx) {

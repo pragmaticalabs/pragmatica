@@ -2,6 +2,7 @@ package org.pragmatica.aether.api;
 
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.api.routes.AlertRoutes;
+import org.pragmatica.aether.api.routes.ApiKeyRoutes;
 import org.pragmatica.aether.api.routes.BackupRoutes;
 import org.pragmatica.aether.api.routes.ClusterConfigRoutes;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
@@ -308,6 +309,7 @@ class ManagementServerImpl implements ManagementServer {
                                                    nodeSupplier.get().consumerGroupCoordinator(),
                                                    nodeSupplier.get().consumerGroupRegistry()));
         routeSources.add(StorageRoutes.storageRoutes(nodeSupplier));
+        routeSources.add(ApiKeyRoutes.apiKeyRoutes(nodeSupplier));
         routeSources.add(TaskRoutes.taskRoutes(nodeSupplier));
         dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm, nodeSupplier)));
         this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));

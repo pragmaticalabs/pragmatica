@@ -1093,6 +1093,56 @@ import static org.pragmatica.lang.Result.success;
 
     Fn1<Cause, String> CONSUMER_GROUP_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid consumer-group key format: %s");
 
+    Fn1<Cause, String> API_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid api-key key format: %s");
+
+    Fn1<Cause, String> API_KEY_AUDIT_FORMAT_ERROR = Causes.forOneValue("Invalid api-key-audit key format: %s");
+
+    record ApiKeyKey(String keyId) implements AetherKey {
+        private static final String PREFIX = "api-key/";
+
+        @Override public String asString() {
+            return PREFIX + keyId;
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02") public static ApiKeyKey apiKeyKey(String keyId) {
+            return new ApiKeyKey(keyId);
+        }
+
+        public static Result<ApiKeyKey> parseApiKeyKey(String key) {
+            if (!key.startsWith(PREFIX)) {return API_KEY_FORMAT_ERROR.apply(key).result();}
+            var id = key.substring(PREFIX.length());
+            if (id.isEmpty()) {return API_KEY_FORMAT_ERROR.apply(key).result();}
+            return success(new ApiKeyKey(id));
+        }
+    }
+
+    record ApiKeyAuditKey(String entryId) implements AetherKey {
+        private static final String PREFIX = "api-key-audit/";
+
+        @Override public String asString() {
+            return PREFIX + entryId;
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02") public static ApiKeyAuditKey apiKeyAuditKey(String entryId) {
+            return new ApiKeyAuditKey(entryId);
+        }
+
+        public static Result<ApiKeyAuditKey> parseApiKeyAuditKey(String key) {
+            if (!key.startsWith(PREFIX)) {return API_KEY_AUDIT_FORMAT_ERROR.apply(key).result();}
+            var id = key.substring(PREFIX.length());
+            if (id.isEmpty()) {return API_KEY_AUDIT_FORMAT_ERROR.apply(key).result();}
+            return success(new ApiKeyAuditKey(id));
+        }
+    }
+
     record CloudCredentialsKey(String provider) implements AetherKey {
         private static final String PREFIX = "cloud-credentials/";
 

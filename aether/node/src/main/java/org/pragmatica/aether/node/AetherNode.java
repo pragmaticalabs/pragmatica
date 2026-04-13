@@ -1085,10 +1085,12 @@ public interface AetherNode extends ManageableNode {
                                            .map(_ -> {
                                                     if (config.managementPort() > 0) {
                                                         var mgmtSecurityEnabled = config.appHttp().securityEnabled();
-                                                        var mgmtSecurityValidator = mgmtSecurityEnabled
-                                                                                   ? SecurityValidator.apiKeyValidator(config.appHttp()
-                                                                                                                                     .apiKeys())
-                                                                                   : SecurityValidator.noOpValidator();
+                                                        var configValidator = mgmtSecurityEnabled
+                                                                             ? SecurityValidator.apiKeyValidator(config.appHttp()
+                                                                                                                               .apiKeys())
+                                                                             : SecurityValidator.noOpValidator();
+                                                        var mgmtSecurityValidator = SecurityValidator.kvStoreAwareValidator(configValidator,
+                                                                                                                            () -> node.kvStore());
                                                         var managementServer = ManagementServer.managementServer(config.managementPort(),
                                                                                                                  () -> node,
                                                                                                                  alertManager,

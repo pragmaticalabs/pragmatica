@@ -7,10 +7,14 @@ import org.pragmatica.aether.http.handler.security.Principal;
 import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.Result;
 
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 
 
 /// Validates request security based on route policy.
@@ -26,6 +30,11 @@ public interface SecurityValidator {
 
     static SecurityValidator apiKeyValidator(Map<String, ApiKeyEntry> keyEntries) {
         return new ApiKeySecurityValidator(keyEntries);
+    }
+
+    static SecurityValidator kvStoreAwareValidator(SecurityValidator configValidator,
+                                                   Supplier<KVStore<AetherKey, AetherValue>> kvStoreSupplier) {
+        return new KvStoreApiKeyValidator(configValidator, kvStoreSupplier);
     }
 
     static SecurityValidator jwtValidator(JwtConfig jwtConfig) {
