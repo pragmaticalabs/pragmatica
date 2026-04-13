@@ -86,6 +86,7 @@ public interface ManageableNode {
     Option<NodeId> leader();
     <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands);
     int managementPort();
+    int appHttpPort();
     long uptimeSeconds();
     List<NodeId> initialTopology();
     TopologyConfig topologyConfig();

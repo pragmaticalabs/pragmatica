@@ -637,6 +637,12 @@ public interface AetherNode extends ManageableNode {
                 return config.managementPort();
             }
 
+            @Override public int appHttpPort() {
+                return config.appHttp().enabled()
+                      ? config.appHttp().port()
+                      : 0;
+            }
+
             @Override public long uptimeSeconds() {
                 return (System.currentTimeMillis() - startTimeMs) / 1000;
             }

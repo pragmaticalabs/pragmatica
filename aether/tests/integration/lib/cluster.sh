@@ -91,6 +91,38 @@ is_cluster_ready() {
 }
 
 # ---------------------------------------------------------------------------
+# Endpoint discovery
+# ---------------------------------------------------------------------------
+
+# Discover LB endpoints from cluster status API.
+# Sets LB_APP_ENDPOINT and LB_MGMT_ENDPOINT from the elected LB node info.
+# Falls back to direct node access if no LB is configured.
+discover_endpoints() {
+    local cluster_endpoint="$1"
+    local status
+    status=$(curl -sf -H "X-API-Key: ${API_KEY}" "${cluster_endpoint}/api/cluster/status" 2>/dev/null)
+
+    if [ -n "$status" ]; then
+        LB_APP_ENDPOINT=$(echo "$status" | python3 -c "import sys,json; d=json.load(sys.stdin); lb=d.get('loadBalancer'); print(lb.get('appEndpoint','') if lb else '')" 2>/dev/null)
+        LB_MGMT_ENDPOINT=$(echo "$status" | python3 -c "import sys,json; d=json.load(sys.stdin); lb=d.get('loadBalancer'); print(lb.get('mgmtEndpoint','') if lb else '')" 2>/dev/null)
+    fi
+
+    # Fallback to direct node access if no LB
+    if [ -z "$LB_APP_ENDPOINT" ]; then
+        LB_APP_ENDPOINT="$cluster_endpoint"
+        LB_MGMT_ENDPOINT="$cluster_endpoint"
+    fi
+}
+
+wait_for_lb_ready() {
+    local endpoint="$1"
+    local timeout="${2:-120}"
+    wait_for "LB ready at ${endpoint}" \
+        "curl -sf ${endpoint}/health/live >/dev/null 2>&1" \
+        "$timeout"
+}
+
+# ---------------------------------------------------------------------------
 # Wait helpers
 # ---------------------------------------------------------------------------
 wait_for_cluster() {

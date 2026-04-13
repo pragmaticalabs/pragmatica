@@ -6,6 +6,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.CertificateStatusRespons
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterConfigResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterStatusNodeInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterStatusResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.LoadBalancerStatusInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.DryRunResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ScaleClusterResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ScaleRequest;
@@ -22,12 +23,14 @@ import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -113,6 +116,7 @@ import org.slf4j.LoggerFactory;
                                         .size();
         var sliceInstances = countSliceInstances(node);
         var certExpiry = buildCertificateExpiry(node);
+        var lbInfo = buildLoadBalancerInfo(node);
         return new ClusterStatusResponse(config.clusterName(),
                                          config.version(),
                                          config.coreCount(),
@@ -125,7 +129,8 @@ import org.slf4j.LoggerFactory;
                                          certExpiry.map(CertificateStatusResponse::expiresAt).or("N/A"),
                                          certExpiry.map(CertificateStatusResponse::secondsUntilExpiry).or(0L),
                                          config.configVersion(),
-                                         node.uptimeSeconds());
+                                         node.uptimeSeconds(),
+                                         lbInfo);
     }
 
     private static int countSliceInstances(ManageableNode node) {
@@ -167,6 +172,22 @@ import org.slf4j.LoggerFactory;
                                              scheduler.secondsUntilExpiry(),
                                              scheduler.lastRenewalAt().toString(),
                                              scheduler.renewalStatus().name());
+    }
+
+    private static Option<LoadBalancerStatusInfo> buildLoadBalancerInfo(ManageableNode node) {
+        return node.taskGroupAssignmentRegistry().ownerFor(TaskGroup.DEPLOYMENT)
+                                               .option()
+                                               .flatMap(ownerId -> node.topologyManager().get(ownerId)
+                                                                                       .map(info -> toLbStatusInfo(ownerId,
+                                                                                                                   info,
+                                                                                                                   node)));
+    }
+
+    private static LoadBalancerStatusInfo toLbStatusInfo(NodeId ownerId, NodeInfo info, ManageableNode node) {
+        var host = info.address().host();
+        var appEndpoint = "http://" + host + ":" + node.appHttpPort();
+        var mgmtEndpoint = "http://" + host + ":" + node.managementPort();
+        return new LoadBalancerStatusInfo("elected", ownerId.id(), appEndpoint, mgmtEndpoint);
     }
 
     private Promise<Object> handleApplyConfig(ApplyConfigRequest request) {

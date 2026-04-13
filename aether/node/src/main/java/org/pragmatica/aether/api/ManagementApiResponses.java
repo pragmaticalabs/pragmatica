@@ -325,6 +325,8 @@ public sealed interface ManagementApiResponses {
                                  long configVersion,
                                  long updatedAt){}
 
+    record LoadBalancerStatusInfo(String type, String nodeId, String appEndpoint, String mgmtEndpoint){}
+
     record ClusterStatusResponse(String clusterName,
                                  String desiredVersion,
                                  int desiredCoreCount,
@@ -337,7 +339,8 @@ public sealed interface ManagementApiResponses {
                                  String certificateExpiresAt,
                                  long certificateDaysRemaining,
                                  long configVersion,
-                                 long uptimeSeconds){}
+                                 long uptimeSeconds,
+                                 Option<LoadBalancerStatusInfo> loadBalancer){}
 
     record ClusterStatusNodeInfo(String nodeId, String role, String lifecycleState, String version, boolean isLeader){}
 
