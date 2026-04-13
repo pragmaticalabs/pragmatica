@@ -3,6 +3,7 @@ package org.pragmatica.aether.cli.cluster;
 import org.pragmatica.aether.cli.cluster.BootstrapState.PhaseStatus;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 
 import java.util.ArrayList;
@@ -87,13 +88,13 @@ import static org.pragmatica.lang.Result.success;
         if (node.isMissingNode() || node.isNull() || !node.isArray()) {return List.of();}
         var resources = new ArrayList<CreatedResource>();
         for (var element : node) {
-            var resource = parseSingleResource(element);
+            var resource = parseSingleResourceNode(element);
             if (resource != null) {resources.add(resource);}
         }
         return List.copyOf(resources);
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static CreatedResource parseSingleResource(JsonNode node) {
+    @SuppressWarnings("JBCT-PAT-01") static CreatedResource parseSingleResourceNode(JsonNode node) {
         var type = node.path("type").asText("");
         return switch (type){
             case "ProvisionedVm" -> CreatedResource.ProvisionedVm.provisionedVm(node.path("provider").asText(),
@@ -154,13 +155,14 @@ import static org.pragmatica.lang.Result.success;
         for (int i = 0;i <resources.size();i++) {
             if (i > 0) {sb.append(',');}
             sb.append("\n    ");
-            appendResource(sb, resources.get(i));
+            appendResourceJson(sb, resources.get(i));
         }
         if (!resources.isEmpty()) {sb.append('\n');}
         sb.append("  ]");
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static void appendResource(StringBuilder sb, CreatedResource resource) {
+    @Contract@SuppressWarnings("JBCT-PAT-01") static void appendResourceJson(StringBuilder sb,
+                                                                             CreatedResource resource) {
         switch (resource){
             case CreatedResource.ProvisionedVm vm -> appendVm(sb, vm);
             case CreatedResource.FirewallRule rule -> appendFirewallRule(sb, rule);

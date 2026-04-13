@@ -7,6 +7,7 @@ import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
@@ -136,6 +137,37 @@ public sealed interface ClusterHttpClient {
                                   .flatMap(ClusterHttpClient::extractBody);
     }
 
+    static Result<Unit> drainNode(String address, int managementPort, String nodeId) {
+        var url = "http://" + address + ":" + managementPort + "/api/node/drain/" + nodeId;
+        return postDirect(url, "{}").mapToUnit();
+    }
+
+    static Result<Unit> waitForNodeReady(String address, int managementPort, long timeoutMs) {
+        var url = "http://" + address + ":" + managementPort + "/health/ready";
+        var deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() <deadline) {
+            if (getDirect(url).isSuccess()) {return Result.unitResult();}
+            ClusterBootstrapOrchestrator.sleepQuietly(2000);
+        }
+        return new HttpError.NodeNotReady(address, timeoutMs).result();
+    }
+
+    static Result<String> checkClusterHealth(String address, int managementPort) {
+        var url = "http://" + address + ":" + managementPort + "/api/health";
+        return getDirect(url);
+    }
+
+    static Result<Unit> waitForDrainComplete(String address, int managementPort, String nodeId, long timeoutMs) {
+        var url = "http://" + address + ":" + managementPort + "/api/node/lifecycle/" + nodeId;
+        var deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() <deadline) {
+            var stateResult = getDirect(url);
+            if (stateResult.map(body -> body.contains("DECOMMISSIONED")).or(false)) {return Result.unitResult();}
+            ClusterBootstrapOrchestrator.sleepQuietly(2000);
+        }
+        return new HttpError.DrainTimeout(nodeId, timeoutMs).result();
+    }
+
     sealed interface HttpError extends Cause {
         HttpError NO_ACTIVE_CLUSTER = new SimpleError("No active cluster context. Use 'aether cluster use <name>' to select one.");
 
@@ -144,6 +176,18 @@ public sealed interface ClusterHttpClient {
         record ApiError(int statusCode, String body) implements HttpError {
             @Override public String message() {
                 return "HTTP " + statusCode + ": " + body;
+            }
+        }
+
+        record NodeNotReady(String address, long timeoutMs) implements HttpError {
+            @Override public String message() {
+                return "Node " + address + " did not become ready within " + timeoutMs + "ms";
+            }
+        }
+
+        record DrainTimeout(String nodeId, long timeoutMs) implements HttpError {
+            @Override public String message() {
+                return "Node " + nodeId + " did not complete drain within " + timeoutMs + "ms";
             }
         }
     }

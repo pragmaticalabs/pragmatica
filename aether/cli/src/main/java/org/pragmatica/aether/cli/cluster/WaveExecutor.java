@@ -4,8 +4,10 @@ import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
+import org.pragmatica.aether.config.cluster.SshConfig;
 import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.NodeGroupConfig;
@@ -31,11 +33,16 @@ import static org.pragmatica.lang.Result.success;
     public static Result<ApplyResult> execute(DiffPlan plan,
                                               ClusterBootstrapConfig stored,
                                               ClusterBootstrapConfig desired) {
-        return executeAdditions(plan.additions(), desired).flatMap(added -> executeModifications(plan.modifications()).flatMap(modified -> executeRemovals(plan.removals(),
-                                                                                                                                                           stored).map(removed -> applyResult(plan,
-                                                                                                                                                                                              added,
-                                                                                                                                                                                              removed,
-                                                                                                                                                                                              modified))));
+        var managementPort = desired.operations().ports()
+                                               .management();
+        return executeAdditions(plan.additions(), desired).flatMap(added -> executeModifications(plan.modifications(),
+                                                                                                 stored,
+                                                                                                 desired).flatMap(modified -> executeRemovals(plan.removals(),
+                                                                                                                                              stored,
+                                                                                                                                              managementPort).map(removed -> applyResult(plan,
+                                                                                                                                                                                         added,
+                                                                                                                                                                                         removed,
+                                                                                                                                                                                         modified))));
     }
 
     private static Result<Integer> executeAdditions(List<DiffAction> additions, ClusterBootstrapConfig desired) {
@@ -165,66 +172,301 @@ import static org.pragmatica.lang.Result.success;
         return success(List.copyOf(nodes));
     }
 
-    private static Result<Integer> executeModifications(List<DiffAction> modifications) {
+    static final long DRAIN_TIMEOUT_MS = 120_000;
+
+    static final long READY_TIMEOUT_MS = 300_000;
+
+    private static Result<Integer> executeModifications(List<DiffAction> modifications,
+                                                        ClusterBootstrapConfig stored,
+                                                        ClusterBootstrapConfig desired) {
         var totalModified = 0;
         for (var action : modifications) {
-            logModification(action);
-            totalModified += modificationNodeCount(action);
+            var result = executeModification(action, stored, desired);
+            if (result.isFailure()) {return result;}
+            totalModified += result.or(0);
         }
         return success(totalModified);
     }
 
-    @Contract private static void logModification(DiffAction action) {
-        switch (action){
-            case DiffAction.RuntimeChange a -> logAction("~",
-                                                         a.sourceName() + "." + a.role().value() + ": runtime change " + a.fromRuntime() + " -> " + a.toRuntime() + " (rolling restart required)");
-            case DiffAction.SourceFieldChange a -> logAction("~",
-                                                             a.sourceName() + ": " + a.field() + " changed (replace-before-retire planned)");
-            case DiffAction.ClusterLevelChange a -> logAction("~",
-                                                              "cluster." + a.field() + ": " + a.from() + " -> " + a.to() + " (cluster-wide update)");
-            default -> logAction("~", action.description());
-        }
-    }
-
-    private static int modificationNodeCount(DiffAction action) {
+    private static Result<Integer> executeModification(DiffAction action,
+                                                       ClusterBootstrapConfig stored,
+                                                       ClusterBootstrapConfig desired) {
         return switch (action){
-            case DiffAction.RuntimeChange _ -> 1;
-            case DiffAction.SourceFieldChange _ -> 1;
-            case DiffAction.ClusterLevelChange _ -> 1;
-            default -> 0;
+            case DiffAction.RuntimeChange a -> executeRuntimeChange(a, stored, desired);
+            case DiffAction.SourceFieldChange a -> executeSourceFieldChange(a, stored, desired);
+            case DiffAction.ClusterLevelChange a -> logClusterLevelChange(a);
+            default -> logUnknownModification(action);
         };
     }
 
-    private static Result<Integer> executeRemovals(List<DiffAction> removals, ClusterBootstrapConfig stored) {
+    private static Result<Integer> executeRuntimeChange(DiffAction.RuntimeChange change,
+                                                        ClusterBootstrapConfig stored,
+                                                        ClusterBootstrapConfig desired) {
+        logAction("~",
+                  change.sourceName() + "." + change.role().value() + ": runtime change " + change.fromRuntime() + " -> " + change.toRuntime());
+        return lookupSource(change.sourceName(), stored.sources()).flatMap(source -> rollingRestart(change.sourceName(),
+                                                                                                    change.role(),
+                                                                                                    source,
+                                                                                                    desired));
+    }
+
+    private static Result<Integer> rollingRestart(String sourceName,
+                                                  NodeRole role,
+                                                  SourceProfile source,
+                                                  ClusterBootstrapConfig desired) {
+        var managementPort = desired.operations().ports()
+                                               .management();
+        var maxUnavailable = resolveMaxUnavailable(role, desired);
+        var nodeCount = option(source.roles().get(role)).flatMap(RoleSubTable::count).or(0);
+        var modified = 0;
+        for (int batch = 0;batch <nodeCount;batch += maxUnavailable) {
+            var batchSize = Math.min(maxUnavailable, nodeCount - batch);
+            var result = rollingRestartBatch(sourceName, role, source, desired, managementPort, batch, batchSize);
+            if (result.isFailure()) {return result;}
+            modified += result.or(0);
+        }
+        return success(modified);
+    }
+
+    private static Result<Integer> rollingRestartBatch(String sourceName,
+                                                       NodeRole role,
+                                                       SourceProfile source,
+                                                       ClusterBootstrapConfig desired,
+                                                       int managementPort,
+                                                       int startIndex,
+                                                       int batchSize) {
+        var modified = 0;
+        for (int i = startIndex;i <startIndex + batchSize;i++) {
+            var nodeId = sourceName + "-" + role.value() + "-" + i;
+            var result = rollingRestartSingleNode(nodeId, sourceName, role, source, desired, managementPort);
+            if (result.isFailure()) {return result;}
+            modified++;
+        }
+        return success(modified);
+    }
+
+    private static Result<Integer> rollingRestartSingleNode(String nodeId,
+                                                            String sourceName,
+                                                            NodeRole role,
+                                                            SourceProfile source,
+                                                            ClusterBootstrapConfig desired,
+                                                            int managementPort) {
+        logAction("~", "  draining " + nodeId + "...");
+        return drainAndDestroyNode(nodeId, sourceName, role, source, managementPort).flatMap(_ -> reprovisionNode(sourceName,
+                                                                                                                  role,
+                                                                                                                  desired))
+                                  .map(_ -> logAndCount("~", "  " + nodeId + " restarted with new runtime", 1));
+    }
+
+    private static Result<Unit> drainAndDestroyNode(String nodeId,
+                                                    String sourceName,
+                                                    NodeRole role,
+                                                    SourceProfile source,
+                                                    int managementPort) {
+        return switch (source.type()){
+            case SSH -> drainSshNode(nodeId, sourceName, source, managementPort);
+            case CLOUD, DOCKER -> drainAndDestroyComputeNode(nodeId, sourceName, role, source, managementPort);
+            case FORGE -> forgeRestartPlaceholder(nodeId);
+        };
+    }
+
+    private static Result<Unit> drainSshNode(String nodeId,
+                                             String sourceName,
+                                             SourceProfile source,
+                                             int managementPort) {
+        var hosts = option(source.roles().values()
+                                       .stream()
+                                       .flatMap(r -> r.hosts().stream()
+                                                            .flatMap(List::stream))
+                                       .toList()).filter(l -> !l.isEmpty())
+                          .or(List.of());
+        if (hosts.isEmpty()) {return Result.unitResult();}
+        var host = hosts.getFirst();
+        return ClusterHttpClient.drainNode(host, managementPort, nodeId).flatMap(_ -> ClusterHttpClient.waitForDrainComplete(host,
+                                                                                                                             managementPort,
+                                                                                                                             nodeId,
+                                                                                                                             DRAIN_TIMEOUT_MS))
+                                          .flatMap(_ -> sshStopNode(host, source));
+    }
+
+    private static Result<Unit> sshStopNode(String host, SourceProfile source) {
+        var sshConfig = buildSshConfig(source);
+        logAction("~", "  SSH stop on " + host);
+        return RemoteCommandRunner.ssh(host, "docker stop aether-node || true", sshConfig).mapToUnit();
+    }
+
+    private static Result<Unit> drainAndDestroyComputeNode(String nodeId,
+                                                           String sourceName,
+                                                           NodeRole role,
+                                                           SourceProfile source,
+                                                           int managementPort) {
+        var address = resolveNodeAddress(nodeId);
+        return ClusterHttpClient.drainNode(address, managementPort, nodeId).flatMap(_ -> ClusterHttpClient.waitForDrainComplete(address,
+                                                                                                                                managementPort,
+                                                                                                                                nodeId,
+                                                                                                                                DRAIN_TIMEOUT_MS))
+                                          .flatMap(_ -> dispatchDestroy(sourceName, source, role, 1, managementPort));
+    }
+
+    private static Result<List<ProvisionedNode>> reprovisionNode(String sourceName,
+                                                                 NodeRole role,
+                                                                 ClusterBootstrapConfig desired) {
+        return lookupSource(sourceName,
+                            desired.sources()).flatMap(source -> dispatchProvision(sourceName, source, role, 1))
+                           .flatMap(nodes -> waitForNewNodes(nodes,
+                                                             desired.operations().ports()
+                                                                               .management()));
+    }
+
+    private static Result<List<ProvisionedNode>> waitForNewNodes(List<ProvisionedNode> nodes, int managementPort) {
+        for (var node : nodes) {
+            var result = ClusterHttpClient.waitForNodeReady(node.publicIp(), managementPort, READY_TIMEOUT_MS);
+            if (result.isFailure()) {return result.map(_ -> List.of());}
+        }
+        return success(nodes);
+    }
+
+    private static Result<Integer> executeSourceFieldChange(DiffAction.SourceFieldChange change,
+                                                            ClusterBootstrapConfig stored,
+                                                            ClusterBootstrapConfig desired) {
+        logAction("~",
+                  change.sourceName() + ": " + change.field() + " changed (replace-before-retire)");
+        return lookupSource(change.sourceName(), stored.sources()).flatMap(oldSource -> lookupSource(change.sourceName(),
+                                                                                                     desired.sources()).flatMap(newSource -> replaceBeforeRetire(change.sourceName(),
+                                                                                                                                                                 oldSource,
+                                                                                                                                                                 newSource,
+                                                                                                                                                                 desired)));
+    }
+
+    private static Result<Integer> replaceBeforeRetire(String sourceName,
+                                                       SourceProfile oldSource,
+                                                       SourceProfile newSource,
+                                                       ClusterBootstrapConfig desired) {
+        var managementPort = desired.operations().ports()
+                                               .management();
+        var totalAffected = 0;
+        for (var entry : oldSource.roles().entrySet()) {
+            var role = entry.getKey();
+            var count = entry.getValue().count()
+                                      .or(0);
+            if (count <= 0) {continue;}
+            var result = replaceBeforeRetireRole(sourceName, role, count, newSource, desired, managementPort);
+            if (result.isFailure()) {return result;}
+            totalAffected += result.or(0);
+        }
+        return success(totalAffected);
+    }
+
+    private static Result<Integer> replaceBeforeRetireRole(String sourceName,
+                                                           NodeRole role,
+                                                           int count,
+                                                           SourceProfile newSource,
+                                                           ClusterBootstrapConfig desired,
+                                                           int managementPort) {
+        logAction("~", "  provisioning " + count + " new " + role.value() + " node(s)...");
+        return dispatchProvision(sourceName, newSource, role, count).flatMap(nodes -> waitForNewNodes(nodes,
+                                                                                                      managementPort))
+                                .flatMap(_ -> drainOldNodes(sourceName, role, count, desired))
+                                .map(count2 -> logAndCount("~",
+                                                           "  " + sourceName + "." + role.value() + ": replaced " + count + " node(s)",
+                                                           count));
+    }
+
+    private static Result<Unit> drainOldNodes(String sourceName,
+                                              NodeRole role,
+                                              int count,
+                                              ClusterBootstrapConfig desired) {
+        var managementPort = desired.operations().ports()
+                                               .management();
+        for (int i = 0;i <count;i++) {
+            var nodeId = sourceName + "-" + role.value() + "-old-" + i;
+            var address = resolveNodeAddress(nodeId);
+            Result<Unit> result = ClusterHttpClient.drainNode(address, managementPort, nodeId)
+                                                             .flatMap(_ -> ClusterHttpClient.waitForDrainComplete(address,
+                                                                                                                  managementPort,
+                                                                                                                  nodeId,
+                                                                                                                  DRAIN_TIMEOUT_MS));
+            if (result.isFailure()) {return result;}
+        }
+        return Result.unitResult();
+    }
+
+    private static Result<Integer> logClusterLevelChange(DiffAction.ClusterLevelChange change) {
+        logAction("~",
+                  "cluster." + change.field() + ": " + change.from() + " -> " + change.to() + " (cluster-wide update)");
+        return success(1);
+    }
+
+    private static Result<Integer> logUnknownModification(DiffAction action) {
+        logAction("~", action.description());
+        return success(0);
+    }
+
+    private static int resolveMaxUnavailable(NodeRole role, ClusterBootstrapConfig config) {
+        return role == NodeRole.CORE
+              ? config.coreTopology().maxUnavailable()
+              : Integer.MAX_VALUE;
+    }
+
+    private static String resolveNodeAddress(String nodeId) {
+        return nodeId;
+    }
+
+    private static SshConfig buildSshConfig(SourceProfile source) {
+        var user = source.user().or("root");
+        var keyPath = source.key().or("~/.ssh/id_rsa");
+        var port = source.sshPort().or(22);
+        return SshConfig.sshConfig(user, keyPath, port);
+    }
+
+    private static Result<Unit> forgeRestartPlaceholder(String nodeId) {
+        logAction("~", "  " + nodeId + "/forge: in-process node will be restarted by Forge");
+        return Result.unitResult();
+    }
+
+    private static Result<Integer> executeRemovals(List<DiffAction> removals,
+                                                   ClusterBootstrapConfig stored,
+                                                   int managementPort) {
         var totalRemoved = 0;
         for (var action : removals) {
-            var result = executeRemoval(action, stored);
+            var result = executeRemoval(action, stored, managementPort);
             if (result.isFailure()) {return result;}
             totalRemoved += result.or(0);
         }
         return success(totalRemoved);
     }
 
-    private static Result<Integer> executeRemoval(DiffAction action, ClusterBootstrapConfig stored) {
+    private static Result<Integer> executeRemoval(DiffAction action,
+                                                  ClusterBootstrapConfig stored,
+                                                  int managementPort) {
         return switch (action){
-            case DiffAction.RemoveSource a -> destroyEntireSource(a.sourceName(), stored);
-            case DiffAction.RemoveRole a -> destroyRole(a.sourceName(), a.role(), a.count(), stored);
-            case DiffAction.ScaleDown a -> destroyScaleDown(a.sourceName(), a.role(), a.from(), a.to(), stored);
+            case DiffAction.RemoveSource a -> destroyEntireSource(a.sourceName(), stored, managementPort);
+            case DiffAction.RemoveRole a -> destroyRole(a.sourceName(), a.role(), a.count(), stored, managementPort);
+            case DiffAction.ScaleDown a -> destroyScaleDown(a.sourceName(),
+                                                            a.role(),
+                                                            a.from(),
+                                                            a.to(),
+                                                            stored,
+                                                            managementPort);
             default -> success(0);
         };
     }
 
-    private static Result<Integer> destroyEntireSource(String sourceName, ClusterBootstrapConfig stored) {
-        return lookupSource(sourceName, stored.sources()).flatMap(source -> destroyAllRoles(sourceName, source));
+    private static Result<Integer> destroyEntireSource(String sourceName,
+                                                       ClusterBootstrapConfig stored,
+                                                       int managementPort) {
+        return lookupSource(sourceName, stored.sources()).flatMap(source -> destroyAllRoles(sourceName,
+                                                                                            source,
+                                                                                            managementPort));
     }
 
-    private static Result<Integer> destroyAllRoles(String sourceName, SourceProfile source) {
+    private static Result<Integer> destroyAllRoles(String sourceName, SourceProfile source, int managementPort) {
         var totalDestroyed = 0;
         for (var entry : source.roles().entrySet()) {
             var count = entry.getValue().count()
                                       .or(0);
             if (count <= 0) {continue;}
-            var result = dispatchDestroy(sourceName, source, entry.getKey(), count);
+            var result = dispatchDestroy(sourceName, source, entry.getKey(), count, managementPort);
             if (result.isFailure()) {return result.map(_ -> 0);}
             totalDestroyed += count;
         }
@@ -235,9 +477,14 @@ import static org.pragmatica.lang.Result.success;
     private static Result<Integer> destroyRole(String sourceName,
                                                NodeRole role,
                                                int count,
-                                               ClusterBootstrapConfig stored) {
+                                               ClusterBootstrapConfig stored,
+                                               int managementPort) {
         return lookupSource(sourceName,
-                            stored.sources()).flatMap(source -> dispatchDestroy(sourceName, source, role, count))
+                            stored.sources()).flatMap(source -> dispatchDestroy(sourceName,
+                                                                                source,
+                                                                                role,
+                                                                                count,
+                                                                                managementPort))
                            .map(_ -> logAndCount("-",
                                                  sourceName + "." + role.value() + ": destroyed " + count + " node(s)",
                                                  count));
@@ -247,21 +494,30 @@ import static org.pragmatica.lang.Result.success;
                                                     NodeRole role,
                                                     int from,
                                                     int to,
-                                                    ClusterBootstrapConfig stored) {
+                                                    ClusterBootstrapConfig stored,
+                                                    int managementPort) {
         var excess = from - to;
         return lookupSource(sourceName,
-                            stored.sources()).flatMap(source -> dispatchDestroy(sourceName, source, role, excess))
+                            stored.sources()).flatMap(source -> dispatchDestroy(sourceName,
+                                                                                source,
+                                                                                role,
+                                                                                excess,
+                                                                                managementPort))
                            .map(_ -> logAndCount("-",
                                                  sourceName + "." + role.value() + ": scaled down by " + excess + " node(s) (LIFO)",
                                                  excess));
     }
 
-    private static Result<Unit> dispatchDestroy(String sourceName, SourceProfile source, NodeRole role, int count) {
+    private static Result<Unit> dispatchDestroy(String sourceName,
+                                                SourceProfile source,
+                                                NodeRole role,
+                                                int count,
+                                                int managementPort) {
         return switch (source.type()){
             case CLOUD -> resolveCloudAndDestroy(source, sourceName, role, count);
             case DOCKER -> resolveDockerAndDestroy(sourceName, role, count);
             case FORGE -> forgeDestroyPlaceholder(sourceName, role, count);
-            case SSH -> sshDestroyPlaceholder(sourceName, role, count);
+            case SSH -> drainAndStopSshNodes(sourceName, role, count, source, managementPort);
         };
     }
 
@@ -304,8 +560,24 @@ import static org.pragmatica.lang.Result.success;
         return Result.unitResult();
     }
 
-    private static Result<Unit> sshDestroyPlaceholder(String sourceName, NodeRole role, int count) {
-        logAction("-", sourceName + "." + role.value() + "/ssh: " + count + " node(s) will be drained (hosts remain)");
+    private static Result<Unit> drainAndStopSshNodes(String sourceName,
+                                                     NodeRole role,
+                                                     int count,
+                                                     SourceProfile source,
+                                                     int managementPort) {
+        logAction("-", sourceName + "." + role.value() + "/ssh: draining " + count + " node(s) (hosts remain)");
+        var hosts = option(source.roles().get(role)).flatMap(RoleSubTable::hosts).or(List.of());
+        var stopCount = Math.min(count, hosts.size());
+        for (int i = 0;i <stopCount;i++) {
+            var host = hosts.get(hosts.size() - 1 - i);
+            var nodeId = sourceName + "-" + role.value() + "-" + (hosts.size() - 1 - i);
+            var result = ClusterHttpClient.drainNode(host, managementPort, nodeId).flatMap(_ -> ClusterHttpClient.waitForDrainComplete(host,
+                                                                                                                                       managementPort,
+                                                                                                                                       nodeId,
+                                                                                                                                       DRAIN_TIMEOUT_MS))
+                                                    .flatMap(_ -> sshStopNode(host, source));
+            if (result.isFailure()) {return result;}
+        }
         return Result.unitResult();
     }
 

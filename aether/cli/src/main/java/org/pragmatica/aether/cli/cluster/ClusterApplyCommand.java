@@ -2,6 +2,8 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormatter;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
@@ -42,7 +44,52 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CON
     @CommandLine.ParentCommand private ClusterCommand parent;
 
     @Override public Integer call() {
+        if (resume) {return handleResume();}
+        if (rollback) {return handleRollback();}
         return readConfigFile().flatMap(this::executeApply).fold(ClusterApplyCommand::onFailure, v -> v);
+    }
+
+    private int handleResume() {
+        return readAndParseConfig().flatMap(this::resumeApply).fold(ClusterApplyCommand::onFailure, v -> v);
+    }
+
+    private int handleRollback() {
+        return readAndParseConfig().flatMap(this::rollbackApply).fold(ClusterApplyCommand::onFailure, v -> v);
+    }
+
+    private Result<Integer> resumeApply(ClusterBootstrapConfig desired) {
+        return fetchAndParseStoredConfig().flatMap(stored -> ApplyOrchestrator.resume(desired, stored))
+                                        .map(this::printApplyResult);
+    }
+
+    private Result<Integer> rollbackApply(ClusterBootstrapConfig desired) {
+        return fetchAndParseStoredConfig().flatMap(stored -> ApplyOrchestrator.rollback(desired, stored))
+                                        .map(this::printApplyResult);
+    }
+
+    private int printApplyResult(ApplyResult result) {
+        System.out.printf("Apply complete: %d added, %d modified, %d removed%n",
+                          result.nodesAdded(),
+                          result.nodesModified(),
+                          result.nodesRemoved());
+        return ExitCode.SUCCESS;
+    }
+
+    private Result<ClusterBootstrapConfig> readAndParseConfig() {
+        return readConfigFile().flatMap(ClusterBootstrapConfigParser::parse);
+    }
+
+    private Result<ClusterBootstrapConfig> fetchAndParseStoredConfig() {
+        return ClusterHttpClient.fetch(CLUSTER_CONFIG_GET).flatMap(MAPPER::readTree)
+                                      .flatMap(ClusterApplyCommand::extractStoredToml)
+                                      .flatMap(ClusterBootstrapConfigParser::parse);
+    }
+
+    private static Result<String> extractStoredToml(JsonNode node) {
+        var toml = node.path("tomlContent").asText("");
+        return toml.isEmpty()
+              ? new ApplyOrchestrator.ApplyAborted("No stored config found on cluster").result()
+              : Result.success(toml);
     }
 
     private Result<String> readConfigFile() {
