@@ -651,3 +651,65 @@ try:
 except: pass
 " 2>/dev/null
 }
+
+# ---------------------------------------------------------------------------
+# Self-Heal (dual-cluster support)
+# ---------------------------------------------------------------------------
+
+# Wait for specific node count on a given endpoint
+wait_for_node_count_on() {
+    local endpoint="$1"
+    local expected="$2"
+    local timeout="${3:-120}"
+
+    wait_for "${expected} nodes on ${endpoint}" \
+        "[ \$(curl -sf -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin).get(\"coreCount\",0))' 2>/dev/null || echo 0) -ge ${expected} ]" \
+        "$timeout"
+}
+
+# Wait for leader election on a given endpoint
+wait_for_leader_on() {
+    local endpoint="$1"
+    local timeout="${2:-30}"
+
+    wait_for "leader elected on ${endpoint}" \
+        "curl -sf -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null | python3 -c 'import sys,json; nodes=json.load(sys.stdin).get(\"nodes\",[]); exit(0 if any(n.get(\"role\")==\"ACTIVE\" for n in nodes) else 1)' 2>/dev/null" \
+        "$timeout"
+}
+
+# Self-heal: wait for cluster to recover after destructive test.
+# Usage: self_heal <env_type> <compose_file> <expected_node_count> <mgmt_endpoint>
+self_heal() {
+    local env_type="$1"
+    local compose_file="$2"
+    local expected_count="${3:-5}"
+    local endpoint="${4:-${CLUSTER_B_MGMT}}"
+
+    log_info "Self-heal: waiting for ${expected_count} healthy nodes..."
+
+    # Step 1: wait for natural recovery (CTM auto-heal)
+    if wait_for_node_count_on "$endpoint" "$expected_count" 120; then
+        wait_for_leader_on "$endpoint" 30 && return 0
+    fi
+
+    # Step 2: force restart
+    log_warn "Cluster did not self-heal within 120s, forcing restart"
+    case "$env_type" in
+        docker|remote)
+            docker compose -f "$compose_file" restart 2>/dev/null
+            # Kill any orphaned CTM-provisioned containers
+            docker rm -f $(docker ps -aq --filter "name=aether-core") 2>/dev/null || true
+            ;;
+        cloud)
+            aether cluster heal --cluster cluster-b 2>/dev/null || true
+            ;;
+    esac
+
+    if wait_for_node_count_on "$endpoint" "$expected_count" 120; then
+        wait_for_leader_on "$endpoint" 30 && return 0
+    fi
+
+    # Step 3: abort
+    log_error "Cluster unrecoverable after restart -- aborting destructive suites"
+    return 1
+}
