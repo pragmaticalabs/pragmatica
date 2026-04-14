@@ -1,5 +1,6 @@
 package org.pragmatica.aether.config.cluster;
 
+import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Option;
 
 import java.util.List;
@@ -21,7 +22,8 @@ public record SourceProfile(String name,
                             Option<String> loadBalancerEndpoint,
                             Map<String, String> databases,
                             Map<NodeRole, RoleSubTable> roles,
-                            List<FirewallRule> firewallRules) {
+                            List<FirewallRule> firewallRules,
+                            Option<TomlDocument> nodeConfig) {
     public SourceProfile {
         loadBalancerIps = List.copyOf(loadBalancerIps);
         databases = Map.copyOf(databases);
@@ -43,7 +45,8 @@ public record SourceProfile(String name,
                                               Option<String> loadBalancerEndpoint,
                                               Map<String, String> databases,
                                               Map<NodeRole, RoleSubTable> roles,
-                                              List<FirewallRule> firewallRules) {
+                                              List<FirewallRule> firewallRules,
+                                              Option<TomlDocument> nodeConfig) {
         return new SourceProfile(name,
                                  type,
                                  provider,
@@ -58,6 +61,40 @@ public record SourceProfile(String name,
                                  loadBalancerEndpoint,
                                  databases,
                                  roles,
-                                 firewallRules);
+                                 firewallRules,
+                                 nodeConfig);
+    }
+
+    public static SourceProfile sourceProfile(String name,
+                                              SourceType type,
+                                              Option<CloudProviderName> provider,
+                                              Option<String> credentials,
+                                              Option<String> region,
+                                              Option<String> zone,
+                                              Option<String> user,
+                                              Option<String> key,
+                                              Option<Integer> sshPort,
+                                              LoadBalancerMode loadBalancer,
+                                              List<String> loadBalancerIps,
+                                              Option<String> loadBalancerEndpoint,
+                                              Map<String, String> databases,
+                                              Map<NodeRole, RoleSubTable> roles,
+                                              List<FirewallRule> firewallRules) {
+        return sourceProfile(name,
+                             type,
+                             provider,
+                             credentials,
+                             region,
+                             zone,
+                             user,
+                             key,
+                             sshPort,
+                             loadBalancer,
+                             loadBalancerIps,
+                             loadBalancerEndpoint,
+                             databases,
+                             roles,
+                             firewallRules,
+                             Option.empty());
     }
 }

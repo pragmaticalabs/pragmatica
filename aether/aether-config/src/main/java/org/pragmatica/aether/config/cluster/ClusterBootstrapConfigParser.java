@@ -2,6 +2,8 @@ package org.pragmatica.aether.config.cluster;
 
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import java.nio.file.Path;
@@ -166,6 +168,7 @@ import static org.pragmatica.lang.Result.success;
         var databases = parseDatabases(doc, section);
         var roles = parseRoles(doc, name, type);
         var firewallRules = parseFirewallRules(doc, name);
+        var nodeConfig = parseNodeConfig(doc, name);
         return SourceProfile.sourceProfile(name,
                                            type,
                                            provider,
@@ -180,7 +183,28 @@ import static org.pragmatica.lang.Result.success;
                                            loadBalancerEndpoint,
                                            databases,
                                            roles,
-                                           firewallRules);
+                                           firewallRules,
+                                           nodeConfig);
+    }
+
+    private static Option<TomlDocument> parseNodeConfig(TomlDocument doc, String sourceName) {
+        var prefix = SOURCE_PREFIX + sourceName + ".node_config";
+        var prefixWithDot = prefix + ".";
+        var sections = new LinkedHashMap<String, Map<String, Object>>();
+        for (var section : doc.sectionNames()) {
+            if (section.equals(prefix)) {
+                sections.put("",
+                             Map.copyOf(doc.sections().get(section)));
+                continue;
+            }
+            if (section.startsWith(prefixWithDot)) {
+                var innerName = section.substring(prefixWithDot.length());
+                sections.put(innerName,
+                             Map.copyOf(doc.sections().get(section)));
+            }
+        }
+        if (sections.isEmpty()) {return Option.empty();}
+        return Option.some(new TomlDocument(Map.copyOf(sections), Map.of()));
     }
 
     private static LoadBalancerMode parseLoadBalancerMode(TomlDocument doc, String section, SourceType type) {
@@ -358,7 +382,7 @@ import static org.pragmatica.lang.Result.success;
         return new ClusterConfigError.ParseFailed(detail);
     }
 
-    private static ClusterConfigError.ParseFailed wrapError(org.pragmatica.lang.Cause cause) {
+    private static ClusterConfigError.ParseFailed wrapError(Cause cause) {
         return new ClusterConfigError.ParseFailed(cause.message());
     }
 }

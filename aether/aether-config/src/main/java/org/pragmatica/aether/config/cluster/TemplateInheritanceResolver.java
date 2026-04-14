@@ -4,9 +4,11 @@ import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -24,7 +26,84 @@ import static org.pragmatica.lang.Result.success;
     private static final int MAX_DEPTH = 16;
 
     public static Result<TomlDocument> resolve(TomlDocument doc) {
-        return resolveSections(doc).map(sections -> new TomlDocument(sections, doc.tableArrays()));
+        return resolveSections(doc).flatMap(sections -> propagateDescendants(doc, sections))
+                              .map(finalSections -> new TomlDocument(finalSections,
+                                                                     doc.tableArrays()));
+    }
+
+    private static Result<Map<String, Map<String, Object>>> propagateDescendants(TomlDocument original,
+                                                                                 Map<String, Map<String, Object>> resolved) {
+        var withDescendants = new LinkedHashMap<>(resolved);
+        for (var sectionName : original.sectionNames()) {
+            if (!isOwnerSection(sectionName)) {continue;}
+            var sectionData = original.sections().get(sectionName);
+            var inheritValue = sectionData.get(INHERIT_KEY);
+            if (inheritValue == null) {continue;}
+            var chain = resolveDescendantChain(inheritValue.toString(), original, new HashSet<>(), 0);
+            if (chain.isFailure()) {return chain.map(_ -> withDescendants);}
+            chain.onSuccess(templateNames -> propagateChain(original, sectionName, templateNames, withDescendants));
+        }
+        return success(withDescendants);
+    }
+
+    private static boolean isOwnerSection(String sectionName) {
+        if (!sectionName.startsWith("source.") && !sectionName.startsWith("runtime.")) {return false;}
+        var prefixLen = sectionName.startsWith("source.")
+                       ? "source.".length()
+                       : "runtime.".length();
+        return sectionName.indexOf('.', prefixLen) <0;
+    }
+
+    private static Result<List<String>> resolveDescendantChain(String templateName,
+                                                               TomlDocument doc,
+                                                               Set<String> visited,
+                                                               int depth) {
+        if (depth >= MAX_DEPTH) {return new ClusterConfigError.ParseFailed("Template inheritance depth exceeded " + MAX_DEPTH + " for descendant chain at '" + templateName + "' (REQ-5.3.2)").result();}
+        var templateSection = TEMPLATE_PREFIX + templateName;
+        if (!doc.hasSection(templateSection)) {return success(List.of());}
+        if (!visited.add(templateName)) {return success(List.of());}
+        var templateData = doc.sections().get(templateSection);
+        var parentValue = templateData.get(INHERIT_KEY);
+        if (parentValue == null) {return success(List.of(templateName));}
+        return resolveDescendantChain(parentValue.toString(), doc, visited, depth + 1).map(parentChain -> appendTemplateName(parentChain,
+                                                                                                                             templateName));
+    }
+
+    private static List<String> appendTemplateName(List<String> parentChain, String templateName) {
+        var combined = new ArrayList<>(parentChain);
+        combined.add(templateName);
+        return List.copyOf(combined);
+    }
+
+    private static void propagateChain(TomlDocument original,
+                                       String ownerSection,
+                                       List<String> templateChain,
+                                       Map<String, Map<String, Object>> sections) {
+        for (var templateName : templateChain) {propagateOneTemplate(original, ownerSection, templateName, sections);}
+    }
+
+    private static void propagateOneTemplate(TomlDocument original,
+                                             String ownerSection,
+                                             String templateName,
+                                             Map<String, Map<String, Object>> sections) {
+        var templatePrefix = TEMPLATE_PREFIX + templateName + ".";
+        var ownerPrefix = ownerSection + ".";
+        for (var section : original.sectionNames()) {
+            if (!section.startsWith(templatePrefix)) {continue;}
+            var rest = section.substring(templatePrefix.length());
+            var targetName = ownerPrefix + rest;
+            var templateData = original.sections().get(section);
+            var existing = sections.get(targetName);
+            sections.put(targetName, existing == null
+                                    ? Map.copyOf(templateData)
+                                    : mergeDescendant(templateData, existing));
+        }
+    }
+
+    private static Map<String, Object> mergeDescendant(Map<String, Object> base, Map<String, Object> overlay) {
+        var merged = new LinkedHashMap<>(base);
+        merged.putAll(overlay);
+        return Map.copyOf(merged);
     }
 
     private static Result<Map<String, Map<String, Object>>> resolveSections(TomlDocument doc) {
