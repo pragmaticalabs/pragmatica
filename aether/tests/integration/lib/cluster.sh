@@ -92,7 +92,7 @@ is_cluster_ready() {
 discover_endpoints() {
     local cluster_endpoint="$1"
     local status
-    status=$(curl -sf -H "X-API-Key: ${API_KEY}" "${cluster_endpoint}/api/cluster/status" 2>/dev/null)
+    status=$(curl -s -H "X-API-Key: ${API_KEY}" "${cluster_endpoint}/api/cluster/status" 2>/dev/null || true)
 
     if [ -n "$status" ]; then
         LB_APP_ENDPOINT=$(json_value "$status" "appEndpoint")
