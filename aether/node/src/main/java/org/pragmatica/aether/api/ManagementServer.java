@@ -1,6 +1,15 @@
 package org.pragmatica.aether.api;
 
 import org.pragmatica.aether.config.HttpProtocol;
+import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
+import org.pragmatica.aether.http.forward.HttpForwarder;
+import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.management.route.RouteTarget;
+import org.pragmatica.aether.slice.delegation.TaskGroup;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.http.CommonContentType;
+import org.pragmatica.http.ContentCategory;
+import org.pragmatica.http.ContentType;
 import org.pragmatica.aether.api.routes.AlertRoutes;
 import org.pragmatica.aether.api.routes.ApiKeyRoutes;
 import org.pragmatica.aether.api.routes.BackupRoutes;
@@ -77,8 +86,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
@@ -124,46 +135,8 @@ public interface ManagementServer {
                                              boolean securityEnabled,
                                              Option<EventLoopGroup> bossGroup,
                                              Option<EventLoopGroup> workerGroup,
-                                             HttpProtocol httpProtocol) {
-        return managementServer(port,
-                                nodeSupplier,
-                                alertManager,
-                                depthRegistry,
-                                traceStore,
-                                logLevelRegistry,
-                                dynamicConfigManager,
-                                scheduledTaskRegistry,
-                                scheduledTaskManager,
-                                sliceInvoker,
-                                scheduledTaskStateRegistry,
-                                tls,
-                                securityValidator,
-                                securityEnabled,
-                                bossGroup,
-                                workerGroup,
-                                httpProtocol,
-                                Option.empty(),
-                                Option.empty(),
-                                Option.empty());
-    }
-
-    static ManagementServer managementServer(int port,
-                                             Supplier<ManageableNode> nodeSupplier,
-                                             AlertManager alertManager,
-                                             ObservabilityDepthRegistry depthRegistry,
-                                             InvocationTraceStore traceStore,
-                                             LogLevelRegistry logLevelRegistry,
-                                             Option<DynamicConfigManager> dynamicConfigManager,
-                                             ScheduledTaskRegistry scheduledTaskRegistry,
-                                             ScheduledTaskManager scheduledTaskManager,
-                                             SliceInvoker sliceInvoker,
-                                             ScheduledTaskStateRegistry scheduledTaskStateRegistry,
-                                             Option<TlsConfig> tls,
-                                             SecurityValidator securityValidator,
-                                             boolean securityEnabled,
-                                             Option<EventLoopGroup> bossGroup,
-                                             Option<EventLoopGroup> workerGroup,
                                              HttpProtocol httpProtocol,
+                                             ForwardingTimeouts forwardingTimeouts,
                                              Option<ClusterNetwork> clusterNetwork,
                                              Option<Serializer> serializer,
                                              Option<Deserializer> deserializer) {
@@ -184,6 +157,7 @@ public interface ManagementServer {
                                         bossGroup,
                                         workerGroup,
                                         httpProtocol,
+                                        forwardingTimeouts,
                                         clusterNetwork,
                                         serializer,
                                         deserializer);
@@ -218,6 +192,9 @@ class ManagementServerImpl implements ManagementServer {
     private final Option<ClusterNetwork> clusterNetwork;
     private final Option<Serializer> forwardSerializer;
     private final Option<Deserializer> forwardDeserializer;
+    private final ForwardingTimeouts forwardingTimeouts;
+
+    private final AtomicReference<Option<HttpForwarder>> mgmtForwarderRef = new AtomicReference<>(Option.empty());
 
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
 
@@ -246,6 +223,7 @@ class ManagementServerImpl implements ManagementServer {
                          Option<EventLoopGroup> bossGroup,
                          Option<EventLoopGroup> workerGroup,
                          HttpProtocol httpProtocol,
+                         ForwardingTimeouts forwardingTimeouts,
                          Option<org.pragmatica.consensus.net.ClusterNetwork> clusterNetwork,
                          Option<org.pragmatica.serialization.Serializer> serializer,
                          Option<org.pragmatica.serialization.Deserializer> deserializer) {
@@ -263,6 +241,7 @@ class ManagementServerImpl implements ManagementServer {
         this.clusterNetwork = clusterNetwork;
         this.forwardSerializer = serializer;
         this.forwardDeserializer = deserializer;
+        this.forwardingTimeouts = forwardingTimeouts;
         this.wsAuthenticator = WebSocketAuthenticator.webSocketAuthenticator(securityValidator, securityEnabled);
         this.metricsPublisher = DashboardMetricsPublisher.dashboardMetricsPublisher(nodeSupplier, alertManager);
         this.statusWsHandler = new StatusWebSocketHandler(wsAuthenticator);
@@ -649,6 +628,7 @@ class ManagementServerImpl implements ManagementServer {
             recordRequestMetrics(methodName, path, instrumented, startTime);
             return;
         }
+        if (tryForwardToRouteOwner(ctx, instrumented, methodName, startTime)) {return;}
         if (router.handle(ctx, instrumented)) {
             recordRequestMetrics(methodName, path, instrumented, startTime);
             return;
@@ -659,6 +639,138 @@ class ManagementServerImpl implements ManagementServer {
         }}
         staticFileHandler.handle(ctx, instrumented);
         recordRequestMetrics(methodName, path, instrumented, startTime);
+    }
+
+    private boolean tryForwardToRouteOwner(RequestContext ctx,
+                                           InstrumentedResponseWriter response,
+                                           String methodName,
+                                           long startTime) {
+        var methodOpt = parseRoutingMethod(ctx.method().name());
+        if (methodOpt.isEmpty()) {return false;}
+        var matched = ManagementRoute.match(methodOpt.unwrap(), ctx.path()).option();
+        if (matched.isEmpty()) {return false;}
+        var target = matched.unwrap().route()
+                                   .target();
+        return switch (target){
+            case RouteTarget.LocalNode __ -> false;
+            case RouteTarget.AnyCoreNode __ -> tryForwardIfNotCore(ctx, response, methodName, startTime);
+            case RouteTarget.TaskGroupTarget(var group) -> tryForwardIfNotOwner(ctx,
+                                                                                response,
+                                                                                methodName,
+                                                                                startTime,
+                                                                                group);
+        };
+    }
+
+    private boolean tryForwardIfNotCore(RequestContext ctx,
+                                        InstrumentedResponseWriter response,
+                                        String methodName,
+                                        long startTime) {
+        var node = nodeSupplier.get();
+        if (node.topologyConfig().coreNodes()
+                               .stream()
+                               .anyMatch(info -> info.id().equals(node.self()))) {return false;}
+        forwardManagementRequest(ctx, response, methodName, startTime);
+        return true;
+    }
+
+    private boolean tryForwardIfNotOwner(RequestContext ctx,
+                                         InstrumentedResponseWriter response,
+                                         String methodName,
+                                         long startTime,
+                                         TaskGroup group) {
+        var node = nodeSupplier.get();
+        var ownerResult = node.taskGroupAssignmentRegistry().ownerFor(group);
+        if (ownerResult.isFailure()) {return false;}
+        var owner = ownerResult.unwrap();
+        if (owner.equals(node.self())) {return false;}
+        forwardManagementRequest(ctx, response, methodName, startTime);
+        return true;
+    }
+
+    private void forwardManagementRequest(RequestContext ctx,
+                                          InstrumentedResponseWriter response,
+                                          String methodName,
+                                          long startTime) {
+        var path = ctx.path();
+        var requestId = ctx.requestId();
+        ensureMgmtForwarder().fold(() -> sendForwardUnavailable(response, path, requestId, methodName, startTime),
+                                   forwarder -> {
+                                       forwarder.forwardManagement(toManagementRequestContext(ctx, path),
+                                                                   requestId).onSuccess(responseData -> sendForwardedResponse(response,
+                                                                                                                              responseData))
+                                                                  .onFailure(cause -> sendForwardError(response,
+                                                                                                       path,
+                                                                                                       requestId,
+                                                                                                       cause))
+                                                                  .onResultRun(() -> recordRequestMetrics(methodName,
+                                                                                                          path,
+                                                                                                          response,
+                                                                                                          startTime));
+                                       return Unit.unit();
+                                   });
+    }
+
+    private Option<HttpForwarder> ensureMgmtForwarder() {
+        var existing = mgmtForwarderRef.get();
+        if (existing.isPresent()) {return existing;}
+        if (clusterNetwork.isEmpty() || forwardSerializer.isEmpty() || forwardDeserializer.isEmpty()) {return Option.empty();}
+        var node = nodeSupplier.get();
+        var fwd = HttpForwarder.httpForwarder(node.self(),
+                                              node.httpRouteRegistry(),
+                                              clusterNetwork.unwrap(),
+                                              forwardSerializer.unwrap(),
+                                              forwardDeserializer.unwrap(),
+                                              forwardingTimeouts.managementTimeout(),
+                                              forwardingTimeouts.retryDelay().millis(),
+                                              forwardingTimeouts.maxRetries(),
+                                              () -> coreNodeIds(node),
+                                              node.taskGroupAssignmentRegistry()::ownerFor);
+        var wrapped = Option.<HttpForwarder>some(fwd);
+        return mgmtForwarderRef.compareAndSet(existing, wrapped)
+              ? wrapped
+              : mgmtForwarderRef.get();
+    }
+
+    private static Set<NodeId> coreNodeIds(ManageableNode node) {
+        return node.topologyConfig().coreNodes()
+                                  .stream()
+                                  .map(NodeInfo::id)
+                                  .collect(Collectors.toSet());
+    }
+
+    private static Option<org.pragmatica.http.routing.HttpMethod> parseRoutingMethod(String raw) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> org.pragmatica.http.routing.HttpMethod.valueOf(raw.toUpperCase()))
+        .option();
+    }
+
+    private void sendForwardedResponse(InstrumentedResponseWriter response, HttpResponseData responseData) {
+        var contentType = Option.option(responseData.headers().get("Content-Type")).map(ct -> ContentType.contentType(ct,
+                                                                                                                      ContentCategory.JSON))
+                                       .or(CommonContentType.APPLICATION_JSON);
+        response.write(toServerStatus(responseData.statusCode()), responseData.body(), contentType);
+    }
+
+    private void sendForwardError(InstrumentedResponseWriter response, String path, String requestId, Cause cause) {
+        log.warn("Management forward failed [{}] {}: {}", requestId, path, cause.message());
+        response.error(HttpStatus.SERVICE_UNAVAILABLE, "Management forward failed: " + cause.message());
+    }
+
+    private Unit sendForwardUnavailable(InstrumentedResponseWriter response,
+                                        String path,
+                                        String requestId,
+                                        String methodName,
+                                        long startTime) {
+        log.warn("Management forwarder unavailable [{}] {} {}", requestId, methodName, path);
+        response.error(HttpStatus.SERVICE_UNAVAILABLE, "Management forwarding not yet available");
+        recordRequestMetrics(methodName, path, response, startTime);
+        return Unit.unit();
+    }
+
+    private static HttpStatus toServerStatus(int code) {
+        for (var status : HttpStatus.values()) {if (status.code() == code) {return status;}}
+        return HttpStatus.INTERNAL_SERVER_ERROR;
     }
 
     private void recordRequestMetrics(String method, String path, InstrumentedResponseWriter writer, long startTime) {

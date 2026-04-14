@@ -1115,6 +1115,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                  serverBossGroup,
                                                                                                                  serverWorkerGroup,
                                                                                                                  config.managementHttpProtocol(),
+                                                                                                                 config.timeouts()
+                                                                                                                                .forwarding(),
                                                                                                                  Option.some(clusterNode.network()),
                                                                                                                  Option.some(serializer),
                                                                                                                  Option.some(deserializer));
