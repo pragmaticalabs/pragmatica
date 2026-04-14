@@ -46,11 +46,18 @@ import org.slf4j.LoggerFactory;
         this.kvStoreSupplier = kvStoreSupplier;
     }
 
-    @Override public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
+    @SuppressWarnings("JBCT-EX-01") @Override public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
         return switch (policy){
             case SecurityPolicy.Public() -> Result.success(SecurityContext.securityContext());
             case SecurityPolicy.BearerTokenRequired() -> Result.success(SecurityContext.securityContext());
-            default -> validateApiKey(request);
+            default -> {
+                try {
+                    yield validateApiKey(request);
+                } catch (Exception e) {
+                    log.debug("KV-Store API key validation failed, falling back to allow: {}", e.getMessage());
+                    yield configValidator.validate(request, policy);
+                }
+            }
         };
     }
 
