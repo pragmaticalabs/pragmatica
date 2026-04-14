@@ -78,12 +78,12 @@ detect_capabilities() {
 
     # Persistence: check if PostgreSQL is reachable
     if command -v pg_isready &>/dev/null; then
-        if pg_isready -h "${PG_HOST:-localhost}" -p "${PG_PORT:-5432}" -U forge -q 2>/dev/null; then
+        if pg_isready -h "${PG_HOST:-${TARGET_HOST:-localhost}}" -p "${PG_PORT:-5432}" -U forge -q 2>/dev/null; then
             export CAP_PERSISTENCE=true
         fi
     else
         # Fallback: try TCP connect
-        if timeout 3 bash -c "echo >/dev/tcp/${PG_HOST:-localhost}/${PG_PORT:-5432}" 2>/dev/null; then
+        if timeout 3 bash -c "echo >/dev/tcp/${PG_HOST:-${TARGET_HOST:-localhost}}/${PG_PORT:-5432}" 2>/dev/null; then
             export CAP_PERSISTENCE=true
         fi
     fi
