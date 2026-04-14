@@ -51,7 +51,7 @@ test_rolling_complete() {
 }
 
 cleanup() {
-    deploy_cleanup
+    deploy_cleanup || true
 }
 
 run_test "Cluster ready" test_cluster_ready
