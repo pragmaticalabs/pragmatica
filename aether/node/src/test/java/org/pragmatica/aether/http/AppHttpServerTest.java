@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue.RouteEntry;
@@ -42,6 +43,7 @@ class AppHttpServerTest {
         port = TEST_PORT;
         // Create server without HTTP forwarding support for basic tests
         server = AppHttpServer.appHttpServer(config,
+                                             ForwardingTimeouts.forwardingTimeouts(),
                                              SELF_NODE,
                                              registry,
                                              Option.none(),  // No HttpRoutePublisher
@@ -109,6 +111,7 @@ class AppHttpServerTest {
     void disabled_server_does_not_bind() {
         var disabledConfig = AppHttpConfig.appHttpConfig();
         var disabledServer = AppHttpServer.appHttpServer(disabledConfig,
+                                                         ForwardingTimeouts.forwardingTimeouts(),
                                                          SELF_NODE,
                                                          registry,
                                                          Option.none(),
@@ -166,6 +169,7 @@ class AppHttpServerTest {
         // Create server with very small max request size (1KB)
         var smallConfig = AppHttpConfig.appHttpConfig(TEST_PORT).withMaxRequestSize(1024);
         var smallServer = AppHttpServer.appHttpServer(smallConfig,
+                                                       ForwardingTimeouts.forwardingTimeouts(),
                                                        SELF_NODE,
                                                        registry,
                                                        Option.none(),

@@ -47,9 +47,12 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
         }
     }
 
-    public record ForwardingTimeouts(TimeSpan retryDelay, int maxRetries) {
+    public record ForwardingTimeouts(TimeSpan retryDelay,
+                                     int maxRetries,
+                                     TimeSpan appTimeout,
+                                     TimeSpan managementTimeout) {
         public static ForwardingTimeouts forwardingTimeouts() {
-            return new ForwardingTimeouts(timeSpan(200).millis(), 3);
+            return new ForwardingTimeouts(timeSpan(200).millis(), 3, timeSpan(5).seconds(), timeSpan(5).seconds());
         }
     }
 

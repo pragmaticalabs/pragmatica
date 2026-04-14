@@ -837,6 +837,7 @@ public interface AetherNode extends ManageableNode {
                                                    .map(org.pragmatica.net.tcp.Server::workerGroup);
         var taskGroupAssignmentRegistry = TaskGroupAssignmentRegistry.taskGroupAssignmentRegistry(kvStore);
         var appHttpServer = AppHttpServer.appHttpServer(config.appHttp(),
+                                                        config.timeouts().forwarding(),
                                                         config.self(),
                                                         httpRouteRegistry,
                                                         Option.some(httpRoutePublisher),

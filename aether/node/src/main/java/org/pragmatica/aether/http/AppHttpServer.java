@@ -6,6 +6,7 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SecurityMode;
+import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.update.DeploymentManager.ActiveRouting;
 import org.pragmatica.aether.update.VersionRouting;
@@ -118,6 +119,7 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     static AppHttpServer appHttpServer(AppHttpConfig config,
+                                       ForwardingTimeouts forwardingTimeouts,
                                        NodeId selfNodeId,
                                        HttpRouteRegistry routeRegistry,
                                        Option<HttpRoutePublisher> httpRoutePublisher,
@@ -130,6 +132,7 @@ import static org.pragmatica.lang.Unit.unit;
                                        Option<EventLoopGroup> workerGroup,
                                        Option<DeploymentManager> strategyCoordinator) {
         return appHttpServer(config,
+                             forwardingTimeouts,
                              selfNodeId,
                              routeRegistry,
                              httpRoutePublisher,
@@ -146,6 +149,7 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     static AppHttpServer appHttpServer(AppHttpConfig config,
+                                       ForwardingTimeouts forwardingTimeouts,
                                        NodeId selfNodeId,
                                        HttpRouteRegistry routeRegistry,
                                        Option<HttpRoutePublisher> httpRoutePublisher,
@@ -159,6 +163,7 @@ import static org.pragmatica.lang.Unit.unit;
                                        Option<DeploymentManager> strategyCoordinator,
                                        Option<HttpRequestObserver> requestObserver) {
         return appHttpServer(config,
+                             forwardingTimeouts,
                              selfNodeId,
                              routeRegistry,
                              httpRoutePublisher,
@@ -175,6 +180,7 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     static AppHttpServer appHttpServer(AppHttpConfig config,
+                                       ForwardingTimeouts forwardingTimeouts,
                                        NodeId selfNodeId,
                                        HttpRouteRegistry routeRegistry,
                                        Option<HttpRoutePublisher> httpRoutePublisher,
@@ -189,6 +195,7 @@ import static org.pragmatica.lang.Unit.unit;
                                        Option<HttpRequestObserver> requestObserver,
                                        Option<Fn1<Result<NodeId>, TaskGroup>> taskGroupOwnerResolver) {
         return new AppHttpServerImpl(config,
+                                     forwardingTimeouts,
                                      selfNodeId,
                                      routeRegistry,
                                      httpRoutePublisher,
@@ -233,6 +240,7 @@ import static org.pragmatica.lang.Unit.unit;
     private final AtomicBoolean routeSyncReceived = new AtomicBoolean(false);
 
     AppHttpServerImpl(AppHttpConfig config,
+                      ForwardingTimeouts forwardingTimeouts,
                       NodeId selfNodeId,
                       HttpRouteRegistry routeRegistry,
                       Option<HttpRoutePublisher> httpRoutePublisher,
@@ -265,7 +273,7 @@ import static org.pragmatica.lang.Unit.unit;
                                                 clusterNetwork,
                                                 serializer,
                                                 deserializer,
-                                                config,
+                                                forwardingTimeouts,
                                                 taskGroupOwnerResolver);
     }
 
@@ -283,7 +291,7 @@ import static org.pragmatica.lang.Unit.unit;
                                                             Option<ClusterNetwork> clusterNetwork,
                                                             Option<Serializer> serializer,
                                                             Option<Deserializer> deserializer,
-                                                            AppHttpConfig config,
+                                                            ForwardingTimeouts forwardingTimeouts,
                                                             Option<Fn1<Result<NodeId>, TaskGroup>> taskGroupOwnerResolver) {
         var resolver = taskGroupOwnerResolver.or(HttpForwarder.UNASSIGNED_RESOLVER);
         return clusterNetwork.flatMap(net -> serializer.flatMap(ser -> deserializer.map(des -> HttpForwarder.httpForwarder(selfNodeId,
@@ -291,7 +299,10 @@ import static org.pragmatica.lang.Unit.unit;
                                                                                                                            net,
                                                                                                                            ser,
                                                                                                                            des,
-                                                                                                                           config.forwardTimeout(),
+                                                                                                                           forwardingTimeouts.appTimeout(),
+                                                                                                                           forwardingTimeouts.retryDelay()
+                                                                                                                                                        .millis(),
+                                                                                                                           forwardingTimeouts.maxRetries(),
                                                                                                                            java.util.Set::of,
                                                                                                                            resolver))));
     }

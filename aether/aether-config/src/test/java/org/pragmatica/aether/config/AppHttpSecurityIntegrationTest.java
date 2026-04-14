@@ -267,7 +267,9 @@ class AppHttpSecurityIntegrationTest {
                 role_claim = "groups"
                 jwks_cache_ttl_seconds = 1800
                 max_request_size = "50MB"
-                forward_timeout_ms = 15000
+
+                [timeouts.forwarding]
+                app_timeout = "15s"
                 """;
 
             ConfigLoader.loadFromString(toml)
@@ -280,7 +282,7 @@ class AppHttpSecurityIntegrationTest {
                     assertThat(appHttp.securityMode()).isEqualTo(SecurityMode.JWT);
                     assertThat(appHttp.securityEnabled()).isTrue();
                     assertThat(appHttp.maxRequestSize()).isEqualTo(50 * 1024 * 1024);
-                    assertThat(appHttp.forwardTimeout().millis()).isEqualTo(15000);
+                    assertThat(config.timeouts().forwarding().appTimeout().millis()).isEqualTo(15000);
 
                     var jwt = appHttp.jwtConfig();
                     assertThat(jwt.isPresent()).isTrue();

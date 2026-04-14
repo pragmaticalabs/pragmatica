@@ -95,18 +95,4 @@ class AppHttpConfigApiKeysTest {
         assertThat(config.portFor(2)).isEqualTo(8072);
     }
 
-    @Test
-    void withForwardTimeout_overridesDefault() {
-        var config = AppHttpConfig.appHttpConfig()
-                                  .withForwardTimeout(org.pragmatica.lang.io.TimeSpan.timeSpan(10).seconds());
-
-        assertThat(config.forwardTimeout().millis()).isEqualTo(10_000);
-    }
-
-    @Test
-    void defaults_forwardTimeout() {
-        var config = AppHttpConfig.appHttpConfig();
-
-        assertThat(config.forwardTimeout()).isEqualTo(AppHttpConfig.DEFAULT_FORWARD_TIMEOUT);
-    }
 }

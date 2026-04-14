@@ -231,11 +231,6 @@ public final class ConfigLoader {
         var enabled = doc.getString("app-http", "enabled").map(ConfigLoader::toBooleanValue)
                                    .or(false);
         var port = doc.getInt("app-http", "port").or(AppHttpConfig.DEFAULT_APP_HTTP_PORT);
-        var forwardTimeout = parseTimeSpanOrMs(doc,
-                                               "app-http",
-                                               "forward_timeout",
-                                               "forward_timeout_ms",
-                                               AppHttpConfig.DEFAULT_FORWARD_TIMEOUT);
         var maxRequestSize = parseDataSize(doc, "app-http", "max_request_size", AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE);
         var explicitMode = doc.getString("app-http", "security_mode").flatMap(SecurityMode::securityMode);
         var apiKeys = resolveApiKeys(doc);
@@ -248,7 +243,6 @@ public final class ConfigLoader {
         if (enabled || !apiKeys.isEmpty()) {builder.appHttp(AppHttpConfig.appHttpConfig(enabled,
                                                                                         port,
                                                                                         apiKeys,
-                                                                                        forwardTimeout,
                                                                                         maxRequestSize,
                                                                                         securityMode,
                                                                                         jwtConfig,
@@ -426,7 +420,15 @@ public final class ConfigLoader {
                                                                    "timeouts.forwarding",
                                                                    "retry_delay",
                                                                    d.retryDelay()),
-                                                     parseInt(doc, "timeouts.forwarding", "max_retries", d.maxRetries()));
+                                                     parseInt(doc, "timeouts.forwarding", "max_retries", d.maxRetries()),
+                                                     parseTimeSpan(doc,
+                                                                   "timeouts.forwarding",
+                                                                   "app_timeout",
+                                                                   d.appTimeout()),
+                                                     parseTimeSpan(doc,
+                                                                   "timeouts.forwarding",
+                                                                   "management_timeout",
+                                                                   d.managementTimeout()));
     }
 
     private static TimeoutsConfig.DeploymentTimeouts parseDeploymentTimeouts(TomlDocument doc,

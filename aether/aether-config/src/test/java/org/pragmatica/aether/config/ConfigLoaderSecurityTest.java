@@ -102,13 +102,15 @@ class ConfigLoaderSecurityTest {
 
             [app-http]
             enabled = "true"
-            forward_timeout_ms = 10000
+
+            [timeouts.forwarding]
+            app_timeout = "10s"
             """;
 
         ConfigLoader.loadFromString(toml)
             .onFailure(cause -> fail(cause.message()))
             .onSuccess(config -> {
-                assertThat(config.appHttp().forwardTimeout().millis()).isEqualTo(10000);
+                assertThat(config.timeouts().forwarding().appTimeout().millis()).isEqualTo(10000);
             });
     }
 

@@ -129,7 +129,7 @@ sequenceDiagram
 |------|-------------|
 | Retry count | `connectedNodes.size() - 1` (try every node exactly once) |
 | Node selection | Round-robin, excluding already-tried nodes |
-| Timeout per attempt | `forwardTimeoutMs` (default: 5000ms) |
+| Timeout per attempt | `[timeouts.forwarding] app_timeout` (default: 5s) |
 | All retries exhausted | 504 Gateway Timeout |
 
 ## Connectivity Filtering

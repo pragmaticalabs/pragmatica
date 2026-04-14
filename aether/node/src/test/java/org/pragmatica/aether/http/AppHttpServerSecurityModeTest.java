@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.SecurityMode;
+import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
@@ -60,6 +61,7 @@ class AppHttpServerSecurityModeTest {
                                    .build();
             var config = AppHttpConfig.appHttpConfig(SECURE_PORT, Set.of(VALID_API_KEY));
             server = AppHttpServer.appHttpServer(config,
+                                                 ForwardingTimeouts.forwardingTimeouts(),
                                                  SELF_NODE,
                                                  HttpRouteRegistry.httpRouteRegistry(),
                                                  Option.none(),
@@ -144,6 +146,7 @@ class AppHttpServerSecurityModeTest {
                                    .build();
             var config = AppHttpConfig.appHttpConfig(OPEN_PORT);
             server = AppHttpServer.appHttpServer(config,
+                                                 ForwardingTimeouts.forwardingTimeouts(),
                                                  SELF_NODE,
                                                  HttpRouteRegistry.httpRouteRegistry(),
                                                  Option.none(),
