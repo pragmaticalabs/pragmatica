@@ -58,18 +58,18 @@ import org.slf4j.LoggerFactory;
         var configResult = configValidator.validate(request, SecurityPolicy.apiKeyRequired());
         if (configResult.isSuccess()) {return configResult;}
         var apiKeyOpt = extractApiKey(request.headers());
-        if (apiKeyOpt.isEmpty()) {
-            return hasAnyConfiguredKeys()
-                  ? SecurityError.MISSING_API_KEY.result()
-                  : Result.success(SecurityContext.securityContext());
-        }
+        if (apiKeyOpt.isEmpty()) {return hasAnyConfiguredKeys()
+                                        ? SecurityError.MISSING_API_KEY.result()
+                                        : Result.success(SecurityContext.securityContext());}
         return checkKvStoreKey(apiKeyOpt.unwrap());
     }
 
     private boolean hasAnyConfiguredKeys() {
         var kvStore = kvStoreSupplier.get();
         if (kvStore == null) {return false;}
-        return kvStore.snapshot().keySet().stream().anyMatch(k -> k.asString().startsWith(API_KEY_PREFIX));
+        return kvStore.snapshot().keySet()
+                               .stream()
+                               .anyMatch(k -> k.asString().startsWith(API_KEY_PREFIX));
     }
 
     private Result<SecurityContext> checkKvStoreKey(String apiKey) {

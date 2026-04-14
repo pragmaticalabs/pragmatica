@@ -30,10 +30,6 @@
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>lb</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>forge-api</artifactId>
         </dependency>
 

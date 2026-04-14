@@ -2,12 +2,6 @@ package org.pragmatica.aether.forge;
 
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.ember.EmberConfig;
-import org.pragmatica.aether.lb.AetherPassiveLB;
-import org.pragmatica.aether.lb.PassiveLBConfig;
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
-import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
@@ -76,8 +70,6 @@ import org.slf4j.LoggerFactory;
     private final EmberConfig forgeConfig;
 
     private volatile Option<EmberCluster> cluster = Option.empty();
-
-    private volatile Option<AetherPassiveLB> loadBalancer = Option.empty();
 
     private volatile Option<ConfigurableLoadRunner> configurableLoadRunner = Option.empty();
 
@@ -210,7 +202,6 @@ import org.slf4j.LoggerFactory;
         var configProvider = buildConfigurationProvider();
         initializeComponents(configProvider);
         startCluster();
-        startLoadBalancer();
         startMetricsCollection();
         deployAndStartLoad();
         apiHandler.onPresent(h -> h.addEvent("CLUSTER_STARTED",
@@ -279,34 +270,6 @@ import org.slf4j.LoggerFactory;
                                                  }));
         TimeSpan.timeSpan(2).seconds()
                          .sleep();
-    }
-
-    private void startLoadBalancer() {
-        if (!forgeConfig.lbEnabled()) {return;}
-        var clusterNodeInfos = cluster.map(EmberCluster::getNodeInfos).or(List.of());
-        if (clusterNodeInfos.isEmpty()) {
-            log.warn("No cluster nodes available, skipping load balancer start");
-            return;
-        }
-        var selfNodeId = NodeId.nodeId("lb-passive").unwrap();
-        var lbClusterPort = EmberCluster.DEFAULT_BASE_PORT + forgeConfig.nodes() + 10;
-        var selfInfo = NodeInfo.nodeInfo(selfNodeId,
-                                         NodeAddress.nodeAddress("localhost", lbClusterPort).unwrap(),
-                                         NodeRole.PASSIVE);
-        var lbConfig = PassiveLBConfig.passiveLBConfig(forgeConfig.lbPort(),
-                                                       selfInfo,
-                                                       clusterNodeInfos,
-                                                       forgeConfig.nodes());
-        var lb = AetherPassiveLB.aetherPassiveLB(lbConfig);
-        lb.start().await(TimeSpan.timeSpan(30).seconds())
-                .onSuccess(_ -> registerLoadBalancer(lb, lbClusterPort))
-                .onFailure(cause -> log.error("Failed to start passive LB: {}",
-                                              cause.message()));
-    }
-
-    private void registerLoadBalancer(AetherPassiveLB lb, int lbClusterPort) {
-        loadBalancer = Option.some(lb);
-        log.info("Passive LB started on port {} (cluster port {})", forgeConfig.lbPort(), lbClusterPort);
     }
 
     private void startMetricsCollection() {
@@ -451,9 +414,6 @@ import org.slf4j.LoggerFactory;
         httpServer.onPresent(server -> server.stop().await(TimeSpan.timeSpan(10).seconds())
                                                   .onFailure(cause -> log.warn("Error stopping HTTP server: {}",
                                                                                cause.message())));
-        loadBalancer.onPresent(lb -> lb.stop().await(TimeSpan.timeSpan(10).seconds())
-                                            .onFailure(cause -> log.warn("Error stopping load balancer: {}",
-                                                                         cause.message())));
         cluster.onPresent(c -> c.stop().await(TimeSpan.timeSpan(30).seconds())
                                      .onFailure(cause -> log.warn("Error stopping cluster: {}",
                                                                   cause.message())));
