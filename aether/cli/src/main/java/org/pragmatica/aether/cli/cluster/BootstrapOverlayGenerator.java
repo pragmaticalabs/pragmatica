@@ -1,0 +1,134 @@
+/*
+ *  Copyright (c) 2020-2025 Sergiy Yevtushenko.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.pragmatica.aether.cli.cluster;
+
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.config.cluster.SourceType;
+import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.lang.Option;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Stream;
+
+
+/// Builds the Layer 4 (CLI bootstrap-time) overlay TOML document for a single node.
+///
+/// The overlay carries only fields the CLI knows deterministically from bootstrap context —
+/// cluster identity, the computed peer list, per-node id and role, and source-type-specific
+/// `[cloud.compute]` and `[database]` blocks. It MUST NOT include settings that are normally
+/// operator-tunable (timeouts, memory, logging) — those belong in Layer 3 overrides.
+///
+/// Spec: aether/docs/specs/node-config-composition-spec.md §6.
+public interface BootstrapOverlayGenerator {
+    record Section(String name, Map<String, Object> values) {
+        static Section section(String name, Map<String, Object> values) {
+            return new Section(name, Map.copyOf(values));
+        }
+    }
+
+    static TomlDocument overlay(ClusterBootstrapConfig config,
+                                SourceProfile source,
+                                String nodeId,
+                                int nodeIndex,
+                                NodeRole role,
+                                List<String> peers,
+                                Option<String> apiKey,
+                                Option<String> dockerGid,
+                                Option<String> clusterSecret) {
+        var fixed = Stream.of(Option.some(clusterSection(config, peers)),
+                              Option.some(nodeSection(nodeId, role, source)),
+                              sourceSpecificSection(config, source, nodeIndex, apiKey, dockerGid),
+                              tlsSection(source, clusterSecret))
+        .flatMap(Option::stream);
+        var databases = databaseSections(source).stream();
+        var sections = Stream.concat(fixed, databases).toList();
+        return new TomlDocument(toOrderedMap(sections), Map.of());
+    }
+
+    private static Map<String, Map<String, Object>> toOrderedMap(List<Section> sections) {
+        var ordered = new LinkedHashMap<String, Map<String, Object>>();
+        sections.forEach(section -> ordered.put(section.name(), section.values()));
+        return Map.copyOf(ordered);
+    }
+
+    private static Section clusterSection(ClusterBootstrapConfig config, List<String> peers) {
+        return Section.section("cluster",
+                               Map.of("name",
+                                      config.cluster().name(),
+                                      "peers",
+                                      String.join(",", peers)));
+    }
+
+    private static Section nodeSection(String nodeId, NodeRole role, SourceProfile source) {
+        var values = new LinkedHashMap<String, Object>();
+        values.put("id", nodeId);
+        values.put("role", role.value());
+        source.zone().onPresent(zone -> values.put("zone", zone));
+        return Section.section("node", values);
+    }
+
+    private static Option<Section> sourceSpecificSection(ClusterBootstrapConfig config,
+                                                         SourceProfile source,
+                                                         int nodeIndex,
+                                                         Option<String> apiKey,
+                                                         Option<String> dockerGid) {
+        return switch (source.type()){
+            case DOCKER -> Option.some(dockerComputeSection(config, nodeIndex, apiKey, dockerGid));
+            case CLOUD -> Option.some(cloudComputeSection(source));
+            case SSH, FORGE -> Option.empty();
+        };
+    }
+
+    private static Section dockerComputeSection(ClusterBootstrapConfig config,
+                                                int nodeIndex,
+                                                Option<String> apiKey,
+                                                Option<String> dockerGid) {
+        var ports = config.operations().ports();
+        var values = new LinkedHashMap<String, Object>();
+        values.put("management_port_base", ports.management());
+        values.put("app_port_base", ports.appHttp());
+        values.put("cluster_port", ports.cluster() + nodeIndex);
+        values.put("socket_path", "/var/run/docker.sock");
+        apiKey.onPresent(key -> values.put("api_key", key));
+        dockerGid.onPresent(gid -> values.put("docker_gid", gid));
+        return Section.section("cloud.compute", values);
+    }
+
+    private static Section cloudComputeSection(SourceProfile source) {
+        var values = new LinkedHashMap<String, Object>();
+        source.provider().onPresent(provider -> values.put("provider", provider.value()));
+        source.region().onPresent(region -> values.put("region", region));
+        return Section.section("cloud.compute", values);
+    }
+
+    private static Option<Section> tlsSection(SourceProfile source, Option<String> clusterSecret) {
+        if (source.type() != SourceType.CLOUD) {return Option.empty();}
+        return clusterSecret.map(secret -> Section.section("tls", Map.of("cluster_secret", secret)));
+    }
+
+    private static List<Section> databaseSections(SourceProfile source) {
+        return source.databases().entrySet()
+                               .stream()
+                               .map(entry -> Section.section("database." + entry.getKey(),
+                                                             Map.of(urlFieldName(entry.getValue()),
+                                                                    entry.getValue())))
+                               .toList();
+    }
+
+    private static String urlFieldName(String url) {
+        return url.startsWith("jdbc:")
+              ? "jdbc_url"
+              : "async_url";
+    }
+}

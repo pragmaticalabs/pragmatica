@@ -2,11 +2,16 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
+import org.pragmatica.aether.config.cluster.DefaultNodeConfig;
+import org.pragmatica.aether.config.cluster.NodeConfigComposer;
+import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.config.cluster.SshConfig;
 import org.pragmatica.aether.environment.NodeAddress;
 import org.pragmatica.aether.environment.ProvisionedNode;
+import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -167,5 +172,30 @@ import static org.pragmatica.lang.Result.success;
         return String.join(",",
                            addresses.stream().map(NodeAddress::publicIp)
                                            .toList());
+    }
+
+    static Result<TomlDocument> composeNodeConfig(BootstrapContext ctx,
+                                                  SourceProfile source,
+                                                  String nodeId,
+                                                  int nodeIndex,
+                                                  NodeRole role,
+                                                  List<String> peers,
+                                                  Option<String> dockerGid,
+                                                  Option<String> clusterSecret) {
+        var overlay = BootstrapOverlayGenerator.overlay(ctx.config(),
+                                                        source,
+                                                        nodeId,
+                                                        nodeIndex,
+                                                        role,
+                                                        peers,
+                                                        ctx.apiKey(),
+                                                        dockerGid,
+                                                        clusterSecret);
+        return Result.all(DefaultNodeConfig.globalDefault(),
+                          DefaultNodeConfig.sourceTypeDefault(source.type()))
+        .map((global, typeDefault) -> NodeConfigComposer.compose(global,
+                                                                 typeDefault,
+                                                                 source.nodeConfig(),
+                                                                 overlay));
     }
 }
