@@ -52,23 +52,4 @@ public record TransactionConfig(TransactionPropagation propagation,
         return new TransactionConfig(p, i, none(), false, EMPTY_ROLLBACK_FOR);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public TransactionConfig withPropagation(TransactionPropagation propagation) {
-        return new TransactionConfig(propagation, isolation, timeout, readOnly, rollbackFor);
-    }
-
-    @SuppressWarnings("JBCT-VO-02") public TransactionConfig withIsolation(IsolationLevel isolation) {
-        return new TransactionConfig(propagation, isolation, timeout, readOnly, rollbackFor);
-    }
-
-    @SuppressWarnings("JBCT-VO-02") public TransactionConfig withTimeout(TimeSpan timeout) {
-        return new TransactionConfig(propagation, isolation, option(timeout), readOnly, rollbackFor);
-    }
-
-    @SuppressWarnings("JBCT-VO-02") public TransactionConfig asReadOnly() {
-        return new TransactionConfig(propagation, isolation, timeout, true, rollbackFor);
-    }
-
-    @SuppressWarnings("JBCT-VO-02") public TransactionConfig withRollbackFor(Class<?>... exceptions) {
-        return new TransactionConfig(propagation, isolation, timeout, readOnly, exceptions);
-    }
 }

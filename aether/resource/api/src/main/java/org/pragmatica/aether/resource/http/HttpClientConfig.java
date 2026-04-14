@@ -82,32 +82,4 @@ public record HttpClientConfig(Option<String> baseUrl,
                                             defaultHeaders));
     }
 
-    public HttpClientConfig withBaseUrl(String url) {
-        return httpClientConfig(option(url), connectTimeout, requestTimeout, followRedirects, json, defaultHeaders).unwrap();
-    }
-
-    public HttpClientConfig withConnectTimeout(TimeSpan timeout) {
-        return httpClientConfig(baseUrl, timeout, requestTimeout, followRedirects, json, defaultHeaders).unwrap();
-    }
-
-    public HttpClientConfig withRequestTimeout(TimeSpan timeout) {
-        return httpClientConfig(baseUrl, connectTimeout, timeout, followRedirects, json, defaultHeaders).unwrap();
-    }
-
-    public HttpClientConfig withFollowRedirects(Redirect policy) {
-        return httpClientConfig(baseUrl, connectTimeout, requestTimeout, policy, json, defaultHeaders).unwrap();
-    }
-
-    public HttpClientConfig withJson(JsonConfig jsonConfig) {
-        return httpClientConfig(baseUrl,
-                                connectTimeout,
-                                requestTimeout,
-                                followRedirects,
-                                option(jsonConfig),
-                                defaultHeaders).unwrap();
-    }
-
-    public HttpClientConfig withDefaultHeaders(Map<String, String> headers) {
-        return httpClientConfig(baseUrl, connectTimeout, requestTimeout, followRedirects, json, headers).unwrap();
-    }
 }

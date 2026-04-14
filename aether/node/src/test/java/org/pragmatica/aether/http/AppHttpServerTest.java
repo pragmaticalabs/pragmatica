@@ -5,6 +5,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.HttpProtocol;
+import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
@@ -14,6 +16,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
+import java.util.Map;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -167,7 +170,8 @@ class AppHttpServerTest {
     @Test
     void request_exceeding_max_size_returns_413() throws Exception {
         // Create server with very small max request size (1KB)
-        var smallConfig = AppHttpConfig.appHttpConfig(TEST_PORT).withMaxRequestSize(1024);
+        var smallConfig = AppHttpConfig.appHttpConfig(true, TEST_PORT, Map.of(), 1024,
+                                                          SecurityMode.NONE, Option.none(), HttpProtocol.H1).unwrap();
         var smallServer = AppHttpServer.appHttpServer(smallConfig,
                                                        ForwardingTimeouts.forwardingTimeouts(),
                                                        SELF_NODE,

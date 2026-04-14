@@ -99,21 +99,4 @@ class TtmConfigTest {
                  .onFailure(cause -> assertThat(cause.message()).contains("confidenceThreshold"));
     }
 
-    @Test
-    void withModelPath_returnsNewConfigWithUpdatedPath() {
-        var original = TtmConfig.ttmConfig();
-        var updated = original.withModelPath("new/model.onnx");
-
-        assertThat(updated.modelPath()).isEqualTo("new/model.onnx");
-        assertThat(updated.inputWindowMinutes()).isEqualTo(original.inputWindowMinutes());
-    }
-
-    @Test
-    void withEnabled_returnsNewConfigWithUpdatedEnabled() {
-        var original = TtmConfig.ttmConfig();
-        var updated = original.withEnabled(false);
-
-        assertThat(updated.enabled()).isFalse();
-        assertThat(updated.modelPath()).isEqualTo(original.modelPath());
-    }
 }

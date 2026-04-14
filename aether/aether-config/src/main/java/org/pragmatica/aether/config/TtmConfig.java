@@ -50,51 +50,6 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                                           enabled));
     }
 
-    public TtmConfig withModelPath(String modelPath) {
-        return ttmConfig(modelPath,
-                         inputWindowMinutes,
-                         predictionHorizon,
-                         evaluationInterval,
-                         confidenceThreshold,
-                         enabled).unwrap();
-    }
-
-    public TtmConfig withEnabled(boolean enabled) {
-        return ttmConfig(modelPath,
-                         inputWindowMinutes,
-                         predictionHorizon,
-                         evaluationInterval,
-                         confidenceThreshold,
-                         enabled).unwrap();
-    }
-
-    public TtmConfig withInputWindowMinutes(int inputWindowMinutes) {
-        return ttmConfig(modelPath,
-                         inputWindowMinutes,
-                         predictionHorizon,
-                         evaluationInterval,
-                         confidenceThreshold,
-                         enabled).unwrap();
-    }
-
-    public TtmConfig withEvaluationInterval(TimeSpan evaluationInterval) {
-        return ttmConfig(modelPath,
-                         inputWindowMinutes,
-                         predictionHorizon,
-                         evaluationInterval,
-                         confidenceThreshold,
-                         enabled).unwrap();
-    }
-
-    public TtmConfig withConfidenceThreshold(double confidenceThreshold) {
-        return ttmConfig(modelPath,
-                         inputWindowMinutes,
-                         predictionHorizon,
-                         evaluationInterval,
-                         confidenceThreshold,
-                         enabled).unwrap();
-    }
-
     private static Result<Integer> checkModelAndTiming(String modelPath,
                                                        boolean enabled,
                                                        int inputWindowMinutes,

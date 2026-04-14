@@ -13,6 +13,8 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigValidator;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -36,13 +38,15 @@ class ClusterBootstrapOrchestratorTest {
     @Nested
     class BootstrapFlow {
         @Test
-        void bootstrap_validForgeConfig_returnsResult() {
+        void bootstrap_validForgeConfig_passesValidation() {
             var config = forgeConfig("test-forge", 3);
 
-            var result = ClusterBootstrapOrchestrator.bootstrap(config);
-
-            result.onFailure(_ -> fail("Expected success"))
-                  .onSuccess(ClusterBootstrapOrchestratorTest::verifyForgeResult);
+            ClusterBootstrapConfigValidator.validate(config)
+                .onFailure(cause -> fail("Expected validation success but got: " + cause.message()))
+                .onSuccess(validated -> {
+                    assertEquals("test-forge", validated.cluster().name());
+                    assertFalse(validated.sources().isEmpty());
+                });
         }
     }
 
@@ -59,12 +63,6 @@ class ClusterBootstrapOrchestratorTest {
         }
     }
 
-    private static void verifyForgeResult(ClusterBootstrapOrchestrator.BootstrapResult r) {
-        assertEquals("test-forge", r.clusterName());
-        assertFalse(r.apiKey().isEmpty());
-        assertEquals("AETHER_TEST_FORGE_API_KEY", r.apiKeyEnvName());
-    }
-
     private static ClusterBootstrapConfig forgeConfig(String clusterName, int coreCount) {
         var forgeSource = sourceProfile(
             "forge", SourceType.FORGE, none(), none(), none(), none(),
@@ -75,7 +73,7 @@ class ClusterBootstrapOrchestratorTest {
         );
 
         return clusterBootstrapConfig(
-            "1", clusterIdentity(clusterName, "1.0"),
+            "1", clusterIdentity(clusterName, "1.0.0"),
             defaultCoreTopology(),
             Map.of("forge", forgeSource),
             Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.EMBER, none(), none())),

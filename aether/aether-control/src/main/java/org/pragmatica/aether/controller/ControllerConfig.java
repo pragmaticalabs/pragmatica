@@ -151,46 +151,6 @@ public record ControllerConfig(double cpuScaleUpThreshold,
                                     scalingConfig);
     }
 
-    public ControllerConfig withCallRateScaleUpThreshold(double threshold) {
-        return new ControllerConfig(cpuScaleUpThreshold,
-                                    cpuScaleDownThreshold,
-                                    threshold,
-                                    evaluationIntervalMs,
-                                    warmUpPeriodMs,
-                                    sliceCooldownMs,
-                                    scalingConfig);
-    }
-
-    public ControllerConfig withEvaluationIntervalMs(long intervalMs) {
-        return new ControllerConfig(cpuScaleUpThreshold,
-                                    cpuScaleDownThreshold,
-                                    callRateScaleUpThreshold,
-                                    intervalMs,
-                                    warmUpPeriodMs,
-                                    sliceCooldownMs,
-                                    scalingConfig);
-    }
-
-    public ControllerConfig withWarmUpPeriodMs(long warmUpMs) {
-        return new ControllerConfig(cpuScaleUpThreshold,
-                                    cpuScaleDownThreshold,
-                                    callRateScaleUpThreshold,
-                                    evaluationIntervalMs,
-                                    warmUpMs,
-                                    sliceCooldownMs,
-                                    scalingConfig);
-    }
-
-    public ControllerConfig withSliceCooldownMs(long cooldownMs) {
-        return new ControllerConfig(cpuScaleUpThreshold,
-                                    cpuScaleDownThreshold,
-                                    callRateScaleUpThreshold,
-                                    evaluationIntervalMs,
-                                    warmUpPeriodMs,
-                                    cooldownMs,
-                                    scalingConfig);
-    }
-
     public ControllerConfig withScalingConfig(ScalingConfig newScalingConfig) {
         return new ControllerConfig(cpuScaleUpThreshold,
                                     cpuScaleDownThreshold,
