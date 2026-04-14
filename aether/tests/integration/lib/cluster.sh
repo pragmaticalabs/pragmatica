@@ -359,6 +359,37 @@ leader_api_post() {
         -d "$body" "http://${TARGET_HOST}:${port}${path}"
 }
 
+# POST to the node owning a specific task group
+task_group_api_post() {
+    local group="$1" path="$2" body="${3:-"{}"}"
+    local owner
+    owner=$(task_group_node "$group")
+    if [ -z "$owner" ] || [ "$owner" = "" ]; then
+        log_warn "No owner for task group ${group}, falling back to api_post" >&2
+        api_post "$path" "$body"
+        return
+    fi
+    local node_num
+    node_num=$(echo "$owner" | sed 's/node-//')
+    local port=$((MGMT_PORT + node_num - 1))
+    curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+        -d "$body" "http://${TARGET_HOST}:${port}${path}" 2>/dev/null
+}
+
+task_group_api_get() {
+    local group="$1" path="$2"
+    local owner
+    owner=$(task_group_node "$group")
+    if [ -z "$owner" ] || [ "$owner" = "" ]; then
+        api_get "$path"
+        return
+    fi
+    local node_num
+    node_num=$(echo "$owner" | sed 's/node-//')
+    local port=$((MGMT_PORT + node_num - 1))
+    curl -sf -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}${path}" 2>/dev/null
+}
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -536,11 +567,11 @@ deploy_start() {
             strategy_body="\"rolling\":{\"requireManualApproval\":${manual}}" ;;
     esac
     local body="{\"blueprint\":\"${coords}\",\"strategy\":\"${strategy_upper}\",\"instances\":${instances},${strategy_body},\"thresholds\":{\"maxErrorRate\":0.1,\"maxLatencyMs\":1000}}"
-    api_post "/api/deploy" "$body"
+    task_group_api_post "STRATEGIES" "/api/deploy" "$body"
 }
 
 deploy_list() {
-    api_get "/api/deploy"
+    task_group_api_get "STRATEGIES" "/api/deploy"
 }
 
 deploy_status() {
@@ -551,19 +582,19 @@ deploy_status() {
 deploy_promote() {
     local deployment_id="$1"
     log_info "Promoting deployment: ${deployment_id}" >&2
-    api_post "/api/deploy/promote/${deployment_id}" "{}"
+    task_group_api_post "STRATEGIES" "/api/deploy/promote/${deployment_id}" "{}"
 }
 
 deploy_rollback() {
     local deployment_id="$1"
     log_info "Rolling back deployment: ${deployment_id}" >&2
-    api_post "/api/deploy/rollback/${deployment_id}" "{}"
+    task_group_api_post "STRATEGIES" "/api/deploy/rollback/${deployment_id}" "{}"
 }
 
 deploy_complete() {
     local deployment_id="$1"
     log_info "Completing deployment: ${deployment_id}" >&2
-    api_post "/api/deploy/complete/${deployment_id}" "{}"
+    task_group_api_post "STRATEGIES" "/api/deploy/complete/${deployment_id}" "{}"
 }
 
 deploy_cleanup() {

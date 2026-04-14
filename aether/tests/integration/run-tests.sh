@@ -497,7 +497,7 @@ fi
 
 # --- Step 8: Gate -- run 00-smoke ---
 GATE_PASSED=true
-if printf '%s\n' "${A_SUITES[@]}" | grep -qx "00"; then
+if [ ${#A_SUITES[@]} -gt 0 ] && printf '%s\n' "${A_SUITES[@]}" | grep -qx "00"; then
     log_step "Gate: running 00-smoke on Cluster A"
     if ! run_suite "00" "a"; then
         log_error "GATE FAILED: 00-smoke did not pass -- aborting all suites"
