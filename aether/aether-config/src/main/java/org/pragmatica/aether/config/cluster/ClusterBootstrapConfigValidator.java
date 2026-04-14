@@ -108,6 +108,7 @@ import static org.pragmatica.lang.Result.success;
 
     private static boolean isImplicitRuntime(String runtimeRef, SourceType sourceType) {
         if ("default".equals(runtimeRef) && (sourceType == SourceType.FORGE || sourceType == SourceType.DOCKER)) {return true;}
+        if ("docker".equals(runtimeRef) && sourceType == SourceType.DOCKER) {return true;}
         return "ember".equals(runtimeRef) && sourceType == SourceType.FORGE;
     }
 

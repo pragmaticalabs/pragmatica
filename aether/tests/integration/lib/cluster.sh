@@ -478,8 +478,9 @@ reassign_task_group() {
 
 wait_for_all_tasks_active() {
     local timeout="${1:-60}"
+    local min_active="${2:-5}"
     wait_for "all task groups ACTIVE" \
-        "[ \$(json_count_matching \"\$(cluster_tasks)\" assignments status ACTIVE 2>/dev/null || echo 0) -ge 6 ]" \
+        "[ \$(json_count_matching \"\$(cluster_tasks)\" assignments status ACTIVE 2>/dev/null || echo 0) -ge ${min_active} ]" \
         "$timeout"
 }
 

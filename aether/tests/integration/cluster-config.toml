@@ -1,19 +1,24 @@
 # Integration test cluster — 5-node Docker deployment
-# Minimal config that passes ClusterConfigValidator
+# Minimal config that passes ClusterBootstrapConfigValidator
+config_version = "1.0.0"
 
 [cluster]
 name = "integration-test"
 version = "1.0.0"
-environment = "docker"
 
-[cluster.core]
-count = 5
+[core_topology]
 min = 3
 max = 15
+max_unavailable = 1
 
-[deployment]
-type = "embedded"
+[source.docker]
+type = "docker"
 
-[deployment.runtime]
-type = "container"
-image = "aether-node:local"
+[source.docker.core]
+count = 5
+
+[operations.ports]
+cluster = 6000
+management = 8080
+app_http = 8070
+swim = 6100
