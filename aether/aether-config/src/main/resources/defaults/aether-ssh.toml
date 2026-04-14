@@ -1,0 +1,11 @@
+# Aether node — SSH source-type defaults (Layer 2)
+#
+# Applied for source.type = "ssh" (bare-metal or pre-provisioned hosts).
+# Layered on top of aether-default.toml.
+
+[cluster]
+tls = true
+
+[app-http]
+# Bare metal: bind to all interfaces by default
+bind = "0.0.0.0"
