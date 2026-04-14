@@ -13,7 +13,9 @@ SOAK_DURATION="${SOAK_DURATION:-14400}"  # 4 hours default
 SOAK_RPS="${SOAK_RPS:-100}"             # 100 rps default
 SOAK_LOG="/tmp/sustained_load_soak.log"
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-1.0}"
-BLUEPRINT="${SOAK_BLUEPRINT:-org.pragmatica.aether.example:url-shortener:1.0.0}"
+BLUEPRINT="${SOAK_BLUEPRINT:-org.pragmatica.aether.test:test-persistence:1.0.0}"
+SOAK_KEY="${SOAK_KEY:-soak-test}"
+SOAK_PATH="/api/kv/${SOAK_KEY}"
 
 STATS_FILE="/tmp/soak_stats.txt"
 
@@ -53,12 +55,17 @@ test_deploy_app() {
 }
 
 test_app_reachable() {
-    local status
-    status=$(http_status "${APP_ENDPOINT}/api/v1/urls/test" -H "X-API-Key: ${API_KEY}")
-    if [ "$status" -gt 0 ] 2>/dev/null; then
-        log_pass "App endpoint reachable (status: ${status})"
+    # Seed the soak key so subsequent GETs return 200 (not 404) under sustained load
+    local seed_status
+    seed_status=$(http_status "${APP_ENDPOINT}${SOAK_PATH}" \
+        -X PUT \
+        -H "X-API-Key: ${API_KEY}" \
+        -H "Content-Type: application/json" \
+        -d '{"value":"soak-baseline"}')
+    if [ "$seed_status" -ge 200 ] && [ "$seed_status" -lt 400 ] 2>/dev/null; then
+        log_pass "Soak key seeded (status: ${seed_status})"
     else
-        log_fail "App endpoint not reachable"
+        log_fail "Failed to seed soak key (status: ${seed_status})"
         return 1
     fi
 }
@@ -77,7 +84,7 @@ test_soak_load() {
     rm -f "$SOAK_LOG"
 
     # Dual load: app endpoint (full pipeline) + management health (cluster stability)
-    start_sustained_load "$SOAK_RPS" "$SOAK_DURATION" "GET" "/api/v1/urls/soak-test" "" "$SOAK_LOG"
+    start_sustained_load "$SOAK_RPS" "$SOAK_DURATION" "GET" "$SOAK_PATH" "" "$SOAK_LOG"
     APP_ENDPOINT="${CLUSTER_ENDPOINT}" start_sustained_load "10" "$SOAK_DURATION" "GET" "/health/live" "" "/tmp/sustained_health_soak.log"
 
     log_info "Soak running — ${SOAK_DURATION}s ($(( SOAK_DURATION / 60 ))min)"

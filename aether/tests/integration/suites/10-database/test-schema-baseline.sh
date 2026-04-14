@@ -7,7 +7,7 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 DATASOURCE="${TEST_DATASOURCE:-default}"
-BLUEPRINT="org.pragmatica.aether.example:url-shortener:1.0.0"
+BLUEPRINT="org.pragmatica.aether.test:test-persistence:1.0.0"
 
 test_cluster_ready() {
     wait_for_cluster 60

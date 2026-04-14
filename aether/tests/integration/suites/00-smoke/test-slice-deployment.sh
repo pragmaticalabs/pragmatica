@@ -6,8 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
-BLUEPRINT_COORDS="${TEST_BLUEPRINT_COORDS:-org.pragmatica.aether.example:url-shortener:1.0.0}"
-BLUEPRINT_NAME="${TEST_BLUEPRINT:-url-shortener}"
+BLUEPRINT_COORDS="${TEST_BLUEPRINT_COORDS:-org.pragmatica.aether.test:test-persistence:1.0.0}"
+BLUEPRINT_NAME="${TEST_BLUEPRINT:-test-persistence}"
 
 test_push_artifacts() {
     push_blueprint "$BLUEPRINT_COORDS"

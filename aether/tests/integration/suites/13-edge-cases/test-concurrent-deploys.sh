@@ -8,7 +8,7 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 STREAM_A="${STREAM_A:-concurrent-test-a}"
 STREAM_B="${STREAM_B:-concurrent-test-b}"
-BLUEPRINT="org.pragmatica.aether.example:url-shortener:1.0.0"
+BLUEPRINT="org.pragmatica.aether.test:test-persistence:1.0.0"
 
 test_cluster_ready() {
     wait_for_cluster 60
