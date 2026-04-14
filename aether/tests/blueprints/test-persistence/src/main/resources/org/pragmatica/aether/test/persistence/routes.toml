@@ -1,0 +1,17 @@
+prefix = "/api/kv"
+
+[security]
+default = "authenticated"
+override_policy = "strengthen_only"
+
+[routes]
+get = "GET /{key}"
+put = "PUT /{key}"
+list = "GET /"
+publish = "POST /publish"
+read = "GET /stream"
+
+[errors]
+default = 500
+HTTP_404 = ["*NotFound*"]
+HTTP_400 = ["*Invalid*"]

@@ -1,5 +1,5 @@
 #!/bin/bash
-# test-sql-connector.sh — Deploy url-shortener (@Sql + PostgreSQL), verify SQL operations
+# test-sql-connector.sh — Deploy test-persistence (@PgSql + PostgreSQL), verify SQL operations
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -7,7 +7,7 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/load.sh"
 
-BLUEPRINT="${SQL_BLUEPRINT:-org.pragmatica.aether.example:url-shortener:1.0.0}"
+BLUEPRINT="${SQL_BLUEPRINT:-org.pragmatica.aether.test:test-persistence:1.0.0}"
 POOL_BURST="${POOL_BURST:-50}"
 
 test_cluster_ready() {
@@ -22,40 +22,53 @@ test_deploy_sql_app() {
     log_pass "SQL-backed app deployed"
 }
 
-test_create_short_url() {
-    local payload='{"url":"https://example.com/integration-test"}'
+test_put_kv_pair() {
+    local payload='{"value":"integration-test-value"}'
     local result
-    result=$(app_post "/api/v1/urls/" "$payload")
-    assert_ne "$result" "" "POST /api/v1/urls/ returns response"
-}
-
-test_resolve_short_url() {
-    local payload='{"url":"https://example.com/resolve-test"}'
-    local create_result
-    create_result=$(app_post "/api/v1/urls/" "$payload")
-    local short_code
-    short_code=$(json_value "$create_result" "shortCode")
-    if [ -z "$short_code" ]; then
-        log_fail "Could not extract shortCode from create response"
-        return 1
-    fi
-    local status
-    status=$(http_status "${APP_ENDPOINT}/api/v1/urls/${short_code}" -H "X-API-Key: ${API_KEY}")
-    if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
-        log_pass "GET /api/v1/urls/${short_code} returns ${status} (success)"
+    result=$(http_status "${APP_ENDPOINT}/api/kv/test-key" \
+        -X PUT \
+        -H "X-API-Key: ${API_KEY}" \
+        -H "Content-Type: application/json" \
+        -d "$payload")
+    if [ "$result" -ge 200 ] && [ "$result" -lt 400 ] 2>/dev/null; then
+        log_pass "PUT /api/kv/test-key returns ${result} (success)"
         return 0
     fi
-    log_fail "GET /api/v1/urls/${short_code} returns ${status} (expected 2xx or 3xx)"
+    log_fail "PUT /api/kv/test-key returns ${result} (expected 2xx)"
+    return 1
+}
+
+test_get_kv_pair() {
+    local payload='{"value":"resolve-test-value"}'
+    local put_status
+    put_status=$(http_status "${APP_ENDPOINT}/api/kv/resolve-key" \
+        -X PUT \
+        -H "X-API-Key: ${API_KEY}" \
+        -H "Content-Type: application/json" \
+        -d "$payload")
+    if [ "$put_status" -lt 200 ] || [ "$put_status" -ge 400 ] 2>/dev/null; then
+        log_fail "PUT failed before GET test (status: ${put_status})"
+        return 1
+    fi
+    local get_result
+    get_result=$(curl -s -H "X-API-Key: ${API_KEY}" "${APP_ENDPOINT}/api/kv/resolve-key" 2>/dev/null)
+    local value
+    value=$(json_value "$get_result" "value")
+    if [ "$value" = "resolve-test-value" ]; then
+        log_pass "GET /api/kv/resolve-key returns expected value"
+        return 0
+    fi
+    log_fail "GET /api/kv/resolve-key value mismatch: got '${value}', expected 'resolve-test-value'"
     return 1
 }
 
 test_connection_pooling_rapid_requests() {
     local success=0 failure=0
     for i in $(seq 1 "$POOL_BURST"); do
-        local payload="{\"url\":\"https://example.com/pool-test-${i}\"}"
+        local payload="{\"value\":\"pool-test-value-${i}\"}"
         local status
-        status=$(http_status "${APP_ENDPOINT}/api/v1/urls/" \
-            -X POST \
+        status=$(http_status "${APP_ENDPOINT}/api/kv/pool-key-${i}" \
+            -X PUT \
             -H "X-API-Key: ${API_KEY}" \
             -H "Content-Type: application/json" \
             -d "$payload")
@@ -77,8 +90,8 @@ test_cluster_healthy_after_sql_load() {
 
 run_test "Cluster ready" test_cluster_ready
 run_test "Deploy SQL app" test_deploy_sql_app
-run_test "Create short URL" test_create_short_url
-run_test "Resolve short URL" test_resolve_short_url
+run_test "Put KV pair" test_put_kv_pair
+run_test "Get KV pair" test_get_kv_pair
 run_test "Connection pooling under rapid requests" test_connection_pooling_rapid_requests
 run_test "Healthy after SQL load" test_cluster_healthy_after_sql_load
 print_summary

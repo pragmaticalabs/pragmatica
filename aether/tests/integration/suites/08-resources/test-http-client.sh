@@ -20,17 +20,17 @@ test_mgmt_status_json() {
     local status
     status=$(cluster_status)
     assert_ne "$status" "" "Management /api/status returns JSON"
+    # Use CLI --field which supports nested dot-path navigation
     local node_id
-    node_id=$(json_field "$status" "['cluster']['nodes'][0]['id']")
+    node_id=$(aether_field status "cluster.nodes.0.id")
     assert_ne "$node_id" "" "Status contains node id in cluster.nodes"
 }
 
 test_mgmt_nodes_json() {
-    local nodes
-    nodes=$(cluster_node_list)
+    # Query directly via CLI which knows how to count nodes
     local count
-    count=$(json_len "$nodes")
-    assert_gt "$count" "0" "Management /api/nodes returns non-empty list"
+    count=$(aether_field topology coreCount)
+    assert_gt "$count" "0" "Management cluster topology returns coreCount > 0"
 }
 
 test_mgmt_content_type() {
