@@ -30,6 +30,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.concurrent.CancellableTask;
+import org.pragmatica.aether.slice.SliceActionConfig;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -50,7 +51,6 @@ import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.pragmatica.aether.slice.SliceActionConfig;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;

@@ -51,5 +51,4 @@ public record TransactionConfig(TransactionPropagation propagation,
                                                                                                                   IsolationLevel i) {
         return new TransactionConfig(p, i, none(), false, EMPTY_ROLLBACK_FOR);
     }
-
 }

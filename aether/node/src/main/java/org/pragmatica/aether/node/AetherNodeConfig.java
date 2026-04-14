@@ -100,192 +100,299 @@ public record AetherNodeConfig(TopologyConfig topology,
 
     public static final int MANAGEMENT_DISABLED = 0;
 
-    // --- Fluent builder ---
-
     public static SelfStage builder() {
-        return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax
-            -> appHttp -> tls -> certificateProvider -> configProvider -> environment
-            -> managementHttpProtocol -> storageConfig -> backupConfig -> streaming
-            -> protocol -> sliceAction -> cache -> ttm -> rollback -> controllerConfig
-            -> autoHeal -> observability -> atomicity -> activationGated -> timeouts
-            -> workerConfig -> deploymentDefaults -> {
-            var effectiveClusterSize = coreMax > 0 ? coreMax : coreNodes.size();
-            var topology = new TopologyConfig(self, effectiveClusterSize,
-                                              timeSpan(5).seconds(), timeSpan(1).seconds(),
-                                              TopologyConfig.DEFAULT_HELLO_TIMEOUT, coreNodes,
-                                              Option.empty(), BackoffConfig.DEFAULT,
-                                              coreMax, effectiveClusterSize);
-            return new AetherNodeConfig(topology, protocol, sliceAction, sliceConfig,
-                                        managementPort, artifactRepo, cache,
-                                        tls, ttm, rollback, appHttp,
-                                        controllerConfig, configProvider,
-                                        environment, autoHeal, observability,
-                                        atomicity, activationGated, timeouts,
-                                        certificateProvider, workerConfig, deploymentDefaults,
-                                        managementHttpProtocol, storageConfig,
-                                        backupConfig, streaming);
+        return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax -> appHttp -> tls -> certificateProvider -> configProvider -> environment -> managementHttpProtocol -> storageConfig -> backupConfig -> streaming -> protocol -> sliceAction -> cache -> ttm -> rollback -> controllerConfig -> autoHeal -> observability -> atomicity -> activationGated -> timeouts -> workerConfig -> deploymentDefaults -> {
+            var effectiveClusterSize = coreMax > 0
+                                      ? coreMax
+                                      : coreNodes.size();
+            var topology = new TopologyConfig(self,
+                                              effectiveClusterSize,
+                                              timeSpan(5).seconds(),
+                                              timeSpan(1).seconds(),
+                                              TopologyConfig.DEFAULT_HELLO_TIMEOUT,
+                                              coreNodes,
+                                              Option.empty(),
+                                              BackoffConfig.DEFAULT,
+                                              coreMax,
+                                              effectiveClusterSize);
+            return new AetherNodeConfig(topology,
+                                        protocol,
+                                        sliceAction,
+                                        sliceConfig,
+                                        managementPort,
+                                        artifactRepo,
+                                        cache,
+                                        tls,
+                                        ttm,
+                                        rollback,
+                                        appHttp,
+                                        controllerConfig,
+                                        configProvider,
+                                        environment,
+                                        autoHeal,
+                                        observability,
+                                        atomicity,
+                                        activationGated,
+                                        timeouts,
+                                        certificateProvider,
+                                        workerConfig,
+                                        deploymentDefaults,
+                                        managementHttpProtocol,
+                                        storageConfig,
+                                        backupConfig,
+                                        streaming);
         };
     }
 
-    // Mandatory stages
+    public interface SelfStage {
+        CoreNodesStage self(NodeId self);
+    }
 
-    public interface SelfStage { CoreNodesStage self(NodeId self); }
-
-    public interface CoreNodesStage { WithManagementPort coreNodes(List<NodeInfo> coreNodes); }
-
-    // Optional stages — frequently customized
+    public interface CoreNodesStage {
+        WithManagementPort coreNodes(List<NodeInfo> coreNodes);
+    }
 
     public interface WithManagementPort {
         WithSliceConfig managementPort(int port);
-        default AetherNodeConfig build() { return managementPort(DEFAULT_MANAGEMENT_PORT).build(); }
+
+        default AetherNodeConfig build() {
+            return managementPort(DEFAULT_MANAGEMENT_PORT).build();
+        }
     }
 
     public interface WithSliceConfig {
         WithArtifactRepo sliceConfig(SliceConfig config);
-        default AetherNodeConfig build() { return sliceConfig(SliceConfig.sliceConfig()).build(); }
+
+        default AetherNodeConfig build() {
+            return sliceConfig(SliceConfig.sliceConfig()).build();
+        }
     }
 
     public interface WithArtifactRepo {
         WithCoreMax artifactRepo(DHTConfig config);
-        default AetherNodeConfig build() { return artifactRepo(DHTConfig.DEFAULT).build(); }
+
+        default AetherNodeConfig build() {
+            return artifactRepo(DHTConfig.DEFAULT).build();
+        }
     }
 
     public interface WithCoreMax {
         WithAppHttp coreMax(int coreMax);
-        default AetherNodeConfig build() { return coreMax(0).build(); }
+
+        default AetherNodeConfig build() {
+            return coreMax(0).build();
+        }
     }
 
     public interface WithAppHttp {
         WithTls appHttp(AppHttpConfig config);
-        default AetherNodeConfig build() { return appHttp(AppHttpConfig.appHttpConfig()).build(); }
+
+        default AetherNodeConfig build() {
+            return appHttp(AppHttpConfig.appHttpConfig()).build();
+        }
     }
 
     public interface WithTls {
         WithCertificateProvider tls(Option<TlsConfig> config);
-        default WithCertificateProvider tls(TlsConfig config) { return tls(Option.some(config)); }
-        default AetherNodeConfig build() { return tls(Option.none()).build(); }
+
+        default WithCertificateProvider tls(TlsConfig config) {
+            return tls(Option.some(config));
+        }
+
+        default AetherNodeConfig build() {
+            return tls(Option.none()).build();
+        }
     }
 
     public interface WithCertificateProvider {
         WithConfigProvider certificateProvider(Option<CertificateProvider> provider);
-        default WithConfigProvider certificateProvider(CertificateProvider provider) { return certificateProvider(Option.some(provider)); }
-        default AetherNodeConfig build() { return certificateProvider(Option.none()).build(); }
+
+        default WithConfigProvider certificateProvider(CertificateProvider provider) {
+            return certificateProvider(Option.some(provider));
+        }
+
+        default AetherNodeConfig build() {
+            return certificateProvider(Option.none()).build();
+        }
     }
 
     public interface WithConfigProvider {
         WithEnvironment configProvider(Option<ConfigurationProvider> provider);
-        default WithEnvironment configProvider(ConfigurationProvider provider) { return configProvider(Option.some(provider)); }
-        default AetherNodeConfig build() { return configProvider(Option.none()).build(); }
+
+        default WithEnvironment configProvider(ConfigurationProvider provider) {
+            return configProvider(Option.some(provider));
+        }
+
+        default AetherNodeConfig build() {
+            return configProvider(Option.none()).build();
+        }
     }
 
     public interface WithEnvironment {
         WithManagementHttpProtocol environment(Option<EnvironmentIntegration> env);
-        default WithManagementHttpProtocol environment(EnvironmentIntegration env) { return environment(Option.some(env)); }
-        default AetherNodeConfig build() { return environment(Option.none()).build(); }
+
+        default WithManagementHttpProtocol environment(EnvironmentIntegration env) {
+            return environment(Option.some(env));
+        }
+
+        default AetherNodeConfig build() {
+            return environment(Option.none()).build();
+        }
     }
 
     public interface WithManagementHttpProtocol {
         WithStorageConfig managementHttpProtocol(HttpProtocol protocol);
-        default AetherNodeConfig build() { return managementHttpProtocol(HttpProtocol.H1).build(); }
+
+        default AetherNodeConfig build() {
+            return managementHttpProtocol(HttpProtocol.H1).build();
+        }
     }
 
     public interface WithStorageConfig {
         WithBackupConfig storageConfig(Map<String, StorageConfig> config);
-        default AetherNodeConfig build() { return storageConfig(Map.of()).build(); }
+
+        default AetherNodeConfig build() {
+            return storageConfig(Map.of()).build();
+        }
     }
 
     public interface WithBackupConfig {
         WithStreaming backupConfig(Option<BackupConfig> config);
-        default WithStreaming backupConfig(BackupConfig config) { return backupConfig(Option.some(config)); }
-        default AetherNodeConfig build() { return backupConfig(Option.none()).build(); }
+
+        default WithStreaming backupConfig(BackupConfig config) {
+            return backupConfig(Option.some(config));
+        }
+
+        default AetherNodeConfig build() {
+            return backupConfig(Option.none()).build();
+        }
     }
 
     public interface WithStreaming {
         WithProtocol streaming(StreamingConfig config);
-        default AetherNodeConfig build() { return streaming(StreamingConfig.streamingConfig()).build(); }
-    }
 
-    // Optional stages — rarely customized
+        default AetherNodeConfig build() {
+            return streaming(StreamingConfig.streamingConfig()).build();
+        }
+    }
 
     public interface WithProtocol {
         WithSliceAction protocol(ProtocolConfig config);
-        default AetherNodeConfig build() { return protocol(ProtocolConfig.defaultConfig()).build(); }
+
+        default AetherNodeConfig build() {
+            return protocol(ProtocolConfig.defaultConfig()).build();
+        }
     }
 
     public interface WithSliceAction {
         WithCache sliceAction(SliceActionConfig config);
-        default AetherNodeConfig build() { return sliceAction(SliceActionConfig.sliceActionConfig()).build(); }
+
+        default AetherNodeConfig build() {
+            return sliceAction(SliceActionConfig.sliceActionConfig()).build();
+        }
     }
 
     public interface WithCache {
         WithTtm cache(DHTConfig config);
-        default AetherNodeConfig build() { return cache(DHTConfig.CACHE_DEFAULT).build(); }
+
+        default AetherNodeConfig build() {
+            return cache(DHTConfig.CACHE_DEFAULT).build();
+        }
     }
 
     public interface WithTtm {
         WithRollback ttm(TtmConfig config);
-        default AetherNodeConfig build() { return ttm(TtmConfig.ttmConfig()).build(); }
+
+        default AetherNodeConfig build() {
+            return ttm(TtmConfig.ttmConfig()).build();
+        }
     }
 
     public interface WithRollback {
         WithControllerConfig rollback(RollbackConfig config);
-        default AetherNodeConfig build() { return rollback(RollbackConfig.rollbackConfig()).build(); }
+
+        default AetherNodeConfig build() {
+            return rollback(RollbackConfig.rollbackConfig()).build();
+        }
     }
 
     public interface WithControllerConfig {
         WithAutoHeal controllerConfig(ControllerConfig config);
-        default AetherNodeConfig build() { return controllerConfig(ControllerConfig.DEFAULT).build(); }
+
+        default AetherNodeConfig build() {
+            return controllerConfig(ControllerConfig.DEFAULT).build();
+        }
     }
 
     public interface WithAutoHeal {
         WithObservability autoHeal(AutoHealConfig config);
-        default AetherNodeConfig build() { return autoHeal(AutoHealConfig.DEFAULT).build(); }
+
+        default AetherNodeConfig build() {
+            return autoHeal(AutoHealConfig.DEFAULT).build();
+        }
     }
 
     public interface WithObservability {
         WithAtomicity observability(ObservabilityConfig config);
-        default AetherNodeConfig build() { return observability(ObservabilityConfig.DEFAULT).build(); }
+
+        default AetherNodeConfig build() {
+            return observability(ObservabilityConfig.DEFAULT).build();
+        }
     }
 
     public interface WithAtomicity {
         WithActivationGated atomicity(DeploymentAtomicity mode);
-        default AetherNodeConfig build() { return atomicity(DeploymentAtomicity.ALL_OR_NOTHING).build(); }
+
+        default AetherNodeConfig build() {
+            return atomicity(DeploymentAtomicity.ALL_OR_NOTHING).build();
+        }
     }
 
     public interface WithActivationGated {
         WithTimeouts activationGated(boolean gated);
-        default AetherNodeConfig build() { return activationGated(false).build(); }
+
+        default AetherNodeConfig build() {
+            return activationGated(false).build();
+        }
     }
 
     public interface WithTimeouts {
         WithWorkerConfig timeouts(TimeoutsConfig config);
-        default AetherNodeConfig build() { return timeouts(TimeoutsConfig.timeoutsConfig()).build(); }
+
+        default AetherNodeConfig build() {
+            return timeouts(TimeoutsConfig.timeoutsConfig()).build();
+        }
     }
 
     public interface WithWorkerConfig {
         WithDeploymentDefaults workerConfig(Option<WorkerConfig> config);
-        default WithDeploymentDefaults workerConfig(WorkerConfig config) { return workerConfig(Option.some(config)); }
-        default AetherNodeConfig build() { return workerConfig(Option.none()).build(); }
+
+        default WithDeploymentDefaults workerConfig(WorkerConfig config) {
+            return workerConfig(Option.some(config));
+        }
+
+        default AetherNodeConfig build() {
+            return workerConfig(Option.none()).build();
+        }
     }
 
     public interface WithDeploymentDefaults {
         AetherNodeConfig deploymentDefaults(DeploymentDefaults defaults);
-        default AetherNodeConfig build() { return deploymentDefaults(DeploymentDefaults.DEFAULT); }
-    }
 
-    // Utility methods
+        default AetherNodeConfig build() {
+            return deploymentDefaults(DeploymentDefaults.DEFAULT);
+        }
+    }
 
     public NodeId self() {
         return topology.self();
     }
 
     public Result<Unit> validate() {
-        if (managementPort < 0 || managementPort > 65535) {
-            return Causes.cause("Invalid management port: " + managementPort).result();
-        }
-        if (managementPort != MANAGEMENT_DISABLED && topology.coreNodes().isEmpty()) {
-            return Causes.cause("At least one core node required when management is enabled").result();
-        }
+        if (managementPort <0 || managementPort > 65535) {return Causes.cause("Invalid management port: " + managementPort)
+                                                                             .result();}
+        if (managementPort != MANAGEMENT_DISABLED && topology.coreNodes().isEmpty()) {return Causes.cause("At least one core node required when management is enabled")
+                                                                                                         .result();}
         return Result.unitResult();
     }
 }

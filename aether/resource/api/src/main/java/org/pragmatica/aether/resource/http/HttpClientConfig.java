@@ -81,5 +81,4 @@ public record HttpClientConfig(Option<String> baseUrl,
                                             json,
                                             defaultHeaders));
     }
-
 }
