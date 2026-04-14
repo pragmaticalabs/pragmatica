@@ -50,7 +50,7 @@ import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.aether.node.AetherNodeConfig.defaultSliceActionConfig;
+import org.pragmatica.aether.slice.SliceActionConfig;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
@@ -527,7 +527,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
                                           targetClusterSize);
         var config = new AetherNodeConfig(topology,
                                           ProtocolConfig.testConfig(),
-                                          defaultSliceActionConfig(),
+                                          SliceActionConfig.sliceActionConfig(),
                                           org.pragmatica.aether.config.SliceConfig.sliceConfig(),
                                           mgmtPort,
                                           DHTConfig.FULL,

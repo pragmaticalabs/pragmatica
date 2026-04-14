@@ -4,9 +4,13 @@ import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.ConfigLoader;
+import org.pragmatica.aether.config.HttpProtocol;
+import org.pragmatica.aether.config.StreamingConfig;
+import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.config.Environment;
 import org.pragmatica.aether.config.SliceConfig;
+import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
@@ -62,6 +66,8 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
         new Main(args).run();
     }
 
+    private record TlsBundle(org.pragmatica.net.tcp.TlsConfig tls, CertificateProvider provider) {}
+
     private void run() {
         var aetherConfig = loadConfig();
         var nodeId = parseNodeId(aetherConfig);
@@ -73,50 +79,106 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
         var dhtConfig = parseDhtConfig(aetherConfig);
         logStartupInfo(nodeId, port, managementPort, peers, aetherConfig, sliceConfig);
         var coreMax = parseCoreMax(aetherConfig);
-        var config = AetherNodeConfig.aetherNodeConfig(nodeId,
-                                                       port,
-                                                       peers,
-                                                       AetherNodeConfig.defaultSliceActionConfig(),
-                                                       sliceConfig,
-                                                       managementPort,
-                                                       dhtConfig,
-                                                       coreMax);
-        var withBackup = wireBackupIfConfigured(config, aetherConfig);
-        var withConfig = wireConfigProvider(withBackup);
-        var withAppHttp = wireAppHttpIfConfigured(withConfig, aetherConfig);
-        var withMgmtProtocol = wireManagementHttpProtocol(withAppHttp, aetherConfig);
-        var withTls = wireTlsIfEnabled(withMgmtProtocol, aetherConfig);
-        warnInsecureTlsInNonLocal(withTls, aetherConfig);
-        var withStorage = wireStorageIfConfigured(withTls, aetherConfig);
-        var withStreaming = wireStreamingIfConfigured(withStorage, aetherConfig);
-        var finalConfig = wireCloudIfConfigured(withStreaming, aetherConfig);
-        var node = AetherNode.aetherNode(finalConfig).unwrap();
+        var tlsBundle = resolveTls(nodeId, peers, aetherConfig);
+        warnInsecureTlsInNonLocal(tlsBundle, aetherConfig);
+
+        var config = AetherNodeConfig.builder()
+                                     .self(nodeId)
+                                     .coreNodes(peers)
+                                     .managementPort(managementPort)
+                                     .sliceConfig(sliceConfig)
+                                     .artifactRepo(dhtConfig)
+                                     .coreMax(coreMax)
+                                     .appHttp(resolveAppHttp(aetherConfig))
+                                     .tls(tlsBundle.map(TlsBundle::tls))
+                                     .certificateProvider(tlsBundle.map(TlsBundle::provider))
+                                     .configProvider(resolveConfigProvider())
+                                     .environment(resolveEnvironment(aetherConfig))
+                                     .managementHttpProtocol(resolveManagementHttpProtocol(aetherConfig))
+                                     .storageConfig(resolveStorage(aetherConfig))
+                                     .backupConfig(resolveBackup(aetherConfig))
+                                     .streaming(resolveStreaming(aetherConfig))
+                                     .build();
+
+        var node = AetherNode.aetherNode(config).unwrap();
         registerShutdownHook(node);
         startNodeAndWait(node, nodeId);
     }
 
-    private AetherNodeConfig wireCloudIfConfigured(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
-        return aetherConfig.flatMap(AetherConfig::cloud).flatMap(cloudConfig -> EnvironmentIntegrationFactory.createFromConfig(cloudConfig).onFailure(cause -> log.error("Failed to create cloud environment: {}",
-                                                                                                                                                                         cause.message()))
-                                                                                                                              .option())
-                                   .map(config::withEnvironment)
-                                   .or(config);
+    // --- Config resolution ---
+
+    private static AppHttpConfig resolveAppHttp(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(AetherConfig::appHttp)
+                           .filter(AppHttpConfig::enabled)
+                           .or(AppHttpConfig.appHttpConfig());
     }
 
-    private static AetherNodeConfig wireBackupIfConfigured(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
-        return aetherConfig.map(AetherConfig::backup).filter(BackupConfig::enabled)
-                               .filter(b -> !b.path().isBlank())
-                               .map(config::withBackupConfig)
-                               .or(config);
+    private Option<TlsBundle> resolveTls(NodeId nodeId, List<NodeInfo> peers, Option<AetherConfig> aetherConfig) {
+        return aetherConfig.filter(AetherConfig::tlsEnabled)
+                           .flatMap(AetherConfig::tls)
+                           .filter(org.pragmatica.aether.config.TlsConfig::autoGenerate)
+                           .flatMap(tlsCfg -> resolveAutoTls(nodeId, peers, tlsCfg));
     }
 
-    private AetherNodeConfig wireConfigProvider(AetherNodeConfig config) {
+    private Option<TlsBundle> resolveAutoTls(NodeId nodeId, List<NodeInfo> peers, org.pragmatica.aether.config.TlsConfig tlsCfg) {
+        return resolveClusterSecret(tlsCfg)
+                           .flatMap(SelfSignedCertificateProvider::selfSignedCertificateProvider)
+                           .flatMap(provider -> {
+                               var hostname = findHostnameFromPeers(nodeId, peers);
+                               return org.pragmatica.net.tcp.TlsConfig.fromProvider(provider, nodeId.id(), hostname)
+                                                                      .map(tc -> new TlsBundle(tc, provider));
+                           })
+                           .onFailure(cause -> log.error("Failed to setup TLS: {}", cause.message()))
+                           .option();
+    }
+
+    private Option<ConfigurationProvider> resolveConfigProvider() {
         return findArg("--config=").map(Path::of)
                       .filter(p -> p.toFile().exists())
-                      .map(this::buildConfigProvider)
-                      .map(config::withConfigProvider)
-                      .or(config);
+                      .map(this::buildConfigProvider);
     }
+
+    private Option<EnvironmentIntegration> resolveEnvironment(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.flatMap(AetherConfig::cloud)
+                           .flatMap(cloudConfig -> EnvironmentIntegrationFactory.createFromConfig(cloudConfig)
+                                                       .onFailure(cause -> log.error("Failed to create cloud environment: {}", cause.message()))
+                                                       .option());
+    }
+
+    private static HttpProtocol resolveManagementHttpProtocol(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(cfg -> cfg.cluster().ports().managementHttpProtocol())
+                           .or(HttpProtocol.H1);
+    }
+
+    private static Map<String, StorageConfig> resolveStorage(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(AetherConfig::storage)
+                           .filter(m -> !m.isEmpty())
+                           .or(Map.of());
+    }
+
+    private static Option<BackupConfig> resolveBackup(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(AetherConfig::backup)
+                           .filter(BackupConfig::enabled)
+                           .filter(b -> !b.path().isBlank());
+    }
+
+    private static StreamingConfig resolveStreaming(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(AetherConfig::streaming)
+                           .or(StreamingConfig.streamingConfig());
+    }
+
+    private void warnInsecureTlsInNonLocal(Option<TlsBundle> tlsBundle, Option<AetherConfig> aetherConfig) {
+        var isNonLocal = aetherConfig.map(AetherConfig::environment)
+                                     .filter(env -> env != Environment.LOCAL)
+                                     .isPresent();
+        if (isNonLocal && tlsBundle.isEmpty()) {
+            log.warn("*** SECURITY WARNING: Running without TLS in non-LOCAL environment. "
+                     + "Cluster transport will use insecure self-signed certificates with no mutual authentication. "
+                     + "Configure TLS via [tls] section in aether.toml for production deployments. ***");
+        }
+    }
+
+    // --- Helpers ---
 
     private ConfigurationProvider buildConfigProvider(Path configPath) {
         var builder = ConfigurationProvider.builder();
@@ -126,51 +188,12 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
         return builder.build();
     }
 
-    private AetherNodeConfig wireAppHttpIfConfigured(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
-        return aetherConfig.map(AetherConfig::appHttp).filter(AppHttpConfig::enabled)
-                               .map(config::withAppHttp)
-                               .or(config);
-    }
-
-    private static AetherNodeConfig wireManagementHttpProtocol(AetherNodeConfig config,
-                                                               Option<AetherConfig> aetherConfig) {
-        return aetherConfig.map(cfg -> cfg.cluster().ports()
-                                                  .managementHttpProtocol()).map(config::withManagementHttpProtocol)
-                               .or(config);
-    }
-
-    private static AetherNodeConfig wireStorageIfConfigured(AetherNodeConfig config,
-                                                            Option<AetherConfig> aetherConfig) {
-        return aetherConfig.map(AetherConfig::storage).filter(m -> !m.isEmpty())
-                               .map(config::withStorage)
-                               .or(config);
-    }
-
-    private static AetherNodeConfig wireStreamingIfConfigured(AetherNodeConfig config,
-                                                              Option<AetherConfig> aetherConfig) {
-        return aetherConfig.map(AetherConfig::streaming).map(config::withStreaming)
-                               .or(config);
-    }
-
-    private void warnInsecureTlsInNonLocal(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
-        var isNonLocal = aetherConfig.map(AetherConfig::environment).filter(env -> env != Environment.LOCAL)
-                                         .isPresent();
-        if (isNonLocal && config.tls().isEmpty()) {log.warn("*** SECURITY WARNING: Running without TLS in non-LOCAL environment. " + "Cluster transport will use insecure self-signed certificates with no mutual authentication. " + "Configure TLS via [tls] section in aether.toml for production deployments. ***");}
-    }
-
-    private AetherNodeConfig wireTlsIfEnabled(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
-        return aetherConfig.filter(AetherConfig::tlsEnabled).flatMap(AetherConfig::tls)
-                                  .filter(org.pragmatica.aether.config.TlsConfig::autoGenerate)
-                                  .map(tlsCfg -> wireAutoTls(config, tlsCfg))
-                                  .or(config);
-    }
-
-    private AetherNodeConfig wireAutoTls(AetherNodeConfig config, org.pragmatica.aether.config.TlsConfig tlsCfg) {
-        return resolveClusterSecret(tlsCfg).flatMap(SelfSignedCertificateProvider::selfSignedCertificateProvider)
-                                   .flatMap(provider -> wireProviderToConfig(config, provider))
-                                   .onFailure(cause -> log.error("Failed to setup TLS: {}",
-                                                                 cause.message()))
-                                   .or(config);
+    private static String findHostnameFromPeers(NodeId nodeId, List<NodeInfo> peers) {
+        return Option.from(peers.stream()
+                                .filter(n -> n.id().equals(nodeId))
+                                .findFirst())
+                     .map(n -> n.address().host())
+                     .or("localhost");
     }
 
     private static Result<byte[]> resolveClusterSecret(org.pragmatica.aether.config.TlsConfig tlsCfg) {
@@ -180,24 +203,12 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
                             .toResult(MISSING_CLUSTER_SECRET);
     }
 
-    private static final Cause MISSING_CLUSTER_SECRET = Causes.cause("No cluster secret configured. Set 'cluster_secret' in [tls] section " + "or AETHER_CLUSTER_SECRET environment variable. " + "A cluster secret is required for TLS certificate generation.");
+    private static final Cause MISSING_CLUSTER_SECRET = Causes.cause(
+        "No cluster secret configured. Set 'cluster_secret' in [tls] section "
+        + "or AETHER_CLUSTER_SECRET environment variable. "
+        + "A cluster secret is required for TLS certificate generation.");
 
-    private static Result<AetherNodeConfig> wireProviderToConfig(AetherNodeConfig config,
-                                                                 CertificateProvider provider) {
-        var nodeId = config.self().id();
-        var hostname = findHostname(config);
-        return org.pragmatica.net.tcp.TlsConfig.fromProvider(provider, nodeId, hostname)
-                                                            .map(tlsConfig -> config.withTls(tlsConfig)
-                                                                                            .withCertificateProvider(provider));
-    }
-
-    private static String findHostname(AetherNodeConfig config) {
-        return Option.from(config.topology().coreNodes()
-                                          .stream()
-                                          .filter(n -> n.id().equals(config.self()))
-                                          .findFirst()).map(n -> n.address().host())
-                          .or("localhost");
-    }
+    // --- Parsing ---
 
     private SliceConfig parseSliceConfig(Option<AetherConfig> aetherConfig) {
         return aetherConfig.map(AetherConfig::slice).or(SliceConfig.sliceConfig());

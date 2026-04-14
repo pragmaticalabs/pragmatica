@@ -100,44 +100,6 @@ public record AppHttpConfig(boolean enabled,
         return securityMode != SecurityMode.NONE;
     }
 
-    public AppHttpConfig withEnabled(boolean enabled) {
-        return appHttpConfig(enabled, port, apiKeys, maxRequestSize, securityMode, jwtConfig, httpProtocol).unwrap();
-    }
-
-    public AppHttpConfig withPort(int port) {
-        return appHttpConfig(enabled, port, apiKeys, maxRequestSize, securityMode, jwtConfig, httpProtocol).unwrap();
-    }
-
-    public AppHttpConfig withApiKeys(Set<String> apiKeys) {
-        var mode = apiKeys.isEmpty()
-                  ? securityMode
-                  : SecurityMode.API_KEY;
-        return appHttpConfig(enabled, port, wrapSimpleKeys(apiKeys), maxRequestSize, mode, jwtConfig, httpProtocol).unwrap();
-    }
-
-    public AppHttpConfig withApiKeyMap(Map<String, ApiKeyEntry> apiKeys) {
-        var mode = apiKeys.isEmpty()
-                  ? securityMode
-                  : SecurityMode.API_KEY;
-        return appHttpConfig(enabled, port, apiKeys, maxRequestSize, mode, jwtConfig, httpProtocol).unwrap();
-    }
-
-    public AppHttpConfig withMaxRequestSize(int maxRequestSize) {
-        return appHttpConfig(enabled, port, apiKeys, maxRequestSize, securityMode, jwtConfig, httpProtocol).unwrap();
-    }
-
-    public AppHttpConfig withSecurityMode(SecurityMode securityMode) {
-        return appHttpConfig(enabled, port, apiKeys, maxRequestSize, securityMode, jwtConfig, httpProtocol).unwrap();
-    }
-
-    public AppHttpConfig withJwtConfig(JwtConfig jwtConfig) {
-        return appHttpConfig(enabled, port, apiKeys, maxRequestSize, securityMode, Option.some(jwtConfig), httpProtocol).unwrap();
-    }
-
-    public AppHttpConfig withHttpProtocol(HttpProtocol httpProtocol) {
-        return appHttpConfig(enabled, port, apiKeys, maxRequestSize, securityMode, jwtConfig, httpProtocol).unwrap();
-    }
-
     private static int normalizeMaxRequestSize(int maxRequestSize) {
         return maxRequestSize > 0
               ? maxRequestSize

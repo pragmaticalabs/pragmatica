@@ -2,6 +2,8 @@ package org.pragmatica.aether.config;
 
 import org.junit.jupiter.api.Test;
 
+import org.pragmatica.lang.Option;
+
 import java.util.Map;
 import java.util.Set;
 
@@ -52,10 +54,8 @@ class AppHttpConfigApiKeysTest {
     }
 
     @Test
-    void withApiKeys_wrapsSimpleKeys() {
-        var config = AppHttpConfig.appHttpConfig()
-                                  .withEnabled(true)
-                                  .withApiKeys(Set.of("my-key"));
+    void factoryWithKeys_wrapsSimpleKeys() {
+        var config = AppHttpConfig.appHttpConfig(8070, Set.of("my-key"));
 
         assertThat(config.securityEnabled()).isTrue();
         assertThat(config.apiKeys()).containsKey("my-key");
@@ -63,15 +63,14 @@ class AppHttpConfigApiKeysTest {
     }
 
     @Test
-    void withApiKeyMap_storesRichEntries() {
+    void fullFactory_storesRichEntries() {
         var entries = Map.of(
             "key-abc", ApiKeyEntry.apiKeyEntry("admin-svc", Set.of("admin")),
             "key-xyz", ApiKeyEntry.apiKeyEntry("reader-svc", Set.of("service"))
         );
 
-        var config = AppHttpConfig.appHttpConfig()
-                                  .withEnabled(true)
-                                  .withApiKeyMap(entries);
+        var config = AppHttpConfig.appHttpConfig(true, 8070, entries, AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE,
+                                                  SecurityMode.API_KEY, Option.none(), HttpProtocol.H1).unwrap();
 
         assertThat(config.securityEnabled()).isTrue();
         assertThat(config.apiKeys()).hasSize(2);

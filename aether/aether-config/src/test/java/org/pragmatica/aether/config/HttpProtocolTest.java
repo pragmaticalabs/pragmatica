@@ -3,6 +3,10 @@ package org.pragmatica.aether.config;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import org.pragmatica.lang.Option;
+
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class HttpProtocolTest {
@@ -118,14 +122,18 @@ class HttpProtocolTest {
         }
 
         @Test
-        void withHttpProtocol_changesProtocol() {
-            var config = AppHttpConfig.appHttpConfig().withHttpProtocol(HttpProtocol.H3);
+        void fullFactory_changesProtocol() {
+            var config = AppHttpConfig.appHttpConfig(false, AppHttpConfig.DEFAULT_APP_HTTP_PORT, Map.of(),
+                                                      AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE, SecurityMode.NONE,
+                                                      Option.none(), HttpProtocol.H3).unwrap();
             assertThat(config.httpProtocol()).isEqualTo(HttpProtocol.H3);
         }
 
         @Test
-        void withHttpProtocol_preservesOtherFields() {
-            var config = AppHttpConfig.appHttpConfig(8080).withHttpProtocol(HttpProtocol.BOTH);
+        void fullFactory_preservesOtherFields() {
+            var config = AppHttpConfig.appHttpConfig(true, 8080, Map.of(),
+                                                      AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE, SecurityMode.NONE,
+                                                      Option.none(), HttpProtocol.BOTH).unwrap();
             assertThat(config.port()).isEqualTo(8080);
             assertThat(config.enabled()).isTrue();
             assertThat(config.httpProtocol()).isEqualTo(HttpProtocol.BOTH);

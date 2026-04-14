@@ -119,37 +119,6 @@ class ControllerConfigTest {
             assertThat(updated.cpuScaleUpThreshold()).isEqualTo(original.cpuScaleUpThreshold());
         }
 
-        @Test
-        void withCallRateScaleUpThreshold_createsCorrectCopy() {
-            var original = ControllerConfig.DEFAULT;
-            var updated = original.withCallRateScaleUpThreshold(999);
-
-            assertThat(updated.callRateScaleUpThreshold()).isEqualTo(999);
-        }
-
-        @Test
-        void withEvaluationIntervalMs_createsCorrectCopy() {
-            var original = ControllerConfig.DEFAULT;
-            var updated = original.withEvaluationIntervalMs(5000);
-
-            assertThat(updated.evaluationIntervalMs()).isEqualTo(5000);
-        }
-
-        @Test
-        void withWarmUpPeriodMs_createsCorrectCopy() {
-            var original = ControllerConfig.DEFAULT;
-            var updated = original.withWarmUpPeriodMs(60000);
-
-            assertThat(updated.warmUpPeriodMs()).isEqualTo(60000);
-        }
-
-        @Test
-        void withSliceCooldownMs_createsCorrectCopy() {
-            var original = ControllerConfig.DEFAULT;
-            var updated = original.withSliceCooldownMs(20000);
-
-            assertThat(updated.sliceCooldownMs()).isEqualTo(20000);
-        }
     }
 
     @Nested

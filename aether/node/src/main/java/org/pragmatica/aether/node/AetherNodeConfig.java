@@ -100,755 +100,192 @@ public record AetherNodeConfig(TopologyConfig topology,
 
     public static final int MANAGEMENT_DISABLED = 0;
 
-    public static SliceActionConfig defaultSliceActionConfig() {
-        return SliceActionConfig.sliceActionConfig();
+    // --- Fluent builder ---
+
+    public static SelfStage builder() {
+        return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax
+            -> appHttp -> tls -> certificateProvider -> configProvider -> environment
+            -> managementHttpProtocol -> storageConfig -> backupConfig -> streaming
+            -> protocol -> sliceAction -> cache -> ttm -> rollback -> controllerConfig
+            -> autoHeal -> observability -> atomicity -> activationGated -> timeouts
+            -> workerConfig -> deploymentDefaults -> {
+            var effectiveClusterSize = coreMax > 0 ? coreMax : coreNodes.size();
+            var topology = new TopologyConfig(self, effectiveClusterSize,
+                                              timeSpan(5).seconds(), timeSpan(1).seconds(),
+                                              TopologyConfig.DEFAULT_HELLO_TIMEOUT, coreNodes,
+                                              Option.empty(), BackoffConfig.DEFAULT,
+                                              coreMax, effectiveClusterSize);
+            return new AetherNodeConfig(topology, protocol, sliceAction, sliceConfig,
+                                        managementPort, artifactRepo, cache,
+                                        tls, ttm, rollback, appHttp,
+                                        controllerConfig, configProvider,
+                                        environment, autoHeal, observability,
+                                        atomicity, activationGated, timeouts,
+                                        certificateProvider, workerConfig, deploymentDefaults,
+                                        managementHttpProtocol, storageConfig,
+                                        backupConfig, streaming);
+        };
     }
 
-    public static AetherNodeConfig aetherNodeConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
-        return aetherNodeConfig(self,
-                                port,
-                                coreNodes,
-                                defaultSliceActionConfig(),
-                                SliceConfig.sliceConfig(),
-                                DEFAULT_MANAGEMENT_PORT,
-                                DHTConfig.DEFAULT,
-                                0);
+    // Mandatory stages
+
+    public interface SelfStage { CoreNodesStage self(NodeId self); }
+
+    public interface CoreNodesStage { WithManagementPort coreNodes(List<NodeInfo> coreNodes); }
+
+    // Optional stages — frequently customized
+
+    public interface WithManagementPort {
+        WithSliceConfig managementPort(int port);
+        default AetherNodeConfig build() { return managementPort(DEFAULT_MANAGEMENT_PORT).build(); }
     }
 
-    public static AetherNodeConfig aetherNodeConfig(NodeId self,
-                                                    int port,
-                                                    List<NodeInfo> coreNodes,
-                                                    SliceActionConfig sliceActionConfig) {
-        return aetherNodeConfig(self,
-                                port,
-                                coreNodes,
-                                sliceActionConfig,
-                                SliceConfig.sliceConfig(),
-                                DEFAULT_MANAGEMENT_PORT,
-                                DHTConfig.DEFAULT,
-                                0);
+    public interface WithSliceConfig {
+        WithArtifactRepo sliceConfig(SliceConfig config);
+        default AetherNodeConfig build() { return sliceConfig(SliceConfig.sliceConfig()).build(); }
     }
 
-    public static AetherNodeConfig aetherNodeConfig(NodeId self,
-                                                    int port,
-                                                    List<NodeInfo> coreNodes,
-                                                    SliceActionConfig sliceActionConfig,
-                                                    int managementPort) {
-        return aetherNodeConfig(self,
-                                port,
-                                coreNodes,
-                                sliceActionConfig,
-                                SliceConfig.sliceConfig(),
-                                managementPort,
-                                DHTConfig.DEFAULT,
-                                0);
+    public interface WithArtifactRepo {
+        WithCoreMax artifactRepo(DHTConfig config);
+        default AetherNodeConfig build() { return artifactRepo(DHTConfig.DEFAULT).build(); }
     }
 
-    public static AetherNodeConfig aetherNodeConfig(NodeId self,
-                                                    int port,
-                                                    List<NodeInfo> coreNodes,
-                                                    SliceActionConfig sliceActionConfig,
-                                                    SliceConfig sliceConfig,
-                                                    int managementPort,
-                                                    DHTConfig artifactRepoConfig) {
-        return aetherNodeConfig(self,
-                                port,
-                                coreNodes,
-                                sliceActionConfig,
-                                sliceConfig,
-                                managementPort,
-                                artifactRepoConfig,
-                                0);
+    public interface WithCoreMax {
+        WithAppHttp coreMax(int coreMax);
+        default AetherNodeConfig build() { return coreMax(0).build(); }
     }
 
-    public static AetherNodeConfig aetherNodeConfig(NodeId self,
-                                                    int port,
-                                                    List<NodeInfo> coreNodes,
-                                                    SliceActionConfig sliceActionConfig,
-                                                    SliceConfig sliceConfig,
-                                                    int managementPort,
-                                                    DHTConfig artifactRepoConfig,
-                                                    int coreMax) {
-        var effectiveClusterSize = coreMax > 0
-                                  ? coreMax
-                                  : coreNodes.size();
-        var topology = new TopologyConfig(self,
-                                          effectiveClusterSize,
-                                          timeSpan(5).seconds(),
-                                          timeSpan(1).seconds(),
-                                          TopologyConfig.DEFAULT_HELLO_TIMEOUT,
-                                          coreNodes,
-                                          Option.empty(),
-                                          BackoffConfig.DEFAULT,
-                                          coreMax,
-                                          effectiveClusterSize);
-        return new AetherNodeConfig(topology,
-                                    ProtocolConfig.defaultConfig(),
-                                    sliceActionConfig,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepoConfig,
-                                    DHTConfig.CACHE_DEFAULT,
-                                    Option.empty(),
-                                    TtmConfig.ttmConfig(),
-                                    RollbackConfig.rollbackConfig(),
-                                    AppHttpConfig.appHttpConfig(),
-                                    ControllerConfig.DEFAULT,
-                                    Option.empty(),
-                                    Option.empty(),
-                                    AutoHealConfig.DEFAULT,
-                                    ObservabilityConfig.DEFAULT,
-                                    DeploymentAtomicity.ALL_OR_NOTHING,
-                                    false,
-                                    TimeoutsConfig.timeoutsConfig(),
-                                    Option.empty(),
-                                    Option.empty(),
-                                    DeploymentDefaults.DEFAULT,
-                                    HttpProtocol.H1,
-                                    Map.of(),
-                                    Option.empty(),
-                                    StreamingConfig.streamingConfig());
+    public interface WithAppHttp {
+        WithTls appHttp(AppHttpConfig config);
+        default AetherNodeConfig build() { return appHttp(AppHttpConfig.appHttpConfig()).build(); }
     }
 
-    public static AetherNodeConfig testConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
-        var topology = new TopologyConfig(self,
-                                          coreNodes.size(),
-                                          timeSpan(500).millis(),
-                                          timeSpan(100).millis(),
-                                          coreNodes);
-        return new AetherNodeConfig(topology,
-                                    ProtocolConfig.testConfig(),
-                                    defaultSliceActionConfig(),
-                                    SliceConfig.sliceConfig(),
-                                    MANAGEMENT_DISABLED,
-                                    DHTConfig.FULL,
-                                    DHTConfig.CACHE_DEFAULT,
-                                    Option.empty(),
-                                    TtmConfig.ttmConfig(),
-                                    RollbackConfig.rollbackConfig(),
-                                    AppHttpConfig.appHttpConfig(),
-                                    ControllerConfig.DEFAULT,
-                                    Option.empty(),
-                                    Option.empty(),
-                                    AutoHealConfig.DEFAULT,
-                                    ObservabilityConfig.DEFAULT,
-                                    DeploymentAtomicity.ALL_OR_NOTHING,
-                                    false,
-                                    TimeoutsConfig.timeoutsConfig(),
-                                    Option.empty(),
-                                    Option.empty(),
-                                    DeploymentDefaults.DEFAULT,
-                                    HttpProtocol.H1,
-                                    Map.of(),
-                                    Option.empty(),
-                                    StreamingConfig.streamingConfig());
+    public interface WithTls {
+        WithCertificateProvider tls(Option<TlsConfig> config);
+        default WithCertificateProvider tls(TlsConfig config) { return tls(Option.some(config)); }
+        default AetherNodeConfig build() { return tls(Option.none()).build(); }
     }
 
-    public static AetherNodeConfig forgeConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
-        var topology = new TopologyConfig(self,
-                                          coreNodes.size(),
-                                          timeSpan(500).millis(),
-                                          timeSpan(100).millis(),
-                                          coreNodes);
-        return new AetherNodeConfig(topology,
-                                    ProtocolConfig.testConfig(),
-                                    defaultSliceActionConfig(),
-                                    SliceConfig.sliceConfig(),
-                                    MANAGEMENT_DISABLED,
-                                    DHTConfig.DEFAULT,
-                                    DHTConfig.CACHE_DEFAULT,
-                                    Option.empty(),
-                                    TtmConfig.ttmConfig(),
-                                    RollbackConfig.rollbackConfig(),
-                                    AppHttpConfig.appHttpConfig(),
-                                    ControllerConfig.forgeDefaults(),
-                                    Option.empty(),
-                                    Option.empty(),
-                                    AutoHealConfig.DEFAULT,
-                                    ObservabilityConfig.DEFAULT,
-                                    DeploymentAtomicity.ALL_OR_NOTHING,
-                                    false,
-                                    TimeoutsConfig.timeoutsConfig(),
-                                    Option.empty(),
-                                    Option.empty(),
-                                    DeploymentDefaults.DEFAULT,
-                                    HttpProtocol.H1,
-                                    Map.of(),
-                                    Option.empty(),
-                                    StreamingConfig.streamingConfig());
+    public interface WithCertificateProvider {
+        WithConfigProvider certificateProvider(Option<CertificateProvider> provider);
+        default WithConfigProvider certificateProvider(CertificateProvider provider) { return certificateProvider(Option.some(provider)); }
+        default AetherNodeConfig build() { return certificateProvider(Option.none()).build(); }
     }
 
-    public AetherNodeConfig withTls(TlsConfig tlsConfig) {
-        var tlsOption = Option.some(tlsConfig);
-        var newTopology = new TopologyConfig(topology.self(),
-                                             topology.clusterSize(),
-                                             topology.reconciliationInterval(),
-                                             topology.pingInterval(),
-                                             topology.helloTimeout(),
-                                             topology.coreNodes(),
-                                             tlsOption,
-                                             topology.backoff(),
-                                             topology.coreMax(),
-                                             topology.coreMin());
-        return new AetherNodeConfig(newTopology,
-                                    protocol,
-                                    sliceAction,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tlsOption,
-                                    ttm,
-                                    rollback,
-                                    appHttp,
-                                    controllerConfig,
-                                    configProvider,
-                                    environment,
-                                    autoHeal,
-                                    observability,
-                                    atomicity,
-                                    activationGated,
-                                    timeouts,
-                                    certificateProvider,
-                                    workerConfig,
-                                    deploymentDefaults,
-                                    managementHttpProtocol,
-                                    storageConfig,
-                                    backupConfig,
-                                    streaming);
+    public interface WithConfigProvider {
+        WithEnvironment configProvider(Option<ConfigurationProvider> provider);
+        default WithEnvironment configProvider(ConfigurationProvider provider) { return configProvider(Option.some(provider)); }
+        default AetherNodeConfig build() { return configProvider(Option.none()).build(); }
     }
 
-    public AetherNodeConfig withTtm(TtmConfig ttmConfig) {
-        return new AetherNodeConfig(topology,
-                                    protocol,
-                                    sliceAction,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tls,
-                                    ttmConfig,
-                                    rollback,
-                                    appHttp,
-                                    controllerConfig,
-                                    configProvider,
-                                    environment,
-                                    autoHeal,
-                                    observability,
-                                    atomicity,
-                                    activationGated,
-                                    timeouts,
-                                    certificateProvider,
-                                    workerConfig,
-                                    deploymentDefaults,
-                                    managementHttpProtocol,
-                                    storageConfig,
-                                    backupConfig,
-                                    streaming);
+    public interface WithEnvironment {
+        WithManagementHttpProtocol environment(Option<EnvironmentIntegration> env);
+        default WithManagementHttpProtocol environment(EnvironmentIntegration env) { return environment(Option.some(env)); }
+        default AetherNodeConfig build() { return environment(Option.none()).build(); }
     }
 
-    public AetherNodeConfig withRollback(RollbackConfig rollbackConfig) {
-        return new AetherNodeConfig(topology,
-                                    protocol,
-                                    sliceAction,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tls,
-                                    ttm,
-                                    rollbackConfig,
-                                    appHttp,
-                                    controllerConfig,
-                                    configProvider,
-                                    environment,
-                                    autoHeal,
-                                    observability,
-                                    atomicity,
-                                    activationGated,
-                                    timeouts,
-                                    certificateProvider,
-                                    workerConfig,
-                                    deploymentDefaults,
-                                    managementHttpProtocol,
-                                    storageConfig,
-                                    backupConfig,
-                                    streaming);
+    public interface WithManagementHttpProtocol {
+        WithStorageConfig managementHttpProtocol(HttpProtocol protocol);
+        default AetherNodeConfig build() { return managementHttpProtocol(HttpProtocol.H1).build(); }
     }
 
-    public AetherNodeConfig withSliceConfig(SliceConfig newSliceConfig) {
-        return new AetherNodeConfig(topology,
-                                    protocol,
-                                    sliceAction,
-                                    newSliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tls,
-                                    ttm,
-                                    rollback,
-                                    appHttp,
-                                    controllerConfig,
-                                    configProvider,
-                                    environment,
-                                    autoHeal,
-                                    observability,
-                                    atomicity,
-                                    activationGated,
-                                    timeouts,
-                                    certificateProvider,
-                                    workerConfig,
-                                    deploymentDefaults,
-                                    managementHttpProtocol,
-                                    storageConfig,
-                                    backupConfig,
-                                    streaming);
+    public interface WithStorageConfig {
+        WithBackupConfig storageConfig(Map<String, StorageConfig> config);
+        default AetherNodeConfig build() { return storageConfig(Map.of()).build(); }
     }
 
-    public AetherNodeConfig withAppHttp(AppHttpConfig appHttpConfig) {
-        return new AetherNodeConfig(topology,
-                                    protocol,
-                                    sliceAction,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tls,
-                                    ttm,
-                                    rollback,
-                                    appHttpConfig,
-                                    controllerConfig,
-                                    configProvider,
-                                    environment,
-                                    autoHeal,
-                                    observability,
-                                    atomicity,
-                                    activationGated,
-                                    timeouts,
-                                    certificateProvider,
-                                    workerConfig,
-                                    deploymentDefaults,
-                                    managementHttpProtocol,
-                                    storageConfig,
-                                    backupConfig,
-                                    streaming);
+    public interface WithBackupConfig {
+        WithStreaming backupConfig(Option<BackupConfig> config);
+        default WithStreaming backupConfig(BackupConfig config) { return backupConfig(Option.some(config)); }
+        default AetherNodeConfig build() { return backupConfig(Option.none()).build(); }
     }
 
-    public AetherNodeConfig withControllerConfig(ControllerConfig newControllerConfig) {
-        return new AetherNodeConfig(topology,
-                                    protocol,
-                                    sliceAction,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tls,
-                                    ttm,
-                                    rollback,
-                                    appHttp,
-                                    newControllerConfig,
-                                    configProvider,
-                                    environment,
-                                    autoHeal,
-                                    observability,
-                                    atomicity,
-                                    activationGated,
-                                    timeouts,
-                                    certificateProvider,
-                                    workerConfig,
-                                    deploymentDefaults,
-                                    managementHttpProtocol,
-                                    storageConfig,
-                                    backupConfig,
-                                    streaming);
+    public interface WithStreaming {
+        WithProtocol streaming(StreamingConfig config);
+        default AetherNodeConfig build() { return streaming(StreamingConfig.streamingConfig()).build(); }
     }
 
-    public AetherNodeConfig withConfigProvider(ConfigurationProvider provider) {
-        return new AetherNodeConfig(topology,
-                                    protocol,
-                                    sliceAction,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tls,
-                                    ttm,
-                                    rollback,
-                                    appHttp,
-                                    controllerConfig,
-                                    Option.some(provider),
-                                    environment,
-                                    autoHeal,
-                                    observability,
-                                    atomicity,
-                                    activationGated,
-                                    timeouts,
-                                    certificateProvider,
-                                    workerConfig,
-                                    deploymentDefaults,
-                                    managementHttpProtocol,
-                                    storageConfig,
-                                    backupConfig,
-                                    streaming);
+    // Optional stages — rarely customized
+
+    public interface WithProtocol {
+        WithSliceAction protocol(ProtocolConfig config);
+        default AetherNodeConfig build() { return protocol(ProtocolConfig.defaultConfig()).build(); }
     }
 
-    public AetherNodeConfig withEnvironment(EnvironmentIntegration env) {
-        return new AetherNodeConfig(topology,
-                                    protocol,
-                                    sliceAction,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tls,
-                                    ttm,
-                                    rollback,
-                                    appHttp,
-                                    controllerConfig,
-                                    configProvider,
-                                    Option.some(env),
-                                    autoHeal,
-                                    observability,
-                                    atomicity,
-                                    activationGated,
-                                    timeouts,
-                                    certificateProvider,
-                                    workerConfig,
-                                    deploymentDefaults,
-                                    managementHttpProtocol,
-                                    storageConfig,
-                                    backupConfig,
-                                    streaming);
+    public interface WithSliceAction {
+        WithCache sliceAction(SliceActionConfig config);
+        default AetherNodeConfig build() { return sliceAction(SliceActionConfig.sliceActionConfig()).build(); }
     }
 
-    public AetherNodeConfig withAutoHeal(AutoHealConfig autoHealConfig) {
-        return new AetherNodeConfig(topology,
-                                    protocol,
-                                    sliceAction,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tls,
-                                    ttm,
-                                    rollback,
-                                    appHttp,
-                                    controllerConfig,
-                                    configProvider,
-                                    environment,
-                                    autoHealConfig,
-                                    observability,
-                                    atomicity,
-                                    activationGated,
-                                    timeouts,
-                                    certificateProvider,
-                                    workerConfig,
-                                    deploymentDefaults,
-                                    managementHttpProtocol,
-                                    storageConfig,
-                                    backupConfig,
-                                    streaming);
+    public interface WithCache {
+        WithTtm cache(DHTConfig config);
+        default AetherNodeConfig build() { return cache(DHTConfig.CACHE_DEFAULT).build(); }
     }
 
-    public AetherNodeConfig withAtomicity(DeploymentAtomicity deploymentAtomicity) {
-        return new AetherNodeConfig(topology,
-                                    protocol,
-                                    sliceAction,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tls,
-                                    ttm,
-                                    rollback,
-                                    appHttp,
-                                    controllerConfig,
-                                    configProvider,
-                                    environment,
-                                    autoHeal,
-                                    observability,
-                                    deploymentAtomicity,
-                                    activationGated,
-                                    timeouts,
-                                    certificateProvider,
-                                    workerConfig,
-                                    deploymentDefaults,
-                                    managementHttpProtocol,
-                                    storageConfig,
-                                    backupConfig,
-                                    streaming);
+    public interface WithTtm {
+        WithRollback ttm(TtmConfig config);
+        default AetherNodeConfig build() { return ttm(TtmConfig.ttmConfig()).build(); }
     }
 
-    public AetherNodeConfig withActivationGated(boolean gated) {
-        return new AetherNodeConfig(topology,
-                                    protocol,
-                                    sliceAction,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tls,
-                                    ttm,
-                                    rollback,
-                                    appHttp,
-                                    controllerConfig,
-                                    configProvider,
-                                    environment,
-                                    autoHeal,
-                                    observability,
-                                    atomicity,
-                                    gated,
-                                    timeouts,
-                                    certificateProvider,
-                                    workerConfig,
-                                    deploymentDefaults,
-                                    managementHttpProtocol,
-                                    storageConfig,
-                                    backupConfig,
-                                    streaming);
+    public interface WithRollback {
+        WithControllerConfig rollback(RollbackConfig config);
+        default AetherNodeConfig build() { return rollback(RollbackConfig.rollbackConfig()).build(); }
     }
 
-    public AetherNodeConfig withTimeouts(TimeoutsConfig newTimeouts) {
-        return new AetherNodeConfig(topology,
-                                    protocol,
-                                    sliceAction,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tls,
-                                    ttm,
-                                    rollback,
-                                    appHttp,
-                                    controllerConfig,
-                                    configProvider,
-                                    environment,
-                                    autoHeal,
-                                    observability,
-                                    atomicity,
-                                    activationGated,
-                                    newTimeouts,
-                                    certificateProvider,
-                                    workerConfig,
-                                    deploymentDefaults,
-                                    managementHttpProtocol,
-                                    storageConfig,
-                                    backupConfig,
-                                    streaming);
+    public interface WithControllerConfig {
+        WithAutoHeal controllerConfig(ControllerConfig config);
+        default AetherNodeConfig build() { return controllerConfig(ControllerConfig.DEFAULT).build(); }
     }
 
-    public AetherNodeConfig withCertificateProvider(CertificateProvider provider) {
-        return new AetherNodeConfig(topology,
-                                    protocol,
-                                    sliceAction,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tls,
-                                    ttm,
-                                    rollback,
-                                    appHttp,
-                                    controllerConfig,
-                                    configProvider,
-                                    environment,
-                                    autoHeal,
-                                    observability,
-                                    atomicity,
-                                    activationGated,
-                                    timeouts,
-                                    Option.some(provider),
-                                    workerConfig,
-                                    deploymentDefaults,
-                                    managementHttpProtocol,
-                                    storageConfig,
-                                    backupConfig,
-                                    streaming);
+    public interface WithAutoHeal {
+        WithObservability autoHeal(AutoHealConfig config);
+        default AetherNodeConfig build() { return autoHeal(AutoHealConfig.DEFAULT).build(); }
     }
 
-    public AetherNodeConfig withWorkerConfig(WorkerConfig config) {
-        return new AetherNodeConfig(topology,
-                                    protocol,
-                                    sliceAction,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tls,
-                                    ttm,
-                                    rollback,
-                                    appHttp,
-                                    controllerConfig,
-                                    configProvider,
-                                    environment,
-                                    autoHeal,
-                                    observability,
-                                    atomicity,
-                                    activationGated,
-                                    timeouts,
-                                    certificateProvider,
-                                    Option.some(config),
-                                    deploymentDefaults,
-                                    managementHttpProtocol,
-                                    storageConfig,
-                                    backupConfig,
-                                    streaming);
+    public interface WithObservability {
+        WithAtomicity observability(ObservabilityConfig config);
+        default AetherNodeConfig build() { return observability(ObservabilityConfig.DEFAULT).build(); }
     }
 
-    public AetherNodeConfig withDeploymentDefaults(DeploymentDefaults defaults) {
-        return new AetherNodeConfig(topology,
-                                    protocol,
-                                    sliceAction,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tls,
-                                    ttm,
-                                    rollback,
-                                    appHttp,
-                                    controllerConfig,
-                                    configProvider,
-                                    environment,
-                                    autoHeal,
-                                    observability,
-                                    atomicity,
-                                    activationGated,
-                                    timeouts,
-                                    certificateProvider,
-                                    workerConfig,
-                                    defaults,
-                                    managementHttpProtocol,
-                                    storageConfig,
-                                    backupConfig,
-                                    streaming);
+    public interface WithAtomicity {
+        WithActivationGated atomicity(DeploymentAtomicity mode);
+        default AetherNodeConfig build() { return atomicity(DeploymentAtomicity.ALL_OR_NOTHING).build(); }
     }
 
-    public AetherNodeConfig withManagementHttpProtocol(HttpProtocol protocol) {
-        return new AetherNodeConfig(topology,
-                                    this.protocol,
-                                    sliceAction,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tls,
-                                    ttm,
-                                    rollback,
-                                    appHttp,
-                                    controllerConfig,
-                                    configProvider,
-                                    environment,
-                                    autoHeal,
-                                    observability,
-                                    atomicity,
-                                    activationGated,
-                                    timeouts,
-                                    certificateProvider,
-                                    workerConfig,
-                                    deploymentDefaults,
-                                    protocol,
-                                    storageConfig,
-                                    backupConfig,
-                                    streaming);
+    public interface WithActivationGated {
+        WithTimeouts activationGated(boolean gated);
+        default AetherNodeConfig build() { return activationGated(false).build(); }
     }
 
-    public AetherNodeConfig withStorage(Map<String, StorageConfig> newStorageConfig) {
-        return new AetherNodeConfig(topology,
-                                    protocol,
-                                    sliceAction,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tls,
-                                    ttm,
-                                    rollback,
-                                    appHttp,
-                                    controllerConfig,
-                                    configProvider,
-                                    environment,
-                                    autoHeal,
-                                    observability,
-                                    atomicity,
-                                    activationGated,
-                                    timeouts,
-                                    certificateProvider,
-                                    workerConfig,
-                                    deploymentDefaults,
-                                    managementHttpProtocol,
-                                    newStorageConfig,
-                                    backupConfig,
-                                    streaming);
+    public interface WithTimeouts {
+        WithWorkerConfig timeouts(TimeoutsConfig config);
+        default AetherNodeConfig build() { return timeouts(TimeoutsConfig.timeoutsConfig()).build(); }
     }
 
-    public AetherNodeConfig withBackupConfig(BackupConfig backup) {
-        return new AetherNodeConfig(topology,
-                                    protocol,
-                                    sliceAction,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tls,
-                                    ttm,
-                                    rollback,
-                                    appHttp,
-                                    controllerConfig,
-                                    configProvider,
-                                    environment,
-                                    autoHeal,
-                                    observability,
-                                    atomicity,
-                                    activationGated,
-                                    timeouts,
-                                    certificateProvider,
-                                    workerConfig,
-                                    deploymentDefaults,
-                                    managementHttpProtocol,
-                                    storageConfig,
-                                    Option.some(backup),
-                                    streaming);
+    public interface WithWorkerConfig {
+        WithDeploymentDefaults workerConfig(Option<WorkerConfig> config);
+        default WithDeploymentDefaults workerConfig(WorkerConfig config) { return workerConfig(Option.some(config)); }
+        default AetherNodeConfig build() { return workerConfig(Option.none()).build(); }
     }
 
-    public AetherNodeConfig withStreaming(StreamingConfig newStreaming) {
-        return new AetherNodeConfig(topology,
-                                    protocol,
-                                    sliceAction,
-                                    sliceConfig,
-                                    managementPort,
-                                    artifactRepo,
-                                    cache,
-                                    tls,
-                                    ttm,
-                                    rollback,
-                                    appHttp,
-                                    controllerConfig,
-                                    configProvider,
-                                    environment,
-                                    autoHeal,
-                                    observability,
-                                    atomicity,
-                                    activationGated,
-                                    timeouts,
-                                    certificateProvider,
-                                    workerConfig,
-                                    deploymentDefaults,
-                                    managementHttpProtocol,
-                                    storageConfig,
-                                    backupConfig,
-                                    newStreaming);
+    public interface WithDeploymentDefaults {
+        AetherNodeConfig deploymentDefaults(DeploymentDefaults defaults);
+        default AetherNodeConfig build() { return deploymentDefaults(DeploymentDefaults.DEFAULT); }
     }
+
+    // Utility methods
 
     public NodeId self() {
         return topology.self();
     }
 
     public Result<Unit> validate() {
-        if (managementPort <0 || managementPort > 65535) {return Causes.cause("Invalid management port: " + managementPort)
-                                                                             .result();}
-        if (managementPort != MANAGEMENT_DISABLED && topology.coreNodes().isEmpty()) {return Causes.cause("At least one core node required when management is enabled")
-                                                                                                         .result();}
+        if (managementPort < 0 || managementPort > 65535) {
+            return Causes.cause("Invalid management port: " + managementPort).result();
+        }
+        if (managementPort != MANAGEMENT_DISABLED && topology.coreNodes().isEmpty()) {
+            return Causes.cause("At least one core node required when management is enabled").result();
+        }
         return Result.unitResult();
     }
 }
