@@ -121,12 +121,13 @@ filter_suites() {
     local filtered=()
     for s in "${cluster_suites[@]}"; do
         for sel in "${selected[@]}"; do
-            if [ "$s" = "$sel" ]; then
+            if [ "$s" = "$sel" ] || [[ "$s" == "${sel}-"* ]]; then
                 filtered+=("$s")
+                break
             fi
         done
     done
-    echo "${filtered[@]}"
+    echo "${filtered[@]+"${filtered[@]}"}"
 }
 
 # ---------------------------------------------------------------------------
