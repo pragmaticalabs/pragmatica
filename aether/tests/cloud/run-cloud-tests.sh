@@ -112,8 +112,8 @@ for suite in "${SUITES[@]}"; do
     echo "[$(date +%H:%M:%S)] --- ${suite} ---"
     SUITE_START=$(date +%s)
 
-    # Run via existing runner
-    if bash "${INTEGRATION_DIR}/scripts/run-suite.sh" "${suite}" > "/tmp/cloud-${suite}.log" 2>&1; then
+    # Run via dual-cluster runner (cluster already provisioned, just run the suite)
+    if bash "${INTEGRATION_DIR}/run-tests.sh" --env remote --skip-deploy --skip-teardown --suites "${suite}" > "/tmp/cloud-${suite}.log" 2>&1; then
         SUITE_STATUS="PASS"
     else
         SUITE_STATUS="FAIL"

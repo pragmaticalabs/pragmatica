@@ -32,122 +32,50 @@ chaos recovery, scaling, streaming, security, and more.
 | `SKIP_SOAK` | No | `true` | Skip long-running soak tests |
 | `COLLECT_METRICS` | No | `false` | Collect thread/heap metrics before/after tests |
 
-## Quick Start (Docker Compose)
+## Quick Start
 
-This is the standard workflow. All commands run from the repository root.
-
-### 1. Deploy cluster to a remote host
+A single dual-cluster runner — `run-tests.sh` — handles provisioning, suite execution, and teardown across `docker` (local), `remote` (existing host), and `cloud` (Hetzner today) environments.
 
 ```bash
-# Full deploy: build + transfer + image build + start cluster
-TARGET_HOST=192.168.0.71 \
-AETHER_SSH_KEY=~/.ssh/aether_test \
-bash aether/tests/integration/scripts/deploy-compose.sh
+# Run all non-soak suites locally
+./aether/tests/integration/run-tests.sh --env docker
 
-# Skip Maven build (reuse existing JAR):
-TARGET_HOST=192.168.0.71 \
-AETHER_SSH_KEY=~/.ssh/aether_test \
-bash aether/tests/integration/scripts/deploy-compose.sh --skip-build
+# Run specific suites on a remote host
+TARGET_HOST=192.168.0.71 AETHER_SSH_KEY=~/.ssh/aether_test \
+  ./aether/tests/integration/run-tests.sh --env remote --suites 00,02,06
 
-# Clean deploy (remove old containers/images first):
-TARGET_HOST=192.168.0.71 \
-AETHER_SSH_KEY=~/.ssh/aether_test \
-bash aether/tests/integration/scripts/deploy-compose.sh --clean
-```
+# Skip the cluster provisioning step (assume cluster is already up)
+./aether/tests/integration/run-tests.sh --env docker --skip-deploy
 
-The deploy script:
-1. Builds the project locally (`mvn clean install -DskipTests`)
-2. Builds example slices (`url-shortener`, `url-shortener-v2`)
-3. Copies JAR, Dockerfile, config, and docker-compose.yml to the target
-4. Builds the Docker image **on the target** (avoids arch mismatch)
-5. Starts a 5-node cluster via `docker compose`
-6. Waits for cluster health and prints connection details
-
-### 2. Verify deployment
-
-```bash
-# Check build timestamp (confirms correct binary is running):
-curl -s -H "X-API-Key: aether-integration-test-key" http://192.168.0.71:5150/api/status \
-  | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Build: {d.get(\"buildTimestamp\",\"?\")}, Leader: {d[\"leader\"]}')"
-
-# Check task delegation:
-curl -s -H "X-API-Key: aether-integration-test-key" http://192.168.0.71:5150/api/cluster/tasks \
-  | python3 -m json.tool
-```
-
-### 3. Run tests
-
-```bash
-# Run all suites (excludes soak tests by default):
-TARGET_HOST=192.168.0.71 \
-AETHER_SSH_KEY=~/.ssh/aether_test \
-bash aether/tests/integration/scripts/run-all.sh
-
-# Run a specific suite:
-TARGET_HOST=192.168.0.71 \
-AETHER_SSH_KEY=~/.ssh/aether_test \
-bash aether/tests/integration/scripts/run-suite.sh 00-smoke
-
-# Run a single test file:
-TARGET_HOST=192.168.0.71 \
-AETHER_SSH_KEY=~/.ssh/aether_test \
-bash aether/tests/integration/suites/15-delegation/test-01-task-assignments.sh
-
-# Include soak tests (4+ hours):
-TARGET_HOST=192.168.0.71 \
-AETHER_SSH_KEY=~/.ssh/aether_test \
-SKIP_SOAK=false \
-bash aether/tests/integration/scripts/run-all.sh
-```
-
-### 4. Tear down
-
-```bash
-ssh -i ~/.ssh/aether_test aether@192.168.0.71 'docker compose down -v'
-```
-
-## Cloud Deployment (Hetzner, AWS, etc.)
-
-For testing on real cloud infrastructure (not docker-compose). Each cloud instance runs one
-Aether node via Docker with `--network host`.
-
-### Hetzner (with hcloud CLI)
-
-```bash
-# Create instances + deploy + start:
-PROVIDER=hetzner \
-AETHER_SSH_KEY=~/.ssh/hetzner \
+# Cloud run, leave clusters up afterwards for inspection
 HCLOUD_TOKEN=xxx \
-bash aether/tests/integration/scripts/deploy-cloud.sh --create
-
-# Run tests against the cluster:
-TARGET_HOST=<first-node-ip> \
-MGMT_PORT=8080 \
-AETHER_SSH_KEY=~/.ssh/hetzner \
-AETHER_SSH_USER=root \
-bash aether/tests/integration/scripts/run-all.sh
-
-# Destroy instances when done:
-PROVIDER=hetzner bash aether/tests/integration/scripts/deploy-cloud.sh --destroy
+  ./aether/tests/integration/run-tests.sh --env cloud --skip-teardown
 ```
 
-### Generic (existing instances)
+Run `./aether/tests/integration/run-tests.sh --help` for the full flag list.
+
+### Single suite or single file
 
 ```bash
-# Deploy to pre-provisioned instances:
-NODES=10.0.0.1,10.0.0.2,10.0.0.3,10.0.0.4,10.0.0.5 \
-AETHER_SSH_KEY=~/.ssh/cloud \
-AETHER_SSH_USER=ubuntu \
-bash aether/tests/integration/scripts/deploy-cloud.sh
+# One suite via the runner
+./aether/tests/integration/run-tests.sh --env docker --suites 00-smoke
 
-# Important: with cloud deployment, management port is 8080 (no docker port mapping)
-TARGET_HOST=10.0.0.1 \
-MGMT_PORT=8080 \
-APP_PORT=8070 \
-AETHER_SSH_KEY=~/.ssh/cloud \
-AETHER_SSH_USER=ubuntu \
-bash aether/tests/integration/scripts/run-all.sh
+# One file (suite scripts are self-contained, can be sourced directly)
+TARGET_HOST=192.168.0.71 AETHER_SSH_KEY=~/.ssh/aether_test \
+  bash aether/tests/integration/suites/15-delegation/test-01-task-assignments.sh
 ```
+
+### Verify deployment
+
+```bash
+# Status and leader (uses the project CLI, no jq/python3)
+aether --field status leader
+aether topology
+```
+
+### Tear down
+
+`run-tests.sh` tears the cluster down by default. Override with `--skip-teardown`.
 
 ## Test Suites
 
@@ -178,12 +106,9 @@ integration/
     common.sh          # Assertions, HTTP helpers, SSH, logging, test runner
     cluster.sh         # Cluster queries, node ops, deploy, scaling, streams, delegation
     load.sh            # k6 load test helpers
+  run-tests.sh         # Dual-cluster runner: provisioning + suites + teardown
   scripts/
-    deploy-compose.sh  # One-command deploy via docker-compose (recommended)
-    deploy-cloud.sh    # Deploy to bare cloud instances (Hetzner, AWS, etc.)
-    run-all.sh         # Run all suites sequentially
-    run-suite.sh       # Run a single suite by name
-    setup.sh           # Legacy setup script (use deploy-compose.sh instead)
+    cleanup.sh         # Tear down cluster (also invoked by run-tests.sh teardown phase)
   suites/
     00-smoke/          # Tests ordered by dependency and risk
     01-stability/
@@ -249,8 +174,8 @@ print_summary
 
 **Docker image tag mismatch:**
 - docker-compose expects `aether-node:local` (not `latest`)
-- Use `deploy-compose.sh` which handles tagging correctly
+- `run-tests.sh` handles tagging correctly during the deploy phase
 
 **Cross-architecture issues:**
-- The deploy scripts always build the Docker image on the target host
+- `run-tests.sh` always builds the Docker image on the target host
 - Never transfer a locally-built Docker image to a different architecture

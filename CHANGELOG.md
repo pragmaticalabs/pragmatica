@@ -69,6 +69,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **API key audit trail** — All key operations (create, rotate, revoke, expire) logged in KV-Store as `ApiKeyAuditValue` entries
 - **API key expiration sweep** — Periodic background task on leader (60s interval) marks expired keys
 
+### Removed
+- **Legacy integration-test orchestrator scripts** — `deploy-compose.sh`, `deploy-cloud.sh`, `run-all.sh`, `run-suite.sh`, `setup.sh` deleted. Superseded by single `run-tests.sh` dual-cluster runner that handles `--env docker|remote|cloud` provisioning, suite execution, and teardown. README, architecture docs, `build-and-push.sh`, and cloud test harness updated accordingly
+
 ### Changed
 - **Forward timeout config consolidation** — `AppHttpConfig.forwardTimeout` removed; HTTP forward timeouts now live in `[timeouts.forwarding]` as `app_timeout` (default 5s) and `management_timeout` (default 5s, used by management forwarding). `ForwardingTimeouts` record extended; `AppHttpConfig` factory overloads collapsed
 - **jOOQ version bump** — 3.20.10/3.20.11 → 3.21.1 across root, integrations/db, and aether/resource (fixes version drift)
