@@ -79,7 +79,7 @@ assert_cluster_healthy() {
 is_cluster_ready() {
     local count
     count=$(cluster_node_count)
-    [ -n "$count" ] && [ "$count" -ge 3 ] 2>/dev/null
+    [ -n "$count" ] && [ "$count" -ge "${NODE_COUNT:-5}" ] 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
