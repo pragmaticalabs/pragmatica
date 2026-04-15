@@ -98,22 +98,18 @@ import org.slf4j.LoggerFactory;
     @MessageReceiver@SuppressWarnings("JBCT-RET-01") public void onBlueprintResourcesPut(ValuePut<BlueprintResourcesKey, BlueprintResourcesValue> valuePut) {
         var tomlContent = valuePut.cause().value()
                                         .tomlContent();
-        TomlParser.parse(tomlContent).onSuccess(this::applyBlueprintEndpoints)
+        TomlParser.parse(tomlContent).onSuccess(this::applyBlueprintResources)
                         .onFailure(cause -> log.error("Failed to parse blueprint resources TOML: {}",
                                                       cause.message()));
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private void applyBlueprintEndpoints(org.pragmatica.config.toml.TomlDocument doc) {
-        for (var sectionName : doc.sectionNames()) {if (sectionName.startsWith("endpoints.")) {loadEndpointSection(doc,
-                                                                                                                   sectionName);}}
-        log.info("Blueprint resources loaded into configuration overlay");
-    }
-
-    private void loadEndpointSection(org.pragmatica.config.toml.TomlDocument doc, String sectionName) {
-        doc.getString(sectionName, "host").onPresent(v -> provider.put(sectionName + ".host", v));
-        doc.getInt(sectionName, "port").onPresent(v -> provider.put(sectionName + ".port", String.valueOf(v)));
-        doc.getString(sectionName, "username").onPresent(v -> provider.put(sectionName + ".username", v));
-        doc.getString(sectionName, "password").onPresent(v -> provider.put(sectionName + ".password", v));
+    @SuppressWarnings("JBCT-PAT-01") private void applyBlueprintResources(org.pragmatica.config.toml.TomlDocument doc) {
+        for (var sectionName : doc.sectionNames()) {
+            if (sectionName.isEmpty()) {continue;}
+            doc.getSection(sectionName).forEach((key, value) -> provider.put(sectionName + "." + key, value));
+        }
+        log.info("Blueprint resources loaded into configuration overlay ({} sections)",
+                 doc.sectionNames().size());
     }
 
     @SuppressWarnings("unchecked") public Promise<Unit> setConfig(String key, String value) {
