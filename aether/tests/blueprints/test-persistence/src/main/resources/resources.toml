@@ -1,0 +1,17 @@
+# Application-level (blueprint) resources for test-persistence.
+#
+# Packaged into the blueprint JAR as META-INF/resources.toml by the JBCT
+# maven-plugin (GenerateBlueprintMojo / PackageBlueprintMojo). At deploy
+# time, BlueprintService stores this content in the KV-Store under
+# BlueprintResourcesKey(blueprintId); each node's slice loader then
+# resolves @ResourceQualifier(config = "streams.test-events") lookups
+# against this content.
+#
+# See @EventStreamPublisher and @EventStreamReader qualifiers in this
+# project: both declare config = "streams.test-events".
+
+[streams.test-events]
+partitions = 4
+retention = "time"
+retention-value = "5m"
+max-event-size = "64KB"
