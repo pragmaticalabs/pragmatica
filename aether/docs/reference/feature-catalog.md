@@ -312,6 +312,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 196 | API key audit trail | Complete | All key operations (create, rotate, revoke, expire) logged as `ApiKeyAuditValue` entries in KV-Store. Periodic expiration sweep (60s) on leader |
 | 197 | Bootstrap resource tracking | Complete | `CreatedResource` sealed interface tracks VMs, firewall rules, floating IPs, containers, SSH configs. LIFO cleanup on failure. State persisted to `~/.aether/clusters/<name>/bootstrap-state.json` |
 | 198 | Pre-flight validation | Complete | Static validation (30+ checks from §12). Default cloud credential ping. `--full-check` for SSH reachability, Docker CLI, floating IP ownership |
+| 199 | Node config composition | Partial | 4-layer CLI-side TOML composition (global default + per-source-type default + operator override + CLI overlay), template inheritance for `node_config` subtrees, auto-detected `jdbc_url`/`async_url` per database, SSH path uses composed config. Follow-ups: #154 Docker bootstrap path, #155 cloud provisioning wiring, #156 Forge in-memory passing |
 
 ---
 
