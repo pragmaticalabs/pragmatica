@@ -6,6 +6,7 @@ import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ApiKeyKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ApiKeyValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -19,6 +20,8 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import org.slf4j.Logger;
@@ -34,8 +37,6 @@ import org.slf4j.LoggerFactory;
     private static final Logger log = LoggerFactory.getLogger(KvStoreApiKeyValidator.class);
 
     private static final String API_KEY_HEADER = "X-API-Key";
-
-    private static final String API_KEY_PREFIX = "api-key/";
 
     private final SecurityValidator configValidator;
     private final Supplier<KVStore<AetherKey, AetherValue>> kvStoreSupplier;
@@ -58,34 +59,42 @@ import org.slf4j.LoggerFactory;
         var configResult = configValidator.validate(request, SecurityPolicy.apiKeyRequired());
         if (configResult.isSuccess()) {return configResult;}
         var apiKeyOpt = extractApiKey(request.headers());
-        if (apiKeyOpt.isEmpty()) {return hasAnyConfiguredKeys()
+        if (apiKeyOpt.isEmpty()) {return hasConfiguredCredentials()
                                         ? SecurityError.MISSING_API_KEY.result()
                                         : Result.success(SecurityContext.securityContext());}
         return checkKvStoreKey(apiKeyOpt.unwrap());
     }
 
-    private boolean hasAnyConfiguredKeys() {
+    @Override public boolean hasConfiguredCredentials() {
+        return configValidator.hasConfiguredCredentials() || hasKvStoreKeys();
+    }
+
+    private boolean hasKvStoreKeys() {
         var kvStore = kvStoreSupplier.get();
         if (kvStore == null) {return false;}
-        return kvStore.snapshot().keySet()
-                               .stream()
-                               .anyMatch(k -> k.asString().startsWith(API_KEY_PREFIX));
+        var found = new AtomicBoolean(false);
+        kvStore.forEach(ApiKeyKey.class, ApiKeyValue.class, (_, _) -> found.set(true));
+        return found.get();
     }
 
     private Result<SecurityContext> checkKvStoreKey(String apiKey) {
         var candidateHash = hashKey(apiKey);
         var kvStore = kvStoreSupplier.get();
         if (kvStore == null) {return SecurityError.INVALID_API_KEY.result();}
-        var snapshot = kvStore.snapshot();
-        for (var entry : snapshot.entrySet()) {
-            if (!entry.getKey().asString()
-                             .startsWith(API_KEY_PREFIX)) {continue;}
-            if (! (entry.getValue() instanceof ApiKeyValue keyValue)) {continue;}
-            if (!keyValue.isValidForAuth()) {continue;}
-            if (MessageDigest.isEqual(candidateHash.getBytes(StandardCharsets.UTF_8),
-                                      keyValue.keyHash().getBytes(StandardCharsets.UTF_8))) {return buildAdminContext(keyValue.keyId());}
-        }
-        return SecurityError.INVALID_API_KEY.result();
+        var candidateHashBytes = candidateHash.getBytes(StandardCharsets.UTF_8);
+        var match = new AtomicReference<ApiKeyValue>();
+        kvStore.forEach(ApiKeyKey.class,
+                        ApiKeyValue.class,
+                        (_, keyValue) -> {
+                            if (match.get() != null) {return;}
+                            if (!keyValue.isValidForAuth()) {return;}
+                            if (MessageDigest.isEqual(candidateHashBytes,
+                                                      keyValue.keyHash().getBytes(StandardCharsets.UTF_8))) {match.set(keyValue);}
+                        });
+        var matched = match.get();
+        return matched == null
+              ? SecurityError.INVALID_API_KEY.result()
+              : buildAdminContext(matched.keyId());
     }
 
     private static Result<SecurityContext> buildAdminContext(String keyId) {

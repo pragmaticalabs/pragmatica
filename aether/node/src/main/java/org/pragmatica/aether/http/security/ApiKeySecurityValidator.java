@@ -46,6 +46,10 @@ class ApiKeySecurityValidator implements SecurityValidator {
         return entries;
     }
 
+    @Override public boolean hasConfiguredCredentials() {
+        return ! keyEntries.isEmpty();
+    }
+
     @Override public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
         return switch (policy){
             case SecurityPolicy.Public() -> Result.success(SecurityContext.securityContext());

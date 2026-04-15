@@ -33,10 +33,6 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-PAT-01"}) public final class ApiKeyRoutes implements RouteSource {
     private static final Logger log = LoggerFactory.getLogger(ApiKeyRoutes.class);
 
-    private static final String API_KEY_PREFIX = "api-key/";
-
-    private static final String API_KEY_AUDIT_PREFIX = "api-key-audit/";
-
     private static final TimeSpan SWEEP_INTERVAL = TimeSpan.timeSpan(60).seconds();
 
     private final Supplier<ManageableNode> nodeSupplier;
@@ -85,15 +81,16 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 
     private Promise<List<KeyInfo>> handleListKeys() {
         var node = nodeSupplier.get();
-        var entries = node.kvStore().snapshot();
         var keys = new ArrayList<KeyInfo>();
-        for (var entry : entries.entrySet()) {if (entry.getKey().asString()
-                                                              .startsWith(API_KEY_PREFIX) && entry.getValue() instanceof ApiKeyValue v) {keys.add(new KeyInfo(v.keyId(),
-                                                                                                                                                              v.status(),
-                                                                                                                                                              v.createdAt(),
-                                                                                                                                                              v.expiresAt(),
-                                                                                                                                                              v.revokedAt(),
-                                                                                                                                                              v.gracePeriodMs()));}}
+        node.kvStore()
+                    .forEach(ApiKeyKey.class,
+                             ApiKeyValue.class,
+                             (_, v) -> keys.add(new KeyInfo(v.keyId(),
+                                                            v.status(),
+                                                            v.createdAt(),
+                                                            v.expiresAt(),
+                                                            v.revokedAt(),
+                                                            v.gracePeriodMs())));
         return Promise.success(List.copyOf(keys));
     }
 
@@ -121,13 +118,14 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 
     private Promise<List<AuditEntry>> handleListAudit() {
         var node = nodeSupplier.get();
-        var entries = node.kvStore().snapshot();
         var audits = new ArrayList<AuditEntry>();
-        for (var entry : entries.entrySet()) {if (entry.getKey().asString()
-                                                              .startsWith(API_KEY_AUDIT_PREFIX) && entry.getValue() instanceof ApiKeyAuditValue v) {audits.add(new AuditEntry(v.keyId(),
-                                                                                                                                                                              v.action(),
-                                                                                                                                                                              v.timestamp(),
-                                                                                                                                                                              v.operatorHint()));}}
+        node.kvStore()
+                    .forEach(ApiKeyAuditKey.class,
+                             ApiKeyAuditValue.class,
+                             (_, v) -> audits.add(new AuditEntry(v.keyId(),
+                                                                 v.action(),
+                                                                 v.timestamp(),
+                                                                 v.operatorHint())));
         audits.sort((a, b) -> Long.compare(b.timestamp(), a.timestamp()));
         return Promise.success(List.copyOf(audits));
     }
@@ -137,24 +135,24 @@ import static org.pragmatica.http.routing.PathParameter.aString;
             var node = nodeSupplier.get();
             if (!node.isLeader()) {return;}
             var now = System.currentTimeMillis();
-            var snapshot = node.kvStore().snapshot();
             var commands = new ArrayList<KVCommand<AetherKey>>();
-            for (var entry : snapshot.entrySet()) {
-                if (!entry.getKey().asString()
-                                 .startsWith(API_KEY_PREFIX)) {continue;}
-                if (! (entry.getValue() instanceof ApiKeyValue v)) {continue;}
-                if (!v.isActive()) {continue;}
-                if (v.expiresAt() <= 0 || v.expiresAt() > now) {continue;}
-                var expired = v.withExpired();
-                commands.add((KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(entry.getKey(), expired));
-                var auditId = v.keyId() + "-expired-" + now;
-                var auditValue = ApiKeyAuditValue.apiKeyAuditValue(v.keyId(),
-                                                                   ApiKeyAuditValue.ACTION_EXPIRED,
-                                                                   "expiration-sweep");
-                commands.add((KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ApiKeyAuditKey.apiKeyAuditKey(auditId),
-                                                                                      auditValue));
-                log.info("API key expired: keyId={}", v.keyId());
-            }
+            node.kvStore()
+                        .forEach(ApiKeyKey.class,
+                                 ApiKeyValue.class,
+                                 (key, v) -> {
+                                     if (!v.isActive()) {return;}
+                                     if (v.expiresAt() <= 0 || v.expiresAt() > now) {return;}
+                                     var expired = v.withExpired();
+                                     commands.add((KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, expired));
+                                     var auditId = v.keyId() + "-expired-" + now;
+                                     var auditValue = ApiKeyAuditValue.apiKeyAuditValue(v.keyId(),
+                                                                                        ApiKeyAuditValue.ACTION_EXPIRED,
+                                                                                        "expiration-sweep");
+                                     commands.add((KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ApiKeyAuditKey.apiKeyAuditKey(auditId),
+                                                                                                           auditValue));
+                                     log.info("API key expired: keyId={}",
+                                              v.keyId());
+                                 });
             if (!commands.isEmpty()) {node.apply(commands);}
         } catch (Exception e) {
             log.debug("API key expiration sweep skipped: {}", e.getMessage());

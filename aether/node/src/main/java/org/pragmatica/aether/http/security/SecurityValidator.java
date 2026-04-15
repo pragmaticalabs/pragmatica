@@ -24,6 +24,10 @@ import java.util.function.Supplier;
 public interface SecurityValidator {
     Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy);
 
+    default boolean hasConfiguredCredentials() {
+        return false;
+    }
+
     static SecurityValidator apiKeyValidator(Set<String> validKeys) {
         return new ApiKeySecurityValidator(ApiKeySecurityValidator.fromKeySet(validKeys));
     }
