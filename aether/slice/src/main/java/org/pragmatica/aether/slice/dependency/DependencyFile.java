@@ -4,12 +4,10 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.StreamOps;
 import org.pragmatica.lang.utils.Causes;
 
-import java.io.BufferedReader;
-import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -125,27 +123,15 @@ import static org.pragmatica.lang.Result.success;
 
     private static final Fn1<Cause, String> FRAMEWORK_DEPENDENCY_ERROR = Causes.forOneValue("Slice incorrectly packaged: framework dependency declared in %s. " + "slice-api, infra-api, and slice-annotations are provided by the runtime and must not be declared as dependencies");
 
-    @SuppressWarnings("JBCT-RET-03") public static Result<DependencyFile> dependencyFile(InputStream inputStream) {
-        return Result.lift(Causes::fromThrowable,
-                           () -> readStreamContent(inputStream))
-        .flatMap(DependencyFile::dependencyFile);
+    public static Result<DependencyFile> dependencyFile(InputStream inputStream) {
+        return StreamOps.readString(inputStream)
+                        .flatMap(DependencyFile::dependencyFile);
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static String readStreamContent(InputStream inputStream) throws IOException {
-        try (var reader = new BufferedReader(new InputStreamReader(inputStream))) {
-            var content = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) {content.append(line).append("\n");}
-            return content.toString();
-        }
-    }
-
-    @SuppressWarnings("JBCT-RET-03") public static Result<DependencyFile> load(String sliceClassName,
-                                                                               ClassLoader classLoader) {
-        var resourcePath = "META-INF/dependencies/" + sliceClassName;
-        var resource = classLoader.getResourceAsStream(resourcePath);
-        if (resource == null) {return success(new DependencyFile(List.of(), List.of(), List.of()));}
-        return dependencyFile(resource);
+    public static Result<DependencyFile> load(String sliceClassName, ClassLoader classLoader) {
+        return StreamOps.readResource(classLoader, "META-INF/dependencies/" + sliceClassName)
+                        .flatMap(DependencyFile::dependencyFile)
+                        .orElse(success(new DependencyFile(List.of(), List.of(), List.of())));
     }
 
     public boolean hasSharedDependencies() {

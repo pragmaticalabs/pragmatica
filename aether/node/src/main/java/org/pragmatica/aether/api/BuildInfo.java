@@ -1,6 +1,7 @@
 package org.pragmatica.aether.api;
 
-import java.io.IOException;
+import org.pragmatica.lang.io.StreamOps;
+
 import java.util.Properties;
 
 
@@ -14,9 +15,8 @@ public record BuildInfo(String buildTimestamp, String buildVersion) {
 
     private static BuildInfo loadBuildInfo() {
         var props = new Properties();
-        try (var is = BuildInfo.class.getClassLoader().getResourceAsStream("build-info.properties")) {
-            if (is != null) {props.load(is);}
-        } catch (IOException ignored) {}
+        StreamOps.openResource(BuildInfo.class.getClassLoader(), "build-info.properties")
+                 .onSuccess(is -> { try { props.load(is); } catch (Exception ignored) {} });
         return new BuildInfo(props.getProperty("build.timestamp", "unknown"),
                              props.getProperty("build.version", "unknown"));
     }
