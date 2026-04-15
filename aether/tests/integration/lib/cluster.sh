@@ -91,15 +91,21 @@ is_cluster_ready() {
 # Falls back to direct node access if no LB is configured.
 discover_endpoints() {
     local cluster_endpoint="$1"
-    local status
-    status=$(curl -s -H "X-API-Key: ${API_KEY}" "${cluster_endpoint}/api/cluster/status" 2>/dev/null || true)
+    local host_port="${cluster_endpoint#http://}"
+    host_port="${host_port#https://}"
 
-    if [ -n "$status" ]; then
-        LB_APP_ENDPOINT=$(json_value "$status" "appEndpoint")
-        LB_MGMT_ENDPOINT=$(json_value "$status" "mgmtEndpoint")
+    LB_APP_ENDPOINT=$(aether -c "$host_port" status --format value --field appEndpoint 2>/dev/null || true)
+    LB_MGMT_ENDPOINT=$(aether -c "$host_port" status --format value --field mgmtEndpoint 2>/dev/null || true)
+
+    # Validate reachability — the LB endpoint is reported with the internal cluster
+    # hostname, which is unreachable from the test host. Fall back to direct access.
+    # Connection-level probe only; the CLI can't bypass DNS failures.
+    if [ -n "$LB_MGMT_ENDPOINT" ] && ! curl -sf -m 3 -H "X-API-Key: ${API_KEY}" "${LB_MGMT_ENDPOINT}/health/live" >/dev/null 2>&1; then
+        LB_APP_ENDPOINT=""
+        LB_MGMT_ENDPOINT=""
     fi
 
-    # Fallback to direct node access if no LB
+    # Fallback to direct node access if no LB or LB unreachable from here
     if [ -z "$LB_APP_ENDPOINT" ]; then
         LB_APP_ENDPOINT="$cluster_endpoint"
         LB_MGMT_ENDPOINT="$cluster_endpoint"

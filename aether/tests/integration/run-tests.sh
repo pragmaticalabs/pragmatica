@@ -486,13 +486,17 @@ B_SUITES=($(filter_suites "${CLUSTER_B_SUITES[@]}"))
 
 # --- Step 7: Deploy blueprints ---
 if [ "$SKIP_DEPLOY" = false ]; then
-    log_step "Deploying blueprints to Cluster A"
-    A_BLUEPRINTS=($(collect_blueprints "${A_SUITES[@]}"))
-    deploy_blueprints "$CLUSTER_A_LB_MGMT" "${A_BLUEPRINTS[@]}"
+    if [ ${#A_SUITES[@]} -gt 0 ]; then
+        log_step "Deploying blueprints to Cluster A"
+        A_BLUEPRINTS=($(collect_blueprints "${A_SUITES[@]}"))
+        [ ${#A_BLUEPRINTS[@]} -gt 0 ] && deploy_blueprints "$CLUSTER_A_LB_MGMT" "${A_BLUEPRINTS[@]}"
+    fi
 
-    log_step "Deploying blueprints to Cluster B"
-    B_BLUEPRINTS=($(collect_blueprints "${B_SUITES[@]}"))
-    deploy_blueprints "$CLUSTER_B_LB_MGMT" "${B_BLUEPRINTS[@]}"
+    if [ ${#B_SUITES[@]} -gt 0 ]; then
+        log_step "Deploying blueprints to Cluster B"
+        B_BLUEPRINTS=($(collect_blueprints "${B_SUITES[@]}"))
+        [ ${#B_BLUEPRINTS[@]} -gt 0 ] && deploy_blueprints "$CLUSTER_B_LB_MGMT" "${B_BLUEPRINTS[@]}"
+    fi
 fi
 
 # --- Step 8: Gate -- run 00-smoke ---
@@ -508,7 +512,7 @@ if [ ${#A_SUITES[@]} -gt 0 ] && printf '%s\n' "${A_SUITES[@]}" | grep -qx "00"; 
     for s in "${A_SUITES[@]}"; do
         [ "$s" != "00" ] && A_REMAINING+=("$s")
     done
-    A_SUITES=("${A_REMAINING[@]}")
+    A_SUITES=("${A_REMAINING[@]+${A_REMAINING[@]}}")
 fi
 
 if [ "$GATE_PASSED" = true ]; then
