@@ -64,6 +64,8 @@ import static org.pragmatica.lang.Result.success;
 
     public static Result<ClusterBootstrapConfig> parse(String content) {
         return TomlParser.parse(content).mapError(ClusterBootstrapConfigParser::wrapError)
+                               .flatMap(resolved -> TemplateInheritanceResolver.resolve(resolved)
+                                                                                       .mapError(ClusterBootstrapConfigParser::wrapError))
                                .flatMap(ClusterBootstrapConfigParser::fromDocument);
     }
 

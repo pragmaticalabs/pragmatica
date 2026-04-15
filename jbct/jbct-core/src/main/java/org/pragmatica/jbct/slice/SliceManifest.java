@@ -7,6 +7,7 @@ import org.pragmatica.lang.utils.Causes;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
@@ -31,12 +32,17 @@ public record SliceManifest(String sliceName,
                             String baseArtifact,
                             String implArtifactId,
                             List<SliceDependency> dependencies,
-                            String configFile) {
+                            String configFile,
+                            List<ResourceConfigRef> resourceConfigRefs) {
+
+    /// A config section reference from a @ResourceQualifier annotation.
+    public record ResourceConfigRef(String resourceType, String configSection) {}
     public SliceManifest {
         implClasses = List.copyOf(implClasses);
         requestClasses = List.copyOf(requestClasses);
         responseClasses = List.copyOf(responseClasses);
         dependencies = List.copyOf(dependencies);
+        resourceConfigRefs = List.copyOf(resourceConfigRefs);
     }
 
     /// Dependency information for blueprint generation.
@@ -87,6 +93,7 @@ public record SliceManifest(String sliceName,
         var implArtifactId = getPropertyOrEmpty(props, "slice.artifactId");
         var dependencies = parseDependencies(props);
         var configFile = getPropertyOrEmpty(props, "config.file");
+        var resourceConfigRefs = parseResourceConfigRefs(props);
         return new SliceManifest(sliceName,
                                  artifactSuffix,
                                  slicePackage,
@@ -96,7 +103,8 @@ public record SliceManifest(String sliceName,
                                  baseArtifact,
                                  implArtifactId,
                                  dependencies,
-                                 configFile);
+                                 configFile,
+                                 resourceConfigRefs);
     }
 
     private static String getPropertyOrEmpty(Properties props, String key) {
@@ -137,6 +145,28 @@ public record SliceManifest(String sliceName,
                                                                   Boolean.parseBoolean(props.getProperty(prefix
                                                                                                          + "external",
                                                                                                          "false"))));
+    }
+
+    private static List<ResourceConfigRef> parseResourceConfigRefs(Properties props) {
+        var refs = new ArrayList<ResourceConfigRef>();
+        parseIndexedConfigRefs(props, "resources.count", "resource.", "type", refs);
+        parseIndexedConfigRefs(props, "publish.topics.count", "publish.topic.", "messageType", refs);
+        parseIndexedConfigRefs(props, "stream.publishers.count", "stream.publisher.", "eventType", refs);
+        parseIndexedConfigRefs(props, "stream.access.count", "stream.access.", "eventType", refs);
+        parseIndexedConfigRefs(props, "reactive.count", "reactive.", "category", refs);
+        return refs;
+    }
+
+    private static void parseIndexedConfigRefs(Properties props, String countKey, String prefix,
+                                               String typeKey, List<ResourceConfigRef> refs) {
+        var count = parseCount(props.getProperty(countKey, "0")).or(0);
+        for (int i = 0; i < count; i++) {
+            var config = props.getProperty(prefix + i + ".config");
+            var type = props.getProperty(prefix + i + "." + typeKey, prefix.replace(".", ""));
+            if (config != null && !config.isEmpty()) {
+                refs.add(new ResourceConfigRef(type, config));
+            }
+        }
     }
 
     private static List<String> parseList(String value) {
