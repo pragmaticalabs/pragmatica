@@ -38,7 +38,7 @@ import static org.pragmatica.aether.slice.repository.Location.location;
 /// Subsequent resolves for the same artifact are instant (local cache hit).
 ///
 /// Supports Basic authentication via ~/.m2/settings.xml server entries.
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-ZONE-02", "JBCT-RET-03", "JBCT-EX-01"}) public interface RemoteRepository extends Repository {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-ZONE-02", "JBCT-EX-01"}) public interface RemoteRepository extends Repository {
     Logger log = LoggerFactory.getLogger(RemoteRepository.class);
 
     Duration DEFAULT_HTTP_TIMEOUT = Duration.ofSeconds(30);

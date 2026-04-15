@@ -34,7 +34,7 @@ import static org.pragmatica.lang.Result.success;
 ///
 /// Keys are cached with a configurable TTL. On cache miss for an unknown kid,
 /// the store refreshes from the remote JWKS endpoint (supporting key rotation).
-@SuppressWarnings({"JBCT-RET-03", "JBCT-EX-01", "JBCT-PAT-01"}) class JwksKeyStore implements AutoCloseable {
+@SuppressWarnings({"JBCT-EX-01", "JBCT-PAT-01"}) class JwksKeyStore implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(JwksKeyStore.class);
 
     private static final JsonMapper JSON = JsonMapper.defaultJsonMapper();

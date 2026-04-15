@@ -6,6 +6,7 @@ import org.pragmatica.aether.cli.OutputFormatter.Column;
 import org.pragmatica.aether.cli.OutputFormatter.TableSpec;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -58,9 +59,9 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TAS
         }
 
         private Result<String> validateInputs() {
-            if (group == null || group.isBlank()) {return new TasksError.MissingGroup().result();}
-            if (targetNode == null || targetNode.isBlank()) {return new TasksError.MissingTarget().result();}
-            return Result.success(group.toUpperCase());
+            return Verify.ensure(group, Verify.Is::present, TasksError.MISSING_GROUP)
+                         .flatMap(_ -> Verify.ensure(targetNode, Verify.Is::present, TasksError.MISSING_TARGET))
+                         .map(_ -> group.toUpperCase());
         }
 
         private Result<String> sendReassignRequest(String validGroup) {
@@ -84,17 +85,14 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TAS
         }
     }
 
-    sealed interface TasksError extends Cause {
-        record MissingGroup() implements TasksError {
-            @Override public String message() {
-                return "Task group name is required (use --group)";
-            }
-        }
+    enum TasksError implements Cause {
+        MISSING_GROUP("Task group name is required (use --group)"),
+        MISSING_TARGET("Target node ID is required (use --target)");
 
-        record MissingTarget() implements TasksError {
-            @Override public String message() {
-                return "Target node ID is required (use --target)";
-            }
-        }
+        private final String message;
+
+        TasksError(String message) { this.message = message; }
+
+        @Override public String message() { return message; }
     }
 }

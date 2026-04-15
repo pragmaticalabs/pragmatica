@@ -22,6 +22,7 @@ import java.util.function.LongSupplier;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.hlc.HlcTimestamp.pack;
@@ -59,15 +60,9 @@ public final class HlcClock {
     /// @param physicalClock   supplier returning current physical time in microseconds
     /// @param maxDriftMicros  maximum allowed drift between remote and local clocks in microseconds
     public static Result<HlcClock> hlcClock(String nodeId, LongSupplier physicalClock, long maxDriftMicros) {
-        if (nodeId == null || nodeId.isEmpty()) {
-            return EMPTY_NODE_ID.result();
-        }
-
-        if (maxDriftMicros <= 0) {
-            return INVALID_MAX_DRIFT.result();
-        }
-
-        return Result.success(new HlcClock(nodeId, physicalClock, maxDriftMicros));
+        return Verify.ensure(nodeId, Verify.Is::present, EMPTY_NODE_ID)
+                     .flatMap(_ -> Verify.ensure(maxDriftMicros, Verify.Is::positive, INVALID_MAX_DRIFT))
+                     .map(_ -> new HlcClock(nodeId, physicalClock, maxDriftMicros));
     }
 
     /// Creates an HLC clock with default physical clock (system time in microseconds) and default max drift (500ms).

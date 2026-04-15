@@ -91,7 +91,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         return start(none(), GossipEncryptor.none());
     }
 
-    @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03", "JBCT-EX-01"}) public Promise<Unit> start(Option<EventLoopGroup> sharedEventLoopGroup,
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) public Promise<Unit> start(Option<EventLoopGroup> sharedEventLoopGroup,
                                                                                                GossipEncryptor gossipEncryptor) {
         this.encryptor = gossipEncryptor;
         if (!starting.compareAndSet(false, true)) {
