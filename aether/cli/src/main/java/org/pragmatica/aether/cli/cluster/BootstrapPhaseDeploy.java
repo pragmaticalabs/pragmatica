@@ -11,6 +11,7 @@ import org.pragmatica.aether.config.cluster.SshConfig;
 import org.pragmatica.aether.environment.NodeAddress;
 import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.config.toml.TomlWriter;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -18,6 +19,7 @@ import org.pragmatica.lang.Unit;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.stream.IntStream;
 
 import static org.pragmatica.aether.cli.cluster.BootstrapPhase.DEPLOY_RUNTIME;
 import static org.pragmatica.lang.Result.success;
@@ -97,32 +99,42 @@ import static org.pragmatica.lang.Result.success;
                                                                                                  String sourceName,
                                                                                                  String clusterSecret) {
         var sshConfig = buildSshConfig(source);
-        var allNodeIds = ctx.nodes().stream()
-                                  .map(ProvisionedNode::nodeId)
-                                  .toList();
-        var allNodeIps = ctx.addresses().stream()
-                                      .map(NodeAddress::publicIp)
-                                      .toList();
         var clusterName = ctx.config().cluster()
                                     .name();
+        var peers = buildThreePartPeers(ctx);
         var nodeIndex = 0;
         for (var node : ctx.nodes()) {
             if (!node.serverId().equals("ssh")) {
                 nodeIndex++;
                 continue;
             }
-            var nodeConfig = NodeConfigTemplate.render(ctx.config(),
-                                                       node.nodeId(),
-                                                       nodeIndex,
-                                                       clusterSecret,
-                                                       allNodeIds,
-                                                       allNodeIps);
-            var result = deploySshNode(node, nodeConfig, sshConfig, clusterName);
+            var result = composeNodeConfig(ctx,
+                                           source,
+                                           node.nodeId(),
+                                           nodeIndex,
+                                           NodeRole.CORE,
+                                           peers,
+                                           Option.empty(),
+                                           Option.some(clusterSecret)).flatMap(doc -> deploySshNode(node,
+                                                                                                    TomlWriter.toToml(doc),
+                                                                                                    sshConfig,
+                                                                                                    clusterName));
             if (result.isFailure()) {return result;}
             nodeIndex++;
         }
         System.out.printf("  [%s/ssh] Deployed runtime to SSH nodes%n", sourceName);
         return Result.unitResult();
+    }
+
+    private static List<String> buildThreePartPeers(BootstrapContext ctx) {
+        var nodes = ctx.nodes();
+        var addresses = ctx.addresses();
+        var clusterPort = ctx.config().operations()
+                                    .ports()
+                                    .cluster();
+        var size = Math.min(nodes.size(), addresses.size());
+        return IntStream.range(0, size).mapToObj(i -> nodes.get(i).nodeId() + ":" + addresses.get(i).publicIp() + ":" + (clusterPort + i))
+                              .toList();
     }
 
     @SuppressWarnings("JBCT-EX-01") private static Result<Unit> deploySshNode(ProvisionedNode node,
@@ -166,12 +178,6 @@ import static org.pragmatica.lang.Result.success;
         var keyPath = source.key().or("~/.ssh/id_rsa");
         var port = source.sshPort().or(22);
         return SshConfig.sshConfig(user, keyPath, port);
-    }
-
-    private static String buildPeerList(List<NodeAddress> addresses) {
-        return String.join(",",
-                           addresses.stream().map(NodeAddress::publicIp)
-                                           .toList());
     }
 
     static Result<TomlDocument> composeNodeConfig(BootstrapContext ctx,

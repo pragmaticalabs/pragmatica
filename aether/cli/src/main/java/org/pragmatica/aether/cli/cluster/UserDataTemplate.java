@@ -5,6 +5,8 @@ import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.RuntimeProfile;
 import org.pragmatica.aether.config.cluster.RuntimeType;
 import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.config.toml.TomlWriter;
 import org.pragmatica.lang.Option;
 
 
@@ -25,48 +27,28 @@ sealed interface UserDataTemplate {
                          String nodeId,
                          int nodeIndex,
                          String clusterSecret,
-                         String clusterName) {
+                         String clusterName,
+                         TomlDocument composedConfig) {
         var ports = config.operations().ports();
-        var tlsEnabled = config.operations().tls()
-                                          .autoGenerate();
         var runtimeProfile = resolveRuntimeProfile(config, source, role);
         var isContainer = isContainerRuntime(runtimeProfile);
         var image = runtimeProfile.flatMap(RuntimeProfile::image)
                                           .or("ghcr.io/pragmaticalabs/aether-node:" + config.cluster().version());
-        var instanceType = resolveInstanceType(source, role);
-        var heap = deriveHeap(instanceType);
         var sb = new StringBuilder();
         appendHeader(sb, clusterName, nodeId, role);
         appendVariables(sb,
                         config.cluster().version(),
                         image,
                         nodeId,
-                        clusterSecret,
-                        ports.cluster(),
-                        ports.management(),
-                        ports.swim(),
-                        tlsEnabled,
-                        config.derivedCoreCount());
+                        clusterSecret);
         if (isContainer) {
             appendDockerInstall(sb);
-            appendConfig(sb,
-                         ports.management(),
-                         ports.cluster(),
-                         tlsEnabled,
-                         clusterSecret,
-                         config.derivedCoreCount(),
-                         heap);
-            appendContainerRun(sb, clusterName, nodeId, ports.cluster(), ports.management(), ports.swim());
+            appendComposedConfig(sb, composedConfig);
+            appendContainerRun(sb, clusterName, nodeId);
         } else {
             appendJvmInstall(sb,
                              config.cluster().version());
-            appendConfig(sb,
-                         ports.management(),
-                         ports.cluster(),
-                         tlsEnabled,
-                         clusterSecret,
-                         config.derivedCoreCount(),
-                         heap);
+            appendComposedConfig(sb, composedConfig);
             appendJvmRun(sb,
                          runtimeProfile.flatMap(RuntimeProfile::jvmArgs).or(""));
         }
@@ -86,11 +68,6 @@ sealed interface UserDataTemplate {
                           .or(true);
     }
 
-    private static String resolveInstanceType(SourceProfile source, NodeRole role) {
-        return Option.option(source.roles().get(role)).flatMap(rt -> rt.instanceType())
-                            .or("cx21");
-    }
-
     private static void appendHeader(StringBuilder sb, String clusterName, String nodeId, NodeRole role) {
         sb.append("#!/bin/bash\n");
         sb.append("set -euo pipefail\n\n");
@@ -108,12 +85,7 @@ sealed interface UserDataTemplate {
                                         String version,
                                         String image,
                                         String nodeId,
-                                        String clusterSecret,
-                                        int clusterPort,
-                                        int managementPort,
-                                        int swimPort,
-                                        boolean tlsEnabled,
-                                        int coreCount) {
+                                        String clusterSecret) {
         sb.append("AETHER_VERSION=\"").append(version)
                  .append("\"\n");
         sb.append("AETHER_IMAGE=\"").append(image)
@@ -121,17 +93,7 @@ sealed interface UserDataTemplate {
         sb.append("AETHER_NODE_ID=\"").append(nodeId)
                  .append("\"\n");
         sb.append("AETHER_CLUSTER_SECRET=\"").append(clusterSecret)
-                 .append("\"\n");
-        sb.append("AETHER_CLUSTER_PORT=").append(clusterPort)
-                 .append('\n');
-        sb.append("AETHER_MANAGEMENT_PORT=").append(managementPort)
-                 .append('\n');
-        sb.append("AETHER_SWIM_PORT=").append(swimPort)
-                 .append('\n');
-        sb.append("AETHER_TLS_ENABLED=").append(tlsEnabled)
-                 .append('\n');
-        sb.append("AETHER_CORE_COUNT=").append(coreCount)
-                 .append("\n\n");
+                 .append("\"\n\n");
     }
 
     private static void appendDockerInstall(StringBuilder sb) {
@@ -141,53 +103,21 @@ sealed interface UserDataTemplate {
         sb.append("fi\n\n");
     }
 
-    private static void appendConfig(StringBuilder sb,
-                                     int managementPort,
-                                     int clusterPort,
-                                     boolean tlsEnabled,
-                                     String clusterSecret,
-                                     int coreCount,
-                                     String heap) {
-        sb.append("# --- Write Aether config ---\n");
+    private static void appendComposedConfig(StringBuilder sb, TomlDocument composedConfig) {
+        sb.append("# --- Write Aether config (composed: defaults + source-type + operator + CLI overlay) ---\n");
         sb.append("mkdir -p /opt/aether/config\n");
         sb.append("cat > /opt/aether/config/aether.toml <<'AETHER_CONFIG'\n");
-        sb.append("[cluster]\n");
-        sb.append("environment = \"docker\"\n");
-        sb.append("nodes = ").append(coreCount)
-                 .append('\n');
-        sb.append("tls = ").append(tlsEnabled)
-                 .append("\n\n");
-        sb.append("[cluster.ports]\n");
-        sb.append("management = ").append(managementPort)
-                 .append('\n');
-        sb.append("cluster = ").append(clusterPort)
-                 .append("\n\n");
-        sb.append("[node]\n");
-        sb.append("heap = \"").append(heap)
-                 .append("\"\n");
-        sb.append("gc = \"zgc\"\n");
-        if (tlsEnabled) {
-            sb.append("\n[tls]\n");
-            sb.append("cluster_secret = \"").append(clusterSecret)
-                     .append("\"\n");
-        }
+        sb.append(TomlWriter.toToml(composedConfig));
         sb.append("AETHER_CONFIG\n\n");
     }
 
-    private static void appendContainerRun(StringBuilder sb,
-                                           String clusterName,
-                                           String nodeId,
-                                           int clusterPort,
-                                           int managementPort,
-                                           int swimPort) {
+    private static void appendContainerRun(StringBuilder sb, String clusterName, String nodeId) {
         sb.append("# --- Pull and run ---\n");
         sb.append("docker pull \"${AETHER_IMAGE}\"\n");
         sb.append("docker run -d \\\n");
         sb.append("    --name aether-node \\\n");
         sb.append("    --restart unless-stopped \\\n");
         sb.append("    --network host \\\n");
-        sb.append("    -e AETHER_NODE_ID=\"${AETHER_NODE_ID}\" \\\n");
-        sb.append("    -e AETHER_CLUSTER_SECRET=\"${AETHER_CLUSTER_SECRET}\" \\\n");
         sb.append("    -l aether-cluster=").append(clusterName)
                  .append(" \\\n");
         sb.append("    -l aether-node-id=").append(nodeId)
@@ -224,15 +154,5 @@ sealed interface UserDataTemplate {
                  .append(", mgmt=")
                  .append(managementPort)
                  .append("\"\n");
-    }
-
-    private static String deriveHeap(String instanceType) {
-        return switch (instanceType){
-            case "cx11", "t3.small", "e2-small", "Standard_B1s" -> "1g";
-            case "cx21", "t3.medium", "e2-medium", "Standard_B2s" -> "2g";
-            case "cx31", "t3.large", "e2-standard-4", "Standard_B4ms" -> "4g";
-            case "cx41", "t3.xlarge", "e2-standard-8", "Standard_B8ms" -> "8g";
-            default -> "2g";
-        };
     }
 }
