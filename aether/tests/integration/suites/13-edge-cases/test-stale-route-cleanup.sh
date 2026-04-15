@@ -7,7 +7,7 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 ROUTE_CLEANUP_TIMEOUT="${ROUTE_CLEANUP_TIMEOUT:-60}"
-BLUEPRINT="org.pragmatica.aether.test:test-persistence:1.0.0"
+BLUEPRINT="org.pragmatica.aether.test:test-echo:1.0.0"
 
 test_cluster_ready() {
     wait_for_cluster 60
