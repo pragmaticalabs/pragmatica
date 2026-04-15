@@ -28,6 +28,7 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -61,14 +62,14 @@ import org.slf4j.LoggerFactory;
 ///   - Periodically evaluate controller with current metrics
 ///   - Apply scaling decisions by updating blueprints in KVStore
 ///
-@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
+@Contract
 // MessageReceiver callbacks + framework lifecycle methods
 public interface ControlLoop extends DelegatedComponent {
     @MessageReceiver void onTopologyChange(TopologyChangeNotification topologyChange);
     @MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
     @MessageReceiver void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
-    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
-    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
+    @MessageReceiver void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
+    @MessageReceiver void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
     @MessageReceiver void onQuorumStateChange(QuorumStateNotification notification);
     void registerBlueprint(Artifact artifact, int instances, int minInstances);
     void unregisterBlueprint(Artifact artifact);

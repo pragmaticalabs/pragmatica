@@ -24,6 +24,7 @@ import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -58,7 +59,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
 /// Manages a cluster of AetherNodes for Ember.
 /// Supports starting, stopping, adding, and killing nodes.
-@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) public final class EmberCluster {
+@Contract @SuppressWarnings("JBCT-RET-03") public final class EmberCluster {
     private static final Logger log = LoggerFactory.getLogger(EmberCluster.class);
 
     public static final int DEFAULT_BASE_PORT = 6000;

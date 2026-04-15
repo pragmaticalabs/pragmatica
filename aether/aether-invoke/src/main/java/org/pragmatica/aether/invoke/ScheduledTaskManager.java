@@ -9,6 +9,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
@@ -34,7 +35,7 @@ import org.slf4j.LoggerFactory;
 /// Watches the ScheduledTaskRegistry for changes, manages timer creation
 /// and cancellation, and invokes slice methods at configured intervals.
 /// Respects leader-only semantics and quorum requirements.
-@SuppressWarnings("JBCT-RET-01")
+@Contract
 // MessageReceiver callbacks + lifecycle methods
 public interface ScheduledTaskManager {
     @MessageReceiver void onLeaderChange(LeaderChange leaderChange);
