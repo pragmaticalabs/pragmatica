@@ -77,6 +77,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                DHTConfig artifactRepo,
                                DHTConfig cache,
                                Option<TlsConfig> tls,
+                               TlsConfig quicTls,
                                TtmConfig ttm,
                                RollbackConfig rollback,
                                AppHttpConfig appHttp,
@@ -105,7 +106,7 @@ public record AetherNodeConfig(TopologyConfig topology,
     public static final int MANAGEMENT_DISABLED = 0;
 
     public static SelfStage builder() {
-        return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax -> appHttp -> tls -> certificateProvider -> configProvider -> environment -> managementHttpProtocol -> storageConfig -> backupConfig -> streaming -> protocol -> sliceAction -> cache -> ttm -> rollback -> controllerConfig -> autoHeal -> observability -> atomicity -> activationGated -> timeouts -> workerConfig -> deploymentDefaults -> {
+        return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax -> appHttp -> tls -> quicTls -> certificateProvider -> configProvider -> environment -> managementHttpProtocol -> storageConfig -> backupConfig -> streaming -> protocol -> sliceAction -> cache -> ttm -> rollback -> controllerConfig -> autoHeal -> observability -> atomicity -> activationGated -> timeouts -> workerConfig -> deploymentDefaults -> {
             var effectiveClusterSize = coreMax > 0
                                       ? coreMax
                                       : coreNodes.size();
@@ -127,6 +128,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                         artifactRepo,
                                         cache,
                                         tls,
+                                        quicTls,
                                         ttm,
                                         rollback,
                                         appHttp,
@@ -158,54 +160,34 @@ public record AetherNodeConfig(TopologyConfig topology,
 
     public interface WithManagementPort {
         WithSliceConfig managementPort(int port);
-
-        default AetherNodeConfig build() {
-            return managementPort(DEFAULT_MANAGEMENT_PORT).build();
-        }
     }
 
     public interface WithSliceConfig {
         WithArtifactRepo sliceConfig(SliceConfig config);
-
-        default AetherNodeConfig build() {
-            return sliceConfig(SliceConfig.sliceConfig()).build();
-        }
     }
 
     public interface WithArtifactRepo {
         WithCoreMax artifactRepo(DHTConfig config);
-
-        default AetherNodeConfig build() {
-            return artifactRepo(DHTConfig.DEFAULT).build();
-        }
     }
 
     public interface WithCoreMax {
         WithAppHttp coreMax(int coreMax);
-
-        default AetherNodeConfig build() {
-            return coreMax(0).build();
-        }
     }
 
     public interface WithAppHttp {
         WithTls appHttp(AppHttpConfig config);
-
-        default AetherNodeConfig build() {
-            return appHttp(AppHttpConfig.appHttpConfig()).build();
-        }
     }
 
     public interface WithTls {
-        WithCertificateProvider tls(Option<TlsConfig> config);
+        WithQuicTls tls(Option<TlsConfig> config);
 
-        default WithCertificateProvider tls(TlsConfig config) {
+        default WithQuicTls tls(TlsConfig config) {
             return tls(Option.some(config));
         }
+    }
 
-        default AetherNodeConfig build() {
-            return tls(Option.none()).build();
-        }
+    public interface WithQuicTls {
+        WithCertificateProvider quicTls(TlsConfig config);
     }
 
     public interface WithCertificateProvider {

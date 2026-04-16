@@ -288,7 +288,7 @@ public interface AetherNode extends ManageableNode {
                                    rabiaMetricsCollector,
                                    true,
                                    persistence,
-                                   config.tls())
+                                   config.quicTls())
         .flatMap(clusterNode -> assembleNode(config,
                                              delegateRouter,
                                              kvStore,
@@ -1403,8 +1403,10 @@ public interface AetherNode extends ManageableNode {
                                                                               java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
         var log = LoggerFactory.getLogger(AetherNode.class);
         log.info("Certificate renewed, valid until {}", newBundle.notAfter());
-        Result.all(QuicSslContextFactory.createServerFromBundle(newBundle),
-                   QuicSslContextFactory.createClientFromBundle(newBundle)).id()
+        Result.all(QuicSslContextFactory.createServerFromBundle(newBundle,
+                                                                org.pragmatica.consensus.net.quic.QuicTlsProvider.CLUSTER_PROTOCOL),
+                   QuicSslContextFactory.createClientFromBundle(newBundle,
+                                                                org.pragmatica.consensus.net.quic.QuicTlsProvider.CLUSTER_PROTOCOL)).id()
                   .onSuccess(tuple -> triggerCertRotation(clusterNode,
                                                           tuple.first(),
                                                           tuple.last(),

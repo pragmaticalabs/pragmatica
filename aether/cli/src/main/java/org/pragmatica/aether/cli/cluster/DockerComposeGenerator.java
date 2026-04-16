@@ -88,7 +88,6 @@ sealed interface DockerComposeGenerator {
                  .append("\"\n");
         sb.append("      PEERS: \"").append(peers)
                  .append("\"\n");
-        sb.append("      AETHER_INSECURE_DEV_MODE: \"true\"\n");
     }
 
     private static void appendPorts(StringBuilder sb, PortMapping ports, int index) {

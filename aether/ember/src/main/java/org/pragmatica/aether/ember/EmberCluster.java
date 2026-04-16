@@ -514,6 +514,13 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
                              .toList();
     }
 
+    private static org.pragmatica.net.tcp.TlsConfig buildForgeQuicTls(NodeId nodeId) {
+        var secret = "aether-forge-cluster-secret".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        var provider = org.pragmatica.net.tcp.security.SelfSignedCertificateProvider.selfSignedCertificateProvider(secret)
+                                                                                                                  .unwrap();
+        return org.pragmatica.net.tcp.TlsConfig.fromProvider(provider, nodeId.id(), "localhost").unwrap();
+    }
+
     private AetherNode createNode(NodeId nodeId,
                                   int port,
                                   int mgmtPort,
@@ -530,6 +537,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
                                           org.pragmatica.consensus.topology.BackoffConfig.DEFAULT,
                                           coreMax,
                                           targetClusterSize);
+        var quicTls = buildForgeQuicTls(nodeId);
         var config = new AetherNodeConfig(topology,
                                           ProtocolConfig.testConfig(),
                                           SliceActionConfig.sliceActionConfig(),
@@ -538,6 +546,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
                                           DHTConfig.FULL,
                                           DHTConfig.CACHE_DEFAULT,
                                           Option.empty(),
+                                          quicTls,
                                           org.pragmatica.aether.config.TtmConfig.ttmConfig(),
                                           RollbackConfig.rollbackConfig(),
                                           AppHttpConfig.appHttpConfig(appHttpPort),

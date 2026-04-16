@@ -30,6 +30,7 @@ import org.pragmatica.consensus.topology.TopologyManagementMessage.AddNode;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.RemoveNode;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.SetClusterSize;
 import org.pragmatica.lang.Option;
+import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -75,15 +76,16 @@ public interface PassiveNode<K extends StructuredKey, V> {
     static <K extends StructuredKey, V> Result<PassiveNode<K, V>> passiveNode(
         TopologyConfig topologyConfig,
         Serializer serializer,
-        Deserializer deserializer) {
+        Deserializer deserializer,
+        TlsConfig tlsConfig) {
 
         var delegateRouter = DelegateRouter.delegate();
         var kvStore = new KVStore<K, V>(delegateRouter, serializer, deserializer);
 
         return Result.all(
             TopologyObserver.topologyObserver(topologyConfig, delegateRouter),
-            QuicTlsProvider.serverContext(Option.empty()),
-            QuicTlsProvider.clientContext(Option.empty())
+            QuicTlsProvider.serverContext(tlsConfig),
+            QuicTlsProvider.clientContext(tlsConfig)
         ).map((topologyManager, serverSsl, clientSsl) -> assembleNode(topologyConfig.self(),
                                                                        delegateRouter,
                                                                        topologyManager,

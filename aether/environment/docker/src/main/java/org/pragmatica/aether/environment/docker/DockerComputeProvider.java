@@ -140,7 +140,6 @@ import static org.pragmatica.lang.Result.success;
                                               "CORE_MAX=" + coreMax,
                                               "-e",
                                               "AETHER_API_KEY=" + apiKey));
-        propagateEnvVar(command, "AETHER_INSECURE_DEV_MODE");
         propagateEnvVar(command, "AETHER_CLUSTER_SECRET");
         if (!config.dockerGid().isEmpty()) {
             command.add("--group-add");

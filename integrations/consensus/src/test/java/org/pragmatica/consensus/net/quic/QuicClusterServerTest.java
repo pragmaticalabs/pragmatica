@@ -34,6 +34,7 @@ import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
+import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -76,8 +77,8 @@ class QuicClusterServerTest {
 
         @Test
         void connect_helloExchanged_peerConnectionEstablished() throws Exception {
-            var serverSslResult = QuicTlsProvider.serverContext(Option.empty());
-            var clientSslResult = QuicTlsProvider.clientContext(Option.empty());
+            var serverSslResult = QuicTlsProvider.serverContext(TlsConfig.selfSignedServer());
+            var clientSslResult = QuicTlsProvider.clientContext(TlsConfig.insecureClient());
 
             serverSslResult.onFailure(_ -> fail("Server SSL context creation failed"));
             clientSslResult.onFailure(_ -> fail("Client SSL context creation failed"));
@@ -134,7 +135,7 @@ class QuicClusterServerTest {
 
         @Test
         void start_bindSucceeds_promiseResolves() {
-            var sslResult = QuicTlsProvider.serverContext(Option.empty());
+            var sslResult = QuicTlsProvider.serverContext(TlsConfig.selfSignedServer());
 
             server = sslResult.fold(
                 _ -> fail("unreachable"),
@@ -154,7 +155,7 @@ class QuicClusterServerTest {
 
         @Test
         void stop_afterStart_releasesResources() {
-            var sslResult = QuicTlsProvider.serverContext(Option.empty());
+            var sslResult = QuicTlsProvider.serverContext(TlsConfig.selfSignedServer());
 
             server = sslResult.fold(
                 _ -> fail("unreachable"),

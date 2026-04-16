@@ -17,93 +17,31 @@
 package org.pragmatica.consensus.net.quic;
 
 import io.netty.handler.codec.quic.QuicSslContext;
-import io.netty.handler.codec.quic.QuicSslContextBuilder;
-import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
-import io.netty.handler.ssl.util.SelfSignedCertificate;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.TlsConfig;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 
 /// Provides QUIC TLS context for cluster transport.
 ///
-/// QUIC mandates TLS 1.3 — there is no plaintext mode. When no TLS configuration
-/// is provided (development/Forge), ephemeral self-signed certificates are
-/// generated automatically for zero-config startup.
+/// QUIC mandates TLS 1.3 — there is no plaintext mode. Every node must be started
+/// with a resolved [TlsConfig] so cluster transport uses a deterministic, shared
+/// certificate authority (typically derived from an `AETHER_CLUSTER_SECRET`).
 ///
 /// Cluster transport uses a custom ALPN protocol identifier ("aether-cluster/1")
 /// to distinguish from HTTP/3 traffic on the same QUIC layer.
 public sealed interface QuicTlsProvider {
-    Logger log = LoggerFactory.getLogger(QuicTlsProvider.class);
-
     /// ALPN protocol identifier for Aether cluster transport.
     String CLUSTER_PROTOCOL = "aether-cluster/1";
 
     /// Obtain a QUIC server SSL context for cluster transport.
-    /// Uses the provided TLS config if present, otherwise auto-generates self-signed certs.
-    static Result<QuicSslContext> serverContext(Option<TlsConfig> tlsConfig) {
-        return tlsConfig.fold(
-            QuicTlsProvider::createSelfSignedServer,
-            QuicSslContextFactory::createServer
-        );
+    static Result<QuicSslContext> serverContext(TlsConfig tlsConfig) {
+        return QuicSslContextFactory.createServer(tlsConfig, CLUSTER_PROTOCOL);
     }
-
-    /// Environment variable that must be set to "true" to allow insecure TLS in development.
-    String INSECURE_DEV_MODE_ENV = "AETHER_INSECURE_DEV_MODE";
 
     /// Obtain a QUIC client SSL context for cluster transport.
-    /// Uses configured trust for production, requires explicit opt-in for insecure development mode.
-    static Result<QuicSslContext> clientContext(Option<TlsConfig> tlsConfig) {
-        return tlsConfig.fold(
-            QuicTlsProvider::createDevClient,
-            QuicSslContextFactory::createClient
-        );
-    }
-
-    /// Self-signed server context with cluster ALPN protocol.
-    /// Uses RSA keys to avoid Java 25 EC named-parameter compatibility issues
-    /// with netty-quiche's BoringSSL native layer.
-    @SuppressWarnings({"deprecation", "JBCT-UTIL-01"}) // SelfSignedCertificate is for dev/testing
-    private static Result<QuicSslContext> createSelfSignedServer() {
-        try {
-            var ssc = new SelfSignedCertificate("localhost", "RSA", 2048);
-            var context = QuicSslContextBuilder.forServer(ssc.key(), null, ssc.cert())
-                                               .applicationProtocols(CLUSTER_PROTOCOL)
-                                               .build();
-            return Result.success(context);
-        } catch (Exception e) {
-            return new QuicTransportError.TlsContextCreationFailed(e).result();
-        }
-    }
-
-    /// Development client context — requires explicit AETHER_INSECURE_DEV_MODE=true.
-    /// Returns an error if the env var is not set, preventing accidental insecure operation.
-    @SuppressWarnings("JBCT-UTIL-01")
-    private static Result<QuicSslContext> createDevClient() {
-        if (!"true".equalsIgnoreCase(System.getenv(INSECURE_DEV_MODE_ENV))) {
-            return QuicTransportError.General.NO_TLS_CONFIGURATION.result();
-        }
-
-        return createInsecureClient();
-    }
-
-    /// Insecure client context with cluster ALPN protocol (trusts all certificates).
-    /// Only reachable when AETHER_INSECURE_DEV_MODE=true.
-    @SuppressWarnings("JBCT-UTIL-01")
-    private static Result<QuicSslContext> createInsecureClient() {
-        try {
-            log.warn("*** INSECURE TLS: QUIC client trusts ALL certificates (AETHER_INSECURE_DEV_MODE=true) ***");
-            var context = QuicSslContextBuilder.forClient()
-                                               .trustManager(InsecureTrustManagerFactory.INSTANCE)
-                                               .applicationProtocols(CLUSTER_PROTOCOL)
-                                               .build();
-            return Result.success(context);
-        } catch (Exception e) {
-            return new QuicTransportError.TlsContextCreationFailed(e).result();
-        }
+    static Result<QuicSslContext> clientContext(TlsConfig tlsConfig) {
+        return QuicSslContextFactory.createClient(tlsConfig, CLUSTER_PROTOCOL);
     }
 
     record Unused() implements QuicTlsProvider {}

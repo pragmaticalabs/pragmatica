@@ -69,9 +69,9 @@ class QuicClusterNetworkTest {
             FrameworkCodecs.frameworkCodecs(),
             combinedCodecs()
         );
-        serverSsl = QuicTlsProvider.serverContext(Option.empty())
+        serverSsl = QuicTlsProvider.serverContext(TlsConfig.selfSignedServer())
                                     .fold(_ -> fail("Server SSL failed"), ssl -> ssl);
-        clientSsl = QuicTlsProvider.clientContext(Option.empty())
+        clientSsl = QuicTlsProvider.clientContext(TlsConfig.insecureClient())
                                     .fold(_ -> fail("Client SSL failed"), ssl -> ssl);
     }
 

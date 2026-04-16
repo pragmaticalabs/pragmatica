@@ -109,94 +109,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// These should be combined with other entries when building the final router.
     List<Entry<?>> routeEntries();
 
-    /// Creates a RabiaNode without metrics collection.
-    /// Uses local leader election (backward compatible).
-    /// Auto-generates self-signed TLS for QUIC transport.
-    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
-                                                              DelegateRouter delegateRouter,
-                                                              StateMachine<C> stateMachine,
-                                                              Serializer serializer,
-                                                              Deserializer deserializer) {
-        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer,
-                         ConsensusMetrics.noop(), false);
-    }
-
-    /// Creates a RabiaNode with metrics collection.
-    /// Uses local leader election (backward compatible).
-    /// Auto-generates self-signed TLS for QUIC transport.
-    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
-                                                              DelegateRouter delegateRouter,
-                                                              StateMachine<C> stateMachine,
-                                                              Serializer serializer,
-                                                              Deserializer deserializer,
-                                                              ConsensusMetrics metrics) {
-        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer, metrics, false);
-    }
-
-    /// Creates a RabiaNode with metrics collection and consensus-based leader election.
-    ///
-    /// When `useConsensusLeaderElection` is true:
-    ///
-    ///   - Leader proposals are submitted through consensus (KVStore with LeaderKey)
-    ///   - LeaderChange notifications are sent asynchronously after commit
-    ///   - All nodes agree on leader through consensus protocol
-    ///
-    ///
-    /// When `useConsensusLeaderElection` is false (default):
-    ///
-    ///   - Leader is computed locally on view change
-    ///   - LeaderChange notifications are sent immediately (synchronously)
-    ///   - Backward compatible with existing behavior
-    ///
-    ///
-    /// Auto-generates self-signed TLS for QUIC transport.
-    ///
-    /// @param config                     Node configuration
-    /// @param delegateRouter             DelegateRouter for message routing (caller must wire after collecting all routes)
-    /// @param stateMachine               State machine for consensus
-    /// @param serializer                 Message serializer
-    /// @param deserializer               Message deserializer
-    /// @param metrics                    Consensus metrics collector
-    /// @param useConsensusLeaderElection Whether to use consensus-based leader election
-    /// @return Result containing RabiaNode instance, or failure if topology/TLS creation fails
-    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
-                                                              DelegateRouter delegateRouter,
-                                                              StateMachine<C> stateMachine,
-                                                              Serializer serializer,
-                                                              Deserializer deserializer,
-                                                              ConsensusMetrics metrics,
-                                                              boolean useConsensusLeaderElection) {
-        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer,
-                         metrics, useConsensusLeaderElection, RabiaPersistence.inMemory());
-    }
-
-    /// Creates a RabiaNode with metrics, consensus-based leader election,
-    /// and explicit persistence implementation.
-    /// Auto-generates self-signed TLS for QUIC transport.
-    ///
-    /// @param config                     Node configuration
-    /// @param delegateRouter             DelegateRouter for message routing
-    /// @param stateMachine               State machine for consensus
-    /// @param serializer                 Message serializer
-    /// @param deserializer               Message deserializer
-    /// @param metrics                    Consensus metrics collector
-    /// @param useConsensusLeaderElection Whether to use consensus-based leader election
-    /// @param persistence                Persistence implementation for consensus state
-    /// @return Result containing RabiaNode instance, or failure if topology/TLS creation fails
-    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
-                                                              DelegateRouter delegateRouter,
-                                                              StateMachine<C> stateMachine,
-                                                              Serializer serializer,
-                                                              Deserializer deserializer,
-                                                              ConsensusMetrics metrics,
-                                                              boolean useConsensusLeaderElection,
-                                                              RabiaPersistence<C> persistence) {
-        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer,
-                         metrics, useConsensusLeaderElection, persistence, Option.empty());
-    }
-
     /// Creates a RabiaNode with full QUIC transport configuration.
-    /// Uses provided TLS config or auto-generates self-signed certs when absent.
+    /// Requires explicit TLS config — QUIC has no plaintext mode.
     ///
     /// @param config                     Node configuration
     /// @param delegateRouter             DelegateRouter for message routing
@@ -206,7 +120,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// @param metrics                    Consensus metrics collector
     /// @param useConsensusLeaderElection Whether to use consensus-based leader election
     /// @param persistence                Persistence implementation for consensus state
-    /// @param tlsConfig                  TLS configuration (empty for auto-generated self-signed)
+    /// @param tlsConfig                  TLS configuration for QUIC cluster transport (required — no plaintext mode)
     /// @return Result containing RabiaNode instance, or failure if topology/TLS creation fails
     static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
                                                               DelegateRouter delegateRouter,
@@ -216,7 +130,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               ConsensusMetrics metrics,
                                                               boolean useConsensusLeaderElection,
                                                               RabiaPersistence<C> persistence,
-                                                              Option<TlsConfig> tlsConfig) {
+                                                              TlsConfig tlsConfig) {
         return Result.all(
             TopologyObserver.topologyObserver(config.topology(), delegateRouter),
             QuicTlsProvider.serverContext(tlsConfig),
