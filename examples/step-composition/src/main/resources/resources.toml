@@ -1,0 +1,2 @@
+[messaging.order-events]
+topic_name = "order-events"
