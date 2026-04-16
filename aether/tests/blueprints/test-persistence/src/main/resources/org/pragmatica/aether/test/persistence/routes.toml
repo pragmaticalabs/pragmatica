@@ -9,7 +9,7 @@ get = "GET /{key}"
 put = "PUT /{key}"
 list = "GET /"
 publish = "POST /publish"
-read = "GET /stream"
+read = "POST /stream"
 
 [errors]
 default = 500

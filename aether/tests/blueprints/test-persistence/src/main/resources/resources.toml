@@ -15,3 +15,10 @@ partitions = 4
 retention = "time"
 retention-value = "5m"
 max-event-size = "64KB"
+
+[database]
+# Required by PersistenceSlice's PgSqlConnector qualifier.
+# Values are overridden at deploy time from the node's aether.toml / environment.
+username = "forge"
+password = "forge"
+async_url = "postgresql://forge-postgres:5432/forge"
