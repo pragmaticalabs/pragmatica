@@ -307,7 +307,14 @@ public sealed interface TaskAssignmentCoordinator {
         }
 
         @Override public Result<Unit> reassign(TaskGroup group, NodeId target) {
-            return state.get().reassign(group, target);
+            var key = TaskAssignmentKey.taskAssignmentKey(group);
+            var value = TaskAssignmentValue.taskAssignmentValue(target);
+            var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
+            clusterNode.apply(List.of(command))
+                             .onFailure(cause -> log.error("Consensus proposal failed for task group {} reassignment: {}",
+                                                           group,
+                                                           cause.message()));
+            return Result.unitResult();
         }
 
         private void deactivateCurrentState() {
