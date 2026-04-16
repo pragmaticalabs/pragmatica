@@ -83,7 +83,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
         var dhtConfig = parseDhtConfig(aetherConfig);
         logStartupInfo(nodeId, port, managementPort, peers, aetherConfig, sliceConfig);
         var coreMax = parseCoreMax(aetherConfig);
-        var tlsBundle = resolveTls(nodeId, peers, aetherConfig).unwrap();
+        var tlsBundle = resolveTls(nodeId, peers, aetherConfig).expect("Failed to resolve TLS configuration at node startup");
         var appHttpTls = aetherConfig.filter(AetherConfig::tlsEnabled).map(_ -> tlsBundle.tls());
         var config = AetherNodeConfig.builder().self(nodeId)
                                              .coreNodes(peers)
@@ -102,7 +102,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
                                              .backupConfig(resolveBackup(aetherConfig))
                                              .streaming(resolveStreaming(aetherConfig))
                                              .build();
-        var node = AetherNode.aetherNode(config).unwrap();
+        var node = AetherNode.aetherNode(config).expect("Failed to initialize Aether node at startup");
         registerShutdownHook(node);
         startNodeAndWait(node, nodeId);
     }
@@ -291,7 +291,9 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
                                       int selfPort,
                                       Map<String, String> labels,
                                       Option<AetherConfig> aetherConfig) {
-        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", selfPort).unwrap(), NodeRole.ACTIVE, labels);
+        var selfInfo = NodeInfo.nodeInfo(self,
+                                         nodeAddress("localhost", selfPort).expect("localhost is a valid node address"),
+                                         NodeRole.ACTIVE, labels);
         return findArg("--peers=").map(peersStr -> parsePeersFromString(peersStr, self, selfInfo))
                       .orElse(findEnv("CLUSTER_PEERS").map(peersStr -> parsePeersFromString(peersStr, self, selfInfo)))
                       .orElse(aetherConfig.map(this::generatePeersFromConfig))
@@ -314,8 +316,8 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
         var port = clusterPort + (env == Environment.LOCAL
                                   ? index
                                   : 0);
-        return NodeInfo.nodeInfo(NodeId.nodeId("node-" + index).unwrap(),
-                                 nodeAddress(host, port).unwrap());
+        return NodeInfo.nodeInfo(NodeId.nodeId("node-" + index).expect("generated node id must be valid"),
+                                 nodeAddress(host, port).expect("generated node address must be valid"));
     }
 
     private List<NodeInfo> parsePeersFromString(String peersStr, NodeId self, NodeInfo selfInfo) {
@@ -348,7 +350,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
     private Option<NodeInfo> parseHostPortPeer(String[] parts) {
         var host = parts[0];
         var port = Integer.parseInt(parts[1]);
-        var nodeId = NodeId.nodeId("node-" + host + "-" + port).unwrap();
+        var nodeId = NodeId.nodeId("node-" + host + "-" + port).expect("generated node id must be valid");
         return nodeAddress(host, port).map(addr -> NodeInfo.nodeInfo(nodeId, addr)).option();
     }
 

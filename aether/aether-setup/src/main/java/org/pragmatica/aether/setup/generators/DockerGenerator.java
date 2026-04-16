@@ -48,7 +48,7 @@ public final class DockerGenerator implements Generator {
     }
 
     @SuppressWarnings("JBCT-EX-01") private GeneratorOutput generateArtifacts(AetherConfig config, Path outputDir) throws Exception {
-        createDirectories(outputDir).unwrap();
+        createDirectories(outputDir).expect("create docker output directory");
         var generatedFiles = new ArrayList<Path>();
         writeFile(outputDir, "docker-compose.yml", generateDockerCompose(config), generatedFiles);
         writeFile(outputDir, ".env", generateEnvFile(config), generatedFiles);
@@ -60,13 +60,13 @@ public final class DockerGenerator implements Generator {
     }
 
     @SuppressWarnings("JBCT-EX-01") private void writeFile(Path dir, String name, String content, List<Path> files) throws Exception {
-        writeString(dir.resolve(name), content).unwrap();
+        writeString(dir.resolve(name), content).expect("write docker artifact: " + name);
         files.add(Path.of(name));
     }
 
     @SuppressWarnings("JBCT-EX-01") private Path writeScript(Path dir, String name, String content, List<Path> files) throws Exception {
         var path = dir.resolve(name);
-        writeString(path, content).unwrap();
+        writeString(path, content).expect("write docker script: " + name);
         makeExecutable(path);
         files.add(Path.of(name));
         return path;

@@ -80,21 +80,24 @@ public final class AetherUp {
         var overrides = extractOverrides(options);
         var result = ConfigLoader.loadWithOverrides(configPath, overrides);
         result.onFailure(cause -> printErrorAndExit("Error loading configuration:", cause.message()));
-        return result.unwrap();
+        return result.expect("printErrorAndExit calls System.exit; unwrap unreachable on failure");
     }
 
     private static AetherConfig configFromDefaults(Map<String, String> options) {
         var envStr = options.getOrDefault("env", "docker");
-        var env = Environment.environment(envStr).onFailure(cause -> printErrorAndExit("Error:",
-                                                                                       cause.message()))
-                                         .unwrap();
+        var env = Environment.environment(envStr).onFailure(cause -> printErrorAndExit("Error:", cause.message()))
+                                                 .expect("printErrorAndExit calls System.exit; unwrap unreachable on failure");
         var builder = AetherConfig.builder().withEnvironment(env);
         withOverrides(builder, options);
         return builder.build();
     }
 
     private static void withOverrides(AetherConfig.Builder builder, Map<String, String> options) {
-        if (options.containsKey("nodes")) {builder.nodes(Number.parseInt(options.get("nodes")).unwrap());}
+        if (options.containsKey("nodes")) {
+            Number.parseInt(options.get("nodes"))
+                  .onFailure(cause -> printErrorAndExit("Invalid --nodes value:", cause.message()))
+                  .onSuccess(builder::nodes);
+        }
         if (options.containsKey("heap")) {builder.heap(options.get("heap"));}
         if (options.containsKey("tls")) {builder.tls(true);}
         if (options.containsKey("no-tls")) {builder.tls(false);}
