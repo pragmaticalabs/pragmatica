@@ -118,6 +118,7 @@ public interface ManagementServer {
     Promise<Unit> stop();
     Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle);
     @SuppressWarnings("JBCT-RET-01") void onHttpForwardRequest(HttpForwardRequest request);
+    @SuppressWarnings("JBCT-RET-01") void onHttpForwardResponse(HttpForwardResponse response);
 
     static ManagementServer managementServer(int port,
                                              Supplier<ManageableNode> nodeSupplier,
@@ -776,6 +777,10 @@ class ManagementServerImpl implements ManagementServer {
     private void recordRequestMetrics(String method, String path, InstrumentedResponseWriter writer, long startTime) {
         var durationNanos = System.nanoTime() - startTime;
         requestObserver.recordRequest(method, path, writer.statusCategory(), durationNanos);
+    }
+
+    @SuppressWarnings("JBCT-RET-01") @Override public void onHttpForwardResponse(HttpForwardResponse response) {
+        ensureMgmtForwarder().onPresent(fwd -> fwd.onHttpForwardResponse(response));
     }
 
     @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01"}) @Override public void onHttpForwardRequest(HttpForwardRequest request) {

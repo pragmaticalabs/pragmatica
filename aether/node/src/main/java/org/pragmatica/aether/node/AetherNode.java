@@ -1750,7 +1750,9 @@ public interface AetherNode extends ManageableNode {
                                                                                  appHttpServer,
                                                                                  managementServerRef.get())));
         entries.add(MessageRouter.Entry.route(org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse.class,
-                                              appHttpServer::onHttpForwardResponse));
+                                              response -> demuxHttpForwardResponse(response,
+                                                                                   appHttpServer,
+                                                                                   managementServerRef.get())));
         entries.add(MessageRouter.Entry.route(KVStoreLocalIO.Request.Find.class, kvStore::find));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
                                               notification -> handleLeaderCommit(notification, leaderManager)));
@@ -1769,6 +1771,12 @@ public interface AetherNode extends ManageableNode {
                                                                                  AppHttpServer appHttpServer,
                                                                                  Option<ManagementServer> managementServer) {
         if (request.pipeline() == HttpForwardMessage.Pipeline.MANAGEMENT) {managementServer.onPresent(ms -> ms.onHttpForwardRequest(request));} else {appHttpServer.onHttpForwardRequest(request);}
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") private static void demuxHttpForwardResponse(HttpForwardMessage.HttpForwardResponse response,
+                                                                                  AppHttpServer appHttpServer,
+                                                                                  Option<ManagementServer> managementServer) {
+        if (response.pipeline() == HttpForwardMessage.Pipeline.MANAGEMENT) {managementServer.onPresent(ms -> ms.onHttpForwardResponse(response));} else {appHttpServer.onHttpForwardResponse(response);}
     }
 
     private static void handleLeaderCommit(KVStoreNotification.ValuePut<?, ?> notification,
