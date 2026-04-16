@@ -41,9 +41,11 @@ See [examples/](examples/) for more: URL shortener, ecommerce (multi-slice), ban
 
 ## Build
 
+The monorepo requires specific build ordering — annotation processors and Maven plugins must be bootstrapped before the modules that depend on them. Use the provided script:
+
 ```bash
-mvn install -DskipTests    # Build all modules
-mvn verify                 # Build with tests
+./build.sh                 # Full build: bootstrap, lint, install, e2e compile, test blueprints
+mvn test                   # Run tests after build
 ```
 
 ## Using in Your Project
