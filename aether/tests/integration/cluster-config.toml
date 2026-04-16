@@ -6,7 +6,7 @@ config_version = "1.0.0"
 name = "integration-test"
 version = "1.0.0"
 
-[core_topology]
+[cluster.core]
 min = 3
 max = 15
 max_unavailable = 1

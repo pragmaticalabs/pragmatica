@@ -99,8 +99,6 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private List<String> buildRunCommand(ProvisionSpec spec, String containerName, int nodeIndex) {
-        var mgmtPort = config.managementPortBase() + nodeIndex;
-        var appPort = config.appPortBase() + nodeIndex;
         var role = spec.tags().getOrDefault("aether.role", "core");
         var cluster = spec.tags().getOrDefault("aether.cluster", "default");
         var nodeId = spec.tags().getOrDefault("aether.node-id", containerName);
@@ -124,10 +122,6 @@ import static org.pragmatica.lang.Result.success;
                                               "aether.role=" + role,
                                               "--label",
                                               "aether.node-id=" + nodeId,
-                                              "-p",
-                                              mgmtPort + ":8080",
-                                              "-p",
-                                              appPort + ":8070",
                                               "-e",
                                               "NODE_ID=" + nodeId,
                                               "-e",
@@ -141,6 +135,7 @@ import static org.pragmatica.lang.Result.success;
                                               "-e",
                                               "AETHER_API_KEY=" + apiKey));
         propagateEnvVar(command, "AETHER_CLUSTER_SECRET");
+        propagateEnvVar(command, "AETHER_DOCKER_NETWORK");
         if (!config.dockerGid().isEmpty()) {
             command.add("--group-add");
             command.add(config.dockerGid());

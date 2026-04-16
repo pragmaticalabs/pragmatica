@@ -26,8 +26,12 @@ public record DockerEnvironmentIntegrationFactory() implements EnvironmentIntegr
 
     private static Result<DockerConfig> buildDockerConfig(CloudConfig config) {
         var compute = config.compute();
+        var envNetwork = System.getenv("AETHER_DOCKER_NETWORK");
+        var networkName = envNetwork != null && !envNetwork.isBlank()
+                         ? envNetwork
+                         : compute.getOrDefault("network_name", "aether-network");
         return dockerConfig(compute.getOrDefault("image_name", "aether-node:local"),
-                            compute.getOrDefault("network_name", "aether-network"),
+                            networkName,
                             parseIntOrDefault(compute.getOrDefault("management_port_base", ""), 5150),
                             parseIntOrDefault(compute.getOrDefault("app_port_base", ""), 8070),
                             parseIntOrDefault(compute.getOrDefault("cluster_port", ""), 6000),

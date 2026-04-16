@@ -24,6 +24,7 @@ x-node-common: &node-common
     DOCKER_GID: "${DOCKER_GID:-984}"
     JAVA_OPTS: "-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
     AETHER_CLUSTER_SECRET: "aether-integration-test-cluster-secret"
+    AETHER_DOCKER_NETWORK: "aether-a-network"
   healthcheck:
     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
     interval: 10s

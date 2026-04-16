@@ -1193,6 +1193,11 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
+    @SuppressWarnings("JBCT-RET-01") private static void propagateScale(ValuePut<AetherKey.ClusterConfigKey, AetherValue> put,
+                                                                        ClusterTopologyManager ctm) {
+        if (put.cause().value() instanceof AetherValue.ClusterConfigValue configValue) {ctm.setDesiredSize(configValue.coreCount());}
+    }
+
     private static void markReadyWithAddress(ClusterTopologyManager ctm,
                                              NodeId nodeId,
                                              AetherValue.NodeLifecycleValue lifecycleValue) {
@@ -1573,6 +1578,8 @@ public interface AetherNode extends ManageableNode {
                                                          clusterDeploymentManager::onNodeLifecyclePut)
                                                   .onPut(AetherKey.NodeLifecycleKey.class,
                                                          put -> notifyCtmOnDuty(put, clusterTopologyManager))
+                                                  .onPut(AetherKey.ClusterConfigKey.class,
+                                                         put -> propagateScale(put, clusterTopologyManager))
                                                   .onRemove(AetherKey.NodeLifecycleKey.class,
                                                             remove -> clusterTopologyManager.observer()
                                                                                                      .markDeparted(remove.cause().key()
