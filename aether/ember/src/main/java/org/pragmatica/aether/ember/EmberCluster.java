@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ember;
 
 import org.pragmatica.config.ConfigurationProvider;
@@ -59,7 +63,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
 /// Manages a cluster of AetherNodes for Ember.
 /// Supports starting, stopping, adding, and killing nodes.
-@Contract @SuppressWarnings("JBCT-RET-03") public final class EmberCluster {
+@Contract@SuppressWarnings("JBCT-RET-03") public final class EmberCluster {
     private static final Logger log = LoggerFactory.getLogger(EmberCluster.class);
 
     public static final int DEFAULT_BASE_PORT = 6000;
@@ -439,7 +443,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
         return targetClusterSize;
     }
 
-    public void setClusterSize(int newSize) {
+    @Contract public void setClusterSize(int newSize) {
         effectiveSize.set(newSize);
         var message = new TopologyManagementMessage.SetClusterSize(newSize);
         nodes.values().forEach(node -> node.route(message));

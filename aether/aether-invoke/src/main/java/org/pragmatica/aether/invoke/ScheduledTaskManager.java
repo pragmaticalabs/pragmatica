@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry.ScheduledTask;
@@ -35,9 +39,7 @@ import org.slf4j.LoggerFactory;
 /// Watches the ScheduledTaskRegistry for changes, manages timer creation
 /// and cancellation, and invokes slice methods at configured intervals.
 /// Respects leader-only semantics and quorum requirements.
-@Contract
-// MessageReceiver callbacks + lifecycle methods
-public interface ScheduledTaskManager {
+@Contract public interface ScheduledTaskManager {
     @MessageReceiver void onLeaderChange(LeaderChange leaderChange);
     @MessageReceiver void onQuorumStateChange(QuorumStateNotification notification);
     int activeTimerCount();
@@ -260,13 +262,12 @@ public interface ScheduledTaskManager {
 
     sealed interface IntervalParser {
         static org.pragmatica.lang.Result<TimeSpan> parse(String interval) {
-            return Verify.ensure(interval, Verify.Is::present, EMPTY_INTERVAL)
-                         .flatMap(IntervalParser::parseInterval);
+            return Verify.ensure(interval, Verify.Is::present, EMPTY_INTERVAL).flatMap(IntervalParser::parseInterval);
         }
 
         private static org.pragmatica.lang.Result<TimeSpan> parseInterval(String interval) {
             var trimmed = interval.trim();
-            if (trimmed.length() < 2) {return INVALID_INTERVAL.apply(interval).result();}
+            if (trimmed.length() <2) {return INVALID_INTERVAL.apply(interval).result();}
             var suffix = trimmed.charAt(trimmed.length() - 1);
             var numberPart = trimmed.substring(0, trimmed.length() - 1);
             return parseNumber(numberPart, interval).flatMap(value -> applyUnit(value, suffix, interval));

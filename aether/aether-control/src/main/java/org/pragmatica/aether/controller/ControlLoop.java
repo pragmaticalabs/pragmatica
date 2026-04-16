@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.controller;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -62,9 +66,7 @@ import org.slf4j.LoggerFactory;
 ///   - Periodically evaluate controller with current metrics
 ///   - Apply scaling decisions by updating blueprints in KVStore
 ///
-@Contract
-// MessageReceiver callbacks + framework lifecycle methods
-public interface ControlLoop extends DelegatedComponent {
+@Contract public interface ControlLoop extends DelegatedComponent {
     @MessageReceiver void onTopologyChange(TopologyChangeNotification topologyChange);
     @MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
     @MessageReceiver void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);

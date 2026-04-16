@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.dependency;
 
 import org.pragmatica.lang.Cause;
@@ -124,14 +128,14 @@ import static org.pragmatica.lang.Result.success;
     private static final Fn1<Cause, String> FRAMEWORK_DEPENDENCY_ERROR = Causes.forOneValue("Slice incorrectly packaged: framework dependency declared in %s. " + "slice-api, infra-api, and slice-annotations are provided by the runtime and must not be declared as dependencies");
 
     public static Result<DependencyFile> dependencyFile(InputStream inputStream) {
-        return StreamOps.readString(inputStream)
-                        .flatMap(DependencyFile::dependencyFile);
+        return StreamOps.readString(inputStream).flatMap(DependencyFile::dependencyFile);
     }
 
     public static Result<DependencyFile> load(String sliceClassName, ClassLoader classLoader) {
-        return StreamOps.readResource(classLoader, "META-INF/dependencies/" + sliceClassName)
-                        .flatMap(DependencyFile::dependencyFile)
-                        .orElse(success(new DependencyFile(List.of(), List.of(), List.of())));
+        return StreamOps.readResource(classLoader, "META-INF/dependencies/" + sliceClassName).flatMap(DependencyFile::dependencyFile)
+                                     .orElse(success(new DependencyFile(List.of(),
+                                                                        List.of(),
+                                                                        List.of())));
     }
 
     public boolean hasSharedDependencies() {

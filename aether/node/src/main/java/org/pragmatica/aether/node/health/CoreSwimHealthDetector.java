@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.health;
 
 import org.pragmatica.consensus.NodeId;
@@ -92,7 +96,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     }
 
     @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) public Promise<Unit> start(Option<EventLoopGroup> sharedEventLoopGroup,
-                                                                                               GossipEncryptor gossipEncryptor) {
+                                                                                GossipEncryptor gossipEncryptor) {
         this.encryptor = gossipEncryptor;
         if (!starting.compareAndSet(false, true)) {
             log.debug("SWIM start already in progress, skipping");

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.ExitCode;
@@ -59,9 +63,10 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TAS
         }
 
         private Result<String> validateInputs() {
-            return Verify.ensure(group, Verify.Is::present, TasksError.MISSING_GROUP)
-                         .flatMap(_ -> Verify.ensure(targetNode, Verify.Is::present, TasksError.MISSING_TARGET))
-                         .map(_ -> group.toUpperCase());
+            return Verify.ensure(group, Verify.Is::present, TasksError.MISSING_GROUP).flatMap(_ -> Verify.ensure(targetNode,
+                                                                                                                 Verify.Is::present,
+                                                                                                                 TasksError.MISSING_TARGET))
+                                .map(_ -> group.toUpperCase());
         }
 
         private Result<String> sendReassignRequest(String validGroup) {
@@ -88,11 +93,12 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TAS
     enum TasksError implements Cause {
         MISSING_GROUP("Task group name is required (use --group)"),
         MISSING_TARGET("Target node ID is required (use --target)");
-
         private final String message;
-
-        TasksError(String message) { this.message = message; }
-
-        @Override public String message() { return message; }
+        TasksError(String message) {
+            this.message = message;
+        }
+        @Override public String message() {
+            return message;
+        }
     }
 }
