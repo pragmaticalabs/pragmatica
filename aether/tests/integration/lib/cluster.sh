@@ -640,10 +640,16 @@ self_heal() {
     # Step 2: force restart
     log_warn "Cluster did not self-heal within 120s, forcing restart"
     case "$env_type" in
-        docker|remote)
+        docker)
             docker compose -f "$compose_file" restart 2>/dev/null
-            # Kill any orphaned CTM-provisioned containers
             docker rm -f $(docker ps -aq --filter "name=aether-core") 2>/dev/null || true
+            ;;
+        remote)
+            # docker commands target the remote host; local docker has no
+            # knowledge of aether-core-* orphans provisioned on the test target.
+            local remote_compose="~/$(basename "$compose_file")"
+            remote_exec "docker compose -f ${remote_compose} restart" 2>/dev/null || true
+            remote_exec "docker rm -f \$(docker ps -aq --filter 'name=aether-core') 2>/dev/null || true" 2>/dev/null || true
             ;;
         cloud)
             aether cluster heal --cluster cluster-b 2>/dev/null || true

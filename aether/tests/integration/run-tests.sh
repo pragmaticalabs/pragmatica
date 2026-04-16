@@ -35,6 +35,8 @@ RESULTS_JSON="${SCRIPT_DIR}/test-results.json"
 COMPOSE_A="${SCRIPT_DIR}/docker-compose-a.yml"
 CLUSTER_A_NAME="test-a"
 CLUSTER_A_MGMT="http://${TARGET_HOST:-localhost}:5150"
+# Direct (LB-less) app-HTTP fallback — node-1's host-mapped app port (see docker-compose-a.yml)
+CLUSTER_A_APP_DIRECT="http://${TARGET_HOST:-localhost}:8070"
 CLUSTER_A_LB_APP=""
 CLUSTER_A_LB_MGMT=""
 
@@ -42,6 +44,8 @@ CLUSTER_A_LB_MGMT=""
 COMPOSE_B="${SCRIPT_DIR}/docker-compose-b.yml"
 CLUSTER_B_NAME="test-b"
 CLUSTER_B_MGMT="http://${TARGET_HOST:-localhost}:5160"
+# Direct (LB-less) app-HTTP fallback — node-1's host-mapped app port (see docker-compose-b.yml)
+CLUSTER_B_APP_DIRECT="http://${TARGET_HOST:-localhost}:8080"
 CLUSTER_B_LB_APP=""
 CLUSTER_B_LB_MGMT=""
 
@@ -207,15 +211,17 @@ run_suite() {
         return 0
     fi
 
-    # Set cluster-specific endpoints
+    # Set cluster-specific endpoints. App-HTTP fallback points to the node-1
+    # direct app port (8070/8080 per compose), not the mgmt port — slice routes
+    # are only served on the app HTTP listener.
     local cluster_endpoint lb_app lb_mgmt
     if [ "$cluster" = "a" ]; then
         cluster_endpoint="$CLUSTER_A_MGMT"
-        lb_app="${CLUSTER_A_LB_APP:-$CLUSTER_A_MGMT}"
+        lb_app="${CLUSTER_A_LB_APP:-$CLUSTER_A_APP_DIRECT}"
         lb_mgmt="${CLUSTER_A_LB_MGMT:-$CLUSTER_A_MGMT}"
     else
         cluster_endpoint="$CLUSTER_B_MGMT"
-        lb_app="${CLUSTER_B_LB_APP:-$CLUSTER_B_MGMT}"
+        lb_app="${CLUSTER_B_LB_APP:-$CLUSTER_B_APP_DIRECT}"
         lb_mgmt="${CLUSTER_B_LB_MGMT:-$CLUSTER_B_MGMT}"
     fi
 
