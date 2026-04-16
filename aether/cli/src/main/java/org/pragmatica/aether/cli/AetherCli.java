@@ -766,9 +766,9 @@ import static org.pragmatica.lang.Option.some;
                 return List.copyOf(descriptors);
             }
 
-            @SuppressWarnings("JBCT-RET-03") private static List<ArtifactDescriptor> reportParseError(Cause cause) {
+            private static List<ArtifactDescriptor> reportParseError(Cause cause) {
                 System.err.println("Failed to read blueprint: " + cause.message());
-                return null;
+                return List.of();
             }
 
             private static Path findBlueprintJar(String groupId, String artifactId, String version) {
