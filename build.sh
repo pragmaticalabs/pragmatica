@@ -7,8 +7,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Enable insecure TLS mode for development builds (self-signed certs)
-export AETHER_INSECURE_DEV_MODE=true
+# Cluster secret for deterministic QUIC TLS during development builds.
+# Real deployments supply this via the operator's environment.
+: "${AETHER_CLUSTER_SECRET:=aether-local-dev-cluster-secret}"
+export AETHER_CLUSTER_SECRET
 
 # Run maven silently, fail on BUILD FAILURE
 mvn_quiet() {

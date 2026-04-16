@@ -216,7 +216,7 @@ type = "docker"
 type = "container"
 image = "ghcr.io/pragmaticalabs/aether-node:local"
 java_opts = "-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
-env = { AETHER_INSECURE_DEV_MODE = "true" }
+env = { AETHER_CLUSTER_SECRET = "aether-integration-test-cluster-secret" }
 
 [infrastructure.database.test-pg]
 type = "postgresql"
@@ -263,7 +263,7 @@ key = "${env:AETHER_SSH_KEY}"
 type = "container"
 image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1"
 java_opts = "-Xmx512m -XX:+UseZGC"
-env = { AETHER_INSECURE_DEV_MODE = "true" }
+env = { AETHER_CLUSTER_SECRET = "aether-integration-test-cluster-secret" }
 
 [infrastructure.database.cloud-pg]
 type = "postgresql"
@@ -343,7 +343,7 @@ key = "${env:AETHER_SSH_KEY}"
 type = "container"
 image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1"
 java_opts = "-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
-env = { AETHER_INSECURE_DEV_MODE = "true" }
+env = { AETHER_CLUSTER_SECRET = "aether-integration-test-cluster-secret" }
 
 [infrastructure.database.onprem-pg]
 type = "postgresql"
