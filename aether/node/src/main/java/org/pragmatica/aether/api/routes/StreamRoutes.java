@@ -213,6 +213,14 @@ public final class StreamRoutes implements RouteSource {
 
     private Result<StreamCreateResponse> createStreamWithConfig(String name, StreamCreateRequest request) {
         var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
+        return streamManager().streamInfo(name)
+                            .map(existing -> Result.success(new StreamCreateResponse(name,
+                                                                                     existing.partitions(),
+                                                                                     "exists")))
+                            .or(() -> createFreshStream(name, partitions));
+    }
+
+    private Result<StreamCreateResponse> createFreshStream(String name, int partitions) {
         var config = StreamConfig.streamConfig(name, partitions, MANAGEMENT_API_RETENTION, "latest");
         return streamManager().createStream(config).map(_ -> new StreamCreateResponse(name, partitions, "created"));
     }

@@ -124,15 +124,23 @@ public interface JsonMapper {
     }
 
     /// Navigate a JsonNode tree using a dot-separated path.
+    /// Numeric segments are interpreted as array indices when the current node is an array.
     private static Result<String> navigatePath(JsonNode root, String dotPath) {
         var node = root;
         for (var segment : dotPath.split("\\.")) {
-            node = node.path(segment);
+            node = navigateSegment(node, segment);
             if (node.isMissingNode()) {
                 return pathNotFound(dotPath).result();
             }
         }
         return Result.success(nodeToString(node));
+    }
+
+    private static JsonNode navigateSegment(JsonNode node, String segment) {
+        if (node.isArray() && segment.matches("\\d+")) {
+            return node.path(Integer.parseInt(segment));
+        }
+        return node.path(segment);
     }
 
     /// Convert a JsonNode to its string representation.
