@@ -200,6 +200,28 @@ list_blueprints() {
 # ---------------------------------------------------------------------------
 # Node operations
 # ---------------------------------------------------------------------------
+_docker_container_name() {
+    # Remote Docker compose files name containers `aether-<cluster_id>-<node_id>`
+    # (aether-a-node-1, aether-b-node-2, ...). Fall back for older single-cluster
+    # environments that just use `aether-<node_id>`.
+    local node_id="$1"
+    if [ -n "${CLUSTER_ID:-}" ]; then
+        printf 'aether-%s-%s' "$CLUSTER_ID" "$node_id"
+    else
+        printf 'aether-%s' "$node_id"
+    fi
+}
+
+# Tear down any CTM-provisioned `aether-core-*` replacement containers on the
+# remote host so the cluster settles back to the fixed compose-node set.
+# Called between disruption tests to avoid phantom-sixth-node inflation.
+drop_ctm_replacements() {
+    if [ "$CLOUD_MODE" = "true" ]; then
+        return 0
+    fi
+    remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-core-) 2>/dev/null || true" 2>/dev/null
+}
+
 kill_node() {
     local node_id="$1"
     log_info "Killing node: ${node_id}"
@@ -207,7 +229,14 @@ kill_node() {
         # Cloud: each VM runs a single container named "aether-node"
         cloud_ssh "$node_id" "docker kill aether-node" 2>/dev/null
     else
-        remote_exec "docker kill aether-${node_id}" 2>/dev/null
+        local name
+        name=$(_docker_container_name "$node_id")
+        log_info "  (container=${name})"
+        local out
+        out=$(remote_exec "docker kill ${name} 2>&1" 2>&1)
+        if [ -n "$out" ] && ! echo "$out" | grep -q "^${name}$"; then
+            log_warn "kill_node: docker kill ${name} output: ${out}"
+        fi
     fi
 }
 
@@ -217,7 +246,9 @@ start_node() {
     if [ "$CLOUD_MODE" = "true" ]; then
         cloud_ssh "$node_id" "docker start aether-node" 2>/dev/null
     else
-        remote_exec "docker start aether-${node_id}" 2>/dev/null
+        local name
+        name=$(_docker_container_name "$node_id")
+        remote_exec "docker start ${name}" 2>/dev/null
     fi
 }
 
@@ -229,7 +260,7 @@ restart_all_nodes() {
             cloud_ssh "node-${i}" "docker restart aether-node" 2>/dev/null || true
         done
     else
-        remote_exec "docker ps -a --filter 'name=aether-node-' -q | xargs -r docker stop 2>/dev/null; docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=aether-node-' -q | xargs -r docker start" 2>/dev/null
+        remote_exec "docker ps -a --filter 'name=aether-a-node-' --filter 'name=aether-b-node-' -q | xargs -r docker stop 2>/dev/null; docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=aether-a-node-' --filter 'name=aether-b-node-' -q | xargs -r docker start" 2>/dev/null
     fi
 }
 
@@ -248,12 +279,12 @@ restore_baseline() {
         needs_restore=true
         remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null || true" 2>/dev/null
     fi
-    # Check for stopped compose nodes
+    # Check for stopped compose nodes (both cluster-A and cluster-B naming).
     local stopped
-    stopped=$(remote_exec "docker ps -a --filter 'name=aether-node-' --filter 'status=exited' -q 2>/dev/null | wc -l" 2>/dev/null)
+    stopped=$(remote_exec "docker ps -a --filter 'name=aether-a-node-' --filter 'name=aether-b-node-' --filter 'status=exited' -q 2>/dev/null | wc -l" 2>/dev/null)
     if [ "${stopped:-0}" -gt 0 ] 2>/dev/null; then
         needs_restore=true
-        remote_exec "docker ps -a --filter 'name=aether-node-' --filter 'status=exited' -q | xargs -r docker start" 2>/dev/null
+        remote_exec "docker ps -a --filter 'name=aether-a-node-' --filter 'name=aether-b-node-' --filter 'status=exited' -q | xargs -r docker start" 2>/dev/null
     fi
     if [ "$needs_restore" = true ]; then
         log_info "Cluster was degraded — waiting for nodes to rejoin"

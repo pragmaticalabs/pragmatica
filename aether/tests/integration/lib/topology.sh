@@ -1,0 +1,173 @@
+#!/bin/bash
+# topology.sh — Semantic topology helpers built on /api/events
+#
+# Replaces count-polling against /api/cluster/topology with event-driven waits.
+# Rationale: auto-heal is fast; snapshot counts race with it. Events give us
+# a stable, ordered record of what actually happened in the window.
+#
+# All helpers consume /api/events via `aether events --since <ISO-8601>`.
+# Queries are pinned to a surviving node (via aether_failover → CLI) because
+# each node maintains its own per-node event buffer.
+
+LIB_DIR_TOPOLOGY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${LIB_DIR_TOPOLOGY}/common.sh"
+
+# Current UTC timestamp in the ISO-8601 form accepted by /api/events?since=
+# Usage: ts=$(topology_now)
+topology_now() {
+    date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+# Fetch raw events since baseline, UNIONED across all core nodes.
+# Each node maintains a per-node ring buffer (notifications are local). The LB
+# picks a random backend, so a single GET /api/events on the LB only sees one
+# node's view — and if that node was the one we killed and restarted, the
+# departure event isn't there. We query every direct node port and concatenate.
+# Empty string for $since means "all buffered".
+# Usage: topology_events_since "$baseline"
+topology_events_since() {
+    local since="${1:-}"
+    local base_port="${MGMT_PORT:-5150}"
+    local count="${NODE_COUNT:-5}"
+    local merged=""
+    local i port url events inner
+    for i in $(seq 0 $((count - 1))); do
+        port=$((base_port + i))
+        url="http://${TARGET_HOST}:${port}/api/events"
+        if [ -n "$since" ]; then
+            url="${url}?since=${since}"
+        fi
+        events=$(curl -sf -m 3 -H "X-API-Key: ${API_KEY}" "$url" 2>/dev/null) || continue
+        if [ -z "$events" ] || [ "$events" = "[]" ]; then
+            continue
+        fi
+        inner=$(printf '%s' "$events" | sed 's/^\[//; s/\]$//')
+        if [ -z "$inner" ]; then
+            continue
+        fi
+        if [ -n "$merged" ]; then
+            merged="${merged},${inner}"
+        else
+            merged="$inner"
+        fi
+    done
+    printf '[%s]' "$merged"
+}
+
+# Count events of a given type whose details.nodeId matches the given node.
+# Uses regex that matches both orderings of type/nodeId within an event record.
+# Usage: topology_count_node_events "$events_json" NODE_LEFT node-3
+topology_count_node_events() {
+    local events_json="$1" type="$2" node_id="$3"
+    # Event records are flat JSON objects. Match type AND nodeId in any order.
+    local pattern_a="\"type\":\"${type}\"[^}]*\"nodeId\":\"${node_id}\""
+    local pattern_b="\"nodeId\":\"${node_id}\"[^}]*\"type\":\"${type}\""
+    local count_a count_b
+    count_a=$(printf '%s' "$events_json" | grep -oE "$pattern_a" | wc -l | tr -d ' ')
+    count_b=$(printf '%s' "$events_json" | grep -oE "$pattern_b" | wc -l | tr -d ' ')
+    echo $((count_a + count_b))
+}
+
+# Count events of a given type whose details.nodeId is NOT equal to exclude_id.
+# Used to spot "replacement" joins (any node joined that is not the one we killed).
+# Usage: topology_count_other_node_events "$events_json" NODE_JOINED node-3
+topology_count_other_node_events() {
+    local events_json="$1" type="$2" exclude_id="$3"
+    # Extract every NODE_JOINED record's nodeId, then drop matches equal to exclude_id.
+    local all_ids
+    all_ids=$(printf '%s' "$events_json" | \
+        grep -oE "\"type\":\"${type}\"[^}]*\"nodeId\":\"[^\"]+\"|\"nodeId\":\"[^\"]+\"[^}]*\"type\":\"${type}\"" | \
+        grep -oE "\"nodeId\":\"[^\"]+\"" | \
+        sed 's/"nodeId":"\([^"]*\)"/\1/')
+    if [ -z "$all_ids" ]; then
+        echo "0"
+        return
+    fi
+    printf '%s\n' "$all_ids" | grep -vFx -- "$exclude_id" | wc -l | tr -d ' '
+}
+
+# Wait until a NODE_LEFT or NODE_FAILED event is observed for the given node
+# since the supplied baseline. Returns 0 on success, 1 on timeout.
+# Usage: wait_for_node_departure node-3 "$baseline" 60
+wait_for_node_departure() {
+    local node_id="$1" baseline="$2" timeout="${3:-60}"
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
+        local events
+        events=$(topology_events_since "$baseline" 2>/dev/null) || events=""
+        if [ -n "$events" ]; then
+            local left failed
+            left=$(topology_count_node_events "$events" NODE_LEFT "$node_id")
+            failed=$(topology_count_node_events "$events" NODE_FAILED "$node_id")
+            if [ "$left" -gt 0 ] || [ "$failed" -gt 0 ]; then
+                return 0
+            fi
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+# Wait until a NODE_JOINED event is observed for any node OTHER than the
+# killed one, since the supplied baseline. This is how we confirm CTM
+# provisioned a replacement (rather than the original coming back).
+# Usage: wait_for_replacement_of node-3 "$baseline" 120
+wait_for_replacement_of() {
+    local killed_id="$1" baseline="$2" timeout="${3:-120}"
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
+        local events
+        events=$(topology_events_since "$baseline" 2>/dev/null) || events=""
+        if [ -n "$events" ]; then
+            local joined_others
+            joined_others=$(topology_count_other_node_events "$events" NODE_JOINED "$killed_id")
+            if [ "$joined_others" -gt 0 ]; then
+                return 0
+            fi
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+# Observe quorum window between baseline and now. Replays topology events,
+# computes minimum member count at any instant, asserts it never dropped
+# below quorum = ceil((expected + 1) / 2).
+#
+# Relies on `clusterSize` field present in NODE_JOINED / NODE_LEFT payloads.
+# NODE_FAILED omits clusterSize (by design — local shutdown), so it does not
+# perturb the running count; surviving nodes emit NODE_LEFT with the updated
+# clusterSize a moment later.
+#
+# Usage: observe_quorum_window "$baseline" 5
+#   → prints "min=<n> quorum=<n> ok" and returns 0 on pass, 1 on violation.
+observe_quorum_window() {
+    local baseline="$1" expected_size="${2:-5}"
+    local quorum=$(( (expected_size + 1 + 1) / 2 ))  # ceil((N+1)/2)
+    local events
+    events=$(topology_events_since "$baseline" 2>/dev/null) || events=""
+    if [ -z "$events" ]; then
+        echo "min=$expected_size quorum=$quorum ok (no events in window)"
+        return 0
+    fi
+    # Extract every clusterSize value from NODE_JOINED / NODE_LEFT events in order.
+    # These are the running cluster member counts as observed locally.
+    local sizes
+    sizes=$(printf '%s' "$events" | \
+        grep -oE "\"clusterSize\":\"[0-9]+\"" | \
+        sed 's/"clusterSize":"\([0-9]*\)"/\1/')
+    local min=$expected_size
+    if [ -n "$sizes" ]; then
+        while IFS= read -r s; do
+            if [ "$s" -lt "$min" ]; then
+                min=$s
+            fi
+        done <<< "$sizes"
+    fi
+    if [ "$min" -lt "$quorum" ]; then
+        echo "min=$min quorum=$quorum FAIL (dropped below quorum)"
+        return 1
+    fi
+    echo "min=$min quorum=$quorum ok"
+    return 0
+}

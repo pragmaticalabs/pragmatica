@@ -214,15 +214,19 @@ run_suite() {
     # Set cluster-specific endpoints. App-HTTP fallback points to the node-1
     # direct app port (8070/8080 per compose), not the mgmt port — slice routes
     # are only served on the app HTTP listener.
-    local cluster_endpoint lb_app lb_mgmt
+    # Note: $cluster may be overwritten by suite.conf (`cluster=destructive`
+    # sets it to a semantic label). Normalize to a/b based on the MGMT target.
+    local cluster_endpoint lb_app lb_mgmt cluster_id
     if [ "$cluster" = "a" ]; then
         cluster_endpoint="$CLUSTER_A_MGMT"
         lb_app="${CLUSTER_A_LB_APP:-$CLUSTER_A_APP_DIRECT}"
         lb_mgmt="${CLUSTER_A_LB_MGMT:-$CLUSTER_A_MGMT}"
+        cluster_id="a"
     else
         cluster_endpoint="$CLUSTER_B_MGMT"
         lb_app="${CLUSTER_B_LB_APP:-$CLUSTER_B_APP_DIRECT}"
         lb_mgmt="${CLUSTER_B_LB_MGMT:-$CLUSTER_B_MGMT}"
+        cluster_id="b"
     fi
 
     # Export for the suite scripts
@@ -230,6 +234,7 @@ run_suite() {
     export APP_ENDPOINT="$lb_app"
     export DIRECT_ENDPOINT="$cluster_endpoint"
     export MGMT_PORT="${cluster_endpoint##*:}"
+    export CLUSTER_ID="$cluster_id"
 
     # Run suite
     local start_time

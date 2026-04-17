@@ -1,10 +1,16 @@
 #!/bin/bash
-# test-swim-detection.sh — Kill node, measure detection time, verify < 15 seconds
+# test-swim-detection.sh — Kill a follower, verify SWIM/topology emits
+# a departure event within the detection window, then wait for full recovery.
+#
+# Event-driven instead of snapshot polling: auto-heal is fast enough that
+# /api/cluster/topology can show the replacement before the poll sees the
+# drop. /api/events gives us an ordered, stable record of what happened.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
+source "${SCRIPT_DIR}/../../lib/topology.sh"
 
 DETECTION_TIMEOUT="${SWIM_DETECTION_TIMEOUT:-15}"
 
@@ -18,93 +24,44 @@ test_cluster_ready() {
 test_swim_detection_time() {
     local leader
     leader=$(cluster_leader)
-
-    local nodes
-    nodes=$(cluster_node_list)
     local victim
-    # Extract nodeId/id values, pick one that is not the leader
-    victim=""
-    for field in nodeId id; do
-        local candidates
-        candidates=$(echo "$nodes" | grep -o "\"${field}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed "s/.*\"${field}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/")
-        while IFS= read -r nid; do
-            if [ -n "$nid" ] && [ "$nid" != "$leader" ]; then
-                victim="$nid"
-                break 2
-            fi
-        done <<< "$candidates"
-    done
+    victim=$(pick_non_leader "$leader" 1)
+    : "${victim:=node-4}"
 
-    if [ -z "$victim" ]; then
-        victim="node-4"
-    fi
-
-    log_info "Killing node ${victim} and measuring detection time"
-    kill_node "$victim"
-
+    local baseline
+    baseline=$(topology_now)
     local start_epoch
     start_epoch=$(now_epoch)
-    local detected=false
-    local elapsed=0
 
-    # Poll every second for up to 60 seconds — check if victim is gone from topology
-    while [ "$elapsed" -lt 60 ]; do
-        local topology
-        topology=$(direct_api_get "/api/cluster/topology" 2>/dev/null || echo "")
-        # Check if victim node is no longer in the healthy node list
-        if [ -n "$topology" ] && ! json_contains "$topology" "nodeId" "$victim"; then
-            elapsed=$(elapsed_since "$start_epoch")
-            detected=true
-            break
-        fi
-        # Also check if node count dropped
-        local count
-        count=$(json_value "$topology" "coreCount" 2>/dev/null || echo "5")
-        if [ "$count" -lt 5 ] 2>/dev/null; then
-            elapsed=$(elapsed_since "$start_epoch")
-            detected=true
-            break
-        fi
-        sleep 1
+    KILLED_VICTIM="$victim"
+    kill_node "$victim"
+
+    if wait_for_node_departure "$victim" "$baseline" 60; then
+        local elapsed
         elapsed=$(elapsed_since "$start_epoch")
-    done
-
-    if [ "$detected" = true ]; then
-        log_info "Node failure detected in ${elapsed}s"
+        log_info "NODE_LEFT/NODE_FAILED observed for ${victim} after ${elapsed}s"
         if [ "$elapsed" -le "$DETECTION_TIMEOUT" ]; then
-            log_pass "SWIM detection within ${DETECTION_TIMEOUT}s window: ${elapsed}s"
+            log_pass "SWIM detection within ${DETECTION_TIMEOUT}s: ${elapsed}s"
         else
-            # Still pass but warn — detection happened, just slow
             log_warn "SWIM detection took ${elapsed}s (threshold: ${DETECTION_TIMEOUT}s)"
-            log_pass "Node failure was detected (${elapsed}s)"
+            log_pass "Departure event recorded (${elapsed}s)"
         fi
     else
-        # Auto-heal may have replaced the node before we observed the drop
-        log_warn "Node failure not observed within 60s — auto-heal may have replaced immediately"
-        log_pass "Cluster remains healthy after kill (auto-heal active)"
-    fi
-}
-
-test_node_removed_from_list() {
-    local nodes
-    nodes=$(cluster_node_list)
-    local count
-    count=$(json_len "$nodes")
-    if [ "$count" -lt 5 ] 2>/dev/null; then
-        log_pass "Failed node removed from /api/nodes (${count} nodes)"
-    else
-        log_warn "Node list still shows 5 — auto-heal may have replaced"
-        log_pass "Cluster stable after detection"
+        log_fail "No NODE_LEFT/NODE_FAILED event for ${victim} within 60s"
+        return 1
     fi
 }
 
 test_recovery_after_detection() {
+    drop_ctm_replacements
+    if [ -n "${KILLED_VICTIM:-}" ]; then
+        start_node "$KILLED_VICTIM"
+    fi
     wait_for_node_count 5 180
     assert_cluster_healthy "Cluster recovered after SWIM detection"
 }
 
 run_test "Cluster ready (5 nodes)" test_cluster_ready
 run_test "SWIM detection time" test_swim_detection_time
-run_test "Node removed from list" test_node_removed_from_list
 run_test "Recovery after detection" test_recovery_after_detection
 print_summary
