@@ -18,7 +18,7 @@ test_cluster_ready() {
 test_deploy_sql_app() {
     push_blueprint "$BLUEPRINT" || log_warn "Artifact push returned non-zero (may already exist)"
     deploy_blueprint "$BLUEPRINT" || log_warn "Blueprint deploy returned non-zero (may already exist)"
-    wait_for_slices_active 1 120
+    wait_for_all_target_instances_active 120
     log_pass "SQL-backed app deployed"
 }
 

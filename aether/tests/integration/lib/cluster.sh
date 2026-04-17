@@ -105,9 +105,10 @@ discover_endpoints() {
         LB_MGMT_ENDPOINT=""
     fi
 
-    # Fallback to direct node access if no LB or LB unreachable from here
-    if [ -z "$LB_APP_ENDPOINT" ]; then
-        LB_APP_ENDPOINT="$cluster_endpoint"
+    # When no LB or LB unreachable, leave LB_APP_ENDPOINT empty so the caller
+    # picks its CLUSTER_*_APP_DIRECT fallback (correct app HTTP port). Mgmt may
+    # be reused as-is for management API since direct mgmt also serves /api/*.
+    if [ -z "$LB_MGMT_ENDPOINT" ]; then
         LB_MGMT_ENDPOINT="$cluster_endpoint"
     fi
 }
@@ -146,7 +147,19 @@ wait_for_leader() {
 wait_for_slices_active() {
     local min_instances="${1:-1}" timeout="${2:-120}"
     wait_for "slices active (>= ${min_instances} instances)" \
-        "[ \$(slices_total_instances) -ge ${min_instances} ]" "$timeout"
+        "[ \$(slices_active_instances) -ge ${min_instances} ]" "$timeout"
+}
+
+# Wait for every declared target instance across all deployed slices to reach ACTIVE.
+# Unlike wait_for_slices_active (min count), this ensures EVERY node hosting the
+# slice has completed activation (routes propagated, endpoints published). Use this
+# when a test hits a specific node directly (e.g. port-mapped) — otherwise the first
+# ACTIVE may race against a node still in ACTIVATING, yielding 404 on route lookup.
+wait_for_all_target_instances_active() {
+    local timeout="${1:-120}"
+    wait_for "all slice target instances ACTIVE" \
+        "[ \$(slices_active_instances) -ge \$(slices_target_total) ] && [ \$(slices_target_total) -gt 0 ]" \
+        "$timeout"
 }
 
 # ---------------------------------------------------------------------------
@@ -159,6 +172,24 @@ slices_total_instances() {
     local count
     count=$(printf '%s' "$slices" | grep -o '"state"[[:space:]]*:[[:space:]]*"[LA][CO][AT][DI][EV][DE]*"' | wc -l | tr -d ' ')
     echo "${count:-0}"
+}
+
+slices_active_instances() {
+    local slices
+    slices=$(cluster_slices)
+    local count
+    count=$(printf '%s' "$slices" | grep -o '"state"[[:space:]]*:[[:space:]]*"ACTIVE"' | wc -l | tr -d ' ')
+    echo "${count:-0}"
+}
+
+slices_target_total() {
+    local slices
+    slices=$(cluster_slices)
+    local total=0
+    while IFS= read -r n; do
+        total=$((total + n))
+    done < <(printf '%s' "$slices" | grep -o '"targetInstances"[[:space:]]*:[[:space:]]*[0-9]*' | grep -o '[0-9]*$')
+    echo "$total"
 }
 
 push_blueprint() {
