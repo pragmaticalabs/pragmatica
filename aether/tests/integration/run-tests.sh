@@ -270,7 +270,7 @@ run_suite() {
 # ---------------------------------------------------------------------------
 run_cluster_a_suites() {
     local suites=("$@")
-    local max_parallel=4
+    local max_parallel="${MAX_PARALLEL:-4}"
     local pids=()
     local failed=false
 
@@ -292,7 +292,7 @@ run_cluster_a_suites() {
                         new_pids+=("$p")
                     fi
                 done
-                pids=("${new_pids[@]}")
+                pids=("${new_pids[@]+${new_pids[@]}}")
             done
         else
             # Fallback: wait for all if at max, then clear
@@ -529,7 +529,7 @@ fi
 if [ "$GATE_PASSED" = true ]; then
     # --- Step 9: Run Cluster A suites (parallel) ---
     if [ ${#A_SUITES[@]} -gt 0 ]; then
-        log_step "Running Cluster A suites (parallel, max 4)"
+        log_step "Running Cluster A suites (parallel, max ${MAX_PARALLEL:-4})"
         run_cluster_a_suites "${A_SUITES[@]}" || true
     fi
 
