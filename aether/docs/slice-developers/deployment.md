@@ -235,6 +235,28 @@ Both participate in the dependency graph. The generated blueprint lists external
 5. Blueprint JAR is packaged with `blueprint.toml` + `resources.toml` + `schema/`
 6. At deploy time, the runtime pulls individual slice JARs by their Maven coordinates
 
+### Build-Time Validation
+
+The blueprint generator performs two validations:
+
+1. **Resource config validation** — every `@ResourceQualifier(config = "X")` annotation must have a matching `[X]` section in `resources.toml`.
+
+2. **Schema migration validation** — if any slice declares a `@Sql` or `@PgSql` resource, the blueprint must include matching migration scripts:
+
+   | Annotation config | Expected migration path |
+   |-------------------|------------------------|
+   | `"database"` | `schema/V001__<name>.sql` |
+   | `"database.orders"` | `schema/orders/V001__<name>.sql` |
+
+   If the database schema is managed externally (DBA team, Liquibase, Terraform, etc.), add to `jbct.toml`:
+
+   ```toml
+   [blueprint]
+   schema = "external"
+   ```
+
+   Supported modes: `required` (default — fail build), `optional` (warn only), `external` (skip).
+
 ### Notes
 
 - External slices always use default configuration. The publishing team controls slice config via their own `SliceName.toml`.
