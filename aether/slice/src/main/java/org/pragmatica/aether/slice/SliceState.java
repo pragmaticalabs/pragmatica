@@ -29,6 +29,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
     LOADED,
     ACTIVATE,
     ACTIVATING(timeSpan(90).seconds()),
+    ROUTING(timeSpan(30).seconds()),
     ACTIVE,
     DEACTIVATE,
     DEACTIVATING(timeSpan(30).seconds()),
@@ -56,7 +57,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
     }
     public boolean isInProgress() {
         return switch (this){
-            case LOAD, LOADING, ACTIVATE, ACTIVATING, DEACTIVATE, DEACTIVATING, UNLOAD, UNLOADING -> true;
+            case LOAD, LOADING, ACTIVATE, ACTIVATING, ROUTING, DEACTIVATE, DEACTIVATING, UNLOAD, UNLOADING -> true;
             case LOADED, ACTIVE, FAILED -> false;
         };
     }
@@ -66,7 +67,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
             case LOADING, DEACTIVATING -> Set.of(LOADED, FAILED);
             case LOADED -> Set.of(ACTIVATE, UNLOAD);
             case ACTIVATE -> Set.of(ACTIVATING);
-            case ACTIVATING -> Set.of(ACTIVE, FAILED);
+            case ACTIVATING -> Set.of(ROUTING, ACTIVE, FAILED);
+            case ROUTING -> Set.of(ACTIVE, FAILED);
             case ACTIVE -> Set.of(DEACTIVATE);
             case DEACTIVATE -> Set.of(DEACTIVATING);
             case FAILED -> Set.of(UNLOAD);
@@ -83,7 +85,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
             case LOADING, DEACTIVATING -> success(LOADED);
             case LOADED -> success(ACTIVATE);
             case ACTIVATE -> success(ACTIVATING);
-            case ACTIVATING -> success(ACTIVE);
+            case ACTIVATING -> success(ROUTING);
+            case ROUTING -> success(ACTIVE);
             case ACTIVE -> success(DEACTIVATE);
             case DEACTIVATE -> success(DEACTIVATING);
             case FAILED -> success(UNLOAD);
@@ -99,6 +102,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
         map.put("LOADED", LOADED);
         map.put("ACTIVATE", ACTIVATE);
         map.put("ACTIVATING", ACTIVATING);
+        map.put("ROUTING", ROUTING);
         map.put("ACTIVE", ACTIVE);
         map.put("DEACTIVATE", DEACTIVATE);
         map.put("DEACTIVATING", DEACTIVATING);

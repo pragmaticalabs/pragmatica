@@ -147,7 +147,7 @@ class DeploymentMetricsCollectorImpl implements DeploymentMetricsCollector {
     private DeploymentMetrics toFailedMetrics(DeploymentFailed event, DeploymentMetrics metrics) {
         return switch (event.failedAt()){
             case LOADING -> metrics.failedLoading(event.timestamp());
-            case ACTIVATING -> metrics.failedActivating(event.timestamp());
+            case ACTIVATING, ROUTING -> metrics.failedActivating(event.timestamp());
             default -> metrics.failedLoading(event.timestamp());
         };
     }

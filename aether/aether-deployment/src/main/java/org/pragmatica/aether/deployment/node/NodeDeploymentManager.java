@@ -216,6 +216,7 @@ public interface NodeDeploymentManager {
                     case LOADED -> handleLoaded(sliceKey);
                     case ACTIVATE -> handleActivating(sliceKey);
                     case ACTIVATING -> {}
+                    case ROUTING -> {}
                     case ACTIVE -> handleActive(sliceKey);
                     case DEACTIVATE -> handleDeactivating(sliceKey);
                     case DEACTIVATING -> {}
@@ -269,10 +270,31 @@ public interface NodeDeploymentManager {
                             .flatMap(this::publishStreamSubscriptions)
                             .flatMap(this::publishScheduledTasks)
                             .flatMap(this::registerAndNotifyConfig)
+                            .flatMap(this::publishRoutesIfPresent)
                             .flatMap(key -> transitionTo(key, SliceState.ACTIVE))
-                            .flatMap(this::publishEndpointsAndRoutes)
+                            .flatMap(this::publishEndpoints)
                             .timeout(activationChainTimeout)
                             .withFailure(cause -> handleActivationFailure(sliceKey, cause));
+            }
+
+            /// If the slice has HTTP routes, transit through ROUTING and commit a routes Put via
+            /// consensus before continuing to ACTIVE. When the routes Put's Promise resolves, the
+            /// routes are in every node's consensus log — serial ordering then guarantees that any
+            /// node seeing the following ACTIVE state has already applied the routes entry.
+            /// Slices without routes bypass ROUTING entirely.
+            private Promise<SliceNodeKey> publishRoutesIfPresent(SliceNodeKey sliceKey) {
+                if (!sliceHasHttpRoutes(sliceKey.artifact())) {
+                    return Promise.success(sliceKey);
+                }
+                return transitionTo(sliceKey, SliceState.ROUTING)
+                    .flatMap(key -> publishHttpRoutes(key).map(_ -> key));
+            }
+
+            private boolean sliceHasHttpRoutes(Artifact artifact) {
+                return httpRoutePublisher.flatMap(publisher -> findLoadedSlice(artifact).map(ls -> publisher.hasRoutes(
+                                             ls.slice().getClass().getClassLoader(),
+                                             ls.slice())))
+                                         .or(false);
             }
 
             private Promise<SliceNodeKey> activateSliceWithTimeout(SliceNodeKey sliceKey) {
@@ -280,10 +302,6 @@ public interface NodeDeploymentManager {
                                                .flatMap(timeout -> sliceStore.activateSlice(sliceKey.artifact())
                                                                                            .timeout(timeout))
                                                .map(_ -> sliceKey);
-            }
-
-            private Promise<SliceNodeKey> publishEndpointsAndRoutes(SliceNodeKey sliceKey) {
-                return Promise.all(publishEndpoints(sliceKey), publishHttpRoutes(sliceKey)).map((_, _) -> sliceKey);
             }
 
             private void handleActivationFailure(SliceNodeKey sliceKey, Cause cause) {
@@ -1049,7 +1067,8 @@ public interface NodeDeploymentManager {
                         continue;
                     }
                     log.debug("Reactivating suspended slice {}", sliceKey.artifact());
-                    registerSliceForInvocation(sliceKey).flatMap(this::publishEndpointsAndRoutes)
+                    registerSliceForInvocation(sliceKey).flatMap(this::publishRoutesIfPresent)
+                                              .flatMap(key -> publishEndpoints(key).map(_ -> key))
                                               .flatMap(this::publishTopicSubscriptions)
                                               .flatMap(this::publishScheduledTasks)
                                               .onSuccess(_ -> log.debug("Reactivated slice {}",
