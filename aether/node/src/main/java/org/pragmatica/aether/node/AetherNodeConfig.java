@@ -25,6 +25,7 @@ import org.pragmatica.aether.slice.blueprint.DeploymentConfig;
 import org.pragmatica.aether.slice.blueprint.DeploymentConfig.CanaryStageConfig;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.net.ClusterFormationConfig;
 import org.pragmatica.consensus.rabia.ProtocolConfig;
 import org.pragmatica.consensus.topology.BackoffConfig;
 import org.pragmatica.consensus.topology.TopologyConfig;
@@ -69,6 +70,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param managementHttpProtocol    HTTP protocol for management server (H1, H3, BOTH) — default H1
 /// @param storageConfig            Named hierarchical storage instance configurations (empty map for defaults)
 /// @param backupConfig             Consensus state backup configuration (empty for in-memory only)
+/// @param clusterFormation         Cluster formation timings (stabilization, post-establish grace, quorum-loss hysteresis)
 public record AetherNodeConfig(TopologyConfig topology,
                                ProtocolConfig protocol,
                                SliceActionConfig sliceAction,
@@ -95,7 +97,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                HttpProtocol managementHttpProtocol,
                                Map<String, StorageConfig> storageConfig,
                                Option<BackupConfig> backupConfig,
-                               StreamingConfig streaming) {
+                               StreamingConfig streaming,
+                               ClusterFormationConfig clusterFormation) {
     public record DeploymentDefaults(long canaryEvaluationIntervalMs, List<CanaryStageConfig> defaultCanaryStages) {
         @SuppressWarnings("JBCT-VO-02") public static final DeploymentDefaults DEFAULT = new DeploymentDefaults(30_000,
                                                                                                                 DeploymentConfig.defaultCanaryStages());
@@ -106,7 +109,7 @@ public record AetherNodeConfig(TopologyConfig topology,
     public static final int MANAGEMENT_DISABLED = 0;
 
     public static SelfStage builder() {
-        return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax -> appHttp -> tls -> quicTls -> certificateProvider -> configProvider -> environment -> managementHttpProtocol -> storageConfig -> backupConfig -> streaming -> protocol -> sliceAction -> cache -> ttm -> rollback -> controllerConfig -> autoHeal -> observability -> atomicity -> activationGated -> timeouts -> workerConfig -> deploymentDefaults -> {
+        return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax -> appHttp -> tls -> quicTls -> certificateProvider -> configProvider -> environment -> managementHttpProtocol -> storageConfig -> backupConfig -> streaming -> protocol -> sliceAction -> cache -> ttm -> rollback -> controllerConfig -> autoHeal -> observability -> atomicity -> activationGated -> timeouts -> workerConfig -> deploymentDefaults -> clusterFormation -> {
             var effectiveClusterSize = coreMax > 0
                                       ? coreMax
                                       : coreNodes.size();
@@ -146,7 +149,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                         managementHttpProtocol,
                                         storageConfig,
                                         backupConfig,
-                                        streaming);
+                                        streaming,
+                                        clusterFormation);
         };
     }
 
@@ -363,10 +367,18 @@ public record AetherNodeConfig(TopologyConfig topology,
     }
 
     public interface WithDeploymentDefaults {
-        AetherNodeConfig deploymentDefaults(DeploymentDefaults defaults);
+        WithClusterFormation deploymentDefaults(DeploymentDefaults defaults);
 
         default AetherNodeConfig build() {
-            return deploymentDefaults(DeploymentDefaults.DEFAULT);
+            return deploymentDefaults(DeploymentDefaults.DEFAULT).build();
+        }
+    }
+
+    public interface WithClusterFormation {
+        AetherNodeConfig clusterFormation(ClusterFormationConfig config);
+
+        default AetherNodeConfig build() {
+            return clusterFormation(ClusterFormationConfig.defaults());
         }
     }
 

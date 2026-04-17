@@ -39,6 +39,7 @@ import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.util.concurrent.Future;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.net.ClusterFormationConfig;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.ConnectionError;
 import org.pragmatica.consensus.net.NetworkMessage;
@@ -98,20 +99,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private final AtomicBoolean quorumEstablished = new AtomicBoolean(false);
     private final AtomicReference<ScheduledFuture<?>> stabilizationTimer = new AtomicReference<>();
     private final AtomicReference<ScheduledFuture<?>> quorumLossTimer = new AtomicReference<>();
+    private final AtomicReference<ScheduledFuture<?>> postEstablishGraceTimer = new AtomicReference<>();
+    private final AtomicBoolean inPostEstablishGrace = new AtomicBoolean(false);
     /// Peers pending removal — deferred during hysteresis to prevent topology destruction on transient disconnects.
     /// When hysteresis expires, all pending peers are removed. When hysteresis is cancelled (peer reconnects), cleared.
     private final Set<NodeId> pendingRemovals = ConcurrentHashMap.newKeySet();
     private final QuicTransportMetrics quicMetrics = QuicTransportMetrics.quicTransportMetrics();
 
-    /// Topology stabilization window — quorum is deferred until peer count is stable for this duration.
-    /// Prevents premature activation when nodes connect at different speeds during cold start.
-    private static final long STABILIZATION_WINDOW_MS = 5_000;
-
-    /// Quorum loss hysteresis — don't fire DISAPPEARED until below quorum for this duration.
-    /// Prevents transient QUIC reconnections from killing quorum during restarts/reconnections.
-    /// 5s balances detection speed (real failures) vs stability (transient reconnections).
-    /// Rabia naturally stalls without enough voters, so brief stale quorum is safe.
-    private static final long QUORUM_LOSS_HYSTERESIS_MS = 5_000;
+    private final ClusterFormationConfig formationConfig;
 
     private volatile QuicClusterServer server;
     private volatile QuicClusterClient client;
@@ -128,6 +123,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
                               MessageRouter router,
                               QuicSslContext serverSslContext,
                               QuicSslContext clientSslContext) {
+        this(topologyManager, serializer, deserializer, router, serverSslContext, clientSslContext, ClusterFormationConfig.defaults());
+    }
+
+    public QuicClusterNetwork(TopologyManager topologyManager,
+                              Serializer serializer,
+                              Deserializer deserializer,
+                              MessageRouter router,
+                              QuicSslContext serverSslContext,
+                              QuicSslContext clientSslContext,
+                              ClusterFormationConfig formationConfig) {
         this.self = topologyManager.self();
         this.topologyManager = topologyManager;
         this.serializer = serializer;
@@ -135,6 +140,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         this.router = router;
         this.serverSslContext = serverSslContext;
         this.clientSslContext = clientSslContext;
+        this.formationConfig = formationConfig;
     }
 
     @Override
@@ -616,11 +622,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
             case REMOVE -> {
                 cancelStabilizationTimer();
                 if (!currentlyHaveQuorum && quorumEstablished.get()) {
-                    // Defer RemoveNode during hysteresis — prevents topology destruction on transient disconnects.
-                    // If peer reconnects within the window, pendingRemovals is cleared.
-                    // If hysteresis expires, all pending peers are removed.
+                    // Defer RemoveNode during quorum-loss hysteresis — prevents topology destruction on
+                    // transient disconnects. If peer reconnects within the window, pendingRemovals is
+                    // cleared. If hysteresis expires, all pending peers are removed.
                     pendingRemovals.add(peerId);
                     handleQuorumLossCandidate();
+                } else if (inPostEstablishGrace.get() && currentlyHaveQuorum && quorumEstablished.get()) {
+                    // Defer RemoveNode during post-establish grace — absorbs transient drops that arrive
+                    // just after initial establishment without crossing the quorum threshold. Reconnect
+                    // within the grace window cancels the removal (ADD branch clears pendingRemovals);
+                    // grace expiry flushes any stuck removals in onPostEstablishGraceComplete.
+                    pendingRemovals.add(peerId);
                 } else {
                     router.route(new TopologyManagementMessage.RemoveNode(peerId));
                 }
@@ -629,6 +641,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
             case SHUTDOWN -> {
                 cancelStabilizationTimer();
                 cancelQuorumLossTimer();
+                cancelPostEstablishGraceTimer();
                 quorumEstablished.set(false);
                 router.route(QuorumStateNotification.disappeared());
                 yield TopologyChangeNotification.nodeDown(peerId);
@@ -639,27 +652,21 @@ public class QuicClusterNetwork implements ClusterNetwork {
         router.route(viewChange);
     }
 
-    /// Decide whether to fire ESTABLISHED immediately (all peers connected) or defer (partial quorum).
+    /// Always wait the full stabilization window before firing ESTABLISHED, even when every peer is
+    /// already connected. Bursts of peer-add events at cold start (all nodes starting concurrently)
+    /// were previously short-circuited to "establish immediately", which exposed a race where a
+    /// transient QUIC disconnect arriving a few seconds later mutated the Rabia topology mid-flight
+    /// and left consensus stuck in Phase[0]. Always stabilizing absorbs that flap.
     private void handleQuorumCandidate(int activePeerCount, int clusterSize) {
-        var allPeersConnected = (activePeerCount + 1) >= clusterSize;
-        if (allPeersConnected) {
-            // All expected peers connected — proceed immediately, no need to wait
-            cancelStabilizationTimer();
-            if (quorumEstablished.compareAndSet(false, true)) {
-                log.info("All {} peers connected — establishing quorum immediately", activePeerCount);
-                router.route(QuorumStateNotification.established());
-            }
-        } else {
-            // Partial quorum — reset stabilization timer. Fire only after topology is stable.
-            resetStabilizationTimer();
-        }
+        resetStabilizationTimer();
     }
 
     private void resetStabilizationTimer() {
         cancelStabilizationTimer();
-        var timer = SharedScheduler.schedule(this::onStabilizationComplete, TimeSpan.timeSpan(STABILIZATION_WINDOW_MS).millis());
+        var window = formationConfig.stabilizationWindow();
+        var timer = SharedScheduler.schedule(this::onStabilizationComplete, window);
         stabilizationTimer.set(timer);
-        log.info("Topology changed during formation — waiting {}ms for stabilization", STABILIZATION_WINDOW_MS);
+        log.info("Topology changed during formation — waiting {}ms for stabilization", window.millis());
     }
 
     private void onStabilizationComplete() {
@@ -667,9 +674,46 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var quorumSize = topologyManager.quorumSize();
         var currentlyHaveQuorum = (activePeerCount + 1) >= quorumSize;
         if (currentlyHaveQuorum && quorumEstablished.compareAndSet(false, true)) {
-            log.info("Topology stable for {}ms with {} peers — establishing quorum", STABILIZATION_WINDOW_MS, activePeerCount);
+            log.info("Topology stable for {}ms with {} peers — establishing quorum",
+                     formationConfig.stabilizationWindow().millis(), activePeerCount);
             router.route(QuorumStateNotification.established());
+            startPostEstablishGrace();
         }
+    }
+
+    /// Post-establish grace: after the cluster reports ESTABLISHED, buffer single-peer REMOVE events
+    /// (that still leave quorum intact) for a configurable window. A reconnect clears the buffer;
+    /// expiry flushes any stuck removals as real RemoveNode events. Inoculates against transient
+    /// QUIC drops that arrive just after establishment.
+    private void startPostEstablishGrace() {
+        cancelPostEstablishGraceTimer();
+        inPostEstablishGrace.set(true);
+        var grace = formationConfig.postEstablishGrace();
+        var timer = SharedScheduler.schedule(this::onPostEstablishGraceComplete, grace);
+        postEstablishGraceTimer.set(timer);
+        log.info("Post-establish grace started — buffering REMOVEs for {}ms", grace.millis());
+    }
+
+    private void onPostEstablishGraceComplete() {
+        inPostEstablishGrace.set(false);
+        if (pendingRemovals.isEmpty()) {
+            log.info("Post-establish grace expired cleanly — no deferred removals");
+            return;
+        }
+        var flushed = Set.copyOf(pendingRemovals);
+        pendingRemovals.clear();
+        log.warn("Post-establish grace expired with {} deferred REMOVE(s) — flushing: {}", flushed.size(), flushed);
+        for (var peer : flushed) {
+            router.route(new TopologyManagementMessage.RemoveNode(peer));
+        }
+    }
+
+    private void cancelPostEstablishGraceTimer() {
+        var timer = postEstablishGraceTimer.getAndSet(null);
+        if (timer != null) {
+            timer.cancel(false);
+        }
+        inPostEstablishGrace.set(false);
     }
 
     private void cancelStabilizationTimer() {
@@ -680,9 +724,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// Defer quorum loss — start hysteresis timer. If quorum is restored within the window, cancel.
     private void handleQuorumLossCandidate() {
         cancelQuorumLossTimer();
-        var timer = SharedScheduler.schedule(this::onQuorumLossConfirmed, TimeSpan.timeSpan(QUORUM_LOSS_HYSTERESIS_MS).millis());
+        var hysteresis = formationConfig.quorumLossHysteresis();
+        var timer = SharedScheduler.schedule(this::onQuorumLossConfirmed, hysteresis);
         quorumLossTimer.set(timer);
-        log.info("Quorum lost — waiting {}ms before confirming (transient reconnection grace period)", QUORUM_LOSS_HYSTERESIS_MS);
+        log.info("Quorum lost — waiting {}ms before confirming (transient reconnection grace period)", hysteresis.millis());
     }
 
     private void onQuorumLossConfirmed() {
@@ -695,7 +740,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var currentlyHaveQuorum = (activePeerCount + 1) >= quorumSize;
         if (!currentlyHaveQuorum && quorumEstablished.compareAndSet(true, false)) {
             log.warn("Quorum loss confirmed after {}ms hysteresis — firing DISAPPEARED ({} active peers, need {}, removed {})",
-                     QUORUM_LOSS_HYSTERESIS_MS, activePeerCount, quorumSize, removedPeers.size());
+                     formationConfig.quorumLossHysteresis().millis(), activePeerCount, quorumSize, removedPeers.size());
             router.route(QuorumStateNotification.disappeared());
         } else {
             log.info("Quorum restored during hysteresis window — loss cancelled ({} active peers, removed {} stale)",

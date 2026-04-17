@@ -564,7 +564,8 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
                                           org.pragmatica.aether.config.HttpProtocol.H1,
                                           java.util.Map.of(),
                                           Option.empty(),
-                                          org.pragmatica.aether.config.StreamingConfig.streamingConfig());
+                                          org.pragmatica.aether.config.StreamingConfig.streamingConfig(),
+                                          org.pragmatica.consensus.net.ClusterFormationConfig.defaults());
         return AetherNode.aetherNode(config).unwrap();
     }
 

@@ -276,7 +276,10 @@ public interface AetherNode extends ManageableNode {
         var dhtNode = DHTNode.dhtNode(config.self(), dhtStorage, dhtRing, config.artifactRepo());
         var sliceRegistry = SliceRegistry.sliceRegistry();
         var deferredInvoker = DeferredSliceInvokerFacade.deferredSliceInvokerFacade();
-        var nodeConfig = NodeConfig.nodeConfig(config.protocol(), config.topology(), config.activationGated());
+        var nodeConfig = NodeConfig.nodeConfig(config.protocol(),
+                                               config.topology(),
+                                               config.activationGated(),
+                                               config.clusterFormation());
         var rabiaMetricsCollector = RabiaMetricsCollector.rabiaMetricsCollector();
         var networkMetricsHandler = NetworkMetricsHandler.networkMetricsHandler();
         var persistence = resolvePersistence(config);

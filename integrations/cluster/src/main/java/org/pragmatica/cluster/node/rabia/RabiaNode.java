@@ -165,7 +165,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                              deserializer,
                                              delegateRouter,
                                              serverSsl,
-                                             clientSsl);
+                                             clientSsl,
+                                             config.clusterFormation());
         var activationGated = config.activationGated();
         var consensus = new RabiaEngine<>(topologyManager, network, stateMachine, config.protocol(), metrics, activationGated, persistence);
         // Create leader manager - for consensus mode, we wire the proposal handler
