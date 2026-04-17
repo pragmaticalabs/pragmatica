@@ -226,6 +226,27 @@ public record MethodModel(String name,
         throw new IllegalStateException("parameterName() called on method with " + parameters.size() + " params: " + name);
     }
 
+    /// One field of a record type — name and erased type string.
+    public record RecordComponent(String name, String typeName) {}
+
+    /// Extracts the record components (name + type) of a TypeMirror in declaration order.
+    /// Returns an empty list when the TypeMirror is not a record.
+    /// Used by RouteSourceGenerator to merge path/query params with body record fields.
+    public static List<RecordComponent> recordComponents(TypeMirror type) {
+        if (!(type instanceof DeclaredType dt)) {
+            return List.of();
+        }
+        var element = dt.asElement();
+        if (element.getKind() != ElementKind.RECORD) {
+            return List.of();
+        }
+        return ((TypeElement) element).getRecordComponents()
+                                      .stream()
+                                      .map(rc -> new RecordComponent(rc.getSimpleName().toString(),
+                                                                     rc.asType().toString()))
+                                      .toList();
+    }
+
     private static Result<MethodModel> validateAndBuildModel(ExecutableElement method,
                                                               ProcessingEnvironment env,
                                                               String name,

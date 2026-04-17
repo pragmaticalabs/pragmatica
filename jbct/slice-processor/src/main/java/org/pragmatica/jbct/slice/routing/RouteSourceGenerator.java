@@ -600,12 +600,13 @@ public class RouteSourceGenerator {
         var allParams = new ArrayList<>(pathParamNames);
         allParams.add("body");
         var handlerParams = String.join(", ", allParams);
+        var constructorExpr = buildMergedConstructorExpr(parameterType, method, pathParamNames, List.of());
         if (method.hasSecurityParams()) {
             var bizParam = method.businessParameters().getFirst();
-            var delegateCall = delegateCallWithSecurity(method, Map.of(bizParam.name(), "body"));
+            var delegateCall = delegateCallWithSecurity(method, Map.of(bizParam.name(), constructorExpr));
             generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
         } else {
-            out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(body))");
+            out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(" + constructorExpr + "))");
         }
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
     }
@@ -630,12 +631,13 @@ public class RouteSourceGenerator {
         var allParams = new ArrayList<>(queryParamNames);
         allParams.add("body");
         var handlerParams = String.join(", ", allParams);
+        var constructorExpr = buildMergedConstructorExpr(parameterType, method, List.of(), queryParamNames);
         if (method.hasSecurityParams()) {
             var bizParam = method.businessParameters().getFirst();
-            var delegateCall = delegateCallWithSecurity(method, Map.of(bizParam.name(), "body"));
+            var delegateCall = delegateCallWithSecurity(method, Map.of(bizParam.name(), constructorExpr));
             generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
         } else {
-            out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(body))");
+            out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(" + constructorExpr + "))");
         }
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
     }
@@ -705,14 +707,64 @@ public class RouteSourceGenerator {
         allParams.addAll(queryParamNames);
         allParams.add("body");
         var handlerParams = String.join(", ", allParams);
+        var constructorExpr = buildMergedConstructorExpr(parameterType, method, pathParamNames, queryParamNames);
         if (method.hasSecurityParams()) {
             var bizParam = method.businessParameters().getFirst();
-            var delegateCall = delegateCallWithSecurity(method, Map.of(bizParam.name(), "body"));
+            var delegateCall = delegateCallWithSecurity(method, Map.of(bizParam.name(), constructorExpr));
             generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
         } else {
-            out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(body))");
+            out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(" + constructorExpr + "))");
         }
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
+    }
+
+    /// Build a constructor expression that merges path/query lambda args with body record fields.
+    /// Walks the slice param record's components in declaration order:
+    ///   - if the component name matches a path or query param → use the lambda var of the same name;
+    ///   - otherwise the component must come from body → emit `body.<componentName>()`.
+    /// Falls back to `body` when the param type is not a record (caller passes the body straight through),
+    /// preserving prior behaviour for non-record params.
+    /// Reports an error via the messager when a path/query name has no matching record component.
+    private String buildMergedConstructorExpr(String parameterType,
+                                              MethodModel method,
+                                              List<String> pathParamNames,
+                                              List<String> queryParamNames) {
+        var paramTypeMirror = method.hasSecurityParams()
+                              ? method.businessParameterType()
+                              : method.parameterType();
+        var components = MethodModel.recordComponents(paramTypeMirror);
+        if (components.isEmpty()) {
+            return "body";
+        }
+        var componentNames = components.stream()
+                                       .map(MethodModel.RecordComponent::name)
+                                       .collect(Collectors.toSet());
+        for (var p : pathParamNames) {
+            if (!componentNames.contains(p)) {
+                messager.printMessage(Diagnostic.Kind.ERROR,
+                                      "Slice method '" + method.name() + "': path parameter '" + p
+                                      + "' has no matching field in record " + parameterType
+                                      + ". Add a record component named '" + p + "'.");
+            }
+        }
+        for (var q : queryParamNames) {
+            if (!componentNames.contains(q)) {
+                messager.printMessage(Diagnostic.Kind.ERROR,
+                                      "Slice method '" + method.name() + "': query parameter '" + q
+                                      + "' has no matching field in record " + parameterType
+                                      + ". Add a record component named '" + q + "'.");
+            }
+        }
+        var args = components.stream()
+                             .map(c -> {
+                                 var n = c.name();
+                                 if (pathParamNames.contains(n) || queryParamNames.contains(n)) {
+                                     return n;
+                                 }
+                                 return "body." + n + "()";
+                             })
+                             .collect(Collectors.joining(", "));
+        return "new " + parameterType + "(" + args + ")";
     }
 
     private String pathParamList(List<PathParam> pathParams) {
