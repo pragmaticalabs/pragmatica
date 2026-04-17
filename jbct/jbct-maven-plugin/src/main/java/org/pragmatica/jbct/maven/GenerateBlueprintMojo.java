@@ -1,5 +1,8 @@
 package org.pragmatica.jbct.maven;
 
+import org.pragmatica.jbct.config.BlueprintConfig;
+import org.pragmatica.jbct.config.BlueprintConfig.SchemaMode;
+import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.slice.SliceConfig;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.jbct.slice.SliceManifest;
@@ -93,6 +96,7 @@ public class GenerateBlueprintMojo extends AbstractMojo {
             return;
         }
         validateResourceConfigs(localManifests, dependencyManifests);
+        validateSchemaPresence();
         var graph = buildDependencyGraph(localManifests, dependencyManifests);
         topologicalSort(graph);
         generateBlueprint();
@@ -175,6 +179,89 @@ public class GenerateBlueprintMojo extends AbstractMojo {
             }
         }
         return sections;
+    }
+
+    // --- Schema validation ---
+
+    private void validateSchemaPresence() throws MojoExecutionException {
+        var blueprintConfig = loadBlueprintConfig();
+        if (blueprintConfig.schema() == SchemaMode.EXTERNAL) {
+            getLog().debug("Schema validation skipped (blueprint.schema = external)");
+            return;
+        }
+
+        var databaseSections = findDatabaseSections();
+        if (databaseSections.isEmpty()) {
+            return;
+        }
+
+        var missing = new LinkedHashSet<String>();
+        for (var datasource : databaseSections) {
+            if (!hasSchemaFiles(datasource)) {
+                missing.add(datasource);
+            }
+        }
+
+        if (missing.isEmpty()) {
+            getLog().info("Schema validation passed: " + databaseSections.size() + " datasource(s) with migrations");
+            return;
+        }
+
+        var message = buildSchemaErrorMessage(missing);
+        if (blueprintConfig.schema() == SchemaMode.OPTIONAL) {
+            getLog().warn(message);
+        } else {
+            throw new MojoExecutionException(message);
+        }
+    }
+
+    private BlueprintConfig loadBlueprintConfig() {
+        var projectDir = Option.some(project.getBasedir().toPath());
+        return ConfigLoader.load(Option.none(), projectDir).blueprint();
+    }
+
+    private Set<String> findDatabaseSections() throws MojoExecutionException {
+        var sections = parseResourcesTomlSections();
+        var databaseSections = new LinkedHashSet<String>();
+        for (var section : sections) {
+            if (section.equals("database") || section.startsWith("database.")) {
+                databaseSections.add(section);
+            }
+        }
+        return databaseSections;
+    }
+
+    private boolean hasSchemaFiles(String datasource) {
+        var schemaPath = schemaDirectory.toPath();
+        if (!FileOps.exists(schemaPath) || !FileOps.isDirectory(schemaPath)) {
+            return false;
+        }
+        // "database" -> schema/V*__*.sql; "database.orders" -> schema/orders/V*__*.sql
+        var migrationDir = datasource.equals("database")
+                           ? schemaPath
+                           : schemaPath.resolve(datasource.substring("database.".length()));
+        if (!FileOps.exists(migrationDir) || !FileOps.isDirectory(migrationDir)) {
+            return false;
+        }
+        return FileOps.list(migrationDir)
+                      .map(paths -> paths.stream().anyMatch(p -> p.getFileName().toString().matches("V\\d+__.*\\.sql")))
+                      .or(false);
+    }
+
+    private String buildSchemaErrorMessage(Set<String> missing) {
+        var sb = new StringBuilder("Schema validation failed.\n");
+        sb.append("The following datasources are declared in resources.toml but have no migration scripts:\n\n");
+        for (var datasource : missing) {
+            var expectedPath = datasource.equals("database")
+                               ? "schema/V1__<name>.sql"
+                               : "schema/" + datasource.substring("database.".length()) + "/V1__<name>.sql";
+            sb.append("  [").append(datasource).append("]  — expected at: ").append(expectedPath).append("\n");
+        }
+        sb.append("\nThe runtime requires at least one V<N>__<name>.sql migration per datasource.\n");
+        sb.append("If the schema is managed externally, add to jbct.toml:\n\n");
+        sb.append("  [blueprint]\n");
+        sb.append("  schema = \"external\"\n");
+        return sb.toString();
     }
 
     // --- Manifest loading ---

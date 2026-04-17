@@ -18,6 +18,7 @@ import java.util.stream.Collectors;
 public record JbctConfig(FormatterConfig formatter,
                          LintConfig lint,
                          FilesConfig files,
+                         BlueprintConfig blueprint,
                          List<String> sourceDirectories,
                          List<String> excludePackages,
                          List<String> slicePackages) {
@@ -32,6 +33,7 @@ public record JbctConfig(FormatterConfig formatter,
     public static final JbctConfig DEFAULT = jbctConfig(FormatterConfig.DEFAULT,
                                                         LintConfig.DEFAULT,
                                                         FilesConfig.DEFAULT,
+                                                        BlueprintConfig.DEFAULT,
                                                         List.of("src/main/java"),
                                                         List.of(),
                                                         List.of());
@@ -40,10 +42,11 @@ public record JbctConfig(FormatterConfig formatter,
     public static JbctConfig jbctConfig(FormatterConfig formatter,
                                         LintConfig lint,
                                         FilesConfig files,
+                                        BlueprintConfig blueprint,
                                         List<String> sourceDirectories,
                                         List<String> excludePackages,
                                         List<String> slicePackages) {
-        return new JbctConfig(formatter, lint, files, sourceDirectories, excludePackages, slicePackages);
+        return new JbctConfig(formatter, lint, files, blueprint, sourceDirectories, excludePackages, slicePackages);
     }
 
     /// Create config from parsed TOML document.
@@ -97,6 +100,11 @@ public record JbctConfig(FormatterConfig formatter,
         var fileExcludes = toml.getStringList("files", "excludes")
                                .or(FilesConfig.DEFAULT.excludes());
         var filesConfig = new FilesConfig(maxFileSize, fileExcludes);
+        // Blueprint section
+        var schemaMode = toml.getString("blueprint", "schema")
+                             .map(BlueprintConfig.SchemaMode::fromString)
+                             .or(BlueprintConfig.SchemaMode.REQUIRED);
+        var blueprintConfig = new BlueprintConfig(schemaMode);
         // Project section
         var sourceDirectories = toml.getStringList("project", "sourceDirectories")
                                     .or(List.of("src/main/java"));
@@ -105,7 +113,8 @@ public record JbctConfig(FormatterConfig formatter,
         // Slice packages - empty by default, must be explicitly configured
         var slicePackages = toml.getStringList("lint", "slicePackages")
                                 .or(List.of());
-        return jbctConfig(formatterConfig, lintConfig, filesConfig, sourceDirectories, excludePackages, slicePackages);
+        return jbctConfig(formatterConfig, lintConfig, filesConfig, blueprintConfig, sourceDirectories, excludePackages,
+                          slicePackages);
     }
 
     /// Merge this config with another, with other taking precedence.
@@ -115,32 +124,29 @@ public record JbctConfig(FormatterConfig formatter,
     }
 
     private JbctConfig mergeWith(JbctConfig other) {
-        // Merge formatter config (use other if different from default)
         var mergedFormatter = other.formatter.equals(FormatterConfig.DEFAULT)
                               ? this.formatter
                               : other.formatter;
-        // Merge lint config (use other if different from default)
         var mergedLint = other.lint.equals(LintConfig.DEFAULT)
                          ? this.lint
                          : other.lint;
-        // Merge files config (use other if different from default)
         var mergedFiles = other.files.equals(FilesConfig.DEFAULT)
                           ? this.files
                           : other.files;
-        // Merge source directories (use other if not default)
+        var mergedBlueprint = other.blueprint.equals(BlueprintConfig.DEFAULT)
+                              ? this.blueprint
+                              : other.blueprint;
         var mergedSourceDirs = other.sourceDirectories.equals(List.of("src/main/java"))
                                ? this.sourceDirectories
                                : other.sourceDirectories;
-        // Merge exclude packages (use other if not empty)
         var mergedExcludePackages = other.excludePackages.isEmpty()
                                     ? this.excludePackages
                                     : other.excludePackages;
-        // Merge slice packages (use other if not empty)
         var mergedSlicePackages = other.slicePackages.isEmpty()
                                   ? this.slicePackages
                                   : other.slicePackages;
-        return jbctConfig(mergedFormatter, mergedLint, mergedFiles, mergedSourceDirs, mergedExcludePackages,
-                          mergedSlicePackages);
+        return jbctConfig(mergedFormatter, mergedLint, mergedFiles, mergedBlueprint, mergedSourceDirs,
+                          mergedExcludePackages, mergedSlicePackages);
     }
 
     /// Generate TOML representation of this config.
