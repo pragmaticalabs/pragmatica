@@ -50,7 +50,7 @@ public final class KubernetesGenerator implements Generator {
 
     @SuppressWarnings("JBCT-EX-01") private GeneratorOutput generateManifests(AetherConfig config, Path outputDir) throws Exception {
         var manifestsDir = outputDir.resolve("manifests");
-        createDirectories(manifestsDir).unwrap();
+        createDirectories(manifestsDir).expect("create kubernetes manifests directory");
         var generatedFiles = new ArrayList<Path>();
         writeManifest(manifestsDir, "namespace.yaml", generateNamespace(config), generatedFiles);
         writeManifest(manifestsDir, "configmap.yaml", generateConfigMap(config), generatedFiles);
@@ -67,13 +67,13 @@ public final class KubernetesGenerator implements Generator {
                                                                String name,
                                                                String content,
                                                                List<Path> files) throws Exception {
-        writeString(dir.resolve(name), content).unwrap();
+        writeString(dir.resolve(name), content).expect("write kubernetes manifest: " + name);
         files.add(Path.of("manifests/" + name));
     }
 
     @SuppressWarnings("JBCT-EX-01") private void writeScript(Path dir, String name, String content, List<Path> files) throws Exception {
         var path = dir.resolve(name);
-        writeString(path, content).unwrap();
+        writeString(path, content).expect("write kubernetes script: " + name);
         makeExecutable(path);
         files.add(Path.of(name));
     }

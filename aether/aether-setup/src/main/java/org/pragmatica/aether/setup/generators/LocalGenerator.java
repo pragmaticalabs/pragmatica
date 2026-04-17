@@ -44,8 +44,8 @@ public final class LocalGenerator implements Generator {
     }
 
     @SuppressWarnings("JBCT-EX-01") private GeneratorOutput generateScripts(AetherConfig config, Path outputDir) throws Exception {
-        createDirectories(outputDir).unwrap();
-        createDirectories(outputDir.resolve("logs")).unwrap();
+        createDirectories(outputDir).expect("create local output directory");
+        createDirectories(outputDir.resolve("logs")).expect("create local logs directory");
         var generatedFiles = new ArrayList<Path>();
         var startPath = writeScript(outputDir, "start.sh", generateStartScript(config), generatedFiles);
         var stopPath = writeScript(outputDir, "stop.sh", generateStopScript(config), generatedFiles);
@@ -57,7 +57,7 @@ public final class LocalGenerator implements Generator {
 
     @SuppressWarnings("JBCT-EX-01") private Path writeScript(Path dir, String name, String content, List<Path> files) throws Exception {
         var path = dir.resolve(name);
-        writeString(path, content).unwrap();
+        writeString(path, content).expect("write local script: " + name);
         makeExecutable(path);
         files.add(Path.of(name));
         return path;

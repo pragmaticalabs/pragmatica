@@ -48,7 +48,7 @@ public final class RouteMatcher {
     }
 
     private static RouteMatcher buildOrFail(ManagementRoute[] routes) {
-        return build(routes).unwrap();
+        return build(routes).expect("ManagementRoute enum contains ambiguous routes - coding bug");
     }
 
     public Result<MatchedRoute> match(HttpMethod method, String rawPath) {

@@ -43,7 +43,7 @@ public final class LocalDiskTier implements StorageTier {
 
     @Override
     public Promise<Option<byte[]>> get(BlockId id) {
-        return Promise.lift(READ_ERROR, () -> readBlock(id));
+        return Promise.lift(READ_ERROR, () -> readBlock(id)).flatMap(Promise::resolved);
     }
 
     @Override
@@ -52,7 +52,7 @@ public final class LocalDiskTier implements StorageTier {
             return StorageError.TierFull.tierFull(TierLevel.LOCAL_DISK, usedBytes.get(), maxBytes).promise();
         }
 
-        return Promise.lift(WRITE_ERROR, () -> writeBlock(id, content));
+        return Promise.lift(WRITE_ERROR, () -> writeBlock(id, content)).flatMap(Promise::resolved);
     }
 
     /// Atomic CAS capacity reservation — prevents TOCTOU race.
@@ -74,7 +74,7 @@ public final class LocalDiskTier implements StorageTier {
 
     @Override
     public Promise<Unit> delete(BlockId id) {
-        return Promise.lift(WRITE_ERROR, () -> deleteBlock(id));
+        return Promise.lift(WRITE_ERROR, () -> deleteBlock(id)).flatMap(Promise::resolved);
     }
 
     @Override
@@ -97,39 +97,40 @@ public final class LocalDiskTier implements StorageTier {
         return maxBytes;
     }
 
-    private Option<byte[]> readBlock(BlockId id) {
+    private Result<Option<byte[]>> readBlock(BlockId id) {
         var path = blockPath(id);
 
         return FileOps.exists(path)
-               ? some(FileOps.readBytes(path).unwrap())
-               : none();
+               ? FileOps.readBytes(path).map(Option::some)
+               : Result.success(none());
     }
 
-    private Unit writeBlock(BlockId id, byte[] content) {
+    private Result<Unit> writeBlock(BlockId id, byte[] content) {
         var path = blockPath(id);
-        FileOps.createDirectories(path.getParent()).unwrap();
+        return FileOps.createDirectories(path.getParent())
+                      .flatMap(_ -> existingSize(path))
+                      .flatMap(previousSize -> FileOps.writeBytes(path, content)
+                                                      .onSuccess(_ -> correctUsedBytes(previousSize)));
+    }
 
-        var previousSize = FileOps.exists(path) ? FileOps.size(path).unwrap() : 0L;
-        FileOps.writeBytes(path, content).unwrap();
+    private Result<Long> existingSize(Path path) {
+        return FileOps.exists(path) ? FileOps.size(path) : Result.success(0L);
+    }
 
+    private void correctUsedBytes(long previousSize) {
         // Capacity was pre-reserved for content.length. Correct for overwrites.
         if (previousSize > 0) {
             usedBytes.addAndGet(-previousSize);
         }
-
-        return unit();
     }
 
-    private Unit deleteBlock(BlockId id) {
+    private Result<Unit> deleteBlock(BlockId id) {
         var path = blockPath(id);
-
-        if (FileOps.exists(path)) {
-            var fileSize = FileOps.size(path).unwrap();
-            FileOps.delete(path).unwrap();
-            usedBytes.addAndGet(-fileSize);
+        if (!FileOps.exists(path)) {
+            return Result.success(unit());
         }
-
-        return unit();
+        return FileOps.size(path)
+                      .flatMap(fileSize -> FileOps.delete(path).onSuccess(_ -> usedBytes.addAndGet(-fileSize)));
     }
 
     private Path blockPath(BlockId id) {
