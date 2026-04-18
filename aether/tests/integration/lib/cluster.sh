@@ -201,8 +201,19 @@ push_blueprint() {
 deploy_blueprint() {
     local artifact="$1"
     log_info "Deploying blueprint: ${artifact}" >&2
-    aether_failover blueprint deploy "$artifact" 2>/dev/null \
-        || api_post "/api/blueprint/deploy" "{\"artifact\":\"${artifact}\"}"
+    # Retry deploy for up to ~20s. The cluster can return "Node X is inactive" briefly during
+    # startup before Rabia consensus has activated; a single-shot deploy would fail that window.
+    local i result
+    for i in 1 2 3 4; do
+        result=$(aether_failover blueprint deploy "$artifact" 2>/dev/null \
+            || api_post "/api/blueprint/deploy" "{\"artifact\":\"${artifact}\"}")
+        if printf '%s' "$result" | grep -q 'deployed\|deploymentId\|status'; then
+            printf '%s' "$result"
+            return 0
+        fi
+        sleep 5
+    done
+    printf '%s' "$result"
 }
 
 publish_blueprint() {
