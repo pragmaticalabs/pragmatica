@@ -705,6 +705,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
         log.warn("Post-establish grace expired with {} deferred REMOVE(s) — flushing: {}", flushed.size(), flushed);
         for (var peer : flushed) {
             router.route(new TopologyManagementMessage.RemoveNode(peer));
+            // Also fire a TopologyChangeNotification so listeners (CTM, CDM) react at the moment
+            // the observer's topology actually shrinks. The initial processViewChange(REMOVE)
+            // already emitted nodeRemoved with the pre-flush view; that earlier notification's
+            // count can't reflect the removal while it's buffered in pendingRemovals.
+            router.route(TopologyChangeNotification.nodeRemoved(peer, currentView()));
         }
     }
 
@@ -734,7 +739,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // Flush deferred removals — these peers didn't reconnect during the hysteresis window
         var removedPeers = Set.copyOf(pendingRemovals);
         pendingRemovals.clear();
-        removedPeers.forEach(peerId -> router.route(new TopologyManagementMessage.RemoveNode(peerId)));
+        removedPeers.forEach(peerId -> {
+            router.route(new TopologyManagementMessage.RemoveNode(peerId));
+            router.route(TopologyChangeNotification.nodeRemoved(peerId, currentView()));
+        });
         var activePeerCount = peerLinks.size() - passivePeers.size();
         var quorumSize = topologyManager.quorumSize();
         var currentlyHaveQuorum = (activePeerCount + 1) >= quorumSize;

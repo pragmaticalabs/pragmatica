@@ -4,6 +4,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -93,7 +94,8 @@ public interface TopologyObserver extends TopologyManager {
                        AtomicBoolean active,
                        AtomicInteger effectiveClusterSize,
                        java.util.Set<NodeId> readyNodes,
-                       Set<NodeId> coreNodeIds) implements TopologyObserver {
+                       Set<NodeId> coreNodeIds,
+                       Set<NodeId> tombstonedNodes) implements TopologyObserver {
             private static final Logger log = LoggerFactory.getLogger(TopologyObserver.class);
 
             Manager(Map<NodeId, NodeState> nodeStatesById,
@@ -104,7 +106,8 @@ public interface TopologyObserver extends TopologyManager {
                     AtomicBoolean active,
                     AtomicInteger effectiveClusterSize,
                     java.util.Set<NodeId> readyNodes,
-                    Set<NodeId> coreNodeIds) {
+                    Set<NodeId> coreNodeIds,
+                    Set<NodeId> tombstonedNodes) {
                 this.config = config;
                 this.router = router;
                 this.nodeStatesById = nodeStatesById;
@@ -114,6 +117,7 @@ public interface TopologyObserver extends TopologyManager {
                 this.effectiveClusterSize = effectiveClusterSize;
                 this.readyNodes = readyNodes;
                 this.coreNodeIds = coreNodeIds;
+                this.tombstonedNodes = tombstonedNodes;
                 this.effectiveClusterSize.set(config.clusterSize());
                 config().coreNodes()
                       .forEach(this::addNode);
@@ -134,12 +138,17 @@ public interface TopologyObserver extends TopologyManager {
                     // Re-add any configured core nodes that were removed due to disconnection.
                     // Without this, nodes removed from nodeStatesById are never reconnected
                     // because reconcile() only requests connections for nodes IN the map.
+                    // Skip tombstoned nodes — these were explicitly removed (node killed/replaced)
+                    // and must not be resurrected from config, otherwise they linger as phantoms
+                    // alongside any CTM-provisioned replacement and inflate cluster count.
                     config().coreNodes().stream()
                           .filter(node -> !nodeStatesById.containsKey(node.id()))
+                          .filter(node -> !tombstonedNodes.contains(node.id()))
                           .forEach(this::addNode);
                     router().route(new NetworkServiceMessage.ListConnectedNodes());
                 } else if (nodeStatesById().size() <= 1) {
                     log.info("Topology drained to self-only — re-seeding from config ({} core nodes)", config().coreNodes().size());
+                    tombstonedNodes.clear();
                     config().coreNodes()
                           .forEach(this::addNode);
                 }
@@ -164,11 +173,18 @@ public interface TopologyObserver extends TopologyManager {
 
             @Override
             public void handleAddNodeMessage(TopologyManagementMessage.AddNode message) {
+                // Clear tombstone so the node can rejoin on explicit re-add (e.g. restarted container
+                // handshakes via QUIC Hello and gets routed as an unknown-node AddNode).
+                tombstonedNodes.remove(message.nodeInfo().id());
                 addNode(message.nodeInfo());
             }
 
             @Override
             public void handleRemoveNodeMessage(TopologyManagementMessage.RemoveNode removeNode) {
+                // Tombstone prevents initReconcile from resurrecting this node from the static
+                // config.coreNodes() list. Cleared on explicit re-add via handleAddNodeMessage
+                // or when the observer drains to self-only.
+                tombstonedNodes.add(removeNode.nodeId());
                 removeNode(removeNode.nodeId());
             }
 
@@ -185,7 +201,11 @@ public interface TopologyObserver extends TopologyManager {
 
             @Override
             public void handleDiscoveredNodes(NetworkMessage.DiscoveredNodes discoveredNodes) {
+                // Tombstone filter: don't resurrect a locally-removed peer just because a gossip
+                // partner still knows about it (their REMOVE may not have propagated yet).
                 discoveredNodes.nodes()
+                               .stream()
+                               .filter(info -> !tombstonedNodes.contains(info.id()))
                                .forEach(this::addNode);
             }
 
@@ -237,7 +257,7 @@ public interface TopologyObserver extends TopologyManager {
                       .onEmpty(() -> {
                                    nodeIdsByAddress().putIfAbsent(nodeInfo.address(),
                                                                   nodeInfo.id());
-                                   if (nodeInfo.role() != org.pragmatica.consensus.net.NodeRole.PASSIVE) {
+                                   if (nodeInfo.role() != NodeRole.PASSIVE) {
                                        coreNodeIds.add(nodeInfo.id());
                                    }
                                    // Only request connection if topology observer is active (router is ready)
@@ -331,6 +351,15 @@ public interface TopologyObserver extends TopologyManager {
                 return (int) readyNodes.stream()
                                        .filter(id -> !isPassive(id))
                                        .count();
+            }
+
+            @Override
+            public int healthyActiveNodeCount() {
+                return (int) nodeStatesById.values()
+                                          .stream()
+                                          .filter(state -> state.info().role() != NodeRole.PASSIVE)
+                                          .filter(state -> state.health() == NodeHealth.HEALTHY)
+                                          .count();
             }
 
             private int activeTopologySize() {
@@ -431,6 +460,7 @@ public interface TopologyObserver extends TopologyManager {
                                           timeSource,
                                           new AtomicBoolean(false),
                                           new AtomicInteger(config.clusterSize()),
+                                          ConcurrentHashMap.newKeySet(),
                                           ConcurrentHashMap.newKeySet(),
                                           ConcurrentHashMap.newKeySet()));
     }

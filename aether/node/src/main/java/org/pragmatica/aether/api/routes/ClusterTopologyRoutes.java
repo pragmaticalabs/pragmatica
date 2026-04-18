@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.topology.NodeHealth;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.http.routing.Route;
@@ -73,6 +74,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var connectedPeers = node.connectedPeerIds();
         var allNodeIds = topologyManager.topology();
         var coreNodeIds = allNodeIds.stream().filter(id -> !topologyManager.isPassive(id))
+                                           .filter(id -> isHealthy(topologyManager, id))
                                            .map(NodeId::id)
                                            .toList();
         var coreCount = coreNodeIds.size();
@@ -89,6 +91,11 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                                  coreNodeIds,
                                                  connectedPeers.size(),
                                                  nodeDetails);
+    }
+
+    private static boolean isHealthy(TopologyManager tm, NodeId id) {
+        return tm.getState(id).map(state -> state.health() == NodeHealth.HEALTHY)
+                          .or(false);
     }
 
     private static TopologyNodeDetail buildNodeDetail(TopologyManager tm, NodeId nodeId, boolean connected) {

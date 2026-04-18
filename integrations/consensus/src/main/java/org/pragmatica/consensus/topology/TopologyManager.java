@@ -102,6 +102,17 @@ public interface TopologyManager {
                                .count();
     }
 
+    /// Returns the count of currently-healthy active (non-passive) nodes.
+    /// Used by reconciliation decisions that must distinguish "reachable right now" from
+    /// "present in topology but possibly unreachable" — e.g. CTM deficit/surplus checks must
+    /// not count a killed-but-not-yet-evicted peer as live.
+    default int healthyActiveNodeCount() {
+        return (int) topology().stream()
+                               .filter(id -> !isPassive(id))
+                               .filter(id -> getState(id).map(state -> state.health() == NodeHealth.HEALTHY).or(false))
+                               .count();
+    }
+
     /// Mark a node as ready (ON_DUTY). Called when a node registers its lifecycle state.
     /// The observer tracks ready nodes independently of QUIC connections.
     default void markReady(NodeId nodeId) {}

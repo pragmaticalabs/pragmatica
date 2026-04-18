@@ -154,7 +154,7 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private void activateWithCurrentTopology() {
-        var actual = observer.activeNodeCount();
+        var actual = observer.healthyActiveNodeCount();
         var desired = configuredSizeRef.get();
         var readyCount = observer.readyNodeCount();
         var effectiveActual = Math.max(actual, readyCount);
@@ -244,7 +244,7 @@ import static org.pragmatica.lang.Unit.unit;
     private void checkFormationComplete() {
         if (!active.get()) {return;}
         if (! (stateRef.get() instanceof NodeReconcilerState.Forming)) {return;}
-        var actual = observer.activeNodeCount();
+        var actual = observer.healthyActiveNodeCount();
         var desired = configuredSizeRef.get();
         if (actual >= desired) {
             transitionTo(new NodeReconcilerState.Converged());
@@ -270,7 +270,7 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private void reconcileForming() {
-        var actual = observer.activeNodeCount();
+        var actual = observer.healthyActiveNodeCount();
         var configured = configuredSizeRef.get();
         if (actual >= configured) {
             transitionTo(new NodeReconcilerState.Converged());
@@ -279,7 +279,7 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private void reconcileActive(NodeReconcilerState currentState) {
-        var actual = observer.activeNodeCount();
+        var actual = observer.healthyActiveNodeCount();
         var configured = configuredSizeRef.get();
         if (actual == configured) {
             cancelRecheck();
@@ -427,6 +427,7 @@ import static org.pragmatica.lang.Unit.unit;
 
     private Map<String, String> buildProvisionTags() {
         var peers = observer.topology().stream()
+                                     .filter(this::isHealthyPeer)
                                      .flatMap(nodeId -> observer.get(nodeId).stream())
                                      .map(ClusterTopologyManagerRecord::formatPeerEntry)
                                      .collect(Collectors.joining(","));
@@ -434,6 +435,11 @@ import static org.pragmatica.lang.Unit.unit;
                       peers,
                       "aether.core-max",
                       String.valueOf(configuredSizeRef.get()));
+    }
+
+    private boolean isHealthyPeer(NodeId nodeId) {
+        return observer.getState(nodeId).map(state -> state.health() == NodeHealth.HEALTHY)
+                                .or(false);
     }
 
     private static String formatPeerEntry(NodeInfo info) {
