@@ -105,7 +105,14 @@ user-agent = "OrderService/1.0"
 x-trace-id = "${env:TRACE_ID}"
 ```
 
-Variable expansion (`${env:...}`) in config values is resolved at provisioning time. If the provider supports refresh, values are re-resolved on each request (supporting token rotation and external secret stores).
+Variable expansion (`${env:...}`, `${secret:...}`, etc.) in config values is resolved at provisioning time. Two refresh classes:
+
+| Field | Refresh policy |
+|---|---|
+| `authorization`, `[http.<name>.headers]` values | Re-resolved per request when the underlying provider supports refresh — supports token rotation and external secret stores without reprovisioning the client |
+| `base_url`, `path_prefix`, timeouts, retry/circuit-breaker fields, `[http.<name>.json]` | Resolved once at provisioning time. Changing these requires reprovisioning |
+
+Headers and Authorization are designated as "hot" because secret rotation is the common operational case. All other fields define the client's shape and are intentionally cold to keep request hot-paths cheap.
 
 ### 2.4 Per-Method Timeout via Resource Provisioning
 
@@ -123,6 +130,8 @@ connect_timeout = "10s"
 ```
 
 Methods without a timeout annotation use the client-level default from `[http.<name>]`.
+
+The processor records the (method → config-section) mapping in the slice manifest. At provisioning time, the SPI provisions one `TimeoutConfig` per referenced section and threads them into the generated adapter as a single `Map<MethodName, TimeoutConfig>` constructor parameter. The adapter looks up its method's `MethodName` on each invocation; absent entry → fall back to the client-level default. `MethodName` is the existing value object from `aether/slice-api`.
 
 ---
 
@@ -156,14 +165,14 @@ Every `{name}` must have a matching method parameter. Compile-time error if not.
 
 ### 3.3 Parameter Binding Rules
 
-Parameters are bound in this order:
+Before classifying parameters, the processor collects all template variables from BOTH the path template (path segments + query portion) AND every `@Header(value = "{...}")` template into a single matched-names set. Each parameter is then classified by name:
 
 1. **Path variables** — parameter name matches `{name}` in path segment portion of template
-2. **Header values** — parameter name matches `{name}` in `@Header` value template
+2. **Header values** — parameter name matches `{name}` in any `@Header` value template
 3. **Query parameters** — parameter name matches `{name}` in query portion of template
-4. **Request body** — the remaining unmatched parameter (at most one per method)
+4. **Request body** — the remaining unmatched parameter (at most one per method, or all unmatched parameters when `@Consumes` declares the `FORM` category)
 
-If more than one parameter is unmatched, the processor emits a compile-time error.
+If more than one parameter is unmatched and the request is not `FORM`-encoded, the processor emits a compile-time error. If a `{name}` template variable has no matching parameter, the processor emits a compile-time error.
 
 ### 3.4 Query Parameter Type Handling
 
@@ -358,11 +367,14 @@ sealed interface HttpClientError extends Cause {
         }
     }
 
+    record Timeout(TimeSpan limit, String detail) implements HttpClientError { ... }
     record ConnectionFailed(String detail) implements HttpClientError { ... }
     record DeserializationFailed(String detail) implements HttpClientError { ... }
     record RequestBuildFailed(String detail) implements HttpClientError { ... }
 }
 ```
+
+`Timeout` is a distinct case from `ConnectionFailed` because timeout is a configurable, expected condition (per-method or client-level) whose remediation is to bump `request_timeout`/`connect_timeout`, not to investigate connectivity. Carrying the `TimeSpan limit` in the cause makes the error message self-explanatory and feeds operational dashboards.
 
 ### 5.5 Usage Patterns
 
