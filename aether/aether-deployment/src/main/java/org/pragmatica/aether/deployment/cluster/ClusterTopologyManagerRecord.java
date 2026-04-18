@@ -70,6 +70,8 @@ import static org.pragmatica.lang.Unit.unit;
 
     private static final int MAX_WAVE_SIZE = 5;
 
+    private static final TimeSpan DEFICIT_HYSTERESIS = TimeSpan.timeSpan(3).seconds();
+
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
                                                                      AutoHealConfig config,
@@ -313,21 +315,26 @@ import static org.pragmatica.lang.Unit.unit;
                                                        List.of(),
                                                        Instant.now());
         if (!stateRef.compareAndSet(current, next)) {return;}
-        log.info("CTM: Cluster at {}/{}, deferring provision by hysteresis window to absorb transient flaps",
+        log.info("CTM: Cluster at {}/{}, deferring provision by {}ms hysteresis to absorb transient flaps",
                  actual,
-                 desired);
-        // Defer actual provisioning by retryInterval — if the peer that triggered the deficit
+                 desired,
+                 DEFICIT_HYSTERESIS.millis());
+        // Defer actual provisioning by a short window — if the peer that triggered the deficit
         // was a transient QUIC flap, it reconnects (handleAddNodeMessage clears its tombstone
         // and re-adds to nodeStatesById) within this window and we skip provisioning.
+        // Too-long a window lets tests observe a "degraded" interim state; too-short lets
+        // genuine flaps churn the cluster. 3s is tuned for docker-local QUIC retries.
         SharedScheduler.schedule(() -> attemptProvisionAfterHysteresis(desired, batchSize),
-                                 autoHealConfig.retryInterval());
+                                 DEFICIT_HYSTERESIS);
         scheduleRecheck();
     }
 
     private void attemptProvisionAfterHysteresis(int desired, int plannedBatchSize) {
         if (!active.get()) {return;}
         if (! (stateRef.get() instanceof NodeReconcilerState.Reconciling)) {return;}
-        var actual = observer.activeNodeCount();
+        // Use healthyActiveNodeCount so SUSPECTED (still-in-map but unreachable) peers aren't
+        // counted as present — otherwise we'd skip provision and leave the cluster degraded.
+        var actual = observer.healthyActiveNodeCount();
         if (actual >= desired) {
             log.info("CTM: Deficit healed during hysteresis window ({}/{}) — skipping provision", actual, desired);
             cancelRecheck();
