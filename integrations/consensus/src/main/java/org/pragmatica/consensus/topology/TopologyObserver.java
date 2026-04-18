@@ -98,6 +98,8 @@ public interface TopologyObserver extends TopologyManager {
                        Set<NodeId> tombstonedNodes) implements TopologyObserver {
             private static final Logger log = LoggerFactory.getLogger(TopologyObserver.class);
 
+            private static final TimeSpan EVICTION_GRACE_PERIOD = TimeSpan.timeSpan(60).seconds();
+
             Manager(Map<NodeId, NodeState> nodeStatesById,
                     Map<NodeAddress, NodeId> nodeIdsByAddress,
                     MessageRouter router,
@@ -155,26 +157,32 @@ public interface TopologyObserver extends TopologyManager {
                 }
             }
 
-            /// Peers that have failed enough consecutive connection attempts (per the configured
-            /// `BackoffConfig.shouldDisable`) get tombstoned and routed as RemoveNode, so
-            /// downstream listeners (CTM, CDM) react and consensus-level structures
-            /// (clusterSize/quorum, sliceState/NodeArtifact KV) don't linger referring to
-            /// addresses that are clearly unreachable. Without this, a CTM-provisioned node that
-            /// gets externally removed (e.g. `docker rm -f`) without a clean shutdown can stay in
-            /// nodeStatesById indefinitely if QUIC never produces a hard disconnect event.
+            /// Peers that have been SUSPECTED long enough — past `BackoffConfig.shouldDisable`
+            /// attempt threshold AND with their last attempt older than `evictionGracePeriod`
+            /// wall-clock time — get tombstoned and routed as RemoveNode. Downstream listeners
+            /// (CTM, CDM) react and consensus-level structures (clusterSize/quorum,
+            /// sliceState/NodeArtifact KV) stop lingering on unreachable addresses. Without this,
+            /// a CTM-provisioned node externally removed (e.g. `docker rm -f`) without a clean
+            /// shutdown stays in nodeStatesById indefinitely if QUIC never produces a hard
+            /// disconnect. The grace period avoids evicting peers during cluster formation when
+            /// they've briefly failed to connect but are still booting.
             private void evictLongSuspectedPeers() {
                 var backoff = config.backoff();
                 var selfId = config.self();
+                var now = now();
+                var grace = EVICTION_GRACE_PERIOD;
                 nodeStatesById.values().stream()
                               .filter(state -> state.health() == NodeHealth.SUSPECTED)
                               .filter(state -> backoff.shouldDisable(state.failedAttempts()))
+                              .filter(state -> state.lastAttempt().plusMillis(grace.millis()).isBefore(now))
                               .filter(state -> !state.info().id().equals(selfId))
                               .map(state -> state.info().id())
                               .toList()
                               .forEach(id -> {
-                                  log.info("Evicting long-suspected peer {} (>= {} failed attempts)",
+                                  log.info("Evicting long-suspected peer {} (>= {} failed attempts, idle > {}ms)",
                                            id,
-                                           backoff.maxAttempts());
+                                           backoff.maxAttempts(),
+                                           grace.millis());
                                   router().route(new TopologyManagementMessage.RemoveNode(id));
                               });
             }
