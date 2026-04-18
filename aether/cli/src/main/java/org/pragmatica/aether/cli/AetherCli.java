@@ -369,14 +369,9 @@ import static org.pragmatica.lang.Option.some;
         resolveApiKey().onPresent(key -> builder.header("X-API-Key", key));
     }
 
-    /// Apply the per-request timeout (`--request-timeout`, default 60s). 0 disables.
-    /// Without this, a server that accepts the connection but never responds (e.g. forward
-    /// to a dead task-group owner that times out internally without surfacing an error)
-    /// would block the CLI's `await()` indefinitely.
     private void attachTimeout(HttpRequest.Builder builder) {
-        if (requestTimeoutSeconds > 0) {
-            builder.timeout(TimeSpan.timeSpan(requestTimeoutSeconds).seconds().duration());
-        }
+        if (requestTimeoutSeconds > 0) {builder.timeout(TimeSpan.timeSpan(requestTimeoutSeconds).seconds()
+                                                                         .duration());}
     }
 
     private HttpRequest buildGetRequest(URI uri) {

@@ -86,7 +86,7 @@ public interface AetherMaps {
 
     private static EndpointKey deserializeEndpointKey(byte[] bytes) {
         return EndpointKey.endpointKey(new String(bytes, StandardCharsets.UTF_8))
-                          .expect("DHT corruption: invalid EndpointKey bytes");
+                                      .expect("DHT corruption: invalid EndpointKey bytes");
     }
 
     private static byte[] serializeEndpointValue(EndpointValue value) {
@@ -96,7 +96,7 @@ public interface AetherMaps {
 
     private static EndpointValue deserializeEndpointValue(byte[] bytes) {
         return new EndpointValue(NodeId.nodeId(new String(bytes, StandardCharsets.UTF_8))
-                                       .expect("DHT corruption: invalid NodeId bytes for EndpointValue"));
+                                              .expect("DHT corruption: invalid NodeId bytes for EndpointValue"));
     }
 
     private static byte[] serializeSliceNodeKey(SliceNodeKey key) {
@@ -105,7 +105,7 @@ public interface AetherMaps {
 
     private static SliceNodeKey deserializeSliceNodeKey(byte[] bytes) {
         return SliceNodeKey.sliceNodeKey(new String(bytes, StandardCharsets.UTF_8))
-                           .expect("DHT corruption: invalid SliceNodeKey bytes");
+                                        .expect("DHT corruption: invalid SliceNodeKey bytes");
     }
 
     private static byte[] serializeSliceNodeValue(SliceNodeValue value) {
@@ -129,7 +129,7 @@ public interface AetherMaps {
 
     public static HttpNodeRouteKey deserializeHttpRouteKey(byte[] bytes) {
         return HttpNodeRouteKey.httpNodeRouteKey(new String(bytes, StandardCharsets.UTF_8))
-                               .expect("DHT corruption: invalid HttpNodeRouteKey bytes");
+                                                .expect("DHT corruption: invalid HttpNodeRouteKey bytes");
     }
 
     public static byte[] serializeHttpRouteValue(HttpNodeRouteValue value) {

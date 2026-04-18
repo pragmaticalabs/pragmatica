@@ -1036,11 +1036,11 @@ public interface AetherNode extends ManageableNode {
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.ReadForwardResponse.class,
                                                  streamForwardClient::onReadForwardResponse));
         registerStreamForwardExtensions(resourceProviderSetup,
-                                         streamForwardClient,
-                                         taskGroupAssignmentRegistry,
-                                         streamPartitionManager,
-                                         serializer,
-                                         deserializer);
+                                        streamForwardClient,
+                                        taskGroupAssignmentRegistry,
+                                        streamPartitionManager,
+                                        serializer,
+                                        deserializer);
         var certRenewalScheduler = createCertRenewalScheduler(config,
                                                               clusterNode,
                                                               appHttpServer,
@@ -1932,11 +1932,11 @@ public interface AetherNode extends ManageableNode {
                                                         Deserializer deserializer) {
         resourceProviderSetup.spiProvider()
                                          .onPresent(spi -> registerForwardExtensionsOnSpi(spi,
-                                                                                           forwardClient,
-                                                                                           registry,
-                                                                                           streamPartitionManager,
-                                                                                           serializer,
-                                                                                           deserializer));
+                                                                                          forwardClient,
+                                                                                          registry,
+                                                                                          streamPartitionManager,
+                                                                                          serializer,
+                                                                                          deserializer));
     }
 
     private static void registerForwardExtensionsOnSpi(SpiResourceProvider spi,

@@ -26,9 +26,6 @@ public record StreamConfig(String name,
 
     private static final int DEFAULT_MIN_SYNC_REPLICAS = 0;
 
-    /// Populates component defaults when a blueprint resources.toml section declares
-    /// only a subset of StreamConfig fields. ConfigService.bindToClass reads per-component
-    /// values from this instance when the TOML does not supply them.
     public static final StreamConfig DEFAULT = new StreamConfig("",
                                                                 DEFAULT_PARTITIONS,
                                                                 RetentionPolicy.retentionPolicy(),

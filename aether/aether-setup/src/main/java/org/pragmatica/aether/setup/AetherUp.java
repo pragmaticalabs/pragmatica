@@ -11,6 +11,7 @@ import org.pragmatica.aether.setup.generators.DockerGenerator;
 import org.pragmatica.aether.setup.generators.Generator;
 import org.pragmatica.aether.setup.generators.KubernetesGenerator;
 import org.pragmatica.aether.setup.generators.LocalGenerator;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.parse.Number;
 
@@ -85,19 +86,18 @@ public final class AetherUp {
 
     private static AetherConfig configFromDefaults(Map<String, String> options) {
         var envStr = options.getOrDefault("env", "docker");
-        var env = Environment.environment(envStr).onFailure(cause -> printErrorAndExit("Error:", cause.message()))
-                                                 .expect("printErrorAndExit calls System.exit; unwrap unreachable on failure");
+        var env = Environment.environment(envStr).onFailure(cause -> printErrorAndExit("Error:",
+                                                                                       cause.message()))
+                                         .expect("printErrorAndExit calls System.exit; unwrap unreachable on failure");
         var builder = AetherConfig.builder().withEnvironment(env);
         withOverrides(builder, options);
         return builder.build();
     }
 
-    private static void withOverrides(AetherConfig.Builder builder, Map<String, String> options) {
-        if (options.containsKey("nodes")) {
-            Number.parseInt(options.get("nodes"))
-                  .onFailure(cause -> printErrorAndExit("Invalid --nodes value:", cause.message()))
-                  .onSuccess(builder::nodes);
-        }
+    @Contract private static void withOverrides(AetherConfig.Builder builder, Map<String, String> options) {
+        if (options.containsKey("nodes")) {Number.parseInt(options.get("nodes")).onFailure(cause -> printErrorAndExit("Invalid --nodes value:",
+                                                                                                                      cause.message()))
+                                                          .onSuccess(builder::nodes);}
         if (options.containsKey("heap")) {builder.heap(options.get("heap"));}
         if (options.containsKey("tls")) {builder.tls(true);}
         if (options.containsKey("no-tls")) {builder.tls(false);}

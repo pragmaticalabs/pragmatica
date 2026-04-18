@@ -293,7 +293,8 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
                                       Option<AetherConfig> aetherConfig) {
         var selfInfo = NodeInfo.nodeInfo(self,
                                          nodeAddress("localhost", selfPort).expect("localhost is a valid node address"),
-                                         NodeRole.ACTIVE, labels);
+                                         NodeRole.ACTIVE,
+                                         labels);
         return findArg("--peers=").map(peersStr -> parsePeersFromString(peersStr, self, selfInfo))
                       .orElse(findEnv("CLUSTER_PEERS").map(peersStr -> parsePeersFromString(peersStr, self, selfInfo)))
                       .orElse(aetherConfig.map(this::generatePeersFromConfig))

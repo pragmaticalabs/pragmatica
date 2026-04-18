@@ -277,24 +277,16 @@ public interface NodeDeploymentManager {
                             .withFailure(cause -> handleActivationFailure(sliceKey, cause));
             }
 
-            /// If the slice has HTTP routes, transit through ROUTING and commit a routes Put via
-            /// consensus before continuing to ACTIVE. When the routes Put's Promise resolves, the
-            /// routes are in every node's consensus log — serial ordering then guarantees that any
-            /// node seeing the following ACTIVE state has already applied the routes entry.
-            /// Slices without routes bypass ROUTING entirely.
             private Promise<SliceNodeKey> publishRoutesIfPresent(SliceNodeKey sliceKey) {
-                if (!sliceHasHttpRoutes(sliceKey.artifact())) {
-                    return Promise.success(sliceKey);
-                }
-                return transitionTo(sliceKey, SliceState.ROUTING)
-                    .flatMap(key -> publishHttpRoutes(key).map(_ -> key));
+                if (!sliceHasHttpRoutes(sliceKey.artifact())) {return Promise.success(sliceKey);}
+                return transitionTo(sliceKey, SliceState.ROUTING).flatMap(key -> publishHttpRoutes(key).map(_ -> key));
             }
 
             private boolean sliceHasHttpRoutes(Artifact artifact) {
-                return httpRoutePublisher.flatMap(publisher -> findLoadedSlice(artifact).map(ls -> publisher.hasRoutes(
-                                             ls.slice().getClass().getClassLoader(),
-                                             ls.slice())))
-                                         .or(false);
+                return httpRoutePublisher.flatMap(publisher -> findLoadedSlice(artifact).map(ls -> publisher.hasRoutes(ls.slice().getClass()
+                                                                                                                               .getClassLoader(),
+                                                                                                                       ls.slice())))
+                .or(false);
             }
 
             private Promise<SliceNodeKey> activateSliceWithTimeout(SliceNodeKey sliceKey) {
