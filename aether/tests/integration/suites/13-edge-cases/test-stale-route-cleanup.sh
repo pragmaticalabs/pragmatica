@@ -13,6 +13,13 @@ test_cluster_ready() {
     wait_for_cluster 60
     push_blueprint "$BLUEPRINT"
     deploy_blueprint "$BLUEPRINT"
+    # After destructive prior suites, CDM may need time to redistribute slices to live nodes.
+    # Trigger an explicit re-scale if the first deploy doesn't produce live instances.
+    if ! wait_for_slices_active 1 60; then
+        log_warn "Slices not active after first deploy — triggering re-scale"
+        api_post "/api/slices/scale" "{\"artifact\":\"org.pragmatica.aether.test:test-echo-echo-slice:1.0.0\",\"instances\":3}" > /dev/null 2>&1 || true
+        wait_for_slices_active 1 120 || log_warn "Slices still not active after rescale"
+    fi
     log_pass "Cluster ready with baseline blueprint deployed"
 }
 

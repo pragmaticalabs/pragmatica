@@ -9,6 +9,11 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 BLUEPRINT_V1="org.pragmatica.aether.example:url-shortener:1.0.0"
 BLUEPRINT_V2="org.pragmatica.aether.example:url-shortener:1.0.1"
 
+# Persist the deployment ID across test stages. `deploy_list` can omit an entry once its
+# state transitions to terminal (COMPLETED/ROLLED_BACK/FAILED), so relying on the list to
+# re-discover the ID after each stage is brittle. The start response is authoritative.
+DEPLOYMENT_ID=""
+
 test_cluster_ready() {
     wait_for_cluster 60
     wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
@@ -27,6 +32,8 @@ test_canary_start() {
     local result
     result=$(deploy_start "$BLUEPRINT_V2" canary --traffic 5 --instances 1)
     assert_contains "$result" "deploymentId" "Canary started with deployment ID"
+    DEPLOYMENT_ID=$(deploy_extract_id "$result")
+    assert_ne "$DEPLOYMENT_ID" "" "Captured deployment ID from start response"
 }
 
 test_canary_list() {
@@ -36,23 +43,31 @@ test_canary_list() {
 }
 
 test_canary_promote() {
-    local deployments did
-    deployments=$(deploy_list)
-    did=$(deploy_extract_id "$deployments")
-    assert_ne "$did" "" "Got deployment ID"
-    deploy_promote "$did"
+    assert_ne "$DEPLOYMENT_ID" "" "Have deployment ID"
+    deploy_promote "$DEPLOYMENT_ID"
     sleep 5
     local status_result
-    status_result=$(deploy_status "$did")
+    status_result=$(deploy_status "$DEPLOYMENT_ID" 2>/dev/null || echo "")
     log_info "Deployment status after promote: $status_result"
 }
 
 test_canary_complete() {
-    local deployments did
-    deployments=$(deploy_list)
-    did=$(deploy_extract_id "$deployments")
+    assert_ne "$DEPLOYMENT_ID" "" "Have deployment ID"
     local result
-    result=$(deploy_complete "$did")
+    result=$(deploy_complete "$DEPLOYMENT_ID" 2>/dev/null || echo "")
+    if printf '%s' "$result" | grep -q '"state"[[:space:]]*:[[:space:]]*"COMPLETED"'; then
+        log_pass "Canary completed"
+        return 0
+    fi
+    # complete() rejects COMPLETED → COMPLETED with an invalid-transition error. If the
+    # deployment already reached terminal state (promote can auto-advance the final stage on
+    # canaries that resolve to ALL_NEW), accept that as success and verify via status.
+    local status_check
+    status_check=$(deploy_status "$DEPLOYMENT_ID" 2>/dev/null || echo "")
+    if printf '%s' "$status_check" | grep -q '"state"[[:space:]]*:[[:space:]]*"COMPLETED"'; then
+        log_pass "Canary already in COMPLETED state"
+        return 0
+    fi
     assert_contains "$result" "COMPLETED" "Canary completed"
 }
 

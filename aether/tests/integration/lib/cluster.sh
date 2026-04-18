@@ -686,15 +686,28 @@ wait_for_leader_on() {
 
 # Self-heal: wait for cluster to recover after destructive test.
 # Usage: self_heal <env_type> <compose_file> <expected_node_count> <mgmt_endpoint>
+#
+# Strategy:
+#   Step 0 — restore_baseline: kill any CTM-provisioned containers and restart any
+#            stopped compose nodes so the next suite starts against the canonical
+#            node-1..5 topology, not a mix of original + provisioned replacements.
+#            Without this, tests that deploy new blueprints (e.g. 13-edge-cases) hit a
+#            cluster whose node identities drift suite-to-suite, which confuses slice
+#            placement and can leave ACTIVE instances unreported during the test window.
+#   Step 1 — wait for natural recovery.
+#   Step 2 — force restart via compose if Step 1 times out.
 self_heal() {
     local env_type="$1"
     local compose_file="$2"
     local expected_count="${3:-5}"
     local endpoint="${4:-${CLUSTER_B_MGMT}}"
 
-    log_info "Self-heal: waiting for ${expected_count} healthy nodes..."
+    log_info "Self-heal: restoring baseline topology then waiting for ${expected_count} healthy nodes..."
 
-    # Step 1: wait for natural recovery (CTM auto-heal)
+    # Step 0: normalize to canonical topology before waiting for recovery
+    restore_baseline
+
+    # Step 1: wait for natural recovery (CTM auto-heal + restart of stopped nodes)
     if wait_for_node_count_on "$endpoint" "$expected_count" 120; then
         wait_for_leader_on "$endpoint" 30 && return 0
     fi

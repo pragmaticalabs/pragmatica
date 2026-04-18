@@ -15,6 +15,14 @@ test_cluster_ready() {
     wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
     push_blueprint "$BLUEPRINT"
     deploy_blueprint "$BLUEPRINT"
+    # After a destructive suite has left cluster B with reshuffled nodes, CDM needs time to
+    # redistribute the test-echo slice to currently-live nodes. A fresh scale re-triggers
+    # placement if the prior deployment's NodeArtifact entries point to now-dead nodes.
+    if ! wait_for_slices_active 1 60; then
+        log_warn "Slices not active after first deploy — triggering re-scale"
+        api_post "/api/slices/scale" "{\"artifact\":\"org.pragmatica.aether.test:test-echo-echo-slice:1.0.0\",\"instances\":3}" > /dev/null 2>&1 || true
+        wait_for_slices_active 1 120 || log_warn "Slices still not active after rescale"
+    fi
     log_pass "Cluster ready with baseline blueprint deployed"
 }
 

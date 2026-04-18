@@ -10,6 +10,12 @@ test_cluster_ready() {
     wait_for_cluster 60
     # Recover from any prior test that killed nodes — auto-heal can take a while
     wait_for_node_count 5 240 || log_warn "Only $(cluster_node_count) nodes available — proceeding"
+    # Clear any lingering drain state from prior destructive suites — otherwise the first
+    # drain here can be rejected with 409 because the budget is already exhausted by
+    # pre-existing DRAINING nodes. Reactivate node-4 / node-5 (the nodes this test targets).
+    activate_node "node-4" > /dev/null 2>&1 || true
+    activate_node "node-5" > /dev/null 2>&1 || true
+    sleep 2
     local count
     count=$(cluster_node_count)
     if [ "$count" -lt 3 ] 2>/dev/null; then
