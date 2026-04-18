@@ -54,6 +54,7 @@ import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.consensus.topology.NodeHealth;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
@@ -1131,8 +1132,27 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                 if (key.nodeId().equals(removedNode)) {commands.add(new KVCommand.Remove<>(key));}
             }
 
+            /// Nodes considered "live" for the purpose of KV-cleanup: in the topology AND currently
+            /// HEALTHY. A SUSPECTED peer that's been unreachable long enough to be counted as a
+            /// phantom must NOT be treated as live — otherwise its NodeArtifact / NodeRoutes /
+            /// TaskAssignment entries survive cluster churn and keep the forwarding layer
+            /// referencing dead addresses, eventually wedging `cluster.apply` consensus writes
+            /// (observed as "Promise timed out after 10000ms" on blueprint deploy after several
+            /// rounds of destructive tests).
+            private Set<NodeId> healthyNodeSet() {
+                return activeNodes.get().stream()
+                                       .filter(this::isHealthyNode)
+                                       .collect(Collectors.toSet());
+            }
+
+            private boolean isHealthyNode(NodeId nodeId) {
+                return topologyManager.getState(nodeId)
+                                      .map(state -> state.health() == NodeHealth.HEALTHY)
+                                      .or(false);
+            }
+
             void cleanupStaleNodeRoutes() {
-                var currentNodes = new HashSet<>(activeNodes.get());
+                var currentNodes = healthyNodeSet();
                 var commands = new ArrayList<KVCommand<AetherKey>>();
                 kvStore.forEach(NodeRoutesKey.class,
                                 NodeRoutesValue.class,
@@ -1152,7 +1172,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             }
 
             void cleanupStaleSliceEntries() {
-                var currentNodes = new HashSet<>(activeNodes.get());
+                var currentNodes = healthyNodeSet();
                 var staleKeys = sliceStates.keySet().stream()
                                                   .filter(key -> !currentNodes.contains(key.nodeId()))
                                                   .toList();
@@ -1167,7 +1187,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             }
 
             void cleanupStaleNodeArtifactEntries() {
-                var currentNodes = new HashSet<>(activeNodes.get());
+                var currentNodes = healthyNodeSet();
                 var staleKeys = new ArrayList<NodeArtifactKey>();
                 kvStore.forEach(NodeArtifactKey.class,
                                 NodeArtifactValue.class,
@@ -1594,6 +1614,12 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                           blueprints.size());
                 cleanupOrphanedSliceEntries();
                 cleanupStaleNodeRoutes();
+                // Evict KV entries whose nodeId is no longer HEALTHY — without this, phantom
+                // NodeArtifact / sliceState entries accumulate across destructive test suites
+                // and wedge subsequent `cluster.apply` writes once the forwarding layer tries
+                // to reach a dead node that CDM still thinks hosts a slice.
+                cleanupStaleNodeArtifactEntries();
+                cleanupStaleSliceEntries();
                 detectStuckTransitionalStates();
             }
 
