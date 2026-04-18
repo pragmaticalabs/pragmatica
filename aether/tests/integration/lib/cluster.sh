@@ -303,10 +303,12 @@ start_node() {
     fi
 }
 
-# Restart containers for clean cluster formation (hard reset — stops everything first).
-# Only restarts containers of the current cluster (identified by CLUSTER_NAME prefix) — must
-# NOT restart siblings because the in-memory KV-Store would be wiped on unrelated cluster
-# nodes, dropping blueprints and slice state deployed by earlier suites.
+# Restore cluster to canonical topology after destructive test (kill + CTM auto-heal).
+# Removes CTM-provisioned `aether-core-*` replacements and starts any stopped compose nodes
+# for the CURRENT cluster only (identified by CLUSTER_NAME prefix). Does NOT stop nodes that
+# are still running — stopping healthy nodes forces a KV-Store rebuild on every surviving
+# node and wipes the in-memory consensus log, dropping blueprints and slice state put in
+# KV by earlier suites.
 restart_all_nodes() {
     log_info "Restoring cluster to baseline..."
     if [ "$CLOUD_MODE" = "true" ]; then
@@ -315,7 +317,7 @@ restart_all_nodes() {
         done
     else
         local prefix="${CLUSTER_NAME:-aether-b-node-}"
-        remote_exec "docker ps -a --filter 'name=${prefix}' -q | xargs -r docker stop 2>/dev/null; docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=${prefix}' -q | xargs -r docker start" 2>/dev/null
+        remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=${prefix}' --filter 'status=exited' -q | xargs -r docker start" 2>/dev/null
     fi
 }
 
