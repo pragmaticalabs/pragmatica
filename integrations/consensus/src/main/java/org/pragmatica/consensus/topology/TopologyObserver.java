@@ -135,6 +135,7 @@ public interface TopologyObserver extends TopologyManager {
 
             private void initReconcile() {
                 if (active.get()) {
+                    evictLongSuspectedPeers();
                     // Re-add any configured core nodes that were removed due to disconnection.
                     // Without this, nodes removed from nodeStatesById are never reconnected
                     // because reconcile() only requests connections for nodes IN the map.
@@ -152,6 +153,30 @@ public interface TopologyObserver extends TopologyManager {
                     config().coreNodes()
                           .forEach(this::addNode);
                 }
+            }
+
+            /// Peers that have failed enough consecutive connection attempts (per the configured
+            /// `BackoffConfig.shouldDisable`) get tombstoned and routed as RemoveNode, so
+            /// downstream listeners (CTM, CDM) react and consensus-level structures
+            /// (clusterSize/quorum, sliceState/NodeArtifact KV) don't linger referring to
+            /// addresses that are clearly unreachable. Without this, a CTM-provisioned node that
+            /// gets externally removed (e.g. `docker rm -f`) without a clean shutdown can stay in
+            /// nodeStatesById indefinitely if QUIC never produces a hard disconnect event.
+            private void evictLongSuspectedPeers() {
+                var backoff = config.backoff();
+                var selfId = config.self();
+                nodeStatesById.values().stream()
+                              .filter(state -> state.health() == NodeHealth.SUSPECTED)
+                              .filter(state -> backoff.shouldDisable(state.failedAttempts()))
+                              .filter(state -> !state.info().id().equals(selfId))
+                              .map(state -> state.info().id())
+                              .toList()
+                              .forEach(id -> {
+                                  log.info("Evicting long-suspected peer {} (>= {} failed attempts)",
+                                           id,
+                                           backoff.maxAttempts());
+                                  router().route(new TopologyManagementMessage.RemoveNode(id));
+                              });
             }
 
             @Override
