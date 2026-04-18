@@ -34,18 +34,22 @@ NODE_COUNT="${NODE_COUNT:-5}"
 
 # Try CLI command against available nodes (failover on connection failure)
 # Tries ports MGMT_PORT, MGMT_PORT+1, ... MGMT_PORT+NODE_COUNT-1
+# Each CLI invocation is bounded by AETHER_CLI_TIMEOUT (default 60s) — the CLI
+# itself has no client-side timeout on long requests, so a stuck management
+# endpoint would otherwise wedge the whole suite indefinitely.
 aether_failover() {
+    local cli_timeout="${AETHER_CLI_TIMEOUT:-60}"
     # If LB endpoint is known, use it directly
     if [ -n "${LB_MGMT_ENDPOINT:-}" ]; then
         local lb_host_port="${LB_MGMT_ENDPOINT#http://}"
-        aether -c "${lb_host_port}" --api-key "${API_KEY}" "$@" 2>/dev/null
+        timeout "$cli_timeout" aether -c "${lb_host_port}" --api-key "${API_KEY}" "$@" 2>/dev/null
         return $?
     fi
     local base_port="${MGMT_PORT}"
     for i in $(seq 0 $((NODE_COUNT - 1))); do
         local port=$((base_port + i))
         local result
-        result=$(aether -c "${TARGET_HOST}:${port}" --api-key "${API_KEY}" "$@" 2>/dev/null) && { echo "$result"; return 0; }
+        result=$(timeout "$cli_timeout" aether -c "${TARGET_HOST}:${port}" --api-key "${API_KEY}" "$@" 2>/dev/null) && { echo "$result"; return 0; }
     done
     return 1
 }

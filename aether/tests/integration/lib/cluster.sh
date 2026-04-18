@@ -192,6 +192,10 @@ slices_target_total() {
     echo "$total"
 }
 
+# Bound the aether CLI so a stuck request can never wedge a whole suite.
+# 60s is generous: cluster-wide consensus deploys complete within ~5s when healthy.
+AETHER_CLI_TIMEOUT="${AETHER_CLI_TIMEOUT:-60}"
+
 push_blueprint() {
     local coords="$1"
     log_info "Pushing blueprint artifacts: ${coords}" >&2
@@ -202,7 +206,8 @@ deploy_blueprint() {
     local artifact="$1"
     log_info "Deploying blueprint: ${artifact}" >&2
     aether_failover blueprint deploy "$artifact" 2>/dev/null \
-        || api_post "/api/blueprint/deploy" "{\"artifact\":\"${artifact}\"}"
+        || curl -sf -m "$AETHER_CLI_TIMEOUT" -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+                -d "{\"artifact\":\"${artifact}\"}" "${CLUSTER_ENDPOINT}/api/blueprint/deploy"
 }
 
 publish_blueprint() {
