@@ -313,9 +313,30 @@ import static org.pragmatica.lang.Unit.unit;
                                                        List.of(),
                                                        Instant.now());
         if (!stateRef.compareAndSet(current, next)) {return;}
-        log.info("CTM: Cluster at {}/{}, provisioning {} replacement(s)", actual, desired, batchSize);
-        provisionNodes(batchSize);
+        log.info("CTM: Cluster at {}/{}, deferring provision by hysteresis window to absorb transient flaps",
+                 actual,
+                 desired);
+        // Defer actual provisioning by retryInterval — if the peer that triggered the deficit
+        // was a transient QUIC flap, it reconnects (handleAddNodeMessage clears its tombstone
+        // and re-adds to nodeStatesById) within this window and we skip provisioning.
+        SharedScheduler.schedule(() -> attemptProvisionAfterHysteresis(desired, batchSize),
+                                 autoHealConfig.retryInterval());
         scheduleRecheck();
+    }
+
+    private void attemptProvisionAfterHysteresis(int desired, int plannedBatchSize) {
+        if (!active.get()) {return;}
+        if (! (stateRef.get() instanceof NodeReconcilerState.Reconciling)) {return;}
+        var actual = observer.activeNodeCount();
+        if (actual >= desired) {
+            log.info("CTM: Deficit healed during hysteresis window ({}/{}) — skipping provision", actual, desired);
+            cancelRecheck();
+            desiredSizeRef.set(desired);
+            transitionTo(new NodeReconcilerState.Converged());
+            return;
+        }
+        log.info("CTM: Deficit persists after hysteresis ({}/{}) — provisioning {}", actual, desired, plannedBatchSize);
+        provisionNodes(plannedBatchSize);
     }
 
     private void handleSurplus(int actual, int configured) {
