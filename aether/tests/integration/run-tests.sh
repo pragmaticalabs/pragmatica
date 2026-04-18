@@ -236,6 +236,10 @@ run_suite() {
     export MGMT_PORT="${cluster_endpoint##*:}"
     export CLUSTER_ID="$cluster_id"
     export CLUSTER_NAME="aether-${cluster_id}-node-"
+    # aether_failover reads global LB_MGMT_ENDPOINT — must point at THIS cluster, not whichever
+    # was discovered last. Otherwise suites on cluster A send CLI traffic to cluster B's LB.
+    export LB_MGMT_ENDPOINT="$lb_mgmt"
+    export LB_APP_ENDPOINT="$lb_app"
 
     # Run suite
     local start_time
