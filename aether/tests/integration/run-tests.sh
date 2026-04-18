@@ -164,7 +164,19 @@ deploy_blueprints() {
         local coords="org.pragmatica.aether.test:${bp}:1.0.0"
         log_info "Pushing blueprint: ${coords} to ${cluster_endpoint}"
         aether -c "${cluster_endpoint#http://}" --api-key "${API_KEY}" artifact push "$coords" 2>/dev/null || true
-        aether -c "${cluster_endpoint#http://}" --api-key "${API_KEY}" blueprint deploy "$coords" 2>/dev/null || true
+        # Deploy with retry — cluster can briefly return NodeInactive while Rabia finishes
+        # activating immediately after startup. A single-shot deploy here would silently
+        # leave the blueprint unregistered (|| true swallows the error), causing later
+        # suites to find no slices.
+        local deploy_attempt deploy_out
+        for deploy_attempt in 1 2 3 4 5; do
+            deploy_out=$(aether -c "${cluster_endpoint#http://}" --api-key "${API_KEY}" blueprint deploy "$coords" 2>&1 || true)
+            if printf '%s' "$deploy_out" | grep -q '"status"[[:space:]]*:[[:space:]]*"deployed"'; then
+                break
+            fi
+            log_info "Deploy attempt ${deploy_attempt} for ${coords} did not confirm — retrying in 5s"
+            sleep 5
+        done
     done
 }
 
