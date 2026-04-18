@@ -137,7 +137,12 @@ public interface TopologyObserver extends TopologyManager {
 
             private void initReconcile() {
                 if (active.get()) {
-                    evictLongSuspectedPeers();
+                    // evictLongSuspectedPeers disabled — under transient network flaps the 60s
+                    // idle check could fire on a legitimate peer between backoff retries,
+                    // triggering a RemoveNode that cascaded into quorum loss. #166's phantom
+                    // NodeArtifact cleanup is now handled by CDM's periodic reconcile + tombstone-
+                    // aware initReconcile; standalone peer eviction would need a stronger signal
+                    // (sustained SWIM unreachability, cluster-wide consensus, ...) than idle-time.
                     // Re-add any configured core nodes that were removed due to disconnection.
                     // Without this, nodes removed from nodeStatesById are never reconnected
                     // because reconcile() only requests connections for nodes IN the map.
