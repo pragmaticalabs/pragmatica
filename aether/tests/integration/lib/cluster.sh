@@ -223,7 +223,16 @@ publish_blueprint() {
     # version (otherwise SameVersionDeployment is returned).
     local artifact="$1"
     log_info "Publishing blueprint (no instances): ${artifact}" >&2
-    api_post "/api/blueprint/publish" "{\"artifact\":\"${artifact}\"}"
+    local i result
+    for i in 1 2 3 4; do
+        result=$(api_post "/api/blueprint/publish" "{\"artifact\":\"${artifact}\"}")
+        if printf '%s' "$result" | grep -q 'published\|status'; then
+            printf '%s' "$result"
+            return 0
+        fi
+        sleep 5
+    done
+    printf '%s' "$result"
 }
 
 deploy_blueprint_file() {
@@ -615,7 +624,17 @@ deploy_start() {
             strategy_body="\"rolling\":{\"requireManualApproval\":${manual}}" ;;
     esac
     local body="{\"blueprint\":\"${coords}\",\"strategy\":\"${strategy_upper}\",\"instances\":${instances},${strategy_body},\"thresholds\":{\"maxErrorRate\":0.1,\"maxLatencyMs\":1000}}"
-    api_post "/api/deploy" "$body"
+    # Retry deploy start — cluster can return NodeInactive during startup window
+    local i result
+    for i in 1 2 3 4; do
+        result=$(api_post "/api/deploy" "$body")
+        if printf '%s' "$result" | grep -q 'deploymentId'; then
+            printf '%s' "$result"
+            return 0
+        fi
+        sleep 5
+    done
+    printf '%s' "$result"
 }
 
 deploy_list() {
