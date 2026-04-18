@@ -235,6 +235,7 @@ run_suite() {
     export DIRECT_ENDPOINT="$cluster_endpoint"
     export MGMT_PORT="${cluster_endpoint##*:}"
     export CLUSTER_ID="$cluster_id"
+    export CLUSTER_NAME="aether-${cluster_id}-node-"
 
     # Run suite
     local start_time

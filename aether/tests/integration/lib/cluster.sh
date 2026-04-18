@@ -303,7 +303,10 @@ start_node() {
     fi
 }
 
-# Restart all containers for clean cluster formation (hard reset — stops everything first)
+# Restart containers for clean cluster formation (hard reset — stops everything first).
+# Only restarts containers of the current cluster (identified by CLUSTER_NAME prefix) — must
+# NOT restart siblings because the in-memory KV-Store would be wiped on unrelated cluster
+# nodes, dropping blueprints and slice state deployed by earlier suites.
 restart_all_nodes() {
     log_info "Restoring cluster to baseline..."
     if [ "$CLOUD_MODE" = "true" ]; then
@@ -311,7 +314,8 @@ restart_all_nodes() {
             cloud_ssh "node-${i}" "docker restart aether-node" 2>/dev/null || true
         done
     else
-        remote_exec "docker ps -a --filter 'name=aether-a-node-' --filter 'name=aether-b-node-' -q | xargs -r docker stop 2>/dev/null; docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=aether-a-node-' --filter 'name=aether-b-node-' -q | xargs -r docker start" 2>/dev/null
+        local prefix="${CLUSTER_NAME:-aether-b-node-}"
+        remote_exec "docker ps -a --filter 'name=${prefix}' -q | xargs -r docker stop 2>/dev/null; docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=${prefix}' -q | xargs -r docker start" 2>/dev/null
     fi
 }
 
