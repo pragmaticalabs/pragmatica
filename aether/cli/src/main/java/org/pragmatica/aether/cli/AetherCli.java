@@ -16,6 +16,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import java.io.BufferedReader;
@@ -84,6 +85,8 @@ import static org.pragmatica.lang.Option.some;
     @CommandLine.Option(names = "--api-key", description = "API key for authenticated access (prefer AETHER_API_KEY env var to avoid process list exposure)") private String apiKey;
 
     @CommandLine.Option(names = {"-k", "--tls-skip-verify"}, description = "Skip TLS certificate verification (insecure)") private boolean tlsSkipVerify;
+
+    @CommandLine.Option(names = {"--request-timeout"}, description = "Per-request timeout in seconds (default 60). 0 disables.") private int requestTimeoutSeconds = 60;
 
     @CommandLine.Mixin private OutputOptions outputOptions = new OutputOptions();
 
@@ -366,10 +369,21 @@ import static org.pragmatica.lang.Option.some;
         resolveApiKey().onPresent(key -> builder.header("X-API-Key", key));
     }
 
+    /// Apply the per-request timeout (`--request-timeout`, default 60s). 0 disables.
+    /// Without this, a server that accepts the connection but never responds (e.g. forward
+    /// to a dead task-group owner that times out internally without surfacing an error)
+    /// would block the CLI's `await()` indefinitely.
+    private void attachTimeout(HttpRequest.Builder builder) {
+        if (requestTimeoutSeconds > 0) {
+            builder.timeout(TimeSpan.timeSpan(requestTimeoutSeconds).seconds().duration());
+        }
+    }
+
     private HttpRequest buildGetRequest(URI uri) {
         var builder = HttpRequest.newBuilder().uri(uri)
                                             .GET();
         attachApiKey(builder);
+        attachTimeout(builder);
         return builder.build();
     }
 
@@ -378,6 +392,7 @@ import static org.pragmatica.lang.Option.some;
                                             .header("Content-Type", "application/json")
                                             .POST(HttpRequest.BodyPublishers.ofString(body));
         attachApiKey(builder);
+        attachTimeout(builder);
         return builder.build();
     }
 
@@ -386,6 +401,7 @@ import static org.pragmatica.lang.Option.some;
                                             .header("Content-Type", contentType)
                                             .PUT(HttpRequest.BodyPublishers.ofByteArray(content));
         attachApiKey(builder);
+        attachTimeout(builder);
         return builder.build();
     }
 
@@ -393,6 +409,7 @@ import static org.pragmatica.lang.Option.some;
         var builder = HttpRequest.newBuilder().uri(uri)
                                             .DELETE();
         attachApiKey(builder);
+        attachTimeout(builder);
         return builder.build();
     }
 
