@@ -6,12 +6,16 @@ package org.pragmatica.aether.metrics;
 
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.MethodName;
-import org.pragmatica.lang.Contract;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPing;
 import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPong;
+import org.pragmatica.cluster.metrics.MetricsMessage.SnapshotPayload;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.utility.RingBuffer;
 
@@ -22,24 +26,26 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.DoubleAdder;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 
 /// Collects and manages metrics for a single node.
 ///
-///
 /// Responsibilities:
-///
 ///   - Collect JVM metrics (CPU, heap usage)
 ///   - Track per-method call stats (count, duration)
 ///   - Store custom metrics from slices
 ///   - Store received metrics from other nodes
-///   - Handle MetricsPing/MetricsPong messages
-///
-///
-///
-/// Metrics are stored in-memory with a sliding window for historical data.
+///   - Handle MetricsPing/MetricsPong messages (with epoch fencing — Commit 3)
+///   - Track locally observed `rabiaTerm` + `epoch` + the last-received snapshot payload
+///   - Provide a hook for aggregating `CommunityReport`s (used by `SpokesmanPingLoop`
+///     when this node owns Spokesman duty)
 public interface MetricsCollector {
     String CPU_USAGE = "cpu.usage";
 
@@ -63,6 +69,14 @@ public interface MetricsCollector {
     @MessageReceiver@Contract void onTopologyChange(TopologyChangeNotification topologyChange);
     @MessageReceiver@Contract void onMetricsPing(MetricsPing ping);
     @MessageReceiver@Contract void onMetricsPong(MetricsPong pong);
+    long observedRabiaTerm();
+    Epoch observedEpoch();
+    Option<SnapshotPayload> lastObservedSnapshot();
+    String currentLifecycleState();
+    List<CommunityReport> collectCommunityReports();
+    @Contract void setLifecycleStateSupplier(Supplier<String> supplier);
+    @Contract void setCommunityReportSupplier(Supplier<List<CommunityReport>> supplier);
+    @Contract void addPongListener(Consumer<MetricsPong> listener);
 
     long DEFAULT_slidingWindowMs = 2 * 60 * 60 * 1000L;
 
@@ -93,6 +107,18 @@ class MetricsCollectorImpl implements MetricsCollector {
     private final ConcurrentHashMap<NodeId, Map<String, Double>> remoteMetrics = new ConcurrentHashMap<>();
 
     private final ConcurrentHashMap<NodeId, RingBuffer<MetricsSnapshot>> historicalMetricsMap = new ConcurrentHashMap<>();
+
+    private final AtomicLong observedRabiaTerm = new AtomicLong();
+
+    private final AtomicReference<Epoch> observedEpoch = new AtomicReference<>(Epoch.ZERO);
+
+    private final AtomicReference<Option<SnapshotPayload>> lastObservedSnapshot = new AtomicReference<>(Option.none());
+
+    private final AtomicReference<Supplier<String>> lifecycleStateSupplier = new AtomicReference<>(() -> "ON_DUTY");
+
+    private final AtomicReference<Supplier<List<CommunityReport>>> communityReportSupplier = new AtomicReference<>(List::of);
+
+    private final CopyOnWriteArrayList<Consumer<MetricsPong>> pongListeners = new CopyOnWriteArrayList<>();
 
     MetricsCollectorImpl(NodeId self, ClusterNetwork network, long slidingWindowMs) {
         this.self = self;
@@ -159,8 +185,12 @@ class MetricsCollectorImpl implements MetricsCollector {
     }
 
     @Override@Contract public void onMetricsPing(MetricsPing ping) {
+        if (!acceptPingFencing(ping)) {return;}
         ping.allMetrics().forEach(this::storeRemoteMetrics);
-        network.send(ping.sender(), new MetricsPong(self, collectLocal()));
+        var incomingEpoch = Epoch.epoch(ping.epochTerm(), ping.epochCounter());
+        advanceEpochAndCacheSnapshot(incomingEpoch, ping.snapshot());
+        var pong = buildPong();
+        network.send(ping.sender(), pong);
     }
 
     @Override@Contract public void onMetricsPong(MetricsPong pong) {
@@ -168,6 +198,64 @@ class MetricsCollectorImpl implements MetricsCollector {
             remoteMetrics.put(pong.sender(), pong.metrics());
             addToHistory(pong.sender(), pong.metrics());
         }
+        pongListeners.forEach(listener -> listener.accept(pong));
+    }
+
+    @Override public long observedRabiaTerm() {
+        return observedRabiaTerm.get();
+    }
+
+    @Override public Epoch observedEpoch() {
+        return observedEpoch.get();
+    }
+
+    @Override public Option<SnapshotPayload> lastObservedSnapshot() {
+        return lastObservedSnapshot.get();
+    }
+
+    @Override public String currentLifecycleState() {
+        return lifecycleStateSupplier.get().get();
+    }
+
+    @Override public List<CommunityReport> collectCommunityReports() {
+        return communityReportSupplier.get().get();
+    }
+
+    @Override@Contract public void setLifecycleStateSupplier(Supplier<String> supplier) {
+        lifecycleStateSupplier.set(supplier);
+    }
+
+    @Override@Contract public void setCommunityReportSupplier(Supplier<List<CommunityReport>> supplier) {
+        communityReportSupplier.set(supplier);
+    }
+
+    @Override@Contract public void addPongListener(Consumer<MetricsPong> listener) {
+        pongListeners.add(listener);
+    }
+
+    private boolean acceptPingFencing(MetricsPing ping) {
+        var currentTerm = observedRabiaTerm.get();
+        if (ping.rabiaTerm() <currentTerm) {return false;}
+        if (ping.rabiaTerm() > currentTerm) {observedRabiaTerm.set(ping.rabiaTerm());}
+        return true;
+    }
+
+    private void advanceEpochAndCacheSnapshot(Epoch incomingEpoch, Option<SnapshotPayload> snapshot) {
+        observedEpoch.updateAndGet(prev -> incomingEpoch.isStrictlyAfter(prev)
+                                          ? incomingEpoch
+                                          : prev);
+        snapshot.onPresent(payload -> lastObservedSnapshot.set(Option.some(payload)));
+    }
+
+    private MetricsPong buildPong() {
+        var epoch = observedEpoch.get();
+        return new MetricsPong(self,
+                               collectLocal(),
+                               observedRabiaTerm.get(),
+                               epoch.rabiaTerm(),
+                               epoch.localCounter(),
+                               currentLifecycleState(),
+                               collectCommunityReports());
     }
 
     private void collectCpuMetrics(Map<String, Double> metrics) {

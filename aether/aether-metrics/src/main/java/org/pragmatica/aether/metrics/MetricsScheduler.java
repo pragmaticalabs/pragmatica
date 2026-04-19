@@ -6,8 +6,12 @@ package org.pragmatica.aether.metrics;
 
 import org.pragmatica.aether.slice.delegation.DelegatedComponent;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
+import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPing;
+import org.pragmatica.cluster.metrics.MetricsMessage.SnapshotPayload;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.consensus.net.ClusterNetwork;
@@ -22,9 +26,13 @@ import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.lang.concurrent.CancellableTask;
 
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,19 +40,48 @@ import org.slf4j.LoggerFactory;
 
 /// Scheduler for metrics collection that runs on the leader node.
 ///
+/// When this node is the leader, periodically sends `MetricsPing` to all nodes.
+/// Each node responds with `MetricsPong` containing their metrics.
 ///
-/// When this node is the leader, periodically sends MetricsPing to all nodes.
-/// Each node responds with MetricsPong containing their metrics.
+/// Commit 3 extension: the ping now carries the leader's current Rabia term,
+/// the cluster-generation epoch, and — on epoch advance — the full
+/// `ClusterGenerationSnapshot` serialized as a `SnapshotPayload`. The
+/// scheduler tracks the last-sent epoch per target node to decide between
+/// full-snapshot and heartbeat-only ping bodies (see spec §7.5).
 public interface MetricsScheduler extends DelegatedComponent {
     @MessageReceiver@Contract void onTopologyChange(TopologyChangeNotification topologyChange);
     @MessageReceiver@Contract void onQuorumStateChange(QuorumStateNotification notification);
     @Contract void stop();
+    @Contract void recordObservedEpoch(NodeId nodeId, Epoch epoch);
+    Map<NodeId, Epoch> observedEpochs();
 
     static MetricsScheduler metricsScheduler(NodeId self,
                                              ClusterNetwork network,
                                              MetricsCollector metricsCollector,
                                              TimeSpan interval) {
-        return new MetricsSchedulerImpl(self, network, metricsCollector, interval);
+        return new MetricsSchedulerImpl(self,
+                                        network,
+                                        metricsCollector,
+                                        interval,
+                                        () -> 0L,
+                                        Option::none,
+                                        _ -> new byte[0]);
+    }
+
+    static MetricsScheduler metricsScheduler(NodeId self,
+                                             ClusterNetwork network,
+                                             MetricsCollector metricsCollector,
+                                             TimeSpan interval,
+                                             Supplier<Long> rabiaTermSupplier,
+                                             Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
+                                             Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder) {
+        return new MetricsSchedulerImpl(self,
+                                        network,
+                                        metricsCollector,
+                                        interval,
+                                        rabiaTermSupplier,
+                                        snapshotSupplier,
+                                        snapshotEncoder);
     }
 
     static MetricsScheduler metricsScheduler(NodeId self, ClusterNetwork network, MetricsCollector metricsCollector) {
@@ -62,6 +99,9 @@ class MetricsSchedulerImpl implements MetricsScheduler {
     private final ClusterNetwork network;
     private final MetricsCollector metricsCollector;
     private final TimeSpan interval;
+    private final Supplier<Long> rabiaTermSupplier;
+    private final Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier;
+    private final Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder;
 
     private final CancellableTask pingTask = CancellableTask.cancellableTask();
 
@@ -71,11 +111,24 @@ class MetricsSchedulerImpl implements MetricsScheduler {
 
     private final AtomicBoolean active = new AtomicBoolean(false);
 
-    MetricsSchedulerImpl(NodeId self, ClusterNetwork network, MetricsCollector metricsCollector, TimeSpan interval) {
+    private final Map<NodeId, Epoch> lastSentEpoch = new ConcurrentHashMap<>();
+
+    private final Map<NodeId, Epoch> observedEpoch = new ConcurrentHashMap<>();
+
+    MetricsSchedulerImpl(NodeId self,
+                         ClusterNetwork network,
+                         MetricsCollector metricsCollector,
+                         TimeSpan interval,
+                         Supplier<Long> rabiaTermSupplier,
+                         Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
+                         Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder) {
         this.self = self;
         this.network = network;
         this.metricsCollector = metricsCollector;
         this.interval = interval;
+        this.rabiaTermSupplier = rabiaTermSupplier;
+        this.snapshotSupplier = snapshotSupplier;
+        this.snapshotEncoder = snapshotEncoder;
     }
 
     @Override public Promise<Unit> activate() {
@@ -103,7 +156,11 @@ class MetricsSchedulerImpl implements MetricsScheduler {
     @Override@Contract public void onTopologyChange(TopologyChangeNotification topologyChange) {
         switch (topologyChange){
             case NodeAdded(_, List<NodeId> newTopology) -> topology.set(newTopology);
-            case NodeRemoved(_, List<NodeId> newTopology) -> topology.set(newTopology);
+            case NodeRemoved(NodeId removed, List<NodeId> newTopology) -> {
+                topology.set(newTopology);
+                lastSentEpoch.remove(removed);
+                observedEpoch.remove(removed);
+            }
             default -> {}
         }
     }
@@ -123,6 +180,16 @@ class MetricsSchedulerImpl implements MetricsScheduler {
         stopPinging();
     }
 
+    @Override@Contract public void recordObservedEpoch(NodeId nodeId, Epoch epoch) {
+        observedEpoch.merge(nodeId, epoch, (prev, next) -> next.isStrictlyAfter(prev)
+                                                          ? next
+                                                          : prev);
+    }
+
+    @Override public Map<NodeId, Epoch> observedEpochs() {
+        return Map.copyOf(observedEpoch);
+    }
+
     private void startPinging() {
         pingTask.set(SharedScheduler.scheduleAtFixedRate(this::sendPingsToAllNodes, interval));
     }
@@ -135,12 +202,37 @@ class MetricsSchedulerImpl implements MetricsScheduler {
         try {
             var currentTopology = topology.get();
             if (currentTopology.isEmpty()) {return;}
-            var ping = new MetricsPing(self, metricsCollector.allMetrics());
+            var rabiaTerm = rabiaTermSupplier.get();
+            var maybeSnapshot = snapshotSupplier.get();
+            var currentEpoch = maybeSnapshot.map(ClusterGenerationSnapshot::epoch).or(Epoch.ZERO);
             currentTopology.stream().filter(nodeId -> !nodeId.equals(self))
-                                  .forEach(nodeId -> network.send(nodeId, ping));
-            log.trace("Sent MetricsPing to {} nodes", currentTopology.size() - 1);
+                                  .forEach(nodeId -> sendOnePing(nodeId, rabiaTerm, currentEpoch, maybeSnapshot));
+            log.trace("Sent MetricsPing to {} nodes at epoch {}", currentTopology.size() - 1, currentEpoch);
         } catch (Exception e) {
             log.warn("Failed to send metrics ping: {}", e.getMessage());
         }
+    }
+
+    private void sendOnePing(NodeId nodeId,
+                             long rabiaTerm,
+                             Epoch currentEpoch,
+                             Option<ClusterGenerationSnapshot> maybeSnapshot) {
+        var payload = buildPayloadForTarget(nodeId, currentEpoch, maybeSnapshot);
+        var ping = new MetricsPing(self,
+                                   metricsCollector.allMetrics(),
+                                   rabiaTerm,
+                                   currentEpoch.rabiaTerm(),
+                                   currentEpoch.localCounter(),
+                                   payload);
+        network.send(nodeId, ping);
+        lastSentEpoch.put(nodeId, currentEpoch);
+    }
+
+    private Option<SnapshotPayload> buildPayloadForTarget(NodeId nodeId,
+                                                          Epoch currentEpoch,
+                                                          Option<ClusterGenerationSnapshot> maybeSnapshot) {
+        var lastSent = lastSentEpoch.get(nodeId);
+        if (lastSent != null && !currentEpoch.isStrictlyAfter(lastSent)) {return Option.none();}
+        return maybeSnapshot.map(snapshotEncoder::apply).map(SnapshotPayload::snapshotPayload);
     }
 }
