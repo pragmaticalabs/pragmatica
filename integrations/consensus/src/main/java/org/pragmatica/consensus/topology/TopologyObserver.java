@@ -71,13 +71,33 @@ public interface TopologyObserver extends TopologyManager {
     @MessageReceiver
     void handleSetClusterSize(TopologyManagementMessage.SetClusterSize message);
 
+    /// Which membership source (`SNAPSHOT` vs `LEGACY`) the observer would serve reads
+    /// from right now, plus the resulting core-id set. Lets tests and diagnostics verify
+    /// that the snapshot-backed path is actually engaged.
+    default EffectiveMembership effectiveMembership() {
+        return new EffectiveMembership(coreNodes(), EffectiveMembership.Source.LEGACY);
+    }
+
     static Result<TopologyObserver> topologyObserver(TopologyConfig config, MessageRouter router) {
-        return topologyObserver(config, router, TimeSource.system());
+        return topologyObserver(config, router, TimeSource.system(), GenerationSnapshotSource.noop());
     }
 
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
                                                      MessageRouter router,
                                                      TimeSource timeSource) {
+        return topologyObserver(config, router, timeSource, GenerationSnapshotSource.noop());
+    }
+
+    static Result<TopologyObserver> topologyObserver(TopologyConfig config,
+                                                     MessageRouter router,
+                                                     GenerationSnapshotSource snapshotSource) {
+        return topologyObserver(config, router, TimeSource.system(), snapshotSource);
+    }
+
+    static Result<TopologyObserver> topologyObserver(TopologyConfig config,
+                                                     MessageRouter router,
+                                                     TimeSource timeSource,
+                                                     GenerationSnapshotSource snapshotSource) {
         // Validate that self node is in coreNodes - required for self() to work
         var selfInCoreNodes = config.coreNodes()
                                     .stream()
@@ -95,7 +115,8 @@ public interface TopologyObserver extends TopologyManager {
                        AtomicInteger effectiveClusterSize,
                        java.util.Set<NodeId> readyNodes,
                        Set<NodeId> coreNodeIds,
-                       Set<NodeId> tombstonedNodes) implements TopologyObserver {
+                       Set<NodeId> tombstonedNodes,
+                       GenerationSnapshotSource snapshotSource) implements TopologyObserver {
             private static final Logger log = LoggerFactory.getLogger(TopologyObserver.class);
 
             private static final TimeSpan EVICTION_GRACE_PERIOD = TimeSpan.timeSpan(60).seconds();
@@ -109,7 +130,8 @@ public interface TopologyObserver extends TopologyManager {
                     AtomicInteger effectiveClusterSize,
                     java.util.Set<NodeId> readyNodes,
                     Set<NodeId> coreNodeIds,
-                    Set<NodeId> tombstonedNodes) {
+                    Set<NodeId> tombstonedNodes,
+                    GenerationSnapshotSource snapshotSource) {
                 this.config = config;
                 this.router = router;
                 this.nodeStatesById = nodeStatesById;
@@ -120,6 +142,7 @@ public interface TopologyObserver extends TopologyManager {
                 this.readyNodes = readyNodes;
                 this.coreNodeIds = coreNodeIds;
                 this.tombstonedNodes = tombstonedNodes;
+                this.snapshotSource = snapshotSource;
                 this.effectiveClusterSize.set(config.clusterSize());
                 config().coreNodes()
                       .forEach(this::addNode);
@@ -341,7 +364,18 @@ public interface TopologyObserver extends TopologyManager {
 
             @Override
             public Set<NodeId> coreNodes() {
-                return Collections.unmodifiableSet(coreNodeIds);
+                return snapshotSource.currentMembershipView()
+                                     .map(MembershipView::coreMemberIds)
+                                     .or(() -> Collections.unmodifiableSet(coreNodeIds));
+            }
+
+            @Override
+            public EffectiveMembership effectiveMembership() {
+                return snapshotSource.currentMembershipView()
+                                     .map(view -> new EffectiveMembership(view.coreMemberIds(),
+                                                                           EffectiveMembership.Source.SNAPSHOT))
+                                     .or(() -> new EffectiveMembership(Collections.unmodifiableSet(coreNodeIds),
+                                                                        EffectiveMembership.Source.LEGACY));
             }
 
             @Override
@@ -384,20 +418,30 @@ public interface TopologyObserver extends TopologyManager {
 
             @Override
             public int readyNodeCount() {
-                // ON_DUTY from consensus is authoritative — no cross-reference against local topology.
-                // Dynamically provisioned nodes may be ON_DUTY before appearing in local nodeStatesById.
-                return (int) readyNodes.stream()
-                                       .filter(id -> !isPassive(id))
-                                       .count();
+                // Prefer snapshot-projected ON_DUTY set: dynamically provisioned nodes may be
+                // ON_DUTY in the leader-projected view before appearing in local nodeStatesById
+                // (and therefore before the local readyNodes membership tracker gets populated
+                // via markReady from consensus). Fall back to legacy readyNodes when the
+                // snapshot source is absent or no snapshot has arrived yet.
+                return snapshotSource.currentMembershipView()
+                                     .map(view -> view.onDutyMemberIds().size())
+                                     .or(() -> (int) readyNodes.stream()
+                                                               .filter(id -> !isPassive(id))
+                                                               .count());
             }
 
             @Override
             public int healthyActiveNodeCount() {
-                return (int) nodeStatesById.values()
-                                          .stream()
-                                          .filter(state -> state.info().role() != NodeRole.PASSIVE)
-                                          .filter(state -> state.health() == NodeHealth.HEALTHY)
-                                          .count();
+                // Snapshot is the authoritative view when present — the leader has already
+                // cross-referenced SWIM/health-hint signals across the whole cluster, whereas
+                // local nodeStatesById only sees QUIC connection outcomes observed by self.
+                return snapshotSource.currentMembershipView()
+                                     .map(MembershipView::healthyOnDutyCount)
+                                     .or(() -> (int) nodeStatesById.values()
+                                                                   .stream()
+                                                                   .filter(state -> state.info().role() != NodeRole.PASSIVE)
+                                                                   .filter(state -> state.health() == NodeHealth.HEALTHY)
+                                                                   .count());
             }
 
             private int activeTopologySize() {
@@ -500,6 +544,7 @@ public interface TopologyObserver extends TopologyManager {
                                           new AtomicInteger(config.clusterSize()),
                                           ConcurrentHashMap.newKeySet(),
                                           ConcurrentHashMap.newKeySet(),
-                                          ConcurrentHashMap.newKeySet()));
+                                          ConcurrentHashMap.newKeySet(),
+                                          snapshotSource));
     }
 }

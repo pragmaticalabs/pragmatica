@@ -5,17 +5,25 @@
 package org.pragmatica.aether.node.generation;
 
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
+import org.pragmatica.aether.slice.generation.CoreMember;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.HealthHint;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPing;
 import org.pragmatica.cluster.metrics.MetricsMessage.SnapshotPayload;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.consensus.topology.MembershipView;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageReceiver;
 
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,23 +51,26 @@ import org.slf4j.LoggerFactory;
 /// Thread-safe — relies on atomics for all mutable state.
 ///
 /// See `aether/docs/specs/cluster-generation-spec.md` §7.2 (Tier 1 distribution).
-public interface NodeSnapshotCache {
+public interface NodeSnapshotCache extends GenerationSnapshotSource {
     Option<ClusterGenerationSnapshot> current();
-    long observedRabiaTerm();
+    @Override long observedRabiaTerm();
     Epoch observedEpoch();
+
+    @Override default Option<MembershipView> currentMembershipView() {
+        return current().map(NodeSnapshotCache::toMembershipView);
+    }
 
     @MessageReceiver@Contract void onMetricsPing(MetricsPing ping);
 
-    /// Creates a cache with a no-op decoder — useful when wiring is still incomplete.
-    /// The cache will still fence pings and track `observedRabiaTerm` / `observedEpoch`,
-    /// but `current()` always returns `Option.none()` because payloads cannot be decoded.
+    private static MembershipView toMembershipView(ClusterGenerationSnapshot snapshot) {
+        var coreMembers = snapshot.coreMembers();
+        return new SnapshotMembershipView(coreMembers, snapshot.desiredCoreSize());
+    }
+
     static NodeSnapshotCache nodeSnapshotCache(NodeId self) {
         return nodeSnapshotCache(self, _ -> Option.none());
     }
 
-    /// Creates a cache that decodes incoming `SnapshotPayload` bytes using the supplied
-    /// decoder. Producers of this cache are responsible for supplying a decoder that
-    /// matches the encoder used by the leader's `MetricsScheduler`.
     static NodeSnapshotCache nodeSnapshotCache(NodeId self,
                                                Function<byte[], Option<ClusterGenerationSnapshot>> snapshotDecoder) {
         return new NodeSnapshotCacheImpl(self, snapshotDecoder);
@@ -73,7 +84,9 @@ final class NodeSnapshotCacheImpl implements NodeSnapshotCache {
     private final Function<byte[], Option<ClusterGenerationSnapshot>> snapshotDecoder;
 
     private final AtomicLong observedRabiaTerm = new AtomicLong();
+
     private final AtomicReference<Epoch> observedEpoch = new AtomicReference<>(Epoch.ZERO);
+
     private final AtomicReference<Option<ClusterGenerationSnapshot>> currentSnapshot = new AtomicReference<>(Option.none());
 
     NodeSnapshotCacheImpl(NodeId self, Function<byte[], Option<ClusterGenerationSnapshot>> snapshotDecoder) {
@@ -95,7 +108,7 @@ final class NodeSnapshotCacheImpl implements NodeSnapshotCache {
 
     @Override@Contract public void onMetricsPing(MetricsPing ping) {
         var currentTerm = observedRabiaTerm.get();
-        if (ping.rabiaTerm() < currentTerm) {
+        if (ping.rabiaTerm() <currentTerm) {
             log.trace("Node {} rejecting stale-term ping from {}: pingTerm={}, observedTerm={}",
                       self,
                       ping.sender(),
@@ -131,5 +144,28 @@ final class NodeSnapshotCacheImpl implements NodeSnapshotCache {
 
     private void storeSnapshot(ClusterGenerationSnapshot snapshot) {
         currentSnapshot.set(Option.some(snapshot));
+    }
+}
+
+/// Narrow adapter that exposes a `ClusterGenerationSnapshot` as the consensus-layer
+/// `MembershipView` contract (package-private on purpose — construction is the cache's
+/// responsibility).
+record SnapshotMembershipView(Map<NodeId, CoreMember> coreMembers, int desiredCoreSize) implements MembershipView {
+    @Override public Set<NodeId> coreMemberIds() {
+        return coreMembers.keySet();
+    }
+
+    @Override public Set<NodeId> onDutyMemberIds() {
+        return coreMembers.entrySet().stream()
+                                   .filter(entry -> entry.getValue().lifecycle() == NodeLifecycleState.ON_DUTY)
+                                   .map(Map.Entry::getKey)
+                                   .collect(Collectors.toUnmodifiableSet());
+    }
+
+    @Override public int healthyOnDutyCount() {
+        return (int) coreMembers.values().stream()
+                                       .filter(member -> member.lifecycle() == NodeLifecycleState.ON_DUTY)
+                                       .filter(member -> member.healthHint() == HealthHint.HEALTHY)
+                                       .count();
     }
 }
