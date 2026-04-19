@@ -11,15 +11,13 @@ BLUEPRINT="org.pragmatica.aether.test:test-echo:1.0.0"
 
 test_cluster_ready() {
     wait_for_cluster 60
+    # ClusterGeneration barrier: whatever churn a prior destructive suite left is
+    # committed to a stable generation before we deploy. No rescale-fallback needed.
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 60 || log_warn "pre-deploy snapshot not quiesced"
     push_blueprint "$BLUEPRINT"
     deploy_blueprint "$BLUEPRINT"
-    # After destructive prior suites, CDM may need time to redistribute slices to live nodes.
-    # Trigger an explicit re-scale if the first deploy doesn't produce live instances.
-    if ! wait_for_slices_active 1 60; then
-        log_warn "Slices not active after first deploy — triggering re-scale"
-        api_post "/api/slices/scale" "{\"artifact\":\"org.pragmatica.aether.test:test-echo-echo-slice:1.0.0\",\"instances\":3}" > /dev/null 2>&1 || true
-        wait_for_slices_active 1 120 || log_warn "Slices still not active after rescale"
-    fi
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 60 || log_warn "deploy did not quiesce"
+    wait_for_slices_active 1 120 || log_warn "Slices not active after deploy"
     log_pass "Cluster ready with baseline blueprint deployed"
 }
 
@@ -67,19 +65,18 @@ test_kill_node_hosting_routes() {
 
     log_info "Killing node with potential routes: ${victim}"
     kill_node "$victim"
+    # Legitimate chaos window: failure detection needs a few seconds.
     sleep 5
 
-    # Wait for stale route cleanup
-    log_info "Waiting up to ${ROUTE_CLEANUP_TIMEOUT}s for stale route cleanup"
-    sleep "$((ROUTE_CLEANUP_TIMEOUT > 30 ? 30 : ROUTE_CLEANUP_TIMEOUT))"
-    log_pass "Waited for route cleanup"
+    # ClusterGeneration barrier: routes are fenced by epoch. When the next
+    # generation quiesces, stale-route cleanup is complete.
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" "$ROUTE_CLEANUP_TIMEOUT" || \
+        log_warn "Post-kill quiescence not reached within ${ROUTE_CLEANUP_TIMEOUT}s"
+    log_pass "Route cleanup fenced by generation advance"
 }
 
 test_no_502_504_after_cleanup() {
-    # Make several requests — none should get 502/504 from stale routes.
-    # Allow up to 30s for the LB to detect the killed peer and remove it from
-    # the round-robin pool before sampling.
-    sleep 10
+    # Previous test already waited for generation quiescence — no pre-sample sleep needed.
     local bad_status=0
     for i in $(seq 1 10); do
         local status

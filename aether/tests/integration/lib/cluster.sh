@@ -3,6 +3,7 @@
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${LIB_DIR}/common.sh"
+source "${LIB_DIR}/generation.sh"
 
 # ---------------------------------------------------------------------------
 # Cluster queries (CLI-based)
@@ -201,19 +202,11 @@ push_blueprint() {
 deploy_blueprint() {
     local artifact="$1"
     log_info "Deploying blueprint: ${artifact}" >&2
-    # Retry deploy for up to ~20s. The cluster can return "Node X is inactive" briefly during
-    # startup before Rabia consensus has activated; a single-shot deploy would fail that window.
-    local i result
-    for i in 1 2 3 4; do
-        result=$(aether_failover blueprint deploy "$artifact" 2>/dev/null \
-            || api_post "/api/blueprint/deploy" "{\"artifact\":\"${artifact}\"}")
-        if printf '%s' "$result" | grep -q 'deployed\|deploymentId\|status'; then
-            printf '%s' "$result"
-            return 0
-        fi
-        sleep 5
-    done
-    printf '%s' "$result"
+    # Single-shot: preceding await_generation_quiesced (in the test/runner) guarantees
+    # the cluster is settled. Retries hid the actual race; the ClusterGeneration gate
+    # replaces the compensation loop with a deterministic barrier.
+    aether_failover blueprint deploy "$artifact" 2>/dev/null \
+        || api_post "/api/blueprint/deploy" "{\"artifact\":\"${artifact}\"}"
 }
 
 publish_blueprint() {
@@ -223,16 +216,7 @@ publish_blueprint() {
     # version (otherwise SameVersionDeployment is returned).
     local artifact="$1"
     log_info "Publishing blueprint (no instances): ${artifact}" >&2
-    local i result
-    for i in 1 2 3 4; do
-        result=$(api_post "/api/blueprint/publish" "{\"artifact\":\"${artifact}\"}")
-        if printf '%s' "$result" | grep -q 'published\|status'; then
-            printf '%s' "$result"
-            return 0
-        fi
-        sleep 5
-    done
-    printf '%s' "$result"
+    api_post "/api/blueprint/publish" "{\"artifact\":\"${artifact}\"}"
 }
 
 deploy_blueprint_file() {
@@ -300,51 +284,6 @@ start_node() {
         local name
         name=$(_docker_container_name "$node_id")
         remote_exec "docker start ${name}" 2>/dev/null
-    fi
-}
-
-# Restore cluster to canonical topology after destructive test (kill + CTM auto-heal).
-# Removes CTM-provisioned `aether-core-*` replacements and starts any stopped compose nodes
-# for the CURRENT cluster only (identified by CLUSTER_NAME prefix). Does NOT stop nodes that
-# are still running — stopping healthy nodes forces a KV-Store rebuild on every surviving
-# node and wipes the in-memory consensus log, dropping blueprints and slice state put in
-# KV by earlier suites.
-restart_all_nodes() {
-    log_info "Restoring cluster to baseline..."
-    if [ "$CLOUD_MODE" = "true" ]; then
-        for i in $(seq 1 "$NODE_COUNT"); do
-            cloud_ssh "node-${i}" "docker restart aether-node" 2>/dev/null || true
-        done
-    else
-        local prefix="${CLUSTER_NAME:-aether-b-node-}"
-        remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=${prefix}' --filter 'status=exited' -q | xargs -r docker start" 2>/dev/null
-    fi
-}
-
-# Lightweight restore: remove CTM-provisioned containers and start any stopped compose nodes.
-# Only acts when the cluster is actually degraded (stopped nodes or CTM containers present).
-# Restarts LB to re-establish QUIC connections when nodes were restored.
-restore_baseline() {
-    if [ "$CLOUD_MODE" = "true" ]; then
-        return 0
-    fi
-    local needs_restore=false
-    # Check for CTM-provisioned containers
-    local ctm_count
-    ctm_count=$(remote_exec "docker ps -a -q --filter name=aether-core 2>/dev/null | wc -l" 2>/dev/null)
-    if [ "${ctm_count:-0}" -gt 0 ] 2>/dev/null; then
-        needs_restore=true
-        remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null || true" 2>/dev/null
-    fi
-    # Check for stopped compose nodes (both cluster-A and cluster-B naming).
-    local stopped
-    stopped=$(remote_exec "docker ps -a --filter 'name=aether-a-node-' --filter 'name=aether-b-node-' --filter 'status=exited' -q 2>/dev/null | wc -l" 2>/dev/null)
-    if [ "${stopped:-0}" -gt 0 ] 2>/dev/null; then
-        needs_restore=true
-        remote_exec "docker ps -a --filter 'name=aether-a-node-' --filter 'name=aether-b-node-' --filter 'status=exited' -q | xargs -r docker start" 2>/dev/null
-    fi
-    if [ "$needs_restore" = true ]; then
-        log_info "Cluster was degraded — waiting for nodes to rejoin"
     fi
 }
 
@@ -630,17 +569,7 @@ deploy_start() {
             strategy_body="\"rolling\":{\"requireManualApproval\":${manual}}" ;;
     esac
     local body="{\"blueprint\":\"${coords}\",\"strategy\":\"${strategy_upper}\",\"instances\":${instances},${strategy_body},\"thresholds\":{\"maxErrorRate\":0.1,\"maxLatencyMs\":1000}}"
-    # Retry deploy start — cluster can return NodeInactive during startup window
-    local i result
-    for i in 1 2 3 4; do
-        result=$(api_post "/api/deploy" "$body")
-        if printf '%s' "$result" | grep -q 'deploymentId'; then
-            printf '%s' "$result"
-            return 0
-        fi
-        sleep 5
-    done
-    printf '%s' "$result"
+    api_post "/api/deploy" "$body"
 }
 
 deploy_list() {
@@ -696,7 +625,8 @@ deploy_extract_id() {
 }
 
 # ---------------------------------------------------------------------------
-# Self-Heal (dual-cluster support)
+# Endpoint-scoped topology waits (still useful for initial cluster bring-up,
+# where await_generation_quiesced may have no snapshot to compare against yet).
 # ---------------------------------------------------------------------------
 
 # Wait for specific node count on a given endpoint
@@ -718,60 +648,4 @@ wait_for_leader_on() {
     wait_for "leader elected on ${endpoint}" \
         "json_contains \"\$(curl -sf -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null)\" role ACTIVE" \
         "$timeout"
-}
-
-# Self-heal: wait for cluster to recover after destructive test.
-# Usage: self_heal <env_type> <compose_file> <expected_node_count> <mgmt_endpoint>
-#
-# Strategy:
-#   Step 0 — restore_baseline: kill any CTM-provisioned containers and restart any
-#            stopped compose nodes so the next suite starts against the canonical
-#            node-1..5 topology, not a mix of original + provisioned replacements.
-#            Without this, tests that deploy new blueprints (e.g. 13-edge-cases) hit a
-#            cluster whose node identities drift suite-to-suite, which confuses slice
-#            placement and can leave ACTIVE instances unreported during the test window.
-#   Step 1 — wait for natural recovery.
-#   Step 2 — force restart via compose if Step 1 times out.
-self_heal() {
-    local env_type="$1"
-    local compose_file="$2"
-    local expected_count="${3:-5}"
-    local endpoint="${4:-${CLUSTER_B_MGMT}}"
-
-    log_info "Self-heal: restoring baseline topology then waiting for ${expected_count} healthy nodes..."
-
-    # Step 0: normalize to canonical topology before waiting for recovery
-    restore_baseline
-
-    # Step 1: wait for natural recovery (CTM auto-heal + restart of stopped nodes)
-    if wait_for_node_count_on "$endpoint" "$expected_count" 120; then
-        wait_for_leader_on "$endpoint" 30 && return 0
-    fi
-
-    # Step 2: force restart
-    log_warn "Cluster did not self-heal within 120s, forcing restart"
-    case "$env_type" in
-        docker)
-            docker compose -f "$compose_file" restart 2>/dev/null
-            docker rm -f $(docker ps -aq --filter "name=aether-core") 2>/dev/null || true
-            ;;
-        remote)
-            # docker commands target the remote host; local docker has no
-            # knowledge of aether-core-* orphans provisioned on the test target.
-            local remote_compose="~/$(basename "$compose_file")"
-            remote_exec "docker compose -f ${remote_compose} restart" 2>/dev/null || true
-            remote_exec "docker rm -f \$(docker ps -aq --filter 'name=aether-core') 2>/dev/null || true" 2>/dev/null || true
-            ;;
-        cloud)
-            aether cluster heal --cluster cluster-b 2>/dev/null || true
-            ;;
-    esac
-
-    if wait_for_node_count_on "$endpoint" "$expected_count" 120; then
-        wait_for_leader_on "$endpoint" 30 && return 0
-    fi
-
-    # Step 3: abort
-    log_error "Cluster unrecoverable after restart -- aborting destructive suites"
-    return 1
 }

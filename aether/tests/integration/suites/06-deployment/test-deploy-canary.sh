@@ -25,10 +25,11 @@ test_canary_start() {
     # Baseline v1 must be active for canary upgrade to v2
     push_blueprint "$BLUEPRINT_V1"
     deploy_blueprint "$BLUEPRINT_V1"
-    sleep 3
+    # ClusterGeneration barrier replaces sleep 3 (registry propagation race).
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "v1 deploy did not quiesce"
     push_blueprint "$BLUEPRINT_V2"
     publish_blueprint "$BLUEPRINT_V2"
-    sleep 2
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "v2 publish did not quiesce"
     local result
     result=$(deploy_start "$BLUEPRINT_V2" canary --traffic 5 --instances 1)
     assert_contains "$result" "deploymentId" "Canary started with deployment ID"
@@ -45,7 +46,7 @@ test_canary_list() {
 test_canary_promote() {
     assert_ne "$DEPLOYMENT_ID" "" "Have deployment ID"
     deploy_promote "$DEPLOYMENT_ID"
-    sleep 5
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "promote did not quiesce"
     local status_result
     status_result=$(deploy_status "$DEPLOYMENT_ID" 2>/dev/null || echo "")
     log_info "Deployment status after promote: $status_result"
@@ -53,19 +54,16 @@ test_canary_promote() {
 
 test_canary_complete() {
     assert_ne "$DEPLOYMENT_ID" "" "Have deployment ID"
+    # Wait for promote's post-quiescence state before asserting terminal state.
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 30 || log_warn "promote snapshot not quiesced"
     local result
     result=$(deploy_complete "$DEPLOYMENT_ID" 2>/dev/null || echo "")
-    if printf '%s' "$result" | grep -q '"state"[[:space:]]*:[[:space:]]*"COMPLETED"'; then
-        log_pass "Canary completed"
-        return 0
-    fi
-    # complete() rejects COMPLETED → COMPLETED with an invalid-transition error. If the
-    # deployment already reached terminal state (promote can auto-advance the final stage on
-    # canaries that resolve to ALL_NEW), accept that as success and verify via status.
+    # If the canary has already auto-advanced to COMPLETED (promote resolved ALL_NEW),
+    # the deployment is a no-op but deploy_status still reflects COMPLETED.
     local status_check
     status_check=$(deploy_status "$DEPLOYMENT_ID" 2>/dev/null || echo "")
     if printf '%s' "$status_check" | grep -q '"state"[[:space:]]*:[[:space:]]*"COMPLETED"'; then
-        log_pass "Canary already in COMPLETED state"
+        log_pass "Canary in COMPLETED state"
         return 0
     fi
     assert_contains "$result" "COMPLETED" "Canary completed"

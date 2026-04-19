@@ -51,6 +51,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 15 | Quorum state management | Battle-tested | Monotonic-sequenced quorum notifications, graceful degradation on quorum loss, automatic restoration |
 | 16 | Topology management | Battle-tested | Node discovery, addition/removal events, health tracking, grace period for departures |
 | 17 | Distributed KV-Store | Battle-tested | Consensus-replicated store with typed keys (SliceNode, SliceTarget, HttpRoute, AppBlueprint, VersionRouting, RollingUpdate, Threshold, LogLevel, Config, TopicSubscription, NodeArtifact, NodeRoutes) |
+| 175 | ClusterGeneration choreography | Complete | Epoch-fenced cluster-wide snapshot (`ClusterGenerationSnapshot`, `Epoch`, `Spokesman`, `ClusterQuiescence`). Leader projects membership/communities/DHT partition ownership at each commit; every node caches the latest snapshot via pings and serves it locally. `GET /api/cluster/generation` (always safe), `POST /api/cluster/await-quiesced?epoch=T:C&timeout=30s` (synchronous barrier for tests/operators). CLI: `aether cluster generation`, `aether cluster await-quiesced`. Replaces retry/sleep/self-heal compensation in the integration test harness with a deterministic quiesced-await. See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) |
 
 ## Networking & Routing
 

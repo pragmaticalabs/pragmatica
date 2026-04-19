@@ -19,10 +19,10 @@ test_rolling_start() {
     deploy_cleanup
     push_blueprint "$BLUEPRINT_V1"
     deploy_blueprint "$BLUEPRINT_V1"
-    sleep 3
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "v1 deploy did not quiesce"
     push_blueprint "$BLUEPRINT_V2"
     publish_blueprint "$BLUEPRINT_V2"
-    sleep 2
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "v2 publish did not quiesce"
     local result
     result=$(deploy_start "$BLUEPRINT_V2" rolling --instances 2)
     assert_contains "$result" "deploymentId" "Rolling deployment started with deployment ID"
@@ -34,7 +34,7 @@ test_rolling_promote() {
     did=$(deploy_extract_id "$deployments")
     assert_ne "$did" "" "Got deployment ID"
     deploy_promote "$did"
-    sleep 5
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "promote did not quiesce"
     local status_result
     status_result=$(deploy_status "$did")
     log_info "Deployment status after promote: $status_result"

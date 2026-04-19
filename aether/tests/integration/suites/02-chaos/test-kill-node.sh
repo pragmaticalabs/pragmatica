@@ -47,25 +47,21 @@ test_health_with_4_nodes() {
 }
 
 test_auto_heal() {
-    log_info "Waiting for CTM auto-heal to restore cluster to 5 nodes..."
-    wait_for_node_count 5 240 || true
+    log_info "Waiting for CTM auto-heal to quiesce at the post-kill generation..."
+    # ClusterGeneration barrier: the post-kill generation commits once replacement
+    # is in place and membership is stable. No 5..7 tolerance window needed.
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 120 || {
+        log_fail "Cluster did not quiesce after auto-heal"
+        return 1
+    }
     local count
     count=$(cluster_node_count)
-    # Tolerate transient overprovision (5..7) — consensus will converge as
-    # extras are terminated. The important invariant is "at least 5 healthy".
-    if [ "$count" -ge 5 ] 2>/dev/null; then
-        log_pass "Auto-heal restored cluster to >=5 nodes (${count})"
-    else
-        log_fail "Auto-heal did not restore cluster: ${count} nodes"
-        return 1
-    fi
+    assert_eq "$count" "5" "Auto-heal restored cluster to exactly 5 nodes"
 }
 
 cleanup() {
-    log_info "Restoring all containers for clean state..."
-    restart_all_nodes
-    wait_for_node_count 5 120 || true
-    wait_for_leader 90 || true
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 60 || \
+        log_warn "Cluster did not quiesce after kill-node; next suite may inherit churn"
 }
 
 run_test "Initial 5 nodes" test_initial_state

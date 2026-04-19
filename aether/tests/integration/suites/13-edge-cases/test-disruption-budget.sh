@@ -8,14 +8,10 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_cluster_ready() {
     wait_for_cluster 60
-    # Recover from any prior test that killed nodes — auto-heal can take a while
-    wait_for_node_count 5 240 || log_warn "Only $(cluster_node_count) nodes available — proceeding"
-    # Clear any lingering drain state from prior destructive suites — otherwise the first
-    # drain here can be rejected with 409 because the budget is already exhausted by
-    # pre-existing DRAINING nodes. Reactivate node-4 / node-5 (the nodes this test targets).
-    activate_node "node-4" > /dev/null 2>&1 || true
-    activate_node "node-5" > /dev/null 2>&1 || true
-    sleep 2
+    # ClusterGeneration barrier: inherit-from-predecessor churn is committed to a stable
+    # generation (no manual drain-reset). Lingering DRAINING lifecycle is fenced by the
+    # leader's snapshot quiescence — if the budget is still exhausted it's a real defect.
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 120 || log_warn "pre-test snapshot not quiesced"
     local count
     count=$(cluster_node_count)
     if [ "$count" -lt 3 ] 2>/dev/null; then
@@ -37,7 +33,7 @@ test_drain_first_node_allowed() {
         log_fail "First drain should be accepted (within budget), got ${status}"
         return 1
     fi
-    sleep 3
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "first drain did not quiesce"
 }
 
 test_drain_second_node_allowed() {
@@ -52,7 +48,7 @@ test_drain_second_node_allowed() {
         log_fail "Second drain should be accepted (within budget), got ${status}"
         return 1
     fi
-    sleep 3
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "second drain did not quiesce"
 }
 
 test_drain_beyond_budget_rejected() {
@@ -92,7 +88,7 @@ test_reactivate_nodes() {
             done
         fi
     fi
-    sleep 5
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "reactivation did not quiesce"
     assert_cluster_healthy "Cluster healthy after reactivation"
 }
 

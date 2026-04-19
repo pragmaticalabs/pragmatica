@@ -25,12 +25,16 @@ test_kill_two_nodes() {
 
     log_info "Killing node 1: ${victim1}"
     kill_node "$victim1"
+    # Legitimate chaos timing: give SWIM a window to detect the first failure
+    # before the second kill (emulates staggered real-world failures).
     sleep 5
     log_info "Killing node 2: ${victim2}"
     kill_node "$victim2"
 
-    # Wait for failure detection (auto-heal may restore before we observe 3)
-    sleep 15
+    # ClusterGeneration commits the post-kill membership view. After quiescence
+    # the count reflects whatever CTM has done — just assert quorum.
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 60 || \
+        log_warn "Post-kill quiescence not observed within 60s"
     local count
     count=$(cluster_node_count)
     assert_ge "$count" "3" "Cluster survives with quorum after 2 kills (${count} nodes)"
@@ -49,18 +53,21 @@ test_leader_still_active() {
 }
 
 test_auto_heal() {
-    log_info "Waiting for CTM auto-heal to restore cluster to 5 nodes..."
-    wait_for_node_count 5 180
+    log_info "Waiting for CTM auto-heal to quiesce at the post-replacement generation..."
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 180 || {
+        log_fail "Cluster did not quiesce after auto-heal"
+        return 1
+    }
     local count
     count=$(cluster_node_count)
-    assert_eq "$count" "5" "Auto-heal restored cluster to 5 nodes"
+    assert_eq "$count" "5" "Auto-heal restored cluster to exactly 5 nodes"
 }
 
 cleanup() {
-    log_info "Restoring all containers for clean state..."
-    restart_all_nodes
-    wait_for_node_count 5 120 || true
-    wait_for_leader 90 || true
+    # CTM auto-heal is responsible for restoring the cluster. We barrier on
+    # ClusterGeneration quiescence — no manual docker compose restart.
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 60 || \
+        log_warn "Cluster did not quiesce after kill-multiple; next suite may inherit churn"
 }
 
 run_test "Initial 5 nodes" test_initial_state

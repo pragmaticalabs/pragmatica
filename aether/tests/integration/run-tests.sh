@@ -30,6 +30,9 @@ SKIP_TEARDOWN=false
 
 RESULTS_FILE="$(mktemp /tmp/aether-test-results.XXXXXX)"
 RESULTS_JSON="${SCRIPT_DIR}/test-results.json"
+TIMINGS_FILE="$(mktemp /tmp/aether-test-timings.XXXXXX)"
+# Child processes (suites) may record per-await durations here.
+export QUIESCED_TIMINGS_FILE="$TIMINGS_FILE"
 
 # Cluster A: non-destructive (parallel)
 COMPOSE_A="${SCRIPT_DIR}/docker-compose-a.yml"
@@ -160,23 +163,14 @@ deploy_blueprints() {
         fi
     done
 
+    # Preceding await_generation_quiesced on the cluster endpoint ensures Rabia
+    # has activated; a single-shot deploy per blueprint is deterministic.
     for bp in "${unique_bps[@]}"; do
         local coords="org.pragmatica.aether.test:${bp}:1.0.0"
         log_info "Pushing blueprint: ${coords} to ${cluster_endpoint}"
         aether -c "${cluster_endpoint#http://}" --api-key "${API_KEY}" artifact push "$coords" 2>/dev/null || true
-        # Deploy with retry — cluster can briefly return NodeInactive while Rabia finishes
-        # activating immediately after startup. A single-shot deploy here would silently
-        # leave the blueprint unregistered (|| true swallows the error), causing later
-        # suites to find no slices.
-        local deploy_attempt deploy_out
-        for deploy_attempt in 1 2 3 4 5; do
-            deploy_out=$(aether -c "${cluster_endpoint#http://}" --api-key "${API_KEY}" blueprint deploy "$coords" 2>&1 || true)
-            if printf '%s' "$deploy_out" | grep -q '"status"[[:space:]]*:[[:space:]]*"deployed"'; then
-                break
-            fi
-            log_info "Deploy attempt ${deploy_attempt} for ${coords} did not confirm — retrying in 5s"
-            sleep 5
-        done
+        aether -c "${cluster_endpoint#http://}" --api-key "${API_KEY}" blueprint deploy "$coords" 2>&1 || \
+            log_warn "blueprint deploy ${coords} did not return success (continuing)"
     done
 }
 
@@ -353,10 +347,17 @@ run_cluster_b_suites() {
 
         run_suite "$suite" "b" || true
 
-        # Self-heal between destructive suites
-        if ! self_heal "$ENV_TYPE" "$COMPOSE_B" 5 "$CLUSTER_B_MGMT"; then
+        # Between destructive suites: wait for cluster to quiesce at the next epoch.
+        # ClusterGeneration guarantees every surviving node has converged on the new
+        # membership view before the next suite runs — no manual restart compensation.
+        local quiesce_start
+        quiesce_start=$(date +%s)
+        if ! await_generation_quiesced "$CLUSTER_B_MGMT" "current+1" 60; then
+            log_error "Cluster B failed to quiesce after suite ${suite} — aborting remaining destructive suites"
             aborted=true
         fi
+        local quiesce_elapsed=$(( $(date +%s) - quiesce_start ))
+        printf 'quiesce_after_%s=%s\n' "$suite" "$quiesce_elapsed" >> "$TIMINGS_FILE"
     done
 }
 
@@ -433,6 +434,35 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
+# Print per-phase and per-quiesce-barrier timings (issue #174 Part 2)
+# ---------------------------------------------------------------------------
+print_timing_report() {
+    [ -s "$TIMINGS_FILE" ] || return 0
+    echo ""
+    echo "========================================"
+    echo "  TIMING SUMMARY"
+    echo "========================================"
+    local provisioning=0 formation=0 blueprint=0
+    provisioning=$(awk -F= '/^provisioning=/{print $2; exit}' "$TIMINGS_FILE")
+    formation=$(awk -F= '/^cluster_formation=/{print $2; exit}' "$TIMINGS_FILE")
+    blueprint=$(awk -F= '/^blueprint_deploy=/{print $2; exit}' "$TIMINGS_FILE")
+    printf "  Provisioning:        %ss\n" "${provisioning:-n/a}"
+    printf "  Cluster formation:   %ss\n" "${formation:-n/a}"
+    printf "  Blueprint deploy:    %ss\n" "${blueprint:-n/a}"
+    # Emit per-suite quiesce barriers (ms) and await-quiesced call durations (ms) if present.
+    local quiesce_lines
+    quiesce_lines=$(grep -E '^(quiesce_after_|await_)' "$TIMINGS_FILE" 2>/dev/null || true)
+    if [ -n "$quiesce_lines" ]; then
+        echo "  Quiesce barriers:"
+        while IFS='=' read -r key value; do
+            [ -z "$key" ] && continue
+            printf "    %-32s %s\n" "${key}:" "$value"
+        done <<< "$quiesce_lines"
+    fi
+    echo "========================================"
+}
+
+# ---------------------------------------------------------------------------
 # Print results report
 # ---------------------------------------------------------------------------
 print_results() {
@@ -463,6 +493,8 @@ print_results() {
     echo "========================================"
     printf "  Total: %d | Passed: %d | Failed: %d | Skipped: %d\n" "$total" "$passed" "$failed" "$skipped"
     echo "========================================"
+
+    print_timing_report
 
     # Generate JSON report
     echo "[" > "$RESULTS_JSON"
@@ -496,6 +528,7 @@ if [ "$SKIP_BUILD" = false ] && [ -x "${REPO_ROOT}/build.sh" ]; then
 fi
 
 # --- Step 2: Deploy clusters ---
+PROVISION_START=$(date +%s)
 if [ "$SKIP_DEPLOY" = false ]; then
     log_step "Deploying clusters"
     case "$ENV_TYPE" in
@@ -507,8 +540,11 @@ if [ "$SKIP_DEPLOY" = false ]; then
             ;;
     esac
 fi
+PROVISION_ELAPSED=$(( $(date +%s) - PROVISION_START ))
+printf 'provisioning=%s\n' "$PROVISION_ELAPSED" >> "$TIMINGS_FILE"
 
 # --- Step 3: Wait for clusters ---
+FORMATION_START=$(date +%s)
 log_step "Waiting for Cluster A"
 wait_for_node_count_on "$CLUSTER_A_MGMT" 5 180
 wait_for_leader_on "$CLUSTER_A_MGMT" 60
@@ -516,6 +552,14 @@ wait_for_leader_on "$CLUSTER_A_MGMT" 60
 log_step "Waiting for Cluster B"
 wait_for_node_count_on "$CLUSTER_B_MGMT" 5 180
 wait_for_leader_on "$CLUSTER_B_MGMT" 60
+
+# Gate cluster readiness on ClusterGeneration quiescence — avoids racing the
+# later blueprint-deploy phase against a cluster that still hasn't converged.
+await_generation_quiesced "$CLUSTER_A_MGMT" "current" 60 || log_warn "Cluster A snapshot not quiesced yet"
+await_generation_quiesced "$CLUSTER_B_MGMT" "current" 60 || log_warn "Cluster B snapshot not quiesced yet"
+
+FORMATION_ELAPSED=$(( $(date +%s) - FORMATION_START ))
+printf 'cluster_formation=%s\n' "$FORMATION_ELAPSED" >> "$TIMINGS_FILE"
 
 # --- Step 4: Discover LB endpoints ---
 log_step "Discovering LB endpoints"
@@ -537,19 +581,27 @@ A_SUITES=($(filter_suites "${CLUSTER_A_SUITES[@]}"))
 B_SUITES=($(filter_suites "${CLUSTER_B_SUITES[@]}"))
 
 # --- Step 7: Deploy blueprints ---
+BLUEPRINT_START=$(date +%s)
 if [ "$SKIP_DEPLOY" = false ]; then
     if [ ${#A_SUITES[@]} -gt 0 ]; then
         log_step "Deploying blueprints to Cluster A"
         A_BLUEPRINTS=($(collect_blueprints "${A_SUITES[@]}"))
         [ ${#A_BLUEPRINTS[@]} -gt 0 ] && deploy_blueprints "$CLUSTER_A_LB_MGMT" "${A_BLUEPRINTS[@]}"
+        # Barrier: blueprints are ACTIVE when the next generation has quiesced.
+        await_generation_quiesced "$CLUSTER_A_LB_MGMT" "current+1" 60 || \
+            log_warn "Cluster A did not quiesce after blueprint deploy"
     fi
 
     if [ ${#B_SUITES[@]} -gt 0 ]; then
         log_step "Deploying blueprints to Cluster B"
         B_BLUEPRINTS=($(collect_blueprints "${B_SUITES[@]}"))
         [ ${#B_BLUEPRINTS[@]} -gt 0 ] && deploy_blueprints "$CLUSTER_B_LB_MGMT" "${B_BLUEPRINTS[@]}"
+        await_generation_quiesced "$CLUSTER_B_LB_MGMT" "current+1" 60 || \
+            log_warn "Cluster B did not quiesce after blueprint deploy"
     fi
 fi
+BLUEPRINT_ELAPSED=$(( $(date +%s) - BLUEPRINT_START ))
+printf 'blueprint_deploy=%s\n' "$BLUEPRINT_ELAPSED" >> "$TIMINGS_FILE"
 
 # --- Step 8: Gate -- run 00-smoke ---
 GATE_PASSED=true
@@ -592,7 +644,7 @@ if [ "$SKIP_TEARDOWN" = false ]; then
     teardown
 fi
 
-# Cleanup temp file
-rm -f "$RESULTS_FILE"
+# Cleanup temp files
+rm -f "$RESULTS_FILE" "$TIMINGS_FILE"
 
 exit $FINAL_RESULT

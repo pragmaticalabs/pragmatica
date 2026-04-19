@@ -52,18 +52,19 @@ test_cluster_survives() {
 }
 
 test_auto_heal() {
-    log_info "Waiting for CTM auto-heal to restore cluster to 5 nodes..."
-    wait_for_node_count 5 180
+    log_info "Waiting for CTM auto-heal to quiesce at the post-replacement generation..."
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 180 || {
+        log_fail "Cluster did not quiesce after auto-heal"
+        return 1
+    }
     local count
     count=$(cluster_node_count)
-    assert_eq "$count" "5" "Auto-heal restored cluster to 5 nodes"
+    assert_eq "$count" "5" "Auto-heal restored cluster to exactly 5 nodes"
 }
 
 cleanup() {
-    log_info "Restoring all containers for clean state..."
-    restart_all_nodes
-    wait_for_node_count 5 120 || true
-    wait_for_leader 90 || true
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 60 || \
+        log_warn "Cluster did not quiesce after kill-under-load; next suite may inherit churn"
 }
 
 run_test "Initial 5 nodes" test_initial_state

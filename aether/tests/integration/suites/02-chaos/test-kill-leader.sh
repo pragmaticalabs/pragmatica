@@ -21,23 +21,14 @@ test_kill_leader_and_reelect() {
 
     log_info "Killing leader: ${old_leader}"
     kill_node "$old_leader"
-
-    # Wait for failure detection (auto-heal may restore before we observe 4)
-    log_info "Waiting for failure detection and re-election..."
+    # Legitimate chaos window: give SWIM/Rabia failure detection a window to fire.
     sleep 10
 
-    # Wait for a leader to be elected (may be a different node or the same node after restart)
-    local new_leader=""
-    local elapsed=0
-    while [ "$elapsed" -lt 90 ]; do
-        new_leader=$(cluster_leader)
-        if [ -n "$new_leader" ] && [ "$new_leader" != "none" ]; then
-            break
-        fi
-        sleep 2
-        elapsed=$((elapsed + 2))
-    done
-
+    # ClusterGeneration barrier — after quiescence, leader election has resolved.
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 90 || \
+        log_warn "Post-kill quiescence not reached within 90s"
+    local new_leader
+    new_leader=$(cluster_leader)
     assert_ne "$new_leader" "" "New leader elected: ${new_leader}"
     assert_ne "$new_leader" "none" "New leader is not 'none'"
     log_info "Leader after kill: ${new_leader} (was: ${old_leader})"
@@ -56,24 +47,20 @@ test_health_with_4_nodes() {
 }
 
 test_auto_heal() {
-    log_info "Waiting for CTM auto-heal to restore cluster to 5 nodes..."
-    wait_for_node_count 5 240 || true
+    log_info "Waiting for CTM auto-heal to quiesce at the post-kill generation..."
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 120 || {
+        log_fail "Cluster did not quiesce after auto-heal"
+        return 1
+    }
     local count
     count=$(cluster_node_count)
-    if [ "$count" -ge 5 ] 2>/dev/null; then
-        log_pass "Auto-heal restored cluster to >=5 nodes (${count})"
-    else
-        log_fail "Auto-heal did not restore cluster: ${count} nodes"
-        return 1
-    fi
+    assert_eq "$count" "5" "Auto-heal restored cluster to exactly 5 nodes"
 }
 
-# Restore cluster for next test suite
+# Restore cluster for next test suite — ClusterGeneration barrier is deterministic.
 cleanup() {
-    log_info "Restoring all containers for clean state..."
-    restart_all_nodes
-    wait_for_node_count 5 120 || true
-    wait_for_leader 90 || true
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 60 || \
+        log_warn "Cluster did not quiesce after kill-leader; next suite may inherit churn"
 }
 
 run_test "Initial 5 nodes" test_initial_state

@@ -21,7 +21,8 @@ test_immediate_deploy() {
 }
 
 test_cluster_healthy_after_deploy() {
-    sleep 10
+    # Barrier on the post-deploy generation — replaces sleep 10 for propagation race.
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "post-deploy quiesce not reached"
     assert_cluster_healthy "Cluster healthy after immediate deploy"
 }
 

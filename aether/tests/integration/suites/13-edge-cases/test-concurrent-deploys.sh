@@ -13,16 +13,13 @@ BLUEPRINT="org.pragmatica.aether.test:test-echo:1.0.0"
 test_cluster_ready() {
     wait_for_cluster 60
     wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
+    # ClusterGeneration barrier: any churn inherited from a destructive predecessor
+    # suite is committed to a stable generation. No rescale fallback needed.
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 60 || log_warn "pre-deploy snapshot not quiesced"
     push_blueprint "$BLUEPRINT"
     deploy_blueprint "$BLUEPRINT"
-    # After a destructive suite has left cluster B with reshuffled nodes, CDM needs time to
-    # redistribute the test-echo slice to currently-live nodes. A fresh scale re-triggers
-    # placement if the prior deployment's NodeArtifact entries point to now-dead nodes.
-    if ! wait_for_slices_active 1 60; then
-        log_warn "Slices not active after first deploy — triggering re-scale"
-        api_post "/api/slices/scale" "{\"artifact\":\"org.pragmatica.aether.test:test-echo-echo-slice:1.0.0\",\"instances\":3}" > /dev/null 2>&1 || true
-        wait_for_slices_active 1 120 || log_warn "Slices still not active after rescale"
-    fi
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 60 || log_warn "deploy did not quiesce"
+    wait_for_slices_active 1 120 || log_warn "Slices not active after deploy"
     log_pass "Cluster ready with baseline blueprint deployed"
 }
 
@@ -98,7 +95,9 @@ test_concurrent_deploy() {
 }
 
 test_both_blueprints_visible() {
-    sleep 5
+    # Stream publish triggers resource creation — barrier on the next generation
+    # so slice/registry writes have quiesced before inspection.
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "post-publish quiesce not reached"
     local slices
     slices=$(cluster_slices)
     if [ -n "$slices" ]; then

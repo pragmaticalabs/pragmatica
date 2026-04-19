@@ -377,10 +377,18 @@ run_test() {
         collect_metrics_before "$sanitized_name"
     fi
 
+    local t_start t_elapsed
+    t_start=$(date +%s)
     if "$fn"; then
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
         TESTS_FAILED=$((TESTS_FAILED + 1))
+    fi
+    t_elapsed=$(( $(date +%s) - t_start ))
+    log_info "duration: ${sanitized_name}=${t_elapsed}s"
+    # Emit per-test duration to the timings aggregator (issue #174).
+    if [ -n "${QUIESCED_TIMINGS_FILE:-}" ]; then
+        printf 'test_%s=%s\n' "$sanitized_name" "$t_elapsed" >> "$QUIESCED_TIMINGS_FILE"
     fi
 
     if [[ "${COLLECT_METRICS:-false}" == "true" ]]; then
