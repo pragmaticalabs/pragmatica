@@ -11,6 +11,7 @@ import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.CoreMember;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthHint;
+import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
@@ -176,6 +177,28 @@ class HealthReconcilerActivatorTest {
         var value = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED);
         activator.onNodeLifecyclePut(new ValuePut<>(new KVCommand.Put<>(NodeLifecycleKey.nodeLifecycleKey(NODE_A), value),
                                                      Option.none()));
+
+        assertThat(cluster.appliedBatches()).isEmpty();
+    }
+
+    @Test
+    void sink_emit_forwardsToReconcilerOnSignal() {
+        activator.onLeaderChange(new LeaderChange(Option.some(SELF), true));
+        seedWithTwoCoreNodes();
+
+        var sink = activator.sink();
+        sink.emit(new HealthSignal.SwimHint(NODE_A, HealthHint.SUSPECTED, Epoch.ZERO));
+
+        // Suspected hint on an ON_DUTY member flips its health hint in-memory (no consensus writes)
+        assertThat(reconciler.currentSnapshot().coreMembers().get(NODE_A).healthHint()).isEqualTo(HealthHint.SUSPECTED);
+    }
+
+    @Test
+    void sink_emit_whenNotLeader_isNoop() {
+        seedWithTwoCoreNodes();
+        isLeader.set(false);
+
+        activator.sink().emit(new HealthSignal.SwimHint(NODE_A, HealthHint.FAULTY, Epoch.ZERO));
 
         assertThat(cluster.appliedBatches()).isEmpty();
     }

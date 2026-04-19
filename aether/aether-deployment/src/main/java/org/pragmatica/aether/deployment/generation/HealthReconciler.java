@@ -11,6 +11,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.GenerationReason;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.HealthSignal;
+import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.generation.OperatorIntent;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
@@ -56,7 +57,7 @@ import static org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot.e
 /// See `aether/docs/specs/cluster-generation-spec.md` §8.
 ///
 /// Dormant in Commit 2 — wiring to bootstrap happens in Commit 4.
-public interface HealthReconciler {
+public interface HealthReconciler extends HealthSignalSink {
     int DEFAULT_SUSPECT_INTERVAL_THRESHOLD = 3;
 
     int DEFAULT_REMOVE_INTERVAL_THRESHOLD = 10;
@@ -67,6 +68,10 @@ public interface HealthReconciler {
     ClusterGenerationSnapshot currentSnapshot();
     Epoch currentEpoch();
     @Contract void seedSnapshot(ClusterGenerationSnapshot snapshot);
+
+    @Contract@Override default void emit(HealthSignal signal) {
+        onSignal(signal);
+    }
 
     static HealthReconciler healthReconciler(NodeId self,
                                              ClusterNode<KVCommand<AetherKey>> cluster,

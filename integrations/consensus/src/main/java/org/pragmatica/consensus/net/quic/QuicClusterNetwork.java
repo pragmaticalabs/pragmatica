@@ -107,6 +107,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private final QuicTransportMetrics quicMetrics = QuicTransportMetrics.quicTransportMetrics();
 
     private final ClusterFormationConfig formationConfig;
+    private final QuicDisconnectListener disconnectListener;
 
     private volatile QuicClusterServer server;
     private volatile QuicClusterClient client;
@@ -123,7 +124,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
                               MessageRouter router,
                               QuicSslContext serverSslContext,
                               QuicSslContext clientSslContext) {
-        this(topologyManager, serializer, deserializer, router, serverSslContext, clientSslContext, ClusterFormationConfig.defaults());
+        this(topologyManager, serializer, deserializer, router, serverSslContext, clientSslContext,
+             ClusterFormationConfig.defaults(), QuicDisconnectListener.noop());
     }
 
     public QuicClusterNetwork(TopologyManager topologyManager,
@@ -133,6 +135,18 @@ public class QuicClusterNetwork implements ClusterNetwork {
                               QuicSslContext serverSslContext,
                               QuicSslContext clientSslContext,
                               ClusterFormationConfig formationConfig) {
+        this(topologyManager, serializer, deserializer, router, serverSslContext, clientSslContext,
+             formationConfig, QuicDisconnectListener.noop());
+    }
+
+    public QuicClusterNetwork(TopologyManager topologyManager,
+                              Serializer serializer,
+                              Deserializer deserializer,
+                              MessageRouter router,
+                              QuicSslContext serverSslContext,
+                              QuicSslContext clientSslContext,
+                              ClusterFormationConfig formationConfig,
+                              QuicDisconnectListener disconnectListener) {
         this.self = topologyManager.self();
         this.topologyManager = topologyManager;
         this.serializer = serializer;
@@ -141,6 +155,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         this.serverSslContext = serverSslContext;
         this.clientSslContext = clientSslContext;
         this.formationConfig = formationConfig;
+        this.disconnectListener = disconnectListener;
     }
 
     @Override
@@ -621,6 +636,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
             }
             case REMOVE -> {
                 cancelStabilizationTimer();
+                // Advisory QUIC-level disconnect signal — fired BEFORE the grace/hysteresis gates so the
+                // leader's HealthReconciler can count every peer-link teardown even when the view change
+                // itself is deferred. Kept alongside the existing TopologyChangeNotification path.
+                disconnectListener.onDisconnect(peerId);
                 if (!currentlyHaveQuorum && quorumEstablished.get()) {
                     // Defer RemoveNode during quorum-loss hysteresis — prevents topology destruction on
                     // transient disconnects. If peer reconnects within the window, pendingRemovals is

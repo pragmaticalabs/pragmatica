@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.generation;
 
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.HealthSignal;
+import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SpokesmanKey;
@@ -50,6 +51,7 @@ public interface HealthReconcilerActivator {
     @Contract void onGovernorAnnouncementRemove(ValueRemove<GovernorAnnouncementKey, GovernorAnnouncementValue> notification);
     @Contract void onSpokesmanPut(ValuePut<SpokesmanKey, SpokesmanValue> notification);
     @Contract void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> notification);
+    HealthSignalSink sink();
 
     static HealthReconcilerActivator healthReconcilerActivator(HealthReconciler reconciler,
                                                                AtomicBoolean isLeaderGate) {
@@ -99,6 +101,10 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler, AtomicBoolea
         reconciler.onSignal(new HealthSignal.SpokesmanAssignmentFailed(coreNodeId,
                                                                        value.communities(),
                                                                        value.failureReason()));
+    }
+
+    @Override public HealthSignalSink sink() {
+        return reconciler;
     }
 
     @Contract@Override public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> notification) {
