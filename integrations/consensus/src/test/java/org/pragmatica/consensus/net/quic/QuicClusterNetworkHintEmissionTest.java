@@ -25,10 +25,12 @@ import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterFormationConfig;
 import org.pragmatica.consensus.net.NetCodecs;
+import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeState;
-import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.consensus.topology.TopologyManagementMessage;
+import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -119,8 +121,8 @@ class QuicClusterNetworkHintEmissionTest {
         return network;
     }
 
-    private TopologyManager stubTopologyManager(NodeInfo self, List<NodeInfo> peers) {
-        return new TopologyManager() {
+    private TopologyObserver stubTopologyManager(NodeInfo self, List<NodeInfo> peers) {
+        return new TopologyObserver() {
             @Override public NodeInfo self() {return self;}
             @Override public Option<NodeInfo> get(NodeId id) {
                 if (id.equals(self.id())) {return Option.some(self);}
@@ -140,6 +142,16 @@ class QuicClusterNetworkHintEmissionTest {
                 peers.forEach(p -> result.add(p.id()));
                 return result;
             }
+            @Override public void reconcile(NetworkServiceMessage.ConnectedNodesList connectedNodesList) {}
+            @Override public void handleAddNodeMessage(TopologyManagementMessage.AddNode message) {}
+            @Override public void handleRemoveNodeMessage(TopologyManagementMessage.RemoveNode removeNode) {}
+            @Override public void registerPeer(NodeInfo peerInfo) {}
+            @Override public void unregisterPeer(NodeId peerId) {}
+            @Override public void handleDiscoverNodes(NetworkMessage.DiscoverNodes discoverNodes) {}
+            @Override public void handleDiscoveredNodes(NetworkMessage.DiscoveredNodes discoveredNodes) {}
+            @Override public void handleConnectionFailed(NetworkServiceMessage.ConnectionFailed connectionFailed) {}
+            @Override public void handleConnectionEstablished(NetworkServiceMessage.ConnectionEstablished connectionEstablished) {}
+            @Override public void handleSetClusterSize(TopologyManagementMessage.SetClusterSize message) {}
         };
     }
 

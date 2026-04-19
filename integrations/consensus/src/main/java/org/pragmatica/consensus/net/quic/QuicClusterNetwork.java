@@ -49,8 +49,7 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
-import org.pragmatica.consensus.topology.TopologyManagementMessage;
-import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.Option;
@@ -85,7 +84,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private final NodeInfo self;
     private final Serializer serializer;
     private final Deserializer deserializer;
-    private final TopologyManager topologyManager;
+    private final TopologyObserver topologyManager;
     private final MessageRouter router;
     private volatile QuicSslContext serverSslContext;
     private volatile QuicSslContext clientSslContext;
@@ -118,7 +117,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         SHUTDOWN
     }
 
-    public QuicClusterNetwork(TopologyManager topologyManager,
+    public QuicClusterNetwork(TopologyObserver topologyManager,
                               Serializer serializer,
                               Deserializer deserializer,
                               MessageRouter router,
@@ -128,7 +127,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
              ClusterFormationConfig.defaults(), QuicDisconnectListener.noop());
     }
 
-    public QuicClusterNetwork(TopologyManager topologyManager,
+    public QuicClusterNetwork(TopologyObserver topologyManager,
                               Serializer serializer,
                               Deserializer deserializer,
                               MessageRouter router,
@@ -139,7 +138,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
              formationConfig, QuicDisconnectListener.noop());
     }
 
-    public QuicClusterNetwork(TopologyManager topologyManager,
+    public QuicClusterNetwork(TopologyObserver topologyManager,
                               Serializer serializer,
                               Deserializer deserializer,
                               MessageRouter router,
@@ -435,8 +434,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         quicMetrics.onConnectionEstablished();
         installWritabilityHandler(connection, peerId);
 
-        // Send AddNode BEFORE ConnectionEstablished if unknown
-        unknownNodeInfo.onPresent(nodeInfo -> router.route(new TopologyManagementMessage.AddNode(nodeInfo)));
+        // Register BEFORE ConnectionEstablished if unknown — direct call replaces the legacy
+        // TopologyManagementMessage.AddNode router-routed path.
+        unknownNodeInfo.onPresent(topologyManager::registerPeer);
         router.route(new NetworkServiceMessage.ConnectionEstablished(peerId));
         processViewChange(ADD, peerId);
 
@@ -663,7 +663,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                     // grace expiry flushes any stuck removals in onPostEstablishGraceComplete.
                     pendingRemovals.add(peerId);
                 } else {
-                    router.route(new TopologyManagementMessage.RemoveNode(peerId));
+                    topologyManager.unregisterPeer(peerId);
                 }
                 yield TopologyChangeNotification.nodeRemoved(peerId, currentView());
             }
@@ -733,7 +733,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         pendingRemovals.clear();
         log.warn("Post-establish grace expired with {} deferred REMOVE(s) — flushing: {}", flushed.size(), flushed);
         for (var peer : flushed) {
-            router.route(new TopologyManagementMessage.RemoveNode(peer));
+            topologyManager.unregisterPeer(peer);
             // Also fire a TopologyChangeNotification so listeners (CTM, CDM) react at the moment
             // the observer's topology actually shrinks. The initial processViewChange(REMOVE)
             // already emitted nodeRemoved with the pre-flush view; that earlier notification's
@@ -769,7 +769,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var removedPeers = Set.copyOf(pendingRemovals);
         pendingRemovals.clear();
         removedPeers.forEach(peerId -> {
-            router.route(new TopologyManagementMessage.RemoveNode(peerId));
+            topologyManager.unregisterPeer(peerId);
             router.route(TopologyChangeNotification.nodeRemoved(peerId, currentView()));
         });
         var activePeerCount = peerLinks.size() - passivePeers.size();

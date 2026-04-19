@@ -12,8 +12,7 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
-import org.pragmatica.consensus.topology.TopologyManagementMessage;
-import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -71,7 +70,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
     private final Map<Channel, ScheduledFuture<?>> helloTimeouts = new ConcurrentHashMap<>();
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private final AtomicBoolean quorumEstablished = new AtomicBoolean(false);
-    private final TopologyManager topologyManager;
+    private final TopologyObserver topologyManager;
     private final Supplier<List<ChannelHandler>> handlers;
     private final MessageRouter router;
     private final AtomicReference<Server> server = new AtomicReference<>();
@@ -82,14 +81,14 @@ public class NettyClusterNetwork implements ClusterNetwork {
         SHUTDOWN
     }
 
-    public NettyClusterNetwork(TopologyManager topologyManager,
+    public NettyClusterNetwork(TopologyObserver topologyManager,
                                Serializer serializer,
                                Deserializer deserializer,
                                MessageRouter router) {
         this(topologyManager, serializer, deserializer, router, List.of(), DEFAULT_CHANNEL_PROTECTION);
     }
 
-    public NettyClusterNetwork(TopologyManager topologyManager,
+    public NettyClusterNetwork(TopologyObserver topologyManager,
                                Serializer serializer,
                                Deserializer deserializer,
                                MessageRouter router,
@@ -97,7 +96,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
         this(topologyManager, serializer, deserializer, router, additionalHandlers, DEFAULT_CHANNEL_PROTECTION);
     }
 
-    public NettyClusterNetwork(TopologyManager topologyManager,
+    public NettyClusterNetwork(TopologyObserver topologyManager,
                                Serializer serializer,
                                Deserializer deserializer,
                                MessageRouter router,
@@ -196,8 +195,9 @@ public class NettyClusterNetwork implements ClusterNetwork {
         channelEstablishedAt.put(hello.sender(), System.nanoTime());
         // Track passive peers
         trackPassiveRole(hello.sender(), unknownNodeInfo);
-        // Send AddNode BEFORE ConnectionEstablished if unknown
-        unknownNodeInfo.onPresent(nodeInfo -> router.route(new TopologyManagementMessage.AddNode(nodeInfo)));
+        // Register BEFORE ConnectionEstablished if unknown — direct call replaces the legacy
+        // TopologyManagementMessage.AddNode router-routed path.
+        unknownNodeInfo.onPresent(topologyManager::registerPeer);
         router.route(new NetworkServiceMessage.ConnectionEstablished(hello.sender()));
         processViewChange(ADD, hello.sender());
         // Initiate topology discovery only for unknown nodes
@@ -418,7 +418,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
                 if (!currentlyHaveQuorum && quorumEstablished.compareAndSet(true, false)) {
                     router.route(QuorumStateNotification.disappeared());
                 }
-                router.route(new TopologyManagementMessage.RemoveNode(peerId));
+                topologyManager.unregisterPeer(peerId);
                 yield TopologyChangeNotification.nodeRemoved(peerId, currentView());
             }
             case SHUTDOWN -> {

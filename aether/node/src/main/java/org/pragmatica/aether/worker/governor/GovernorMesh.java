@@ -5,6 +5,7 @@
 package org.pragmatica.aether.worker.governor;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter.DelegateRouter;
 
@@ -30,5 +31,9 @@ public interface GovernorMesh {
 
     static GovernorMesh governorMesh(DelegateRouter delegateRouter) {
         return new GovernorMeshInstance(delegateRouter);
+    }
+
+    static GovernorMesh governorMesh(DelegateRouter delegateRouter, TopologyObserver topologyObserver) {
+        return new GovernorMeshInstance(delegateRouter, topologyObserver);
     }
 }

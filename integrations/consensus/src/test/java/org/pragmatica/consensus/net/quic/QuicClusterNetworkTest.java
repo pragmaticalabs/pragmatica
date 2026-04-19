@@ -30,11 +30,12 @@ import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetCodecs;
+import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
-import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
@@ -188,7 +189,7 @@ class QuicClusterNetworkTest {
         var nodeAddress = NodeAddress.nodeAddress("127.0.0.1", 19999)
                                      .fold(_ -> fail("Invalid address"), addr -> addr);
         var selfInfo = NodeInfo.nodeInfo(nodeId, nodeAddress);
-        TopologyManager topology = stubTopologyManager(selfInfo, peers);
+        TopologyObserver topology = stubTopologyManager(selfInfo, peers);
 
         var network = new QuicClusterNetwork(topology, codec, codec, router, serverSsl, clientSsl);
         networks.add(network);
@@ -220,8 +221,8 @@ class QuicClusterNetworkTest {
 
     private record StubProtocolMessage(NodeId sender) implements org.pragmatica.consensus.ProtocolMessage {}
 
-    private TopologyManager stubTopologyManager(NodeInfo self, List<NodeInfo> peers) {
-        return new TopologyManager() {
+    private TopologyObserver stubTopologyManager(NodeInfo self, List<NodeInfo> peers) {
+        return new TopologyObserver() {
             @Override
             public NodeInfo self() {
                 return self;
@@ -286,6 +287,17 @@ class QuicClusterNetworkTest {
                 peers.forEach(p -> result.add(p.id()));
                 return result;
             }
+
+            @Override public void reconcile(NetworkServiceMessage.ConnectedNodesList connectedNodesList) {}
+            @Override public void handleAddNodeMessage(TopologyManagementMessage.AddNode message) {}
+            @Override public void handleRemoveNodeMessage(TopologyManagementMessage.RemoveNode removeNode) {}
+            @Override public void registerPeer(NodeInfo peerInfo) {}
+            @Override public void unregisterPeer(NodeId peerId) {}
+            @Override public void handleDiscoverNodes(NetworkMessage.DiscoverNodes discoverNodes) {}
+            @Override public void handleDiscoveredNodes(NetworkMessage.DiscoveredNodes discoveredNodes) {}
+            @Override public void handleConnectionFailed(NetworkServiceMessage.ConnectionFailed connectionFailed) {}
+            @Override public void handleConnectionEstablished(NetworkServiceMessage.ConnectionEstablished connectionEstablished) {}
+            @Override public void handleSetClusterSize(TopologyManagementMessage.SetClusterSize message) {}
         };
     }
 

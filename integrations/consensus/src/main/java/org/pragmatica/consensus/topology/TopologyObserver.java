@@ -6,6 +6,7 @@ import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -55,6 +56,18 @@ public interface TopologyObserver extends TopologyManager {
 
     @MessageReceiver
     void handleRemoveNodeMessage(TopologyManagementMessage.RemoveNode removeNode);
+
+    /// Idempotently add a peer to the topology. Network adapters call this directly when an
+    /// unknown peer completes the Hello handshake — replaces the legacy
+    /// `TopologyManagementMessage.AddNode` router-routed path while leaving the message type
+    /// intact for any remaining external callers.
+    @Contract void registerPeer(NodeInfo peerInfo);
+
+    /// Idempotently remove a peer from the topology and tombstone it so static-config
+    /// reconciliation will not resurrect it. Network adapters call this directly on confirmed
+    /// peer departures — replaces the legacy `TopologyManagementMessage.RemoveNode`
+    /// router-routed path while leaving the message type intact.
+    @Contract void unregisterPeer(NodeId peerId);
 
     @MessageReceiver
     void handleDiscoverNodes(NetworkMessage.DiscoverNodes discoverNodes);
@@ -201,19 +214,29 @@ public interface TopologyObserver extends TopologyManager {
 
             @Override
             public void handleAddNodeMessage(TopologyManagementMessage.AddNode message) {
-                // Clear tombstone so the node can rejoin on explicit re-add (e.g. restarted container
-                // handshakes via QUIC Hello and gets routed as an unknown-node AddNode).
-                tombstonedNodes.remove(message.nodeInfo().id());
-                addNode(message.nodeInfo());
+                registerPeer(message.nodeInfo());
             }
 
             @Override
             public void handleRemoveNodeMessage(TopologyManagementMessage.RemoveNode removeNode) {
+                unregisterPeer(removeNode.nodeId());
+            }
+
+            @Override
+            public void registerPeer(NodeInfo peerInfo) {
+                // Clear tombstone so the node can rejoin on explicit re-add (e.g. restarted container
+                // handshakes via QUIC Hello and gets routed as an unknown-node registration).
+                tombstonedNodes.remove(peerInfo.id());
+                addNode(peerInfo);
+            }
+
+            @Override
+            public void unregisterPeer(NodeId peerId) {
                 // Tombstone prevents initReconcile from resurrecting this node from the static
-                // config.coreNodes() list. Cleared on explicit re-add via handleAddNodeMessage
-                // or when the observer drains to self-only.
-                tombstonedNodes.add(removeNode.nodeId());
-                removeNode(removeNode.nodeId());
+                // config.coreNodes() list. Cleared on explicit re-add via registerPeer or when the
+                // observer drains to self-only.
+                tombstonedNodes.add(peerId);
+                removeNode(peerId);
             }
 
             @Override

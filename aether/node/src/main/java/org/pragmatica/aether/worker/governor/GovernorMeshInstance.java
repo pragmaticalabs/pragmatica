@@ -8,7 +8,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
-import org.pragmatica.consensus.topology.TopologyManagementMessage;
+import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.messaging.MessageRouter.DelegateRouter;
@@ -29,13 +29,21 @@ import org.slf4j.LoggerFactory;
     private final Map<String, NodeId> governors = new ConcurrentHashMap<>();
 
     private final Option<DelegateRouter> delegateRouter;
+    private final Option<TopologyObserver> topologyObserver;
 
     GovernorMeshInstance() {
         this.delegateRouter = Option.empty();
+        this.topologyObserver = Option.empty();
     }
 
     GovernorMeshInstance(DelegateRouter delegateRouter) {
         this.delegateRouter = Option.option(delegateRouter);
+        this.topologyObserver = Option.empty();
+    }
+
+    GovernorMeshInstance(DelegateRouter delegateRouter, TopologyObserver topologyObserver) {
+        this.delegateRouter = Option.option(delegateRouter);
+        this.topologyObserver = Option.option(topologyObserver);
     }
 
     @Override public void registerGovernor(String communityId, NodeId governorId) {
@@ -71,14 +79,13 @@ import org.slf4j.LoggerFactory;
 
     private void registerPeerAddress(NodeId governorId, String tcpAddress) {
         if (tcpAddress == null || tcpAddress.isEmpty()) {return;}
-        delegateRouter.onPresent(router -> parseTcpAddress(tcpAddress).onPresent(addr -> registerInTopology(router,
-                                                                                                            governorId,
-                                                                                                            addr)));
+        parseTcpAddress(tcpAddress).onPresent(addr -> registerInTopology(governorId, addr));
     }
 
-    private static void registerInTopology(DelegateRouter router, NodeId governorId, NodeAddress addr) {
-        router.route(new TopologyManagementMessage.AddNode(NodeInfo.nodeInfo(governorId, addr, NodeRole.PASSIVE)));
-        router.route(new NetworkServiceMessage.ConnectNode(governorId));
+    private void registerInTopology(NodeId governorId, NodeAddress addr) {
+        var nodeInfo = NodeInfo.nodeInfo(governorId, addr, NodeRole.PASSIVE);
+        topologyObserver.onPresent(observer -> observer.registerPeer(nodeInfo));
+        delegateRouter.onPresent(router -> router.route(new NetworkServiceMessage.ConnectNode(governorId)));
     }
 
     private static Option<NodeAddress> parseTcpAddress(String tcpAddress) {
