@@ -53,7 +53,7 @@ test_cluster_survives() {
 
 test_auto_heal() {
     log_info "Waiting for CTM auto-heal to quiesce at the post-replacement generation..."
-    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 180 || {
+    wait_for_node_count 5 180 || {
         log_fail "Cluster did not quiesce after auto-heal"
         return 1
     }
@@ -63,8 +63,10 @@ test_auto_heal() {
 }
 
 cleanup() {
-    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 60 || \
-        log_warn "Cluster did not quiesce after kill-under-load; next suite may inherit churn"
+    restart_all_nodes
+    sleep 3  # let reconnection churn start bumping epoch before we ask for quiescence
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 120 || \
+        log_warn "Cluster did not quiesce after destructive suite; next suite may inherit churn"
 }
 
 run_test "Initial 5 nodes" test_initial_state

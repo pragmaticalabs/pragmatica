@@ -462,12 +462,22 @@ public class QuicClusterNetwork implements ClusterNetwork {
             if (peerLinks.remove(peerId, connection)) {
                 connectionEstablishedAt.remove(peerId);
                 quicMetrics.onConnectionClosed();
-                processViewChange(REMOVE, peerId);
+                if (isFreshConnection(peerId, connection)) {
+                    log.debug("Node {} stale link removed during formation window — skipping REMOVE notification", peerId);
+                } else {
+                    processViewChange(REMOVE, peerId);
+                }
             }
             log.warn("Node {} connection is not active, removed stale link", peerId);
             return;
         }
         writeToStream(peerId, message, connection);
+    }
+
+    private boolean isFreshConnection(NodeId peerId, QuicPeerConnection connection) {
+        var establishedAtNanos = connectionEstablishedAt.getOrDefault(peerId, System.nanoTime());
+        var protectionNanos = topologyManager.helloTimeout().nanos() * 3;
+        return (System.nanoTime() - establishedAtNanos) < protectionNanos;
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Stream selection and write
@@ -581,12 +591,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var staleConnection = peerLinks.remove(peerId);
 
         if (staleConnection != null) {
+            var fresh = isFreshConnection(peerId, staleConnection);
             connectionEstablishedAt.remove(peerId);
             cleanupPeerQueues(peerId);
             quicMetrics.onConnectionClosed();
             staleConnection.close()
                            .onFailure(cause -> log.warn("Error closing stale connection to peer {}: {}", peerId, cause.message()));
-            processViewChange(REMOVE, peerId);
+            if (fresh) {
+                log.debug("Write failure to {} within formation window — skipping REMOVE notification", peerId);
+            } else {
+                processViewChange(REMOVE, peerId);
+            }
         }
     }
 

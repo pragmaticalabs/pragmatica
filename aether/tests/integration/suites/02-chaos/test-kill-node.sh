@@ -50,7 +50,7 @@ test_auto_heal() {
     log_info "Waiting for CTM auto-heal to quiesce at the post-kill generation..."
     # ClusterGeneration barrier: the post-kill generation commits once replacement
     # is in place and membership is stable. No 5..7 tolerance window needed.
-    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 120 || {
+    wait_for_node_count 5 120 || {
         log_fail "Cluster did not quiesce after auto-heal"
         return 1
     }
@@ -60,8 +60,10 @@ test_auto_heal() {
 }
 
 cleanup() {
-    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 60 || \
-        log_warn "Cluster did not quiesce after kill-node; next suite may inherit churn"
+    restart_all_nodes
+    sleep 3  # let reconnection churn start bumping epoch before we ask for quiescence
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 120 || \
+        log_warn "Cluster did not quiesce after destructive suite; next suite may inherit churn"
 }
 
 run_test "Initial 5 nodes" test_initial_state

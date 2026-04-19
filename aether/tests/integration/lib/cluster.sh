@@ -257,6 +257,21 @@ drop_ctm_replacements() {
     remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-core-) 2>/dev/null || true" 2>/dev/null
 }
 
+## Restart all stopped containers of the active cluster + drop any CTM-provisioned
+## replacements. This is a TEST LIFECYCLE primitive (not race compensation) — destructive
+## suites kill nodes; before the next suite runs we bring the cluster back to baseline.
+restart_all_nodes() {
+    log_info "Restoring cluster to baseline (CLUSTER_NAME=${CLUSTER_NAME:-aether-b-node-})..."
+    if [ "$CLOUD_MODE" = "true" ]; then
+        for i in $(seq 1 "${NODE_COUNT:-5}"); do
+            cloud_ssh "node-${i}" "docker restart aether-node" 2>/dev/null || true
+        done
+        return 0
+    fi
+    local prefix="${CLUSTER_NAME:-aether-b-node-}"
+    remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=${prefix}' --filter 'status=exited' -q | xargs -r docker start" 2>/dev/null
+}
+
 kill_node() {
     local node_id="$1"
     log_info "Killing node: ${node_id}"

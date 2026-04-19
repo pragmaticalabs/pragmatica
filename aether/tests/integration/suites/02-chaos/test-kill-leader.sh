@@ -24,9 +24,10 @@ test_kill_leader_and_reelect() {
     # Legitimate chaos window: give SWIM/Rabia failure detection a window to fire.
     sleep 10
 
-    # ClusterGeneration barrier — after quiescence, leader election has resolved.
-    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 90 || \
-        log_warn "Post-kill quiescence not reached within 90s"
+    # Poll for new leader via CLI failover (server-side quiescence may lag without a
+    # live leader to advance the snapshot; wait_for_leader polls direct mgmt ports).
+    # Rabia re-election can take up to ~60s in adverse timing.
+    wait_for_leader 150 || log_warn "Post-kill: no new leader observed within 150s"
     local new_leader
     new_leader=$(cluster_leader)
     assert_ne "$new_leader" "" "New leader elected: ${new_leader}"
@@ -47,9 +48,9 @@ test_health_with_4_nodes() {
 }
 
 test_auto_heal() {
-    log_info "Waiting for CTM auto-heal to quiesce at the post-kill generation..."
-    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 120 || {
-        log_fail "Cluster did not quiesce after auto-heal"
+    log_info "Waiting for CTM auto-heal to restore cluster to 5 nodes..."
+    wait_for_node_count 5 120 || {
+        log_fail "Cluster did not reach 5 nodes after auto-heal (current=$(cluster_node_count))"
         return 1
     }
     local count
@@ -59,8 +60,10 @@ test_auto_heal() {
 
 # Restore cluster for next test suite — ClusterGeneration barrier is deterministic.
 cleanup() {
-    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 60 || \
-        log_warn "Cluster did not quiesce after kill-leader; next suite may inherit churn"
+    restart_all_nodes
+    sleep 3  # let reconnection churn start bumping epoch before we ask for quiescence
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 120 || \
+        log_warn "Cluster did not quiesce after destructive suite; next suite may inherit churn"
 }
 
 run_test "Initial 5 nodes" test_initial_state

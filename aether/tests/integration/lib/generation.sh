@@ -155,15 +155,11 @@ _resolve_epoch() {
 
 # Milliseconds since epoch — portable between GNU and BSD date.
 _now_ms() {
-    if date +%N 2>/dev/null | grep -q '^[0-9]'; then
-        # GNU date supports %N (nanoseconds)
-        local raw
-        raw=$(date +%s%3N 2>/dev/null)
-        if [ -n "$raw" ] && [ "${raw: -3}" != "3N" ]; then
-            printf '%s' "$raw"
-            return 0
-        fi
-    fi
-    # Fallback: seconds*1000 (BSD date)
-    echo $(( $(date +%s) * 1000 ))
+    # Probe for GNU %3N support; BSD date returns literal "%3N" (or a trailing "N").
+    local raw
+    raw=$(date +%s%3N 2>/dev/null)
+    case "$raw" in
+        *[!0-9]*) echo $(( $(date +%s) * 1000 )) ;;
+        *)        printf '%s' "$raw" ;;
+    esac
 }
