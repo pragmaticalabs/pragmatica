@@ -64,6 +64,7 @@ import org.pragmatica.aether.metrics.ComprehensiveSnapshotCollector;
 import org.pragmatica.aether.metrics.MetricsCollector;
 import org.pragmatica.aether.metrics.MetricsScheduler;
 import org.pragmatica.aether.metrics.MinuteAggregator;
+import org.pragmatica.aether.node.generation.NodeSnapshotCache;
 import org.pragmatica.aether.metrics.artifact.ArtifactMetricsCollector;
 import org.pragmatica.aether.metrics.consensus.RabiaMetricsCollector;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
@@ -753,6 +754,7 @@ public interface AetherNode extends ManageableNode {
         metricsCollector.setInvocationMetricsProvider(invocationMetrics);
         metricsCollector.recordCustom("mgmt.port", config.managementPort());
         var metricsScheduler = MetricsScheduler.metricsScheduler(config.self(), clusterNode.network(), metricsCollector);
+        var nodeSnapshotCache = NodeSnapshotCache.nodeSnapshotCache(config.self());
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, repository, artifactStore);
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
@@ -882,6 +884,7 @@ public interface AetherNode extends ManageableNode {
                                                 httpRouteRegistry,
                                                 metricsCollector,
                                                 metricsScheduler,
+                                                nodeSnapshotCache,
                                                 deploymentMetricsCollector,
                                                 deploymentMetricsScheduler,
                                                 controlLoop,
@@ -1504,6 +1507,7 @@ public interface AetherNode extends ManageableNode {
                                                                     HttpRouteRegistry httpRouteRegistry,
                                                                     MetricsCollector metricsCollector,
                                                                     MetricsScheduler metricsScheduler,
+                                                                    NodeSnapshotCache nodeSnapshotCache,
                                                                     DeploymentMetricsCollector deploymentMetricsCollector,
                                                                     DeploymentMetricsScheduler deploymentMetricsScheduler,
                                                                     ControlLoop controlLoop,
@@ -1700,6 +1704,7 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
                                               metricsCollector::onTopologyChange));
         entries.add(MessageRouter.Entry.route(MetricsMessage.MetricsPing.class, metricsCollector::onMetricsPing));
+        entries.add(MessageRouter.Entry.route(MetricsMessage.MetricsPing.class, nodeSnapshotCache::onMetricsPing));
         entries.add(MessageRouter.Entry.route(MetricsMessage.MetricsPong.class, metricsCollector::onMetricsPong));
         entries.add(MessageRouter.Entry.route(DeploymentMetricsMessage.DeploymentMetricsPing.class,
                                               deploymentMetricsCollector::onDeploymentMetricsPing));
