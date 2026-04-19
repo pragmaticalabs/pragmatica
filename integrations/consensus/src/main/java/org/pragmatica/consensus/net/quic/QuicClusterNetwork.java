@@ -455,29 +455,19 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private void sendToConnection(NodeId peerId, Object message, QuicPeerConnection connection) {
         if (connection == null) {
-            log.warn("Node {} is not connected", peerId);
+            log.debug("Node {} is not connected (no peer link)", peerId);
             return;
         }
         if (!connection.isActive()) {
-            if (peerLinks.remove(peerId, connection)) {
-                connectionEstablishedAt.remove(peerId);
-                quicMetrics.onConnectionClosed();
-                if (isFreshConnection(peerId, connection)) {
-                    log.debug("Node {} stale link removed during formation window — skipping REMOVE notification", peerId);
-                } else {
-                    processViewChange(REMOVE, peerId);
-                }
-            }
-            log.warn("Node {} connection is not active, removed stale link", peerId);
+            // The send path observes an inactive connection, but does NOT own peer removal —
+            // QUIC's own channel-close handler is the authoritative path for `unregisterPeer`
+            // and `processViewChange(REMOVE)`. Otherwise transient send-path misses during
+            // initial handshake settlement (one direction ready, other still racing) would
+            // prematurely drop the peer and break Rabia consensus quorum.
+            log.debug("Node {} connection observed inactive on send path — letting lifecycle owner handle removal", peerId);
             return;
         }
         writeToStream(peerId, message, connection);
-    }
-
-    private boolean isFreshConnection(NodeId peerId, QuicPeerConnection connection) {
-        var establishedAtNanos = connectionEstablishedAt.getOrDefault(peerId, System.nanoTime());
-        var protectionNanos = topologyManager.helloTimeout().nanos() * 3;
-        return (System.nanoTime() - establishedAtNanos) < protectionNanos;
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Stream selection and write
@@ -588,21 +578,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private void handleWriteFailure(NodeId peerId) {
-        var staleConnection = peerLinks.remove(peerId);
-
-        if (staleConnection != null) {
-            var fresh = isFreshConnection(peerId, staleConnection);
-            connectionEstablishedAt.remove(peerId);
-            cleanupPeerQueues(peerId);
-            quicMetrics.onConnectionClosed();
-            staleConnection.close()
-                           .onFailure(cause -> log.warn("Error closing stale connection to peer {}: {}", peerId, cause.message()));
-            if (fresh) {
-                log.debug("Write failure to {} within formation window — skipping REMOVE notification", peerId);
-            } else {
-                processViewChange(REMOVE, peerId);
-            }
-        }
+        // Write failure is advisory — the QUIC channel-close handler owns authoritative
+        // peer removal (unregisterPeer + processViewChange(REMOVE)). Clearing peerLinks
+        // here races with handshake completion from the reverse direction and prematurely
+        // drops the peer from Rabia's membership view.
+        log.debug("Write to {} failed; deferring removal to QUIC channel lifecycle", peerId);
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Queue cleanup with size tracking
