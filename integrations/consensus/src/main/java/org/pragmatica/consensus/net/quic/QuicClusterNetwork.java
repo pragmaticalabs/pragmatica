@@ -107,7 +107,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private final QuicTransportMetrics quicMetrics = QuicTransportMetrics.quicTransportMetrics();
 
     private final ClusterFormationConfig formationConfig;
-    private final QuicDisconnectListener disconnectListener;
+    private volatile QuicDisconnectListener disconnectListener;
 
     private volatile QuicClusterServer server;
     private volatile QuicClusterClient client;
@@ -156,6 +156,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
         this.clientSslContext = clientSslContext;
         this.formationConfig = formationConfig;
         this.disconnectListener = disconnectListener;
+    }
+
+    /// Attach a QUIC-disconnect listener post-construction. Higher layers (e.g.
+    /// `AetherNode`) need to wire the listener after the enclosing `RabiaNode`
+    /// — which owns this network — has already been built. A `null` argument
+    /// resets the listener to the no-op implementation.
+    public void setDisconnectListener(QuicDisconnectListener listener) {
+        this.disconnectListener = listener == null
+                                 ? QuicDisconnectListener.noop()
+                                 : listener;
     }
 
     @Override

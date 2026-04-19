@@ -61,9 +61,15 @@ import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.metrics.ComprehensiveSnapshotCollector;
+import org.pragmatica.aether.deployment.generation.ClusterGenerationProjector;
+import org.pragmatica.aether.deployment.generation.HealthReconciler;
+import org.pragmatica.aether.deployment.generation.HealthReconcilerActivator;
 import org.pragmatica.aether.metrics.MetricsCollector;
 import org.pragmatica.aether.metrics.MetricsScheduler;
 import org.pragmatica.aether.metrics.MinuteAggregator;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.HealthSignal;
+import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.node.generation.NodeSnapshotCache;
 import org.pragmatica.aether.metrics.artifact.ArtifactMetricsCollector;
 import org.pragmatica.aether.metrics.consensus.RabiaMetricsCollector;
@@ -151,6 +157,7 @@ import org.pragmatica.dht.DHTTopologyListener;
 import org.pragmatica.dht.DistributedDHTClient;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
 import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
+import org.pragmatica.consensus.net.quic.QuicDisconnectListener;
 import org.pragmatica.consensus.net.quic.QuicTlsProvider;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -162,6 +169,7 @@ import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.PeerInfo;
+import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
@@ -187,6 +195,10 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
@@ -754,7 +766,24 @@ public interface AetherNode extends ManageableNode {
                                                                                 .millis());
         metricsCollector.setInvocationMetricsProvider(invocationMetrics);
         metricsCollector.recordCustom("mgmt.port", config.managementPort());
-        var metricsScheduler = MetricsScheduler.metricsScheduler(config.self(), clusterNode.network(), metricsCollector);
+        var healthSinkRef = new AtomicReference<HealthSignalSink>(HealthSignalSink.noop());
+        HealthSignalSink stableHealthSink = signal -> healthSinkRef.get().emit(signal);
+        var leaderTerm = new AtomicLong(0L);
+        var isLeaderGate = new AtomicBoolean(false);
+        Supplier<Long> rabiaTermSupplier = leaderTerm::get;
+        Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.get(), 0L);
+        var metricsScheduler = MetricsScheduler.metricsScheduler(config.self(),
+                                                                 clusterNode.network(),
+                                                                 metricsCollector,
+                                                                 config.timeouts().cluster()
+                                                                                .pingInterval(),
+                                                                 rabiaTermSupplier,
+                                                                 Option::none,
+                                                                 _ -> new byte[0],
+                                                                 stableHealthSink,
+                                                                 MetricsScheduler.DEFAULT_PING_TIMEOUT_THRESHOLD,
+                                                                 leaderEpochSupplier);
+        metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
         var nodeSnapshotCache = NodeSnapshotCache.nodeSnapshotCache(config.self());
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, repository, artifactStore);
@@ -986,7 +1015,9 @@ public interface AetherNode extends ManageableNode {
         var swimHealthDetector = CoreSwimHealthDetector.coreSwimHealthDetector(delegateRouter,
                                                                                config.topology(),
                                                                                serializer,
-                                                                               deserializer);
+                                                                               deserializer,
+                                                                               stableHealthSink,
+                                                                               leaderEpochSupplier);
         allEntries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
                                                  notification -> startSwimOnQuorum(notification,
                                                                                    swimHealthDetector,
@@ -994,6 +1025,34 @@ public interface AetherNode extends ManageableNode {
                                                                                    rotatingEncryptor)));
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> swimHealthDetector.onNodeConnected(connection.nodeId())));
+        var hlcClock = HlcClock.hlcClock(config.self().id()).unwrap();
+        var projector = ClusterGenerationProjector.clusterGenerationProjector();
+        var healthReconciler = HealthReconciler.healthReconciler(config.self(),
+                                                                 clusterNode,
+                                                                 projector,
+                                                                 hlcClock,
+                                                                 rabiaTermSupplier,
+                                                                 isLeaderGate,
+                                                                 config.autoHeal());
+        var healthReconcilerActivator = HealthReconcilerActivator.healthReconcilerActivator(healthReconciler,
+                                                                                            isLeaderGate);
+        healthSinkRef.set(healthReconcilerActivator.sink());
+        attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 change -> onLeaderChangeForReconciler(change,
+                                                                                       leaderTerm,
+                                                                                       healthReconcilerActivator)));
+        var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
+                                                 .onPut(AetherKey.GovernorAnnouncementKey.class,
+                                                        healthReconcilerActivator::onGovernorAnnouncementPut)
+                                                 .onRemove(AetherKey.GovernorAnnouncementKey.class,
+                                                           healthReconcilerActivator::onGovernorAnnouncementRemove)
+                                                 .onPut(AetherKey.SpokesmanKey.class,
+                                                        healthReconcilerActivator::onSpokesmanPut)
+                                                 .onPut(AetherKey.NodeLifecycleKey.class,
+                                                        healthReconcilerActivator::onNodeLifecyclePut)
+                                                 .build();
+        allEntries.addAll(healthKvRouter.asRouteEntries());
         var streamMaxMemoryBytes = resolveStreamMaxMemoryBytes();
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes);
         var streamSegmentIndex = new SegmentIndex();
@@ -1229,6 +1288,23 @@ public interface AetherNode extends ManageableNode {
                               .map(NodeInfo::address)
                               .findFirst()
                               .orElse(new NodeAddress("", 0));
+    }
+
+    private static void attachQuicDisconnectListener(ClusterNetwork network,
+                                                     HealthSignalSink sink,
+                                                     Supplier<Epoch> epochSupplier) {
+        if (network instanceof QuicClusterNetwork quicNetwork) {
+            QuicDisconnectListener listener = nodeId -> sink.emit(new HealthSignal.QuicDisconnect(nodeId,
+                                                                                                  epochSupplier.get()));
+            quicNetwork.setDisconnectListener(listener);
+        }
+    }
+
+    private static void onLeaderChangeForReconciler(LeaderNotification.LeaderChange change,
+                                                    AtomicLong leaderTerm,
+                                                    HealthReconcilerActivator activator) {
+        if (change.localNodeIsLeader()) {leaderTerm.incrementAndGet();}
+        activator.onLeaderChange(change);
     }
 
     @SuppressWarnings("JBCT-RET-01") private static void activateOnLeaderChange(LeaderNotification.LeaderChange change,

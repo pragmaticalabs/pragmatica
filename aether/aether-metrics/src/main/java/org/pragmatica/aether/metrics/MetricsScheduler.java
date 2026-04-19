@@ -8,6 +8,8 @@ import org.pragmatica.aether.slice.delegation.DelegatedComponent;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.HealthSignal;
+import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPing;
 import org.pragmatica.cluster.metrics.MetricsMessage.SnapshotPayload;
 import org.pragmatica.lang.Contract;
@@ -29,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -49,11 +52,14 @@ import org.slf4j.LoggerFactory;
 /// scheduler tracks the last-sent epoch per target node to decide between
 /// full-snapshot and heartbeat-only ping bodies (see spec §7.5).
 public interface MetricsScheduler extends DelegatedComponent {
+    int DEFAULT_PING_TIMEOUT_THRESHOLD = 3;
+
     @MessageReceiver@Contract void onTopologyChange(TopologyChangeNotification topologyChange);
     @MessageReceiver@Contract void onQuorumStateChange(QuorumStateNotification notification);
     @Contract void stop();
     @Contract void recordObservedEpoch(NodeId nodeId, Epoch epoch);
     Map<NodeId, Epoch> observedEpochs();
+    @Contract void onPongReceived(NodeId nodeId);
 
     static MetricsScheduler metricsScheduler(NodeId self,
                                              ClusterNetwork network,
@@ -65,7 +71,10 @@ public interface MetricsScheduler extends DelegatedComponent {
                                         interval,
                                         () -> 0L,
                                         Option::none,
-                                        _ -> new byte[0]);
+                                        _ -> new byte[0],
+                                        HealthSignalSink.noop(),
+                                        DEFAULT_PING_TIMEOUT_THRESHOLD,
+                                        () -> Epoch.ZERO);
     }
 
     static MetricsScheduler metricsScheduler(NodeId self,
@@ -81,7 +90,32 @@ public interface MetricsScheduler extends DelegatedComponent {
                                         interval,
                                         rabiaTermSupplier,
                                         snapshotSupplier,
-                                        snapshotEncoder);
+                                        snapshotEncoder,
+                                        HealthSignalSink.noop(),
+                                        DEFAULT_PING_TIMEOUT_THRESHOLD,
+                                        () -> Epoch.ZERO);
+    }
+
+    static MetricsScheduler metricsScheduler(NodeId self,
+                                             ClusterNetwork network,
+                                             MetricsCollector metricsCollector,
+                                             TimeSpan interval,
+                                             Supplier<Long> rabiaTermSupplier,
+                                             Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
+                                             Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder,
+                                             HealthSignalSink signalSink,
+                                             int pingTimeoutThreshold,
+                                             Supplier<Epoch> epochSupplier) {
+        return new MetricsSchedulerImpl(self,
+                                        network,
+                                        metricsCollector,
+                                        interval,
+                                        rabiaTermSupplier,
+                                        snapshotSupplier,
+                                        snapshotEncoder,
+                                        signalSink,
+                                        pingTimeoutThreshold,
+                                        epochSupplier);
     }
 
     static MetricsScheduler metricsScheduler(NodeId self, ClusterNetwork network, MetricsCollector metricsCollector) {
@@ -102,6 +136,9 @@ class MetricsSchedulerImpl implements MetricsScheduler {
     private final Supplier<Long> rabiaTermSupplier;
     private final Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier;
     private final Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder;
+    private final HealthSignalSink signalSink;
+    private final int pingTimeoutThreshold;
+    private final Supplier<Epoch> epochSupplier;
 
     private final CancellableTask pingTask = CancellableTask.cancellableTask();
 
@@ -115,13 +152,18 @@ class MetricsSchedulerImpl implements MetricsScheduler {
 
     private final Map<NodeId, Epoch> observedEpoch = new ConcurrentHashMap<>();
 
+    private final Map<NodeId, AtomicInteger> missedPings = new ConcurrentHashMap<>();
+
     MetricsSchedulerImpl(NodeId self,
                          ClusterNetwork network,
                          MetricsCollector metricsCollector,
                          TimeSpan interval,
                          Supplier<Long> rabiaTermSupplier,
                          Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
-                         Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder) {
+                         Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder,
+                         HealthSignalSink signalSink,
+                         int pingTimeoutThreshold,
+                         Supplier<Epoch> epochSupplier) {
         this.self = self;
         this.network = network;
         this.metricsCollector = metricsCollector;
@@ -129,6 +171,9 @@ class MetricsSchedulerImpl implements MetricsScheduler {
         this.rabiaTermSupplier = rabiaTermSupplier;
         this.snapshotSupplier = snapshotSupplier;
         this.snapshotEncoder = snapshotEncoder;
+        this.signalSink = signalSink;
+        this.pingTimeoutThreshold = pingTimeoutThreshold;
+        this.epochSupplier = epochSupplier;
     }
 
     @Override public Promise<Unit> activate() {
@@ -160,6 +205,7 @@ class MetricsSchedulerImpl implements MetricsScheduler {
                 topology.set(newTopology);
                 lastSentEpoch.remove(removed);
                 observedEpoch.remove(removed);
+                missedPings.remove(removed);
             }
             default -> {}
         }
@@ -190,6 +236,11 @@ class MetricsSchedulerImpl implements MetricsScheduler {
         return Map.copyOf(observedEpoch);
     }
 
+    @Override@Contract public void onPongReceived(NodeId nodeId) {
+        var counter = missedPings.get(nodeId);
+        if (counter != null) {counter.set(0);}
+    }
+
     private void startPinging() {
         pingTask.set(SharedScheduler.scheduleAtFixedRate(this::sendPingsToAllNodes, interval));
     }
@@ -213,6 +264,10 @@ class MetricsSchedulerImpl implements MetricsScheduler {
         }
     }
 
+    @Contract void sendPingsNow() {
+        sendPingsToAllNodes();
+    }
+
     private void sendOnePing(NodeId nodeId,
                              long rabiaTerm,
                              Epoch currentEpoch,
@@ -226,6 +281,13 @@ class MetricsSchedulerImpl implements MetricsScheduler {
                                    payload);
         network.send(nodeId, ping);
         lastSentEpoch.put(nodeId, currentEpoch);
+        maybeEmitPingTimeout(nodeId);
+    }
+
+    private void maybeEmitPingTimeout(NodeId nodeId) {
+        var missed = missedPings.computeIfAbsent(nodeId, _ -> new AtomicInteger()).incrementAndGet();
+        if (missed <pingTimeoutThreshold) {return;}
+        signalSink.emit(new HealthSignal.PingTimeout(nodeId, missed, epochSupplier.get()));
     }
 
     private Option<SnapshotPayload> buildPayloadForTarget(NodeId nodeId,
