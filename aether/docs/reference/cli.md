@@ -1227,6 +1227,30 @@ aether cluster generation
 
 JSON output returns the full snapshot shape exposed by `GET /api/cluster/generation`.
 
+### `aether cluster await-quiesced`
+
+Block until the queried node observes the requested cluster generation epoch AND the snapshot reports cluster-wide quiescence. Use this in test harnesses or operator scripts that depend on a deterministic settled state before proceeding.
+
+```bash
+aether cluster await-quiesced --epoch <T:C> [--timeout 30s]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--epoch` | Required, epoch in `term:counter` form (e.g. `7:142`). |
+| `--timeout` | Optional, default `30s`, capped at `120s`. |
+| `--format` | Output format: `table` (default) — concise one-liner; `json` — raw response body. |
+
+Exit codes: `0` on success, non-zero on timeout (HTTP 408) or other failure.
+
+Example:
+```bash
+aether cluster await-quiesced --epoch 7:142 --timeout 60s
+# Output: Quiesced at 7:142 (response: {"epoch":"7:142","quiescence":"QUIESCED","waitedMs":1234})
+```
+
+See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.
+
 ### `aether cluster upgrade`
 
 Initiate a cluster version upgrade.

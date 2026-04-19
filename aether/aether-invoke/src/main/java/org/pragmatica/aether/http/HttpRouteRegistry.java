@@ -83,9 +83,9 @@ public interface HttpRouteRegistry {
                 var key = valuePut.cause().key();
                 var value = valuePut.cause().value();
                 var nodeId = key.nodeId();
-                logIfStaleFence(nodeId,
-                                key.artifact().asString(),
-                                value);
+                if (isStaleFence(nodeId,
+                                 key.artifact().asString(),
+                                 value)) {return;}
                 for (var route : value.routes()) {
                     if (!route.isRoutable()) {continue;}
                     var method = route.httpMethod();
@@ -101,17 +101,19 @@ public interface HttpRouteRegistry {
                 return staleFenceCounter.get();
             }
 
-            private void logIfStaleFence(NodeId nodeId, String artifact, NodeRoutesValue value) {
+            private boolean isStaleFence(NodeId nodeId, String artifact, NodeRoutesValue value) {
                 var valueTerm = value.observedCoreEpoch().rabiaTerm();
                 var observedTerm = snapshotSource.observedEpochRabiaTerm();
                 if (observedTerm - valueTerm > STALE_FENCE_TERM_THRESHOLD) {
                     staleFenceCounter.incrementAndGet();
-                    log.warn("Stale route update for {}/{}: value.rabiaTerm={} observed.rabiaTerm={} — accepting but flagging anomaly",
+                    log.warn("Stale route update for {}/{}: value.rabiaTerm={} observed.rabiaTerm={} — REJECTED (hard fence)",
                              nodeId,
                              artifact,
                              valueTerm,
                              observedTerm);
+                    return true;
                 }
+                return false;
             }
 
             @Override@SuppressWarnings("JBCT-RET-01") public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {

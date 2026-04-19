@@ -4,10 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.generation;
 
+import java.util.function.UnaryOperator;
+
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.CoreMember;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.GenerationChangedNotice;
+import org.pragmatica.aether.slice.generation.GenerationChangedSink;
 import org.pragmatica.aether.slice.generation.GenerationReason;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.HealthSignal;
@@ -81,6 +85,24 @@ public interface HealthReconciler extends HealthSignalSink {
                                              Supplier<Long> rabiaTermSupplier,
                                              AtomicBoolean isLeader,
                                              AutoHealConfig autoHealConfig) {
+        return healthReconciler(self,
+                                cluster,
+                                projector,
+                                hlcClock,
+                                rabiaTermSupplier,
+                                isLeader,
+                                autoHealConfig,
+                                GenerationChangedSink.noop());
+    }
+
+    static HealthReconciler healthReconciler(NodeId self,
+                                             ClusterNode<KVCommand<AetherKey>> cluster,
+                                             ClusterGenerationProjector projector,
+                                             HlcClock hlcClock,
+                                             Supplier<Long> rabiaTermSupplier,
+                                             AtomicBoolean isLeader,
+                                             AutoHealConfig autoHealConfig,
+                                             GenerationChangedSink generationChangedSink) {
         return new HealthReconcilerRecord(self,
                                           cluster,
                                           projector,
@@ -88,6 +110,7 @@ public interface HealthReconciler extends HealthSignalSink {
                                           rabiaTermSupplier,
                                           isLeader,
                                           autoHealConfig,
+                                          generationChangedSink,
                                           new AtomicReference<>(empty(rabiaTermSupplier.get())),
                                           new HashMap<>(),
                                           new HashMap<>(),
@@ -105,6 +128,7 @@ record HealthReconcilerRecord(NodeId self,
                               Supplier<Long> rabiaTermSupplier,
                               AtomicBoolean isLeader,
                               AutoHealConfig autoHealConfig,
+                              GenerationChangedSink generationChangedSink,
                               AtomicReference<ClusterGenerationSnapshot> snapshotRef,
                               Map<NodeId, Integer> consecutivePingMisses,
                               Map<NodeId, HealthHint> swimHints,
@@ -271,8 +295,7 @@ record HealthReconcilerRecord(NodeId self,
     @Contract private void operatorSetDesiredSize(int newSize) {
         var current = snapshotRef.get();
         if (current.desiredCoreSize() == newSize) {return;}
-        var updated = current.withDesiredCoreSize(newSize).withBumpedCounter(GenerationReason.CLUSTER_SIZE_CHANGED);
-        snapshotRef.set(updated);
+        updateAndBump(s -> s.withDesiredCoreSize(newSize), GenerationReason.CLUSTER_SIZE_CHANGED);
     }
 
     @Contract private void operatorDrain(NodeId nodeId) {
@@ -303,7 +326,7 @@ record HealthReconcilerRecord(NodeId self,
         var member = current.coreMembers().get(nodeId);
         if (member == null || member.healthHint() == HealthHint.SUSPECTED) {return;}
         var updatedMap = replaceMember(current.coreMembers(), nodeId, member.withHealthHint(HealthHint.SUSPECTED));
-        snapshotRef.set(current.withCoreMembers(updatedMap).withBumpedCounter(GenerationReason.HEALTH_CHANGE));
+        updateAndBump(s -> s.withCoreMembers(updatedMap), GenerationReason.HEALTH_CHANGE);
     }
 
     @Contract private void clearSuspectedInMemory(NodeId nodeId) {
@@ -311,7 +334,7 @@ record HealthReconcilerRecord(NodeId self,
         var member = current.coreMembers().get(nodeId);
         if (member == null || member.healthHint() == HealthHint.HEALTHY) {return;}
         var updatedMap = replaceMember(current.coreMembers(), nodeId, member.withHealthHint(HealthHint.HEALTHY));
-        snapshotRef.set(current.withCoreMembers(updatedMap).withBumpedCounter(GenerationReason.HEALTH_CHANGE));
+        updateAndBump(s -> s.withCoreMembers(updatedMap), GenerationReason.HEALTH_CHANGE);
         consecutivePingMisses.remove(nodeId);
     }
 
@@ -466,7 +489,16 @@ record HealthReconcilerRecord(NodeId self,
     }
 
     @Contract private void bumpCounter(GenerationReason reason) {
-        snapshotRef.updateAndGet(s -> s.withBumpedCounter(reason));
+        updateAndBump(UnaryOperator.identity(), reason);
+    }
+
+    @Contract private void updateAndBump(UnaryOperator<ClusterGenerationSnapshot> transform,
+                                          GenerationReason reason) {
+        var previous = snapshotRef.get();
+        var bumped = snapshotRef.updateAndGet(s -> transform.apply(s).withBumpedCounter(reason));
+        generationChangedSink.emit(GenerationChangedNotice.generationChangedNotice(previous.epoch(),
+                                                                                   bumped.epoch(),
+                                                                                   reason));
     }
 
     private List<NodeId> coreNodesFromSnapshot(ClusterGenerationSnapshot snapshot) {

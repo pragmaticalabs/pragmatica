@@ -252,7 +252,9 @@ curl "http://localhost:8080/api/events?since=2024-01-15T10:30:00Z"
 ]
 ```
 
-**Event Types:** `NODE_JOINED`, `NODE_LEFT`, `NODE_FAILED`, `LEADER_ELECTED`, `LEADER_LOST`, `QUORUM_ESTABLISHED`, `QUORUM_LOST`, `DEPLOYMENT_STARTED`, `DEPLOYMENT_COMPLETED`, `DEPLOYMENT_FAILED`, `SLICE_FAILURE`, `CONNECTION_ESTABLISHED`, `CONNECTION_FAILED`
+**Event Types:** `NODE_JOINED`, `NODE_LEFT`, `NODE_FAILED`, `LEADER_ELECTED`, `LEADER_LOST`, `QUORUM_ESTABLISHED`, `QUORUM_LOST`, `DEPLOYMENT_STARTED`, `DEPLOYMENT_COMPLETED`, `DEPLOYMENT_FAILED`, `SLICE_FAILURE`, `CONNECTION_ESTABLISHED`, `CONNECTION_FAILED`, `GENERATION_CHANGED`
+
+`GENERATION_CHANGED` events are emitted by the leader's `HealthReconciler` whenever the cluster generation epoch advances. `details` carries `oldEpoch`, `newEpoch`, and `reason` (a `GenerationReason` enum name). See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.4.
 
 **Severity Levels:** `INFO`, `WARNING`, `CRITICAL`
 
@@ -1625,6 +1627,30 @@ See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.1 f
   "partitions": []
 }
 ```
+
+### POST /api/cluster/await-quiesced
+
+Block until the queried node has `observedEpoch >= requested` AND the local snapshot reports cluster-wide quiescence at that epoch. Useful for tests and operators that need to wait for a known steady state before proceeding.
+
+**Query parameters:**
+- `epoch` — required, in `term:counter` form (e.g. `7:142`).
+- `timeout` — optional, default `30s`, max `120s`. Plain numbers are treated as seconds; suffix `s` is permitted.
+
+**Status codes:**
+- `200 OK` — quiescence reached.
+- `408 Request Timeout` — deadline elapsed before reaching the requested epoch + quiescence.
+- `400 Bad Request` — missing/malformed `epoch` or `timeout`.
+
+**Response (success):**
+```json
+{
+  "epoch": "7:142",
+  "quiescence": "QUIESCED",
+  "waitedMs": 1234
+}
+```
+
+See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.1.
 
 ### GET /api/cluster/governors
 

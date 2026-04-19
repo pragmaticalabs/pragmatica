@@ -296,6 +296,18 @@ import java.util.concurrent.atomic.AtomicLong;
                                              Map.of("artifactId", event.artifactId(), "requestedBy", event.requestedBy())));
     }
 
+    public void onGenerationChanged(OperationalEvent.GenerationChanged event) {
+        buffer.add(ClusterEvent.clusterEvent(EventType.GENERATION_CHANGED,
+                                             Severity.INFO,
+                                             "Generation epoch advanced " + event.oldEpoch() + " -> " + event.newEpoch() + " (" + event.reason() + ")",
+                                             Map.of("oldEpoch",
+                                                    event.oldEpoch(),
+                                                    "newEpoch",
+                                                    event.newEpoch(),
+                                                    "reason",
+                                                    event.reason())));
+    }
+
     public void onConnectionFailed(NetworkServiceMessage.ConnectionFailed event) {
         buffer.add(ClusterEvent.clusterEvent(EventType.CONNECTION_FAILED,
                                              Severity.WARNING,

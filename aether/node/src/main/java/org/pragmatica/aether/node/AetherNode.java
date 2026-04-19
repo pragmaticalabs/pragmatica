@@ -69,6 +69,7 @@ import org.pragmatica.aether.metrics.MetricsScheduler;
 import org.pragmatica.aether.metrics.MinuteAggregator;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.GenerationChangedSink;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.node.generation.NodeSnapshotCache;
@@ -771,13 +772,15 @@ public interface AetherNode extends ManageableNode {
         Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.get(), 0L);
         var hlcClockEarly = HlcClock.hlcClock(config.self().id()).unwrap();
         var projectorEarly = ClusterGenerationProjector.clusterGenerationProjector();
+        var generationChangedSink = buildGenerationChangedSink(delegateRouter);
         var healthReconciler = HealthReconciler.healthReconciler(config.self(),
                                                                  clusterNode,
                                                                  projectorEarly,
                                                                  hlcClockEarly,
                                                                  rabiaTermSupplier,
                                                                  isLeaderGate,
-                                                                 config.autoHeal());
+                                                                 config.autoHeal(),
+                                                                 generationChangedSink);
         Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier = () -> isLeaderGate.get()
                                                                             ? Option.some(healthReconciler.currentSnapshot())
                                                                             : Option.none();
@@ -1360,6 +1363,12 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
+    private static GenerationChangedSink buildGenerationChangedSink(MessageRouter router) {
+        return notice -> router.route(OperationalEvent.GenerationChanged.generationChanged(notice.oldEpoch().toString(),
+                                                                                           notice.newEpoch().toString(),
+                                                                                           notice.reason().name()));
+    }
+
     private static void onLeaderChangeForReconciler(LeaderNotification.LeaderChange change,
                                                     AtomicLong leaderTerm,
                                                     HealthReconcilerActivator activator) {
@@ -1922,6 +1931,8 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onBlueprintDeployed));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeleted.class,
                                               eventAggregator::onBlueprintDeleted));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.GenerationChanged.class,
+                                              eventAggregator::onGenerationChanged));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));
         entries.add(MessageRouter.Entry.route(org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest.class,

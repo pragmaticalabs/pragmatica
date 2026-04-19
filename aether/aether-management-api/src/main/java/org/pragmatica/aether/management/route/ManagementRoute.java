@@ -54,6 +54,7 @@ public enum ManagementRoute {
     CERTIFICATE(GET, "/api/certificate", List.of(), ANY),
     CLUSTER_TOPOLOGY(GET, "/api/cluster/topology", List.of(), ANY),
     CLUSTER_GENERATION(GET, "/api/cluster/generation", List.of(), ANY),
+    CLUSTER_AWAIT_QUIESCED(POST, "/api/cluster/await-quiesced", List.of(), ANY),
     CLUSTER_GOVERNORS(GET, "/api/cluster/governors", List.of(), ANY),
     CLUSTER_TASKS_LIST(GET, "/api/cluster/tasks", List.of(), ANY),
     CLUSTER_CONFIG_GET(GET, "/api/cluster/config", List.of(), taskGroup(DEPLOYMENT)),

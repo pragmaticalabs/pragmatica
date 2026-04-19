@@ -49,6 +49,13 @@ public sealed interface ClusterHttpClient {
         return post(route, List.of(), jsonBody);
     }
 
+    static Result<String> post(ManagementRoute route, List<String> params, String queryString, String jsonBody) {
+        return route.assemble(params).map(path -> queryString == null || queryString.isEmpty()
+                                                 ? path
+                                                 : path + "?" + queryString)
+                             .flatMap(path -> postPath(path, jsonBody));
+    }
+
     static Result<String> put(ManagementRoute route, List<String> params, String jsonBody) {
         return route.assemble(params).flatMap(path -> putPath(path, jsonBody));
     }

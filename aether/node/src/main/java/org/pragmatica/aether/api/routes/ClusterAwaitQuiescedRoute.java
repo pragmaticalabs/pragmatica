@@ -1,0 +1,146 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+package org.pragmatica.aether.api.routes;
+
+import org.pragmatica.aether.api.ManagementApiResponses.AwaitQuiescedResponse;
+import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
+import org.pragmatica.aether.slice.generation.ClusterQuiescence;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.http.routing.HttpError;
+import org.pragmatica.http.routing.HttpStatus;
+import org.pragmatica.http.routing.QueryParameter;
+import org.pragmatica.http.routing.Route;
+import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.parse.Number;
+import org.pragmatica.lang.utils.Causes;
+
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+
+
+/// `POST /api/cluster/await-quiesced?epoch={ t:c }&timeout=30s` — blocks until the
+/// queried node has `observedEpoch >= requested` AND the local snapshot reports
+/// `quiescence == QUIESCED`. Returns `200 OK` on success, `408 Request Timeout`
+/// on timeout, `400 Bad Request` on malformed input.
+///
+/// See `aether/docs/specs/cluster-generation-spec.md` §14.1.
+public final class ClusterAwaitQuiescedRoute implements RouteSource {
+    private static final TimeSpan POLL_INTERVAL = TimeSpan.timeSpan(200).millis();
+
+    private static final TimeSpan DEFAULT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
+
+    private static final TimeSpan MAX_TIMEOUT = TimeSpan.timeSpan(120).seconds();
+
+    private static final Fn1<Cause, String> INVALID_EPOCH = Causes.forOneValue("Invalid epoch parameter [%s] (expected term:counter)");
+
+    private static final Fn1<Cause, String> INVALID_TIMEOUT = Causes.forOneValue("Invalid timeout parameter [%s]");
+
+    private static final Cause MISSING_EPOCH = Causes.cause("Missing required query parameter: epoch");
+
+    private final Supplier<ManageableNode> nodeSupplier;
+
+    private ClusterAwaitQuiescedRoute(Supplier<ManageableNode> nodeSupplier) {
+        this.nodeSupplier = nodeSupplier;
+    }
+
+    public static ClusterAwaitQuiescedRoute clusterAwaitQuiescedRoute(Supplier<ManageableNode> nodeSupplier) {
+        return new ClusterAwaitQuiescedRoute(nodeSupplier);
+    }
+
+    @Override public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<AwaitQuiescedResponse>route(ManagementRoute.CLUSTER_AWAIT_QUIESCED)
+                                         .<String, String>withQuery(QueryParameter.aString("epoch"),
+                                                                    QueryParameter.aString("timeout"))
+                                         .to(this::handle)
+                                         .asJson());
+    }
+
+    private Promise<AwaitQuiescedResponse> handle(Option<String> epochParam, Option<String> timeoutParam) {
+        return parseEpoch(epochParam).async()
+                         .flatMap(epoch -> parseTimeout(timeoutParam).async()
+                                                       .flatMap(timeout -> awaitQuiesced(epoch, timeout)));
+    }
+
+    static Result<Epoch> parseEpoch(Option<String> raw) {
+        return raw.toResult(MISSING_EPOCH).flatMap(ClusterAwaitQuiescedRoute::parseEpochString);
+    }
+
+    private static Result<Epoch> parseEpochString(String raw) {
+        var parts = raw.split(":");
+        if (parts.length != 2) {return INVALID_EPOCH.apply(raw).result();}
+        return parseLongPair(parts[0], parts[1]).mapError(_ -> INVALID_EPOCH.apply(raw));
+    }
+
+    private static Result<Epoch> parseLongPair(String termRaw, String counterRaw) {
+        return Number.parseLong(termRaw)
+                               .flatMap(term -> Number.parseLong(counterRaw).map(counter -> Epoch.epoch(term, counter)));
+    }
+
+    static Result<TimeSpan> parseTimeout(Option<String> raw) {
+        return raw.fold(() -> Result.success(DEFAULT_TIMEOUT), ClusterAwaitQuiescedRoute::parseTimeoutString);
+    }
+
+    private static Result<TimeSpan> parseTimeoutString(String raw) {
+        return parseTimeoutSeconds(raw).map(seconds -> TimeSpan.timeSpan(seconds).seconds())
+                                  .map(ClusterAwaitQuiescedRoute::clampTimeout);
+    }
+
+    private static Result<Long> parseTimeoutSeconds(String raw) {
+        var trimmed = raw.endsWith("s")
+                     ? raw.substring(0, raw.length() - 1)
+                     : raw;
+        return Number.parseLong(trimmed).mapError(_ -> INVALID_TIMEOUT.apply(raw));
+    }
+
+    private static TimeSpan clampTimeout(TimeSpan ts) {
+        return ts.millis() > MAX_TIMEOUT.millis()
+              ? MAX_TIMEOUT
+              : ts;
+    }
+
+    private Promise<AwaitQuiescedResponse> awaitQuiesced(Epoch requested, TimeSpan timeout) {
+        var startNanos = System.nanoTime();
+        var deadlineNanos = startNanos + timeout.nanos();
+        return pollUntilReadyOrTimeout(requested, startNanos, deadlineNanos);
+    }
+
+    private Promise<AwaitQuiescedResponse> pollUntilReadyOrTimeout(Epoch requested,
+                                                                   long startNanos,
+                                                                   long deadlineNanos) {
+        var snapshot = nodeSupplier.get().nodeSnapshotCache()
+                                       .current();
+        if (snapshotMatches(snapshot, requested)) {return Promise.success(buildResponse(snapshot.unwrap(), startNanos));}
+        if (System.nanoTime() >= deadlineNanos) {return timeoutResponse();}
+        return Promise.<Boolean>promise(POLL_INTERVAL,
+                                        p -> p.succeed(true))
+                      .flatMap(_ -> pollUntilReadyOrTimeout(requested, startNanos, deadlineNanos));
+    }
+
+    private static boolean snapshotMatches(Option<ClusterGenerationSnapshot> snapshot, Epoch requested) {
+        return snapshot.map(s -> s.epoch().isAtLeast(requested) && s.quiescence() == ClusterQuiescence.QUIESCED)
+                           .or(false);
+    }
+
+    private static AwaitQuiescedResponse buildResponse(ClusterGenerationSnapshot snapshot, long startNanos) {
+        var waitedMs = (System.nanoTime() - startNanos) / 1_000_000L;
+        return new AwaitQuiescedResponse(snapshot.epoch().toString(),
+                                         snapshot.quiescence().name(),
+                                         waitedMs);
+    }
+
+    private static Promise<AwaitQuiescedResponse> timeoutResponse() {
+        return HttpError.httpError(HttpStatus.REQUEST_TIMEOUT,
+                                   Causes.cause("await-quiesced timed out before reaching requested epoch"))
+        .promise();
+    }
+}

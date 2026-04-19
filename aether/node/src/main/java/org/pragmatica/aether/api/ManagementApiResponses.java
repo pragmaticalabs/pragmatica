@@ -356,6 +356,8 @@ public sealed interface ManagementApiResponses {
                                       EpochInfo ownerEpoch,
                                       long ownershipTerm){}
 
+    record AwaitQuiescedResponse(String epoch, String quiescence, long waitedMs){}
+
     record GovernorsResponse(List<GovernorInfo> governors){}
 
     record GovernorInfo(String governorId, String community, int memberCount, List<String> members){}

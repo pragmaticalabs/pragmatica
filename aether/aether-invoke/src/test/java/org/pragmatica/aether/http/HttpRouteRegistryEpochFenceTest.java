@@ -48,7 +48,7 @@ class HttpRouteRegistryEpochFenceTest {
         }
 
         @Test
-        void putWithStaleEpoch_flaggedButAccepted() {
+        void putWithStaleEpoch_flaggedAndRejected() {
             snapshotSource.setTerm(20L);
             var registry = HttpRouteRegistry.httpRouteRegistry(snapshotSource);
 
@@ -56,8 +56,8 @@ class HttpRouteRegistryEpochFenceTest {
 
             assertThat(registry.staleFenceObservationCount()).isEqualTo(1L);
             assertThat(registry.findRoute("GET", "/users/").isPresent())
-                    .as("stale update must still be projected (soft fence)")
-                    .isTrue();
+                    .as("stale update must NOT be projected (hard fence)")
+                    .isFalse();
         }
 
         @Test

@@ -17,6 +17,7 @@ import org.pragmatica.http.ContentType;
 import org.pragmatica.aether.api.routes.AlertRoutes;
 import org.pragmatica.aether.api.routes.ApiKeyRoutes;
 import org.pragmatica.aether.api.routes.BackupRoutes;
+import org.pragmatica.aether.api.routes.ClusterAwaitQuiescedRoute;
 import org.pragmatica.aether.api.routes.ClusterConfigRoutes;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
 import org.pragmatica.aether.api.routes.ClusterGenerationRoutes;
@@ -284,6 +285,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                  scheduledTaskStateRegistry));
         routeSources.add(ClusterTopologyRoutes.clusterTopologyRoutes(nodeSupplier));
         routeSources.add(ClusterGenerationRoutes.clusterGenerationRoutes(nodeSupplier));
+        routeSources.add(ClusterAwaitQuiescedRoute.clusterAwaitQuiescedRoute(nodeSupplier));
         routeSources.add(nodeSupplier.get().clusterTopologyManager()
                                          .map(ClusterConfigApplier::clusterConfigApplier)
                                          .map(applier -> ClusterConfigRoutes.clusterConfigRoutes(nodeSupplier, applier))

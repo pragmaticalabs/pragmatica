@@ -16,12 +16,14 @@ import org.pragmatica.aether.slice.DefaultSliceBridge;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.ConfigFacade;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
@@ -31,6 +33,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue;
@@ -61,8 +64,10 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -87,6 +92,7 @@ public interface NodeDeploymentManager {
     @MessageReceiver void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
     @MessageReceiver void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
     @MessageReceiver void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove);
+    @MessageReceiver void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
     void setShutdownCallback(Runnable callback);
     boolean isActive();
 
@@ -102,6 +108,8 @@ public interface NodeDeploymentManager {
         default void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {}
 
         default void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {}
+
+        default void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {}
 
         record DormantNodeDeploymentState(List<SuspendedSlice> suspendedSlices) implements NodeDeploymentState {
             public DormantNodeDeploymentState() {
@@ -122,7 +130,8 @@ public interface NodeDeploymentManager {
                                          Option<SliceInvokerFacade> sliceInvokerFacade,
                                          TimeSpan activationChainTimeout,
                                          TimeSpan transitionRetryDelay,
-                                         ConfigNotificationManager configNotificationManager) implements NodeDeploymentState {
+                                         ConfigNotificationManager configNotificationManager,
+                                         RoutingEpochAckTracker routingEpochAckTracker) implements NodeDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(ActiveNodeDeploymentState.class);
 
             private static final TimeSpan CONSENSUS_OPERATION_TIMEOUT = TimeSpan.timeSpan(30).seconds();
@@ -161,9 +170,28 @@ public interface NodeDeploymentManager {
                 }
             }
 
+            @Override public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
+                var key = valuePut.cause().key();
+                var value = valuePut.cause().value();
+                var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), self);
+                routingEpochAckTracker.observeAck(sliceKey,
+                                                  key.nodeId(),
+                                                  value.observedCoreEpoch())
+                .onPresent(this::fastTransitionToActive);
+            }
+
+            private void fastTransitionToActive(SliceNodeKey sliceKey) {
+                var current = Option.option(deployments.get(sliceKey)).map(SliceDeployment::state);
+                if (!current.map(state -> state == SliceState.ROUTING).or(false)) {return;}
+                log.debug("Cross-node ack threshold reached for {} — fast-transitioning ROUTING → ACTIVE",
+                          sliceKey.artifact());
+                transitionTo(sliceKey, SliceState.ACTIVE);
+            }
+
             private void handleSliceValueRemove(SliceNodeKey sliceKey) {
                 log.debug("ValueRemove received for key: {}", sliceKey);
                 var deployment = Option.option(deployments.remove(sliceKey));
+                routingEpochAckTracker.clear(sliceKey);
                 if (shouldForceCleanup(deployment)) {forceCleanupSlice(sliceKey);}
             }
 
@@ -279,7 +307,32 @@ public interface NodeDeploymentManager {
 
             private Promise<SliceNodeKey> publishRoutesIfPresent(SliceNodeKey sliceKey) {
                 if (!sliceHasHttpRoutes(sliceKey.artifact())) {return Promise.success(sliceKey);}
-                return transitionTo(sliceKey, SliceState.ROUTING).flatMap(key -> publishHttpRoutes(key).map(_ -> key));
+                return transitionTo(sliceKey, SliceState.ROUTING).withSuccess(this::registerEpochAckExpectation)
+                                   .flatMap(key -> publishHttpRoutes(key).map(_ -> key));
+            }
+
+            private void registerEpochAckExpectation(SliceNodeKey sliceKey) {
+                var targets = collectTargetNodesForArtifact(sliceKey);
+                if (targets.isEmpty()) {return;}
+                routingEpochAckTracker.registerExpectation(sliceKey, Epoch.ZERO, targets);
+            }
+
+            private Set<NodeId> collectTargetNodesForArtifact(SliceNodeKey sliceKey) {
+                var targets = new HashSet<NodeId>();
+                kvStore.forEach(NodeArtifactKey.class,
+                                NodeArtifactValue.class,
+                                (k, v) -> collectTargetIfMatches(targets, sliceKey, k, v));
+                return Set.copyOf(targets);
+            }
+
+            private void collectTargetIfMatches(Set<NodeId> targets,
+                                                SliceNodeKey sliceKey,
+                                                NodeArtifactKey key,
+                                                NodeArtifactValue value) {
+                if (!key.artifact().equals(sliceKey.artifact())) {return;}
+                if (key.nodeId().equals(self)) {return;}
+                if (value.state() == SliceState.FAILED || value.state() == SliceState.UNLOAD || value.state() == SliceState.UNLOADING) {return;}
+                targets.add(key.nodeId());
             }
 
             private boolean sliceHasHttpRoutes(Artifact artifact) {
@@ -308,6 +361,7 @@ public interface NodeDeploymentManager {
             }
 
             private void handleActive(SliceNodeKey sliceKey) {
+                routingEpochAckTracker.clear(sliceKey);
                 router.route(DeploymentCompleted.deploymentCompleted(sliceKey.artifact(),
                                                                      self,
                                                                      System.currentTimeMillis()));
@@ -1286,6 +1340,10 @@ public interface NodeDeploymentManager {
                 state.get().onNodeArtifactRemove(valueRemove);
             }
 
+            @Override public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
+                state.get().onNodeRoutesPut(valuePut);
+            }
+
             @Override public void onQuorumStateChange(QuorumStateNotification quorumStateNotification) {
                 if (!quorumStateNotification.advanceSequence(quorumSequence)) {
                     log.info("Node {} ignoring stale QuorumStateNotification: {}", self().id(), quorumStateNotification);
@@ -1314,7 +1372,8 @@ public interface NodeDeploymentManager {
                                                                                     sliceInvokerFacade(),
                                                                                     activationChainTimeout(),
                                                                                     transitionRetryDelay(),
-                                                                                    ConfigNotificationManager.configNotificationManager());
+                                                                                    ConfigNotificationManager.configNotificationManager(),
+                                                                                    RoutingEpochAckTracker.routingEpochAckTracker());
                 state().set(activeState);
                 log.info("Node {} NodeDeploymentManager activated", self().id());
                 registerLifecycleOnDuty();

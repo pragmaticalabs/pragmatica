@@ -64,4 +64,10 @@ public sealed interface OperationalEvent extends Message.Local {
             return new BlueprintDeleted(artifactId, requestedBy, System.currentTimeMillis());
         }
     }
+
+    record GenerationChanged(String oldEpoch, String newEpoch, String reason, long timestamp) implements OperationalEvent {
+        public static GenerationChanged generationChanged(String oldEpoch, String newEpoch, String reason) {
+            return new GenerationChanged(oldEpoch, newEpoch, reason, System.currentTimeMillis());
+        }
+    }
 }

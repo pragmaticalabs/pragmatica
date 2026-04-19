@@ -47,7 +47,8 @@ public record ClusterEvent(Instant timestamp,
         BACKUP_CREATED,
         BACKUP_RESTORED,
         BLUEPRINT_DEPLOYED,
-        BLUEPRINT_DELETED
+        BLUEPRINT_DELETED,
+        GENERATION_CHANGED
     }
 
     public enum Severity {
