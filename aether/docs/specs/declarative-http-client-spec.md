@@ -427,6 +427,8 @@ If no `[http.X.json]` section is present, `JsonMapper.defaultJsonMapper()` is us
 
 ## 7. Observability
 
+### 7.1 Aspect Wrapping
+
 Every generated HTTP client adapter is wrapped with a built-in Aspect — the same observability infrastructure that slices get. The processor generates `aspect.apply(new PaymentApiHttpAdapter(...))` exactly like it does for slices.
 
 This provides:
@@ -435,6 +437,21 @@ This provides:
 - Dynamic reconfiguration at runtime (change log level, toggle metrics)
 
 No configuration needed. Every provisioned HTTP client interface automatically gets the Aspect.
+
+### 7.2 Request ID Propagation
+
+The generated adapter automatically propagates the current `InvocationContext.requestId()` as an `X-Request-Id` header on every outbound HTTP request. This is a built-in behavior, not configurable — it's always on.
+
+This enables end-to-end request tracing: an inbound request to the Aether cluster carries a request ID through internal cluster forwarding (QUIC), through slice invocations, and out through declarative HTTP client calls to external services. External services that log the `X-Request-Id` header participate in the trace automatically.
+
+The generated code:
+```java
+var requestId = InvocationContext.currentRequestId();
+var builder = HttpRequest.newBuilder().uri(uri);
+requestId.onPresent(id -> builder.header("X-Request-Id", id));
+```
+
+No user annotation or configuration required.
 
 ---
 
