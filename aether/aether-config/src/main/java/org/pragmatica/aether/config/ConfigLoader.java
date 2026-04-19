@@ -651,11 +651,7 @@ public final class ConfigLoader {
                                                   parseTimeSpan(doc,
                                                                 "timeouts.scaling",
                                                                 "auto_heal_startup_cooldown",
-                                                                d.autoHealStartupCooldown()),
-                                                  parseTimeSpan(doc,
-                                                                "timeouts.scaling",
-                                                                "auto_heal_deficit_hysteresis",
-                                                                d.autoHealDeficitHysteresis()));
+                                                                d.autoHealStartupCooldown()));
     }
 
     private static TimeSpan parseTimeSpanOrMs(TomlDocument doc,

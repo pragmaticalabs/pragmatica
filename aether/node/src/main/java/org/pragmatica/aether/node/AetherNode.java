@@ -726,10 +726,6 @@ public interface AetherNode extends ManageableNode {
         var computeProvider = config.environment().flatMap(EnvironmentIntegration::compute);
         var lifecycleManager = NodeLifecycleManager.nodeLifecycleManager(computeProvider);
         var deploymentMap = DeploymentMap.deploymentMap();
-        var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
-                                                                                   lifecycleManager,
-                                                                                   config.autoHeal(),
-                                                                                   deploymentMap);
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,
@@ -800,6 +796,11 @@ public interface AetherNode extends ManageableNode {
                                                                  leaderEpochSupplier);
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
         var nodeSnapshotCache = NodeSnapshotCache.nodeSnapshotCache(config.self(), snapshotDecoder);
+        var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
+                                                                                   lifecycleManager,
+                                                                                   config.autoHeal(),
+                                                                                   deploymentMap,
+                                                                                   nodeSnapshotCache);
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, repository, artifactStore);
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);

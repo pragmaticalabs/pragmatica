@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyManager;
@@ -40,10 +41,12 @@ public interface ClusterTopologyManager extends TopologyManager {
     static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
                                                          NodeLifecycleManager lifecycleManager,
                                                          AutoHealConfig config,
-                                                         DeploymentMap deploymentMap) {
+                                                         DeploymentMap deploymentMap,
+                                                         GenerationSnapshotSource snapshotSource) {
         return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
                                                                          lifecycleManager,
                                                                          config,
-                                                                         deploymentMap);
+                                                                         deploymentMap,
+                                                                         snapshotSource);
     }
 }

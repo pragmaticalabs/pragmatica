@@ -11,6 +11,7 @@ import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.NodeHealth;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
@@ -39,6 +40,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
@@ -53,17 +55,27 @@ import static org.pragmatica.lang.Unit.unit;
 
 /// Implementation of ClusterTopologyManager that delegates read-only operations to
 /// TopologyObserver and manages cluster size via a NodeReconcilerState state machine.
+///
+/// Snapshot-delta-driven: deficit detection is wired to `GenerationSnapshotSource` so a
+/// changed snapshot (term advance) triggers `reconcile()` directly. A single safety-net
+/// timer at `AutoHealConfig.retryInterval` polls for missed deltas; there is no per-deficit
+/// timer chain and no provisioning hysteresis — `handleDeficit` provisions immediately.
+/// The hysteresis previously used to absorb transient flaps is now provided by snapshot
+/// `healthHint` transitions on the leader (see cluster-generation-spec §15.3).
+///
 /// @SuppressWarnings: void callbacks required by TopologyManager/ClusterTopologyManager interfaces
 @SuppressWarnings("JBCT-RET-01") record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
                                                                      AutoHealConfig autoHealConfig,
                                                                      DeploymentMap deploymentMap,
+                                                                     GenerationSnapshotSource snapshotSource,
                                                                      AtomicInteger configuredSizeRef,
                                                                      AtomicInteger desiredSizeRef,
                                                                      AtomicReference<NodeReconcilerState> stateRef,
                                                                      AtomicBoolean active,
                                                                      ConcurrentHashMap<NodeId, Instant> nodeJoinTimes,
-                                                                     CancellableTask recheckFuture) implements ClusterTopologyManager {
+                                                                     AtomicLong lastObservedRabiaTerm,
+                                                                     CancellableTask safetyNetTimer) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
 
     private static final int MINIMUM_CLUSTER_SIZE = 3;
@@ -73,17 +85,20 @@ import static org.pragmatica.lang.Unit.unit;
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
                                                                      AutoHealConfig config,
-                                                                     DeploymentMap deploymentMap) {
+                                                                     DeploymentMap deploymentMap,
+                                                                     GenerationSnapshotSource snapshotSource) {
         var initialSize = observer.clusterSize();
         return new ClusterTopologyManagerRecord(observer,
                                                 lifecycleManager,
                                                 config,
                                                 deploymentMap,
+                                                snapshotSource,
                                                 new AtomicInteger(initialSize),
                                                 new AtomicInteger(initialSize),
                                                 new AtomicReference<>(new NodeReconcilerState.Inactive("not yet activated")),
                                                 new AtomicBoolean(false),
                                                 new ConcurrentHashMap<>(),
+                                                new AtomicLong(0L),
                                                 CancellableTask.cancellableTask());
     }
 
@@ -147,6 +162,7 @@ import static org.pragmatica.lang.Unit.unit;
         if (!active.compareAndSet(false, true)) {return;}
         seedJoinTimesForExistingNodes();
         activateWithCurrentTopology();
+        scheduleSafetyNetPoll();
     }
 
     private void seedJoinTimesForExistingNodes() {
@@ -180,7 +196,7 @@ import static org.pragmatica.lang.Unit.unit;
 
     @Override public void deactivate() {
         if (!active.compareAndSet(true, false)) {return;}
-        cancelRecheck();
+        cancelSafetyNetPoll();
         transitionTo(new NodeReconcilerState.Inactive("deactivated (not leader)"));
         log.info("CTM: Deactivated");
     }
@@ -260,6 +276,7 @@ import static org.pragmatica.lang.Unit.unit;
 
     private void reconcile() {
         if (!active.get()) {return;}
+        observeSnapshotDelta();
         var currentState = stateRef.get();
         if (currentState instanceof NodeReconcilerState.Inactive) {return;}
         if (currentState instanceof NodeReconcilerState.Forming) {
@@ -267,6 +284,14 @@ import static org.pragmatica.lang.Unit.unit;
             return;
         }
         reconcileActive(currentState);
+    }
+
+    private void observeSnapshotDelta() {
+        var observed = snapshotSource.observedRabiaTerm();
+        var previous = lastObservedRabiaTerm.getAndSet(observed);
+        if (observed > previous) {log.debug("CTM: snapshot term advanced {} -> {}, re-evaluating cluster size",
+                                            previous,
+                                            observed);}
     }
 
     private void reconcileForming() {
@@ -282,7 +307,6 @@ import static org.pragmatica.lang.Unit.unit;
         var actual = observer.healthyActiveNodeCount();
         var configured = configuredSizeRef.get();
         if (actual == configured) {
-            cancelRecheck();
             desiredSizeRef.set(configured);
             if (! (currentState instanceof NodeReconcilerState.Converged)) {transitionTo(new NodeReconcilerState.Converged());}
             return;
@@ -313,34 +337,8 @@ import static org.pragmatica.lang.Unit.unit;
                                                        List.of(),
                                                        Instant.now());
         if (!stateRef.compareAndSet(current, next)) {return;}
-        var hysteresis = autoHealConfig.deficitHysteresis();
-        log.info("CTM: Cluster at {}/{}, deferring provision by {}ms hysteresis to absorb transient flaps",
-                 actual,
-                 desired,
-                 hysteresis.millis());
-        // Defer actual provisioning by configured hysteresis — if the peer that triggered the
-        // deficit was a transient QUIC flap, it reconnects (handleAddNodeMessage clears its
-        // tombstone and re-adds to nodeStatesById) within this window and we skip provisioning.
-        SharedScheduler.schedule(() -> attemptProvisionAfterHysteresis(desired, batchSize),
-                                 hysteresis);
-        scheduleRecheck();
-    }
-
-    private void attemptProvisionAfterHysteresis(int desired, int plannedBatchSize) {
-        if (!active.get()) {return;}
-        if (! (stateRef.get() instanceof NodeReconcilerState.Reconciling)) {return;}
-        // Use healthyActiveNodeCount so SUSPECTED (still-in-map but unreachable) peers aren't
-        // counted as present — otherwise we'd skip provision and leave the cluster degraded.
-        var actual = observer.healthyActiveNodeCount();
-        if (actual >= desired) {
-            log.info("CTM: Deficit healed during hysteresis window ({}/{}) — skipping provision", actual, desired);
-            cancelRecheck();
-            desiredSizeRef.set(desired);
-            transitionTo(new NodeReconcilerState.Converged());
-            return;
-        }
-        log.info("CTM: Deficit persists after hysteresis ({}/{}) — provisioning {}", actual, desired, plannedBatchSize);
-        provisionNodes(plannedBatchSize);
+        log.info("CTM: Cluster at {}/{}, provisioning {} replacement(s)", actual, desired, batchSize);
+        provisionNodes(batchSize);
     }
 
     private void handleSurplus(int actual, int configured) {
@@ -369,7 +367,6 @@ import static org.pragmatica.lang.Unit.unit;
                  nodesToTerminate.size(),
                  nodesToTerminate);
         terminateNodes(nodesToTerminate);
-        scheduleRecheck();
     }
 
     private List<NodeId> selectNodesForTermination(int count) {
@@ -501,12 +498,12 @@ import static org.pragmatica.lang.Unit.unit;
                            .or("");
     }
 
-    private void scheduleRecheck() {
-        recheckFuture.set(SharedScheduler.scheduleAtFixedRate(this::reconcile, autoHealConfig.retryInterval()));
+    private void scheduleSafetyNetPoll() {
+        safetyNetTimer.set(SharedScheduler.scheduleAtFixedRate(this::reconcile, autoHealConfig.retryInterval()));
     }
 
-    private void cancelRecheck() {
-        recheckFuture.cancel();
+    private void cancelSafetyNetPoll() {
+        safetyNetTimer.cancel();
     }
 
     private static int provisionBatchSize(int deficit) {
