@@ -5,11 +5,17 @@
 package org.pragmatica.aether.deployment.generation;
 
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.GenerationReason;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SpokesmanKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
@@ -17,10 +23,16 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
+import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Contract;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,23 +67,106 @@ public interface HealthReconcilerActivator {
 
     static HealthReconcilerActivator healthReconcilerActivator(HealthReconciler reconciler,
                                                                AtomicBoolean isLeaderGate) {
-        return new HealthReconcilerActivatorRecord(reconciler, isLeaderGate);
+        return healthReconcilerActivator(reconciler,
+                                         isLeaderGate,
+                                         ClusterGenerationProjector.clusterGenerationProjector(),
+                                         Map::of,
+                                         () -> 0L,
+                                         HlcClock.hlcClock("activator-default").unwrap());
+    }
+
+    static HealthReconcilerActivator healthReconcilerActivator(HealthReconciler reconciler,
+                                                               AtomicBoolean isLeaderGate,
+                                                               ClusterGenerationProjector projector,
+                                                               Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier,
+                                                               Supplier<Long> rabiaTermSupplier,
+                                                               HlcClock hlcClock) {
+        return new HealthReconcilerActivatorRecord(reconciler,
+                                                   isLeaderGate,
+                                                   projector,
+                                                   kvSnapshotSupplier,
+                                                   rabiaTermSupplier,
+                                                   hlcClock);
     }
 }
 
-record HealthReconcilerActivatorRecord(HealthReconciler reconciler, AtomicBoolean isLeaderGate) implements HealthReconcilerActivator {
+record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
+                                       AtomicBoolean isLeaderGate,
+                                       ClusterGenerationProjector projector,
+                                       Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier,
+                                       Supplier<Long> rabiaTermSupplier,
+                                       HlcClock hlcClock) implements HealthReconcilerActivator {
     private static final Logger log = LoggerFactory.getLogger(HealthReconcilerActivatorRecord.class);
 
     @Contract@Override public void onLeaderChange(LeaderChange change) {
         isLeaderGate.set(change.localNodeIsLeader());
         if (change.localNodeIsLeader()) {
-            log.info("HealthReconciler becoming leader — starting reconciler");
+            log.info("HealthReconciler becoming leader — projecting from committed atoms, then starting reconciler");
+            reconciler.seedSnapshot(projectFromCommittedAtoms());
             reconciler.start();
         } else {
             log.info("HealthReconciler stepping down — stopping reconciler");
             reconciler.stop();
             reconciler.seedSnapshot(ClusterGenerationSnapshot.empty(reconciler.currentEpoch().rabiaTerm()));
         }
+    }
+
+    private ClusterGenerationSnapshot projectFromCommittedAtoms() {
+        var kv = kvSnapshotSupplier.get();
+        var lifecycles = collectLifecycles(kv);
+        var governors = collectGovernors(kv);
+        var partitions = collectPartitions(kv);
+        var spokesmen = collectSpokesmen(kv);
+        var term = rabiaTermSupplier.get();
+        var input = ClusterGenerationProjector.ProjectionInput.projectionInput(term,
+                                                                               0L,
+                                                                               lifecycles.size(),
+                                                                               GenerationReason.LEADER_ELECTED,
+                                                                               hlcClock.now(),
+                                                                               lifecycles,
+                                                                               governors,
+                                                                               partitions,
+                                                                               spokesmen,
+                                                                               Map.<NodeId, Epoch>of(),
+                                                                               Map.<String, Epoch>of(),
+                                                                               Map.of());
+        return projector.project(input);
+    }
+
+    private static Map<NodeId, NodeLifecycleValue> collectLifecycles(Map<AetherKey, AetherValue> kv) {
+        var result = new LinkedHashMap<NodeId, NodeLifecycleValue>();
+        kv.forEach((key, value) -> {
+                       if (key instanceof NodeLifecycleKey nk && value instanceof NodeLifecycleValue nv) {result.put(nk.nodeId(),
+                                                                                                                     nv);}
+                   });
+        return Map.copyOf(result);
+    }
+
+    private static Map<String, GovernorAnnouncementValue> collectGovernors(Map<AetherKey, AetherValue> kv) {
+        var result = new LinkedHashMap<String, GovernorAnnouncementValue>();
+        kv.forEach((key, value) -> {
+                       if (key instanceof GovernorAnnouncementKey gk && value instanceof GovernorAnnouncementValue gv) {result.put(gk.communityId(),
+                                                                                                                                   gv);}
+                   });
+        return Map.copyOf(result);
+    }
+
+    private static Map<String, DhtPartitionOwnershipValue> collectPartitions(Map<AetherKey, AetherValue> kv) {
+        var result = new LinkedHashMap<String, DhtPartitionOwnershipValue>();
+        kv.forEach((key, value) -> {
+                       if (key instanceof DhtPartitionOwnershipKey pk && value instanceof DhtPartitionOwnershipValue pv) {result.put(pk.partitionId(),
+                                                                                                                                     pv);}
+                   });
+        return Map.copyOf(result);
+    }
+
+    private static Map<NodeId, SpokesmanValue> collectSpokesmen(Map<AetherKey, AetherValue> kv) {
+        var result = new LinkedHashMap<NodeId, SpokesmanValue>();
+        kv.forEach((key, value) -> {
+                       if (key instanceof SpokesmanKey sk && value instanceof SpokesmanValue sv) {result.put(sk.coreNodeId(),
+                                                                                                             sv);}
+                   });
+        return Map.copyOf(result);
     }
 
     @Contract@Override public void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> notification) {

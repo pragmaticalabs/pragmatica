@@ -82,12 +82,12 @@ class SpokesmanPingLoopTest {
         }
 
         @Test
-        void onSpokesmanPut_assignedStatusDoesNotActivate() {
+        void onSpokesmanPut_assignedStatusActivatesAndRecordsTransition() {
             var value = SpokesmanValue.spokesmanValue(List.of("pool-a"), Epoch.ZERO, HlcTimestamp.ZERO, 1L);
 
             loop.onSpokesmanPut(new ValuePut<>(new KVCommand.Put<>(SpokesmanKey.spokesmanKey(SELF), value), Option.none()));
 
-            assertThat(loop.isActive()).isFalse();
+            assertThat(loop.isActive()).isTrue();
         }
 
         @Test

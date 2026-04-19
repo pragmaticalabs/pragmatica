@@ -47,6 +47,7 @@ import static org.pragmatica.serialization.SliceCodec.writeString;
         all.addAll(org.pragmatica.aether.artifact.ArtifactCodecs.CODECS);
         all.addAll(org.pragmatica.aether.slice.SliceCodecs.CODECS);
         all.addAll(org.pragmatica.aether.slice.kvstore.KvstoreCodecs.CODECS);
+        all.addAll(org.pragmatica.aether.slice.generation.GenerationCodecs.CODECS);
         all.addAll(org.pragmatica.aether.slice.blueprint.BlueprintCodecs.CODECS);
         all.addAll(org.pragmatica.aether.invoke.InvokeCodecs.CODECS);
         all.addAll(org.pragmatica.aether.http.forward.ForwardCodecs.CODECS);

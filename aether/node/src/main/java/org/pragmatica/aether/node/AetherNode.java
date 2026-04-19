@@ -67,6 +67,7 @@ import org.pragmatica.aether.deployment.generation.HealthReconcilerActivator;
 import org.pragmatica.aether.metrics.MetricsCollector;
 import org.pragmatica.aether.metrics.MetricsScheduler;
 import org.pragmatica.aether.metrics.MinuteAggregator;
+import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
@@ -771,19 +772,34 @@ public interface AetherNode extends ManageableNode {
         var isLeaderGate = new AtomicBoolean(false);
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
         Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.get(), 0L);
+        var hlcClockEarly = HlcClock.hlcClock(config.self().id()).unwrap();
+        var projectorEarly = ClusterGenerationProjector.clusterGenerationProjector();
+        var healthReconciler = HealthReconciler.healthReconciler(config.self(),
+                                                                 clusterNode,
+                                                                 projectorEarly,
+                                                                 hlcClockEarly,
+                                                                 rabiaTermSupplier,
+                                                                 isLeaderGate,
+                                                                 config.autoHeal());
+        Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier = () -> isLeaderGate.get()
+                                                                            ? Option.some(healthReconciler.currentSnapshot())
+                                                                            : Option.none();
+        java.util.function.Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder = serializer::encode;
+        java.util.function.Function<byte[], Option<ClusterGenerationSnapshot>> snapshotDecoder = bytes -> decodeSnapshot(deserializer,
+                                                                                                                         bytes);
         var metricsScheduler = MetricsScheduler.metricsScheduler(config.self(),
                                                                  clusterNode.network(),
                                                                  metricsCollector,
                                                                  config.timeouts().cluster()
                                                                                 .pingInterval(),
                                                                  rabiaTermSupplier,
-                                                                 Option::none,
-                                                                 _ -> new byte[0],
+                                                                 snapshotSupplier,
+                                                                 snapshotEncoder,
                                                                  stableHealthSink,
                                                                  MetricsScheduler.DEFAULT_PING_TIMEOUT_THRESHOLD,
                                                                  leaderEpochSupplier);
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
-        var nodeSnapshotCache = NodeSnapshotCache.nodeSnapshotCache(config.self());
+        var nodeSnapshotCache = NodeSnapshotCache.nodeSnapshotCache(config.self(), snapshotDecoder);
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, repository, artifactStore);
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
@@ -1024,17 +1040,12 @@ public interface AetherNode extends ManageableNode {
                                                                                    rotatingEncryptor)));
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> swimHealthDetector.onNodeConnected(connection.nodeId())));
-        var hlcClock = HlcClock.hlcClock(config.self().id()).unwrap();
-        var projector = ClusterGenerationProjector.clusterGenerationProjector();
-        var healthReconciler = HealthReconciler.healthReconciler(config.self(),
-                                                                 clusterNode,
-                                                                 projector,
-                                                                 hlcClock,
-                                                                 rabiaTermSupplier,
-                                                                 isLeaderGate,
-                                                                 config.autoHeal());
         var healthReconcilerActivator = HealthReconcilerActivator.healthReconcilerActivator(healthReconciler,
-                                                                                            isLeaderGate);
+                                                                                            isLeaderGate,
+                                                                                            projectorEarly,
+                                                                                            kvStore::snapshot,
+                                                                                            rabiaTermSupplier,
+                                                                                            hlcClockEarly);
         healthSinkRef.set(healthReconcilerActivator.sink());
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
@@ -1052,6 +1063,30 @@ public interface AetherNode extends ManageableNode {
                                                         healthReconcilerActivator::onNodeLifecyclePut)
                                                  .build();
         allEntries.addAll(healthKvRouter.asRouteEntries());
+        Supplier<Option<ClusterGenerationSnapshot>> spokesmanSnapshotSupplier = () -> isLeaderGate.get()
+                                                                                     ? Option.some(healthReconciler.currentSnapshot())
+                                                                                     : nodeSnapshotCache.current();
+        var spokesmanPingLoop = org.pragmatica.aether.worker.metrics.SpokesmanPingLoop.spokesmanPingLoop(config.self(),
+                                                                                                         clusterNode.network(),
+                                                                                                         config.timeouts().cluster()
+                                                                                                                        .pingInterval(),
+                                                                                                         rabiaTermSupplier,
+                                                                                                         spokesmanSnapshotSupplier,
+                                                                                                         metricsCollector::allMetrics,
+                                                                                                         communityId -> lookupGovernor(kvStore,
+                                                                                                                                       communityId),
+                                                                                                         snapshotEncoder,
+                                                                                                         org.pragmatica.aether.worker.metrics.SpokesmanPingLoop.SpokesmanStatusWriter.fromCluster(clusterNode));
+        spokesmanPingLoop.start();
+        metricsCollector.setCommunityReportSupplier(spokesmanPingLoop::currentReports);
+        var spokesmanKvRouter = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
+                                                    .onPut(AetherKey.SpokesmanKey.class,
+                                                           spokesmanPingLoop::onSpokesmanPut)
+                                                    .onRemove(AetherKey.SpokesmanKey.class,
+                                                              spokesmanPingLoop::onSpokesmanRemove)
+                                                    .build();
+        allEntries.addAll(spokesmanKvRouter.asRouteEntries());
+        metricsCollector.addPongListener(spokesmanPingLoop::onMetricsPong);
         var streamMaxMemoryBytes = resolveStreamMaxMemoryBytes();
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes);
         var streamSegmentIndex = new SegmentIndex();
@@ -1299,6 +1334,26 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
+    private static Option<NodeId> lookupGovernor(KVStore<AetherKey, AetherValue> kvStore, String communityId) {
+        return kvStore.get(AetherKey.GovernorAnnouncementKey.forCommunity(communityId)).filter(v -> v instanceof AetherValue.GovernorAnnouncementValue)
+                          .map(v -> ((AetherValue.GovernorAnnouncementValue) v).governorId());
+    }
+
+    @SuppressWarnings("JBCT-EX-01") private static Option<org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot> decodeSnapshot(Deserializer deserializer,
+                                                                                                                                           byte[] bytes) {
+        if (bytes == null || bytes.length == 0) {return Option.none();}
+        try {
+            org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot snapshot = deserializer.decode(bytes);
+            return Option.option(snapshot);
+        } catch (RuntimeException ex) {
+            LoggerFactory.getLogger(AetherNode.class)
+                                   .warn("Failed to decode ClusterGenerationSnapshot payload ({} bytes): {}",
+                                         bytes.length,
+                                         ex.getMessage());
+            return Option.none();
+        }
+    }
+
     private static void onLeaderChangeForReconciler(LeaderNotification.LeaderChange change,
                                                     AtomicLong leaderTerm,
                                                     HealthReconcilerActivator activator) {
@@ -1383,7 +1438,26 @@ public interface AetherNode extends ManageableNode {
                                                                                       List.of(),
                                                                                       () -> groupMembershipTracker.myGroup()
                                                                                                                           .communityId());
+        var workerHlc = HlcClock.hlcClock(selfId.id()).unwrap();
+        var workerTcpAddress = resolveSelfTcpAddress(config);
+        var governorAnnouncer = org.pragmatica.aether.worker.governor.GovernorAnnouncer.governorAnnouncer(selfId,
+                                                                                                          clusterNode,
+                                                                                                          workerHlc,
+                                                                                                          () -> groupMembershipTracker.myGroup()
+                                                                                                                                              .communityId(),
+                                                                                                          () -> workerTcpAddress,
+                                                                                                          () -> Epoch.ZERO);
+        governorAnnouncer.start();
         log.info("Worker {} subsystems created, ready for SWIM-based community formation", selfId.id());
+    }
+
+    private static String resolveSelfTcpAddress(AetherNodeConfig config) {
+        return config.topology().coreNodes()
+                              .stream()
+                              .filter(info -> info.id().equals(config.self()))
+                              .map(info -> info.address().host() + ":" + info.address().port())
+                              .findFirst()
+                              .orElse("");
     }
 
     @SuppressWarnings({"unchecked", "rawtypes", "JBCT-RET-01"}) private static void handleForwardApplyRequest(ForwardApplyRequest request,
