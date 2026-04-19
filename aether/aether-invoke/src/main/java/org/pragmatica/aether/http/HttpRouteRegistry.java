@@ -11,6 +11,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.lang.Option;
 
 import java.util.HashSet;
@@ -19,6 +20,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
@@ -49,6 +51,7 @@ public interface HttpRouteRegistry {
     @SuppressWarnings("JBCT-RET-01") void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
     @SuppressWarnings("JBCT-RET-01") void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
     @SuppressWarnings("JBCT-RET-01") void evictNode(NodeId nodeId);
+    long staleFenceObservationCount();
 
     record RouteInfo(String httpMethod, String pathPrefix, Set<NodeId> nodes, String security) {
         public static RouteInfo routeInfo(String httpMethod, String pathPrefix, Set<NodeId> nodes, String security) {
@@ -64,14 +67,25 @@ public interface HttpRouteRegistry {
         }
     }
 
+    long STALE_FENCE_TERM_THRESHOLD = 5L;
+
     static HttpRouteRegistry httpRouteRegistry() {
-        record httpRouteRegistry(Map<String, AtomicReference<TreeMap<String, RouteInfo>>> routesByMethod) implements HttpRouteRegistry {
+        return httpRouteRegistry(GenerationSnapshotSource.noop());
+    }
+
+    static HttpRouteRegistry httpRouteRegistry(GenerationSnapshotSource snapshotSource) {
+        record httpRouteRegistry(Map<String, AtomicReference<TreeMap<String, RouteInfo>>> routesByMethod,
+                                 GenerationSnapshotSource snapshotSource,
+                                 AtomicLong staleFenceCounter) implements HttpRouteRegistry {
             private static final Logger log = LoggerFactory.getLogger(httpRouteRegistry.class);
 
             @Override@SuppressWarnings("JBCT-RET-01") public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
                 var key = valuePut.cause().key();
                 var value = valuePut.cause().value();
                 var nodeId = key.nodeId();
+                logIfStaleFence(nodeId,
+                                key.artifact().asString(),
+                                value);
                 for (var route : value.routes()) {
                     if (!route.isRoutable()) {continue;}
                     var method = route.httpMethod();
@@ -80,6 +94,23 @@ public interface HttpRouteRegistry {
                     var ref = routesByMethod.computeIfAbsent(method, _ -> new AtomicReference<>(new TreeMap<>()));
                     ref.updateAndGet(current -> addNodeToRoute(current, method, prefix, nodeId, security));
                     log.debug("HttpRouteRegistry: Registered compound route {} {} node={}", method, prefix, nodeId);
+                }
+            }
+
+            @Override public long staleFenceObservationCount() {
+                return staleFenceCounter.get();
+            }
+
+            private void logIfStaleFence(NodeId nodeId, String artifact, NodeRoutesValue value) {
+                var valueTerm = value.observedCoreEpoch().rabiaTerm();
+                var observedTerm = snapshotSource.observedEpochRabiaTerm();
+                if (observedTerm - valueTerm > STALE_FENCE_TERM_THRESHOLD) {
+                    staleFenceCounter.incrementAndGet();
+                    log.warn("Stale route update for {}/{}: value.rabiaTerm={} observed.rabiaTerm={} — accepting but flagging anomaly",
+                             nodeId,
+                             artifact,
+                             valueTerm,
+                             observedTerm);
                 }
             }
 
@@ -195,6 +226,6 @@ public interface HttpRouteRegistry {
                 return (inputPath.length() == routePath.length() && inputPath.equals(routePath)) || (inputPath.length() > routePath.length() && inputPath.startsWith(routePath) && inputPath.charAt(routePath.length() - 1) == '/');
             }
         }
-        return new httpRouteRegistry(new ConcurrentHashMap<>());
+        return new httpRouteRegistry(new ConcurrentHashMap<>(), snapshotSource, new AtomicLong());
     }
 }

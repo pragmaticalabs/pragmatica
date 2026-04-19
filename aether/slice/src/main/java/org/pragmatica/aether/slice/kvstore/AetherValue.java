@@ -670,7 +670,14 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
-    record NodeRoutesValue(List<RouteEntry> routes) implements AetherValue {
+    record NodeRoutesValue(List<RouteEntry> routes, Epoch observedCoreEpoch) implements AetherValue {
+        public NodeRoutesValue {
+            routes = routes == null
+                    ? List.of()
+                    : List.copyOf(routes);
+            if (observedCoreEpoch == null) {observedCoreEpoch = Epoch.ZERO;}
+        }
+
         public record RouteEntry(String httpMethod,
                                  String pathPrefix,
                                  String sliceMethod,
@@ -701,11 +708,19 @@ import static org.pragmatica.lang.Option.none;
         }
 
         public static NodeRoutesValue empty() {
-            return new NodeRoutesValue(List.of());
+            return new NodeRoutesValue(List.of(), Epoch.ZERO);
         }
 
         public static NodeRoutesValue nodeRoutesValue(List<RouteEntry> routes) {
-            return new NodeRoutesValue(List.copyOf(routes));
+            return new NodeRoutesValue(List.copyOf(routes), Epoch.ZERO);
+        }
+
+        public static NodeRoutesValue nodeRoutesValue(List<RouteEntry> routes, Epoch observedCoreEpoch) {
+            return new NodeRoutesValue(List.copyOf(routes), observedCoreEpoch);
+        }
+
+        public NodeRoutesValue withObservedCoreEpoch(Epoch newEpoch) {
+            return new NodeRoutesValue(routes, newEpoch);
         }
     }
 

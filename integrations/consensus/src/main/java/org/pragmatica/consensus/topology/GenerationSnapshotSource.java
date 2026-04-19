@@ -41,6 +41,17 @@ public interface GenerationSnapshotSource {
     /// when no ping has ever been processed.
     long observedRabiaTerm();
 
+    /// Observed cluster-generation epoch composed from [#observedRabiaTerm()] with a
+    /// zero local counter. Publishers stamp outbound KV values with this epoch so that
+    /// downstream watchers can detect stale-fence anomalies without taking a hard
+    /// dependency on snapshot types.
+    ///
+    /// Default implementation returns `(observedRabiaTerm(), 0L)`. Implementations that
+    /// track a richer epoch internally may override.
+    default long observedEpochRabiaTerm() {
+        return observedRabiaTerm();
+    }
+
     /// No-op source used where snapshot wiring is not yet available (legacy factory
     /// overloads, unit tests that focus on non-snapshot behaviour).
     static GenerationSnapshotSource noop() {

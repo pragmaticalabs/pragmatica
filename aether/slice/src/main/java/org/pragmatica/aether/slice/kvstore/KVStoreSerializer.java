@@ -706,7 +706,7 @@ import static org.pragmatica.lang.Result.success;
         if (raw.isEmpty()) {return NodeRoutesValue.empty();}
         var routes = Arrays.stream(raw.split(";")).map(KVStoreSerializer::parseRouteEntry)
                                   .toList();
-        return new NodeRoutesValue(routes);
+        return NodeRoutesValue.nodeRoutesValue(routes);
     }
 
     private static NodeRoutesValue.RouteEntry parseRouteEntry(String entry) {

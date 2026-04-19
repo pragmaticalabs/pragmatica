@@ -13,6 +13,7 @@ import org.pragmatica.aether.http.handler.HttpRouteDefinition;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
@@ -21,6 +22,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue.RouteEntr
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -76,7 +78,13 @@ public interface HttpRoutePublisher {
     }
 
     static HttpRoutePublisher httpRoutePublisher(NodeId selfNodeId, ClusterNode<KVCommand<AetherKey>> cluster) {
-        return new HttpRoutePublisherImpl(selfNodeId, cluster);
+        return httpRoutePublisher(selfNodeId, cluster, GenerationSnapshotSource.noop());
+    }
+
+    static HttpRoutePublisher httpRoutePublisher(NodeId selfNodeId,
+                                                 ClusterNode<KVCommand<AetherKey>> cluster,
+                                                 GenerationSnapshotSource snapshotSource) {
+        return new HttpRoutePublisherImpl(selfNodeId, cluster, snapshotSource);
     }
 }
 
@@ -85,6 +93,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
 
     private final NodeId selfNodeId;
     private final ClusterNode<KVCommand<AetherKey>> cluster;
+    private final GenerationSnapshotSource snapshotSource;
 
     private final Map<Artifact, HttpRequestHandler> handlers = new ConcurrentHashMap<>();
 
@@ -96,9 +105,12 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
 
     private final AtomicReference<SecurityOverrides> activeOverrides = new AtomicReference<>(SecurityOverrides.EMPTY);
 
-    HttpRoutePublisherImpl(NodeId selfNodeId, ClusterNode<KVCommand<AetherKey>> cluster) {
+    HttpRoutePublisherImpl(NodeId selfNodeId,
+                           ClusterNode<KVCommand<AetherKey>> cluster,
+                           GenerationSnapshotSource snapshotSource) {
         this.selfNodeId = selfNodeId;
         this.cluster = cluster;
+        this.snapshotSource = snapshotSource;
     }
 
     @Override public Promise<Unit> publishRoutes(Artifact artifact,
@@ -202,12 +214,14 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         var routeEntries = effectiveRoutes.stream().map(HttpRoutePublisherImpl::toRouteEntry)
                                                  .toList();
         var key = NodeRoutesKey.nodeRoutesKey(selfNodeId, artifact);
-        var value = new NodeRoutesValue(routeEntries);
+        var stampedEpoch = Epoch.epoch(snapshotSource.observedEpochRabiaTerm(), 0L);
+        var value = NodeRoutesValue.nodeRoutesValue(routeEntries, stampedEpoch);
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
         return cluster.apply(List.of(command)).mapToUnit()
-                            .onSuccess(_ -> log.debug("Published {} HTTP routes for slice {}",
+                            .onSuccess(_ -> log.debug("Published {} HTTP routes for slice {} stamped with epoch {}",
                                                       routes.size(),
-                                                      artifact));
+                                                      artifact,
+                                                      stampedEpoch));
     }
 
     private static RouteEntry toRouteEntry(HttpRouteDefinition route) {
