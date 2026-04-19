@@ -16,12 +16,6 @@ import org.pragmatica.serialization.Codec;
                                     String ownerCommunityId,
                                     Epoch ownerEpoch,
                                     long ownershipTerm) {
-    public PartitionOwner {
-        if (partitionId == null) {partitionId = "";}
-        if (ownerCommunityId == null) {ownerCommunityId = "";}
-        if (ownerEpoch == null) {ownerEpoch = Epoch.ZERO;}
-    }
-
     public static PartitionOwner partitionOwner(String partitionId,
                                                 NodeId ownerNodeId,
                                                 String ownerCommunityId,

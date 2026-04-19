@@ -10,6 +10,7 @@ import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.aether.cli.OutputFormatter.Column;
 import org.pragmatica.aether.cli.OutputFormatter.TableSpec;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -24,7 +25,7 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_GEN
 /// Displays the current cluster generation snapshot as observed by the queried node.
 ///
 /// See `aether/docs/specs/cluster-generation-spec.md` §14.3.
-@Command(name = "generation", description = "Show current cluster generation snapshot") @SuppressWarnings("JBCT-RET-01") class ClusterGenerationCommand implements Callable<Integer> {
+@Command(name = "generation", description = "Show current cluster generation snapshot") class ClusterGenerationCommand implements Callable<Integer> {
     private static final TableSpec MEMBERS_TABLE = new TableSpec("Core Members",
                                                                  List.of(new Column("NODE", "nodeId", 18),
                                                                          new Column("LIFECYCLE", "lifecycle", 12),
@@ -35,7 +36,7 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_GEN
 
     @CommandLine.ParentCommand private ClusterCommand parent;
 
-    @Override public Integer call() {
+    @Contract@Override public Integer call() {
         return ClusterHttpClient.fetch(CLUSTER_GENERATION).fold(ClusterGenerationCommand::onFailure, this::onSuccess);
     }
 

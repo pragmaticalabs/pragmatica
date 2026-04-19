@@ -35,14 +35,16 @@ class DhtPartitionOwnershipKeyTest {
 
     @Test
     void parse_missingPrefix_fails() {
-        DhtPartitionOwnershipKey.parseDhtPartitionOwnershipKey("invalid/foo")
-                                .onSuccess(_ -> Assertions.fail("Expected failure"));
+        var result = DhtPartitionOwnershipKey.parseDhtPartitionOwnershipKey("invalid/foo");
+
+        assertThat(result.isFailure()).isTrue();
     }
 
     @Test
     void parse_emptyPartition_fails() {
-        DhtPartitionOwnershipKey.parseDhtPartitionOwnershipKey("dht-partition-ownership/")
-                                .onSuccess(_ -> Assertions.fail("Expected failure for empty partition"));
+        var result = DhtPartitionOwnershipKey.parseDhtPartitionOwnershipKey("dht-partition-ownership/");
+
+        assertThat(result.isFailure()).isTrue();
     }
 
     @Test

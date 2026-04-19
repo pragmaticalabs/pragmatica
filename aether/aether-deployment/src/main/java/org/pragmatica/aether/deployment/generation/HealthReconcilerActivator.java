@@ -31,12 +31,14 @@ import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,6 +68,8 @@ public interface HealthReconcilerActivator {
 
     String CORE_COMMUNITY_ID = "core";
 
+    int BOOTSTRAP_MAX_ATTEMPTS = 3;
+
     @Contract void onLeaderChange(LeaderChange change);
     @Contract void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> notification);
     @Contract void onGovernorAnnouncementRemove(ValueRemove<GovernorAnnouncementKey, GovernorAnnouncementValue> notification);
@@ -73,16 +77,19 @@ public interface HealthReconcilerActivator {
     @Contract void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> notification);
     HealthSignalSink sink();
 
-    static HealthReconcilerActivator healthReconcilerActivator(HealthReconciler reconciler,
-                                                               AtomicBoolean isLeaderGate) {
-        return new HealthReconcilerActivatorRecord(reconciler,
-                                                   isLeaderGate,
-                                                   ClusterGenerationProjector.clusterGenerationProjector(),
-                                                   Map::of,
-                                                   () -> 0L,
-                                                   HlcClock.hlcClock("activator-default").unwrap(),
-                                                   Option.<ClusterNode<KVCommand<AetherKey>>>none(),
-                                                   reconciler::self);
+    static Result<HealthReconcilerActivator> healthReconcilerActivator(HealthReconciler reconciler,
+                                                                       AtomicBoolean isLeaderGate) {
+        return HlcClock.hlcClock("activator-default")
+                                .map(clock -> new HealthReconcilerActivatorRecord(reconciler,
+                                                                                  isLeaderGate,
+                                                                                  ClusterGenerationProjector.clusterGenerationProjector(),
+                                                                                  Map::of,
+                                                                                  () -> 0L,
+                                                                                  clock,
+                                                                                  Option.<ClusterNode<KVCommand<AetherKey>>>none(),
+                                                                                  reconciler::self,
+                                                                                  new AtomicBoolean(false),
+                                                                                  new AtomicInteger()));
     }
 
     static HealthReconcilerActivator healthReconcilerActivator(HealthReconciler reconciler,
@@ -98,7 +105,9 @@ public interface HealthReconcilerActivator {
                                                    rabiaTermSupplier,
                                                    hlcClock,
                                                    Option.<ClusterNode<KVCommand<AetherKey>>>none(),
-                                                   reconciler::self);
+                                                   reconciler::self,
+                                                   new AtomicBoolean(false),
+                                                   new AtomicInteger());
     }
 
     static HealthReconcilerActivator healthReconcilerActivator(HealthReconciler reconciler,
@@ -116,7 +125,9 @@ public interface HealthReconcilerActivator {
                                                    rabiaTermSupplier,
                                                    hlcClock,
                                                    Option.some(cluster),
-                                                   selfSupplier);
+                                                   selfSupplier,
+                                                   new AtomicBoolean(false),
+                                                   new AtomicInteger());
     }
 }
 
@@ -127,26 +138,39 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
                                        Supplier<Long> rabiaTermSupplier,
                                        HlcClock hlcClock,
                                        Option<ClusterNode<KVCommand<AetherKey>>> cluster,
-                                       Supplier<NodeId> selfSupplier) implements HealthReconcilerActivator {
+                                       Supplier<NodeId> selfSupplier,
+                                       AtomicBoolean bootstrapComplete,
+                                       AtomicInteger bootstrapAttempts) implements HealthReconcilerActivator {
     private static final Logger log = LoggerFactory.getLogger(HealthReconcilerActivatorRecord.class);
 
     @Contract@Override public void onLeaderChange(LeaderChange change) {
         isLeaderGate.set(change.localNodeIsLeader());
         if (change.localNodeIsLeader()) {
             log.info("HealthReconciler becoming leader — projecting from committed atoms, then starting reconciler");
+            bootstrapComplete.set(false);
+            bootstrapAttempts.set(0);
             var seeded = projectFromCommittedAtoms();
             reconciler.seedSnapshot(seeded);
             reconciler.start();
-            bootstrapCorePartitionOwnership(seeded);
+            attemptBootstrap(seeded);
         } else {
             log.info("HealthReconciler stepping down — stopping reconciler");
             reconciler.stop();
             reconciler.seedSnapshot(ClusterGenerationSnapshot.empty(reconciler.currentEpoch().rabiaTerm()));
+            bootstrapComplete.set(false);
+            bootstrapAttempts.set(0);
         }
     }
 
-    @Contract private void bootstrapCorePartitionOwnership(ClusterGenerationSnapshot seeded) {
+    @Contract private void attemptBootstrap(ClusterGenerationSnapshot seeded) {
+        if (bootstrapComplete.get()) {return;}
         cluster.onPresent(clusterNode -> applyCoreBootstrap(clusterNode, seeded));
+    }
+
+    @Contract private void retryBootstrapIfNeeded() {
+        if (bootstrapComplete.get() || !isLeaderGate.get()) {return;}
+        if (bootstrapAttempts.get() >= HealthReconcilerActivator.BOOTSTRAP_MAX_ATTEMPTS) {return;}
+        attemptBootstrap(reconciler.currentSnapshot());
     }
 
     @Contract private void applyCoreBootstrap(ClusterNode<KVCommand<AetherKey>> clusterNode,
@@ -161,9 +185,15 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
                                                              ClusterGenerationSnapshot seeded,
                                                              NodeId self) {
         return existing.fold(() -> Option.some(buildInitialCorePartition(seeded, self)),
-                             owner -> shouldRewriteCoreOwnership(owner, seeded, self)
-                                     ? Option.some(buildRewrittenCorePartition(owner, seeded, self))
-                                     : Option.none());
+                             owner -> rewriteIfOwnerStale(owner, seeded, self));
+    }
+
+    private Option<KVCommand<AetherKey>> rewriteIfOwnerStale(PartitionOwner owner,
+                                                             ClusterGenerationSnapshot seeded,
+                                                             NodeId self) {
+        return shouldRewriteCoreOwnership(owner, seeded, self)
+              ? Option.some(buildRewrittenCorePartition(owner, seeded, self))
+              : Option.none();
     }
 
     private static boolean shouldRewriteCoreOwnership(PartitionOwner owner,
@@ -171,9 +201,11 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
                                                       NodeId self) {
         var recordedOwner = owner.ownerNodeId();
         if (recordedOwner.equals(self)) {return false;}
-        var recordedMember = seeded.coreMembers().get(recordedOwner);
-        if (recordedMember == null) {return true;}
-        var state = recordedMember.lifecycle();
+        return Option.option(seeded.coreMembers().get(recordedOwner)).map(member -> isStaleOwnerState(member.lifecycle()))
+                            .or(true);
+    }
+
+    private static boolean isStaleOwnerState(NodeLifecycleState state) {
         return state == NodeLifecycleState.DECOMMISSIONED || state == NodeLifecycleState.SHUTTING_DOWN || state == NodeLifecycleState.DRAINING;
     }
 
@@ -207,9 +239,12 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
                                              owner.ownershipTerm() + 1L))
         .onEmpty(() -> log.info("Bootstrapping DhtPartitionOwnershipKey(\"core\") with owner {} (ownershipTerm 1)",
                                 self));
-        clusterNode.apply(List.of(command))
-                         .onFailure(cause -> log.error("Core DhtPartitionOwnership bootstrap failed: {}",
-                                                       cause.message()));
+        bootstrapAttempts.incrementAndGet();
+        clusterNode.apply(List.of(command)).onFailure(cause -> log.warn("Core DhtPartitionOwnership bootstrap failed (attempt {}/{}): {}",
+                                                                        bootstrapAttempts.get(),
+                                                                        HealthReconcilerActivator.BOOTSTRAP_MAX_ATTEMPTS,
+                                                                        cause.message()))
+                         .onSuccess(_ -> bootstrapComplete.set(true));
     }
 
     private ClusterGenerationSnapshot projectFromCommittedAtoms() {
@@ -235,43 +270,36 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
     }
 
     private static Map<NodeId, NodeLifecycleValue> collectLifecycles(Map<AetherKey, AetherValue> kv) {
-        var result = new LinkedHashMap<NodeId, NodeLifecycleValue>();
-        kv.forEach((key, value) -> {
-                       if (key instanceof NodeLifecycleKey nk && value instanceof NodeLifecycleValue nv) {result.put(nk.nodeId(),
-                                                                                                                     nv);}
-                   });
-        return Map.copyOf(result);
+        return kv.entrySet().stream()
+                          .filter(entry -> entry.getKey() instanceof NodeLifecycleKey && entry.getValue() instanceof NodeLifecycleValue)
+                          .collect(Collectors.toUnmodifiableMap(entry -> ((NodeLifecycleKey) entry.getKey()).nodeId(),
+                                                                entry -> (NodeLifecycleValue) entry.getValue()));
     }
 
     private static Map<String, GovernorAnnouncementValue> collectGovernors(Map<AetherKey, AetherValue> kv) {
-        var result = new LinkedHashMap<String, GovernorAnnouncementValue>();
-        kv.forEach((key, value) -> {
-                       if (key instanceof GovernorAnnouncementKey gk && value instanceof GovernorAnnouncementValue gv) {result.put(gk.communityId(),
-                                                                                                                                   gv);}
-                   });
-        return Map.copyOf(result);
+        return kv.entrySet().stream()
+                          .filter(entry -> entry.getKey() instanceof GovernorAnnouncementKey && entry.getValue() instanceof GovernorAnnouncementValue)
+                          .collect(Collectors.toUnmodifiableMap(entry -> ((GovernorAnnouncementKey) entry.getKey()).communityId(),
+                                                                entry -> (GovernorAnnouncementValue) entry.getValue()));
     }
 
     private static Map<String, DhtPartitionOwnershipValue> collectPartitions(Map<AetherKey, AetherValue> kv) {
-        var result = new LinkedHashMap<String, DhtPartitionOwnershipValue>();
-        kv.forEach((key, value) -> {
-                       if (key instanceof DhtPartitionOwnershipKey pk && value instanceof DhtPartitionOwnershipValue pv) {result.put(pk.partitionId(),
-                                                                                                                                     pv);}
-                   });
-        return Map.copyOf(result);
+        return kv.entrySet().stream()
+                          .filter(entry -> entry.getKey() instanceof DhtPartitionOwnershipKey && entry.getValue() instanceof DhtPartitionOwnershipValue)
+                          .collect(Collectors.toUnmodifiableMap(entry -> ((DhtPartitionOwnershipKey) entry.getKey()).partitionId(),
+                                                                entry -> (DhtPartitionOwnershipValue) entry.getValue()));
     }
 
     private static Map<NodeId, SpokesmanValue> collectSpokesmen(Map<AetherKey, AetherValue> kv) {
-        var result = new LinkedHashMap<NodeId, SpokesmanValue>();
-        kv.forEach((key, value) -> {
-                       if (key instanceof SpokesmanKey sk && value instanceof SpokesmanValue sv) {result.put(sk.coreNodeId(),
-                                                                                                             sv);}
-                   });
-        return Map.copyOf(result);
+        return kv.entrySet().stream()
+                          .filter(entry -> entry.getKey() instanceof SpokesmanKey && entry.getValue() instanceof SpokesmanValue)
+                          .collect(Collectors.toUnmodifiableMap(entry -> ((SpokesmanKey) entry.getKey()).coreNodeId(),
+                                                                entry -> (SpokesmanValue) entry.getValue()));
     }
 
     @Contract@Override public void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> notification) {
         if (!isLeaderGate.get()) {return;}
+        retryBootstrapIfNeeded();
         var communityId = notification.cause().key()
                                             .communityId();
         var value = notification.cause().value();
@@ -290,6 +318,7 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
 
     @Contract@Override public void onSpokesmanPut(ValuePut<SpokesmanKey, SpokesmanValue> notification) {
         if (!isLeaderGate.get()) {return;}
+        retryBootstrapIfNeeded();
         var value = notification.cause().value();
         if (value.status() != SpokesmanStatus.FAILED) {return;}
         var coreNodeId = notification.cause().key()
@@ -305,15 +334,15 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
 
     @Contract@Override public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> notification) {
         if (!isLeaderGate.get()) {return;}
+        retryBootstrapIfNeeded();
         var state = notification.cause().value()
                                       .state();
         if (state != NodeLifecycleState.DECOMMISSIONED) {return;}
         var nodeId = notification.cause().key()
                                        .nodeId();
-        var snapshot = reconciler.currentSnapshot();
-        var member = snapshot.coreMembers().get(nodeId);
-        if (member == null) {return;}
-        log.info("Core node {} transitioned to DECOMMISSIONED — reconciler will rebalance spokesmen on next signal",
-                 nodeId);
+        Option.option(reconciler.currentSnapshot().coreMembers()
+                                                .get(nodeId))
+        .onPresent(_ -> log.info("Core node {} transitioned to DECOMMISSIONED — reconciler will rebalance spokesmen on next signal",
+                                 nodeId));
     }
 }

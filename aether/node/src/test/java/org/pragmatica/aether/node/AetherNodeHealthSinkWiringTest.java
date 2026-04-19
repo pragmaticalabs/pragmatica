@@ -117,7 +117,7 @@ class AetherNodeHealthSinkWiringTest {
                                                             rabiaTerm::get,
                                                             isLeader,
                                                             AutoHealConfig.DEFAULT);
-        var activator = HealthReconcilerActivator.healthReconcilerActivator(reconciler, isLeader);
+        var activator = HealthReconcilerActivator.healthReconcilerActivator(reconciler, isLeader).unwrap();
         activator.onLeaderChange(new LeaderChange(Option.some(SELF), true));
         seedOneCoreNode(reconciler);
         ref.set(activator.sink());

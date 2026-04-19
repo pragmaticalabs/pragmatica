@@ -29,6 +29,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 class ClusterTopologyRoutesCoreCountTest {
     private static final NodeId NODE_1 = new NodeId("node-1");
@@ -45,7 +47,7 @@ class ClusterTopologyRoutesCoreCountTest {
         @SuppressWarnings("unchecked")
         var handler = (org.pragmatica.http.routing.Handler<ClusterTopologyStatusResponse>) topologyRoute.handler();
         var result = handler.handle(null).await();
-        org.assertj.core.api.Assertions.assertThat(result.isSuccess()).isTrue();
+        assertThat(result.isSuccess()).isTrue();
         return result.unwrap();
     }
 
@@ -75,7 +77,6 @@ class ClusterTopologyRoutesCoreCountTest {
                                                 Epoch.ZERO,
                                                 Epoch.epoch(5L, 10L));
             var snapshot = new ClusterGenerationSnapshot(Epoch.epoch(5L, 10L),
-                                                         5L,
                                                          HlcTimestamp.ZERO,
                                                          GenerationReason.PERIODIC_REFRESH,
                                                          3,
@@ -90,9 +91,9 @@ class ClusterTopologyRoutesCoreCountTest {
             var response = invoke(node);
 
             // Only 2 members are ON_DUTY+HEALTHY — DRAINING member is excluded.
-            org.assertj.core.api.Assertions.assertThat(response.coreCount()).isEqualTo(2);
-            org.assertj.core.api.Assertions.assertThat(response.epoch().isPresent()).isTrue();
-            org.assertj.core.api.Assertions.assertThat(response.epoch().unwrap()).isEqualTo("5:10");
+            assertThat(response.coreCount()).isEqualTo(2);
+            assertThat(response.epoch().isPresent()).isTrue();
+            assertThat(response.epoch().unwrap()).isEqualTo("5:10");
         }
     }
 
@@ -104,8 +105,8 @@ class ClusterTopologyRoutesCoreCountTest {
 
             var response = invoke(node);
 
-            org.assertj.core.api.Assertions.assertThat(response.coreCount()).isEqualTo(4);
-            org.assertj.core.api.Assertions.assertThat(response.epoch().isEmpty()).isTrue();
+            assertThat(response.coreCount()).isEqualTo(4);
+            assertThat(response.epoch().isEmpty()).isTrue();
         }
     }
 

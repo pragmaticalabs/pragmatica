@@ -107,9 +107,13 @@ class ClusterGenerationEventsTest {
     @SuppressWarnings("unchecked") private static ClusterNode<KVCommand<AetherKey>> successCluster() {
         return (ClusterNode<KVCommand<AetherKey>>) Proxy.newProxyInstance(ClusterNode.class.getClassLoader(),
                                                                           new Class[]{ClusterNode.class},
-                                                                          (_, method, _) -> {
-                                                                              if ("apply".equals(method.getName())) {return Promise.success(List.of());}
-                                                                              return null;
-                                                                          });
+                                                                          (_, method, _) -> dispatchClusterMethod(method.getName()));
+    }
+
+    private static Object dispatchClusterMethod(String methodName) {
+        return switch (methodName) {
+            case "apply" -> Promise.success(List.of());
+            default -> throw new UnsupportedOperationException("Not in test proxy: " + methodName);
+        };
     }
 }

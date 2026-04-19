@@ -229,7 +229,6 @@ class HealthReconcilerTest {
                                                                 CommunityQuiescence.DISSOLVING,
                                                                 ""));
             var withCommunity = new ClusterGenerationSnapshot(seeded.epoch(),
-                                                               seeded.rabiaTerm(),
                                                                seeded.committedAt(),
                                                                seeded.reason(),
                                                                seeded.desiredCoreSize(),
@@ -436,7 +435,6 @@ class HealthReconcilerTest {
             partitions.put("p-1", PartitionOwner.partitionOwner("p-1", NODE_A, "worker-pool-a", Epoch.epoch(1L, 0L), 1L));
             partitions.put("p-2", PartitionOwner.partitionOwner("p-2", NODE_A, "worker-pool-a", Epoch.epoch(1L, 0L), 1L));
             var withCommunityAndPartitions = new ClusterGenerationSnapshot(seeded.epoch(),
-                                                                             seeded.rabiaTerm(),
                                                                              seeded.committedAt(),
                                                                              seeded.reason(),
                                                                              seeded.desiredCoreSize(),
@@ -468,7 +466,6 @@ class HealthReconcilerTest {
         updated.put(partitionId,
                      PartitionOwner.partitionOwner(partitionId, ownerNodeId, ownerCommunityId, Epoch.epoch(1L, 0L), ownershipTerm));
         return new ClusterGenerationSnapshot(base.epoch(),
-                                              base.rabiaTerm(),
                                               base.committedAt(),
                                               base.reason(),
                                               base.desiredCoreSize(),

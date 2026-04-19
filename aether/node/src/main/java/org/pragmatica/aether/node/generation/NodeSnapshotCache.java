@@ -20,7 +20,6 @@ import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -48,7 +47,8 @@ import org.slf4j.LoggerFactory;
 ///   - A heartbeat ping (no snapshot) advances the observed epoch but never clears a
 ///     previously cached snapshot.
 ///
-/// Thread-safe — relies on atomics for all mutable state.
+/// Thread-safe — (rabiaTerm, epoch, snapshot) collapse into a single `AtomicReference<State>`
+/// so readers always observe a coherent tuple.
 ///
 /// See `aether/docs/specs/cluster-generation-spec.md` §7.2 (Tier 1 distribution).
 public interface NodeSnapshotCache extends GenerationSnapshotSource {
@@ -73,77 +73,78 @@ public interface NodeSnapshotCache extends GenerationSnapshotSource {
 
     static NodeSnapshotCache nodeSnapshotCache(NodeId self,
                                                Function<byte[], Option<ClusterGenerationSnapshot>> snapshotDecoder) {
-        return new NodeSnapshotCacheImpl(self, snapshotDecoder);
+        return new NodeSnapshotCacheRecord(self, snapshotDecoder, new AtomicReference<>(State.INITIAL));
+    }
+
+    record State(long rabiaTerm, Epoch epoch, Option<ClusterGenerationSnapshot> snapshot) {
+        static final State INITIAL = new State(0L, Epoch.ZERO, Option.none());
     }
 }
 
-final class NodeSnapshotCacheImpl implements NodeSnapshotCache {
-    private static final Logger log = LoggerFactory.getLogger(NodeSnapshotCacheImpl.class);
-
-    private final NodeId self;
-    private final Function<byte[], Option<ClusterGenerationSnapshot>> snapshotDecoder;
-
-    private final AtomicLong observedRabiaTerm = new AtomicLong();
-
-    private final AtomicReference<Epoch> observedEpoch = new AtomicReference<>(Epoch.ZERO);
-
-    private final AtomicReference<Option<ClusterGenerationSnapshot>> currentSnapshot = new AtomicReference<>(Option.none());
-
-    NodeSnapshotCacheImpl(NodeId self, Function<byte[], Option<ClusterGenerationSnapshot>> snapshotDecoder) {
-        this.self = self;
-        this.snapshotDecoder = snapshotDecoder;
-    }
+record NodeSnapshotCacheRecord(NodeId self,
+                               Function<byte[], Option<ClusterGenerationSnapshot>> snapshotDecoder,
+                               AtomicReference<NodeSnapshotCache.State> stateRef) implements NodeSnapshotCache {
+    private static final Logger log = LoggerFactory.getLogger(NodeSnapshotCacheRecord.class);
 
     @Override public Option<ClusterGenerationSnapshot> current() {
-        return currentSnapshot.get();
+        return stateRef.get().snapshot();
     }
 
     @Override public long observedRabiaTerm() {
-        return observedRabiaTerm.get();
+        return stateRef.get().rabiaTerm();
     }
 
     @Override public Epoch observedEpoch() {
-        return observedEpoch.get();
+        return stateRef.get().epoch();
     }
 
     @Override@Contract public void onMetricsPing(MetricsPing ping) {
-        var currentTerm = observedRabiaTerm.get();
-        if (ping.rabiaTerm() <currentTerm) {
-            log.trace("Node {} rejecting stale-term ping from {}: pingTerm={}, observedTerm={}",
+        var incomingEpoch = Epoch.epoch(ping.epochTerm(), ping.epochCounter());
+        var updated = stateRef.updateAndGet(current -> applyPing(current, ping, incomingEpoch));
+        logTransition(ping, incomingEpoch, updated);
+    }
+
+    private NodeSnapshotCache.State applyPing(NodeSnapshotCache.State current, MetricsPing ping, Epoch incomingEpoch) {
+        if (ping.rabiaTerm() <current.rabiaTerm()) {return current;}
+        if (ping.rabiaTerm() > current.rabiaTerm()) {return acceptNewTerm(ping, incomingEpoch, current);}
+        if (!incomingEpoch.isStrictlyAfter(current.epoch())) {return current;}
+        return acceptSameTerm(ping, incomingEpoch, current);
+    }
+
+    private NodeSnapshotCache.State acceptNewTerm(MetricsPing ping,
+                                                  Epoch incomingEpoch,
+                                                  NodeSnapshotCache.State current) {
+        var nextSnapshot = ping.snapshot().flatMap(this::decodePayload);
+        var retained = nextSnapshot.orElse(current.snapshot());
+        return new NodeSnapshotCache.State(ping.rabiaTerm(), incomingEpoch, retained);
+    }
+
+    private NodeSnapshotCache.State acceptSameTerm(MetricsPing ping,
+                                                   Epoch incomingEpoch,
+                                                   NodeSnapshotCache.State current) {
+        var nextSnapshot = ping.snapshot().flatMap(this::decodePayload);
+        var retained = nextSnapshot.orElse(current.snapshot());
+        return new NodeSnapshotCache.State(current.rabiaTerm(), incomingEpoch, retained);
+    }
+
+    private Option<ClusterGenerationSnapshot> decodePayload(SnapshotPayload payload) {
+        return snapshotDecoder.apply(payload.bytes());
+    }
+
+    @Contract private void logTransition(MetricsPing ping, Epoch incomingEpoch, NodeSnapshotCache.State updated) {
+        if (updated.rabiaTerm() != ping.rabiaTerm() && ping.rabiaTerm() <updated.rabiaTerm()) {
+            log.trace("Node {} rejected stale-term ping from {}: pingTerm={}, observedTerm={}",
                       self,
                       ping.sender(),
                       ping.rabiaTerm(),
-                      currentTerm);
+                      updated.rabiaTerm());
             return;
         }
-        var incomingEpoch = Epoch.epoch(ping.epochTerm(), ping.epochCounter());
-        if (ping.rabiaTerm() > currentTerm) {
-            acceptNewTerm(ping, incomingEpoch);
-            return;
-        }
-        acceptSameTerm(ping, incomingEpoch);
-    }
-
-    private void acceptNewTerm(MetricsPing ping, Epoch incomingEpoch) {
-        observedRabiaTerm.set(ping.rabiaTerm());
-        observedEpoch.set(incomingEpoch);
-        ping.snapshot().onPresent(this::decodeAndStore);
-        log.info("Node {} leader term changed, accepting snapshot at epoch {}", self, incomingEpoch);
-    }
-
-    private void acceptSameTerm(MetricsPing ping, Epoch incomingEpoch) {
-        if (!incomingEpoch.isStrictlyAfter(observedEpoch.get())) {return;}
-        observedEpoch.set(incomingEpoch);
-        ping.snapshot().onPresent(this::decodeAndStore);
-        log.trace("Node {} advancing observed epoch to {}", self, incomingEpoch);
-    }
-
-    private void decodeAndStore(SnapshotPayload payload) {
-        snapshotDecoder.apply(payload.bytes()).onPresent(this::storeSnapshot);
-    }
-
-    private void storeSnapshot(ClusterGenerationSnapshot snapshot) {
-        currentSnapshot.set(Option.some(snapshot));
+        if (!incomingEpoch.equals(updated.epoch())) {return;}
+        if (ping.rabiaTerm() > 0L && updated.epoch().equals(incomingEpoch)) {log.trace("Node {} observed epoch {} (term {})",
+                                                                                       self,
+                                                                                       incomingEpoch,
+                                                                                       updated.rabiaTerm());}
     }
 }
 

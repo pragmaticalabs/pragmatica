@@ -25,16 +25,8 @@ import java.util.Set;
                                                  Set<String> partitionsHeld,
                                                  HlcTimestamp committedAt) {
     public CommunityGenerationSnapshot {
-        if (communityId == null) {communityId = "";}
-        if (communityEpoch == null) {communityEpoch = Epoch.ZERO;}
-        if (observedCoreEpoch == null) {observedCoreEpoch = Epoch.ZERO;}
-        members = members == null
-                 ? List.of()
-                 : List.copyOf(members);
-        partitionsHeld = partitionsHeld == null
-                        ? Set.of()
-                        : Set.copyOf(partitionsHeld);
-        if (committedAt == null) {committedAt = HlcTimestamp.ZERO;}
+        members = List.copyOf(members);
+        partitionsHeld = Set.copyOf(partitionsHeld);
     }
 
     public static CommunityGenerationSnapshot communityGenerationSnapshot(String communityId,

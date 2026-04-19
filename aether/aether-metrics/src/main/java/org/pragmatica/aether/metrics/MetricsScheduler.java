@@ -60,6 +60,7 @@ public interface MetricsScheduler extends DelegatedComponent {
     @Contract void recordObservedEpoch(NodeId nodeId, Epoch epoch);
     Map<NodeId, Epoch> observedEpochs();
     @Contract void onPongReceived(NodeId nodeId);
+    @Contract void sendPingsNow();
 
     static MetricsScheduler metricsScheduler(NodeId self,
                                              ClusterNetwork network,
@@ -264,7 +265,7 @@ class MetricsSchedulerImpl implements MetricsScheduler {
         }
     }
 
-    @Contract void sendPingsNow() {
+    @Override@Contract public void sendPingsNow() {
         sendPingsToAllNodes();
     }
 

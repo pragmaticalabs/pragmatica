@@ -29,15 +29,7 @@ import java.util.Set;
                                       CommunityQuiescence quiescence,
                                       String quiescenceDetail) {
     public CommunitySummary {
-        if (communityId == null) {communityId = "";}
-        if (communityEpoch == null) {communityEpoch = Epoch.ZERO;}
-        partitions = partitions == null
-                    ? Set.of()
-                    : Set.copyOf(partitions);
-        if (assignedSpokesman == null) {assignedSpokesman = Option.none();}
-        if (lastAckAtCore == null) {lastAckAtCore = Epoch.ZERO;}
-        if (quiescence == null) {quiescence = CommunityQuiescence.QUIESCED;}
-        if (quiescenceDetail == null) {quiescenceDetail = "";}
+        partitions = Set.copyOf(partitions);
     }
 
     public static CommunitySummary communitySummary(String communityId,
@@ -97,9 +89,7 @@ import java.util.Set;
                                     assignedSpokesman,
                                     lastAckAtCore,
                                     newQuiescence,
-                                    newDetail == null
-                                    ? ""
-                                    : newDetail);
+                                    newDetail);
     }
 
     public CommunitySummary withLastAckAtCore(Epoch newLastAckAtCore) {

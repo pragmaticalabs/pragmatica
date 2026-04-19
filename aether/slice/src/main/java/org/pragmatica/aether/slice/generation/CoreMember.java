@@ -19,14 +19,6 @@ import org.pragmatica.serialization.Codec;
                                 HealthHint healthHint,
                                 Epoch joinedEpoch,
                                 Epoch lastSeenEpoch) {
-    public CoreMember {
-        if (host == null) {host = "";}
-        if (lifecycle == null) {lifecycle = NodeLifecycleState.JOINING;}
-        if (healthHint == null) {healthHint = HealthHint.HEALTHY;}
-        if (joinedEpoch == null) {joinedEpoch = Epoch.ZERO;}
-        if (lastSeenEpoch == null) {lastSeenEpoch = Epoch.ZERO;}
-    }
-
     public static CoreMember coreMember(NodeId nodeId,
                                         String host,
                                         int port,

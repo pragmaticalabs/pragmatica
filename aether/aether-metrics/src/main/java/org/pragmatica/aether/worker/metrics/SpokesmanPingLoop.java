@@ -28,10 +28,11 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -163,9 +164,9 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
 
     private final AtomicReference<List<String>> assignedCommunities = new AtomicReference<>(List.of());
 
-    private final Map<String, CommunityReport> reports = new ConcurrentHashMap<>();
+    private final AtomicReference<Map<String, CommunityReport>> reports = new AtomicReference<>(Map.of());
 
-    private final Map<NodeId, String> governorToCommunity = new ConcurrentHashMap<>();
+    private final AtomicReference<Map<NodeId, String>> governorToCommunity = new AtomicReference<>(Map.of());
 
     private final CancellableTask task = CancellableTask.cancellableTask();
 
@@ -239,9 +240,8 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
 
     @Override@Contract public void onMetricsPong(MetricsPong pong) {
         if (!active.get()) {return;}
-        var communityId = governorToCommunity.get(pong.sender());
-        if (communityId == null) {return;}
-        aggregatePong(communityId, pong);
+        Option.option(governorToCommunity.get().get(pong.sender()))
+                     .onPresent(communityId -> aggregatePong(communityId, pong));
     }
 
     @Override public boolean isActive() {
@@ -249,33 +249,38 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
     }
 
     @Override public List<CommunityReport> currentReports() {
-        return List.copyOf(reports.values());
+        return List.copyOf(reports.get().values());
     }
 
     @Contract private void activate(List<String> communities) {
-        assignedCommunities.set(List.copyOf(communities));
-        rebuildGovernorIndex(communities);
-        if (active.compareAndSet(false, true)) {
-            task.set(SharedScheduler.scheduleAtFixedRate(this::tick, interval));
-            log.info("SpokesmanPingLoop activated on {} with communities {}", self, communities);
+        var frozen = List.copyOf(communities);
+        var newIndex = buildGovernorIndex(frozen);
+        if (!active.compareAndSet(false, true)) {
+            assignedCommunities.set(frozen);
+            governorToCommunity.set(newIndex);
+            return;
         }
+        assignedCommunities.set(frozen);
+        governorToCommunity.set(newIndex);
+        task.set(SharedScheduler.scheduleAtFixedRate(this::tick, interval));
+        log.info("SpokesmanPingLoop activated on {} with communities {}", self, frozen);
     }
 
     @Contract private void deactivate() {
         if (active.compareAndSet(true, false)) {
             task.cancel();
-            reports.clear();
-            governorToCommunity.clear();
+            reports.set(Map.of());
+            governorToCommunity.set(Map.of());
             assignedCommunities.set(List.of());
             log.info("SpokesmanPingLoop deactivated on {}", self);
         }
     }
 
-    private void rebuildGovernorIndex(List<String> communities) {
-        governorToCommunity.clear();
+    private Map<NodeId, String> buildGovernorIndex(List<String> communities) {
+        var fresh = new LinkedHashMap<NodeId, String>();
         communities.forEach(communityId -> governorLookup.apply(communityId)
-                                                               .onPresent(governor -> governorToCommunity.put(governor,
-                                                                                                              communityId)));
+                                                               .onPresent(governor -> fresh.put(governor, communityId)));
+        return Map.copyOf(fresh);
     }
 
     private void tick() {
@@ -313,24 +318,29 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
     }
 
     private void aggregatePong(String communityId, MetricsPong pong) {
-        var existing = reports.get(communityId);
-        var governorId = pong.sender();
-        var partitionsHeld = existing == null
-                            ? Set.<String>of()
-                            : existing.partitionsHeld();
+        reports.updateAndGet(current -> mergeReport(current, communityId, pong));
+    }
+
+    private static Map<String, CommunityReport> mergeReport(Map<String, CommunityReport> current,
+                                                            String communityId,
+                                                            MetricsPong pong) {
+        var partitionsHeld = Option.option(current.get(communityId)).map(CommunityReport::partitionsHeld)
+                                          .or(Set.of());
         var members = lifecycleCount(pong);
         var report = CommunityReport.communityReport(communityId,
                                                      0L,
                                                      pong.observedEpochTerm(),
                                                      pong.observedEpochCounter(),
-                                                     governorId,
+                                                     pong.sender(),
                                                      members.total(),
                                                      members.healthy(),
                                                      members.suspected(),
                                                      members.faulty(),
                                                      partitionsHeld,
                                                      System.currentTimeMillis());
-        reports.put(communityId, report);
+        var fresh = new HashMap<>(current);
+        fresh.put(communityId, report);
+        return Map.copyOf(fresh);
     }
 
     private static LifecycleCounts lifecycleCount(MetricsPong pong) {

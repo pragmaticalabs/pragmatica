@@ -53,29 +53,13 @@ public interface ClusterGenerationProjector {
                            Map<String, Epoch> lastAckPerCommunity,
                            Map<String, SliceTargetValue> sliceTargets) {
         public ProjectionInput {
-            if (now == null) {now = HlcTimestamp.ZERO;}
-            if (reason == null) {reason = GenerationReason.PERIODIC_REFRESH;}
-            lifecycles = lifecycles == null
-                        ? Map.of()
-                        : Map.copyOf(lifecycles);
-            governors = governors == null
-                       ? Map.of()
-                       : Map.copyOf(governors);
-            partitions = partitions == null
-                        ? Map.of()
-                        : Map.copyOf(partitions);
-            spokesmen = spokesmen == null
-                       ? Map.of()
-                       : Map.copyOf(spokesmen);
-            lastSeenPerNode = lastSeenPerNode == null
-                             ? Map.of()
-                             : Map.copyOf(lastSeenPerNode);
-            lastAckPerCommunity = lastAckPerCommunity == null
-                                 ? Map.of()
-                                 : Map.copyOf(lastAckPerCommunity);
-            sliceTargets = sliceTargets == null
-                          ? Map.of()
-                          : Map.copyOf(sliceTargets);
+            lifecycles = Map.copyOf(lifecycles);
+            governors = Map.copyOf(governors);
+            partitions = Map.copyOf(partitions);
+            spokesmen = Map.copyOf(spokesmen);
+            lastSeenPerNode = Map.copyOf(lastSeenPerNode);
+            lastAckPerCommunity = Map.copyOf(lastAckPerCommunity);
+            sliceTargets = Map.copyOf(sliceTargets);
         }
 
         public static ProjectionInput projectionInput(long rabiaTerm,

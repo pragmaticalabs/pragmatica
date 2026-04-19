@@ -4,10 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.generation;
 
-import java.util.function.UnaryOperator;
-
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
+import org.pragmatica.aether.slice.generation.CommunitySummary;
 import org.pragmatica.aether.slice.generation.CoreMember;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.GenerationChangedNotice;
@@ -31,18 +30,21 @@ import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
+import java.util.function.UnaryOperator;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -61,6 +63,12 @@ import static org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot.e
 /// See `aether/docs/specs/cluster-generation-spec.md` §8.
 ///
 /// Dormant in Commit 2 — wiring to bootstrap happens in Commit 4.
+/// Thread-confinement assumption: `onSignal` / `seedSnapshot` / `start` / `stop` are
+/// expected to be driven from a single thread at a time (leader-change activator is
+/// responsible for serializing start/stop transitions against signal processing).
+/// Internal maps are `ConcurrentHashMap` for safety against occasional out-of-order
+/// reads by introspection APIs (e.g. tests, debug dumps), but the decision pipeline
+/// itself is single-writer.
 public interface HealthReconciler extends HealthSignalSink {
     int DEFAULT_SUSPECT_INTERVAL_THRESHOLD = 3;
 
@@ -73,6 +81,7 @@ public interface HealthReconciler extends HealthSignalSink {
     Epoch currentEpoch();
     NodeId self();
     @Contract void seedSnapshot(ClusterGenerationSnapshot snapshot);
+    long consensusApplyFailedCount();
 
     @Contract@Override default void emit(HealthSignal signal) {
         onSignal(signal);
@@ -112,10 +121,11 @@ public interface HealthReconciler extends HealthSignalSink {
                                           autoHealConfig,
                                           generationChangedSink,
                                           new AtomicReference<>(empty(rabiaTermSupplier.get())),
-                                          new HashMap<>(),
-                                          new HashMap<>(),
-                                          new HashSet<>(),
-                                          new AtomicBoolean(false));
+                                          new ConcurrentHashMap<>(),
+                                          new ConcurrentHashMap<>(),
+                                          ConcurrentHashMap.newKeySet(),
+                                          new AtomicBoolean(false),
+                                          new AtomicLong());
     }
 }
 
@@ -133,7 +143,8 @@ record HealthReconcilerRecord(NodeId self,
                               Map<NodeId, Integer> consecutivePingMisses,
                               Map<NodeId, HealthHint> swimHints,
                               Set<NodeId> pendingRemovals,
-                              AtomicBoolean started) implements HealthReconciler {
+                              AtomicBoolean started,
+                              AtomicLong consensusApplyFailed) implements HealthReconciler {
     private static final Logger log = LoggerFactory.getLogger(HealthReconcilerRecord.class);
 
     private static final String CORE_COMMUNITY_ID = "core";
@@ -187,15 +198,26 @@ record HealthReconcilerRecord(NodeId self,
             consecutivePingMisses.clear();
             swimHints.clear();
             pendingRemovals.clear();
+            return;
         }
+        pruneMapsAgainstCore(currentSnapshot.coreMembers().keySet());
+    }
+
+    private void pruneMapsAgainstCore(Set<NodeId> liveCore) {
+        consecutivePingMisses.keySet().retainAll(liveCore);
+        swimHints.keySet().retainAll(liveCore);
+        pendingRemovals.retainAll(liveCore);
     }
 
     @Contract private void handlePingTimeout(HealthSignal.PingTimeout ping) {
         var nodeId = ping.nodeId();
         var missed = consecutivePingMisses.merge(nodeId, 1, Integer::sum);
         var current = snapshotRef.get();
-        var member = current.coreMembers().get(nodeId);
-        if (member == null || pendingRemovals.contains(nodeId)) {return;}
+        Option.option(current.coreMembers().get(nodeId)).filter(_ -> !pendingRemovals.contains(nodeId))
+                     .onPresent(member -> applyPingTimeoutDecision(nodeId, member, missed));
+    }
+
+    private void applyPingTimeoutDecision(NodeId nodeId, CoreMember member, int missed) {
         if (shouldEvict(missed, member, nodeId)) {
             evictNode(nodeId, member, GenerationReason.MEMBER_REMOVED);
             return;
@@ -221,19 +243,24 @@ record HealthReconcilerRecord(NodeId self,
     }
 
     @Contract private void handleQuicDisconnect(HealthSignal.QuicDisconnect quic) {
+        if (!snapshotRef.get().coreMembers()
+                            .containsKey(quic.nodeId())) {return;}
         var missed = consecutivePingMisses.merge(quic.nodeId(), 1, Integer::sum);
         log.debug("QUIC disconnect from {} (counted as advisory miss {})", quic.nodeId(), missed);
     }
 
     @Contract private void handleDrainCompleted(HealthSignal.DrainCompleted drain) {
         var current = snapshotRef.get();
-        var member = current.coreMembers().get(drain.nodeId());
-        if (member == null || member.lifecycle() == NodeLifecycleState.DECOMMISSIONED) {
-            log.debug("DrainCompleted({}) ignored — member absent or already decommissioned", drain.nodeId());
-            return;
-        }
-        log.info("DrainCompleted({}) — writing DECOMMISSIONED via single-writer reconciler", drain.nodeId());
-        evictNode(drain.nodeId(), member, GenerationReason.MEMBER_REMOVED);
+        Option.option(current.coreMembers().get(drain.nodeId())).filter(member -> member.lifecycle() != NodeLifecycleState.DECOMMISSIONED)
+                     .onPresent(member -> performDrainCompletion(drain.nodeId(),
+                                                                 member))
+                     .onEmpty(() -> log.debug("DrainCompleted({}) ignored — member absent or already decommissioned",
+                                              drain.nodeId()));
+    }
+
+    private void performDrainCompletion(NodeId nodeId, CoreMember member) {
+        log.info("DrainCompleted({}) — writing DECOMMISSIONED via single-writer reconciler", nodeId);
+        evictNode(nodeId, member, GenerationReason.MEMBER_REMOVED);
     }
 
     @Contract private void handleGovernorAnnounced(HealthSignal.GovernorAnnounced announced) {
@@ -247,14 +274,19 @@ record HealthReconcilerRecord(NodeId self,
 
     @Contract private void handleCommunityDissolved(HealthSignal.CommunityDissolved dissolved) {
         var current = snapshotRef.get();
-        var community = current.communities().get(dissolved.communityId());
-        if (community == null) {return;}
+        Option.option(current.communities().get(dissolved.communityId()))
+                     .onPresent(community -> dissolveCommunity(dissolved.communityId(),
+                                                               community,
+                                                               current));
+    }
+
+    private void dissolveCommunity(String communityId, CommunitySummary community, ClusterGenerationSnapshot current) {
         var survivors = coreNodesFromSnapshot(current);
         if (survivors.isEmpty()) {
-            log.warn("CommunityDissolved({}) — no surviving core nodes to absorb partitions", dissolved.communityId());
+            log.warn("CommunityDissolved({}) — no surviving core nodes to absorb partitions", communityId);
             return;
         }
-        var commands = buildDissolveCommands(dissolved.communityId(), community.partitions(), survivors);
+        var commands = buildDissolveCommands(communityId, community.partitions(), survivors);
         applyCommandsAndBump(commands, GenerationReason.COMMUNITY_DISSOLVED);
     }
 
@@ -282,14 +314,22 @@ record HealthReconcilerRecord(NodeId self,
     }
 
     @Contract private void operatorRemove(NodeId nodeId) {
-        var current = snapshotRef.get();
-        var member = current.coreMembers().get(nodeId);
-        if (member == null) {return;}
-        if (member.lifecycle() == NodeLifecycleState.DRAINING || member.lifecycle() == NodeLifecycleState.DECOMMISSIONED || member.lifecycle() == NodeLifecycleState.SHUTTING_DOWN) {
+        Option.option(snapshotRef.get().coreMembers()
+                                     .get(nodeId))
+        .onPresent(member -> applyOperatorRemoveDecision(nodeId, member));
+    }
+
+    private void applyOperatorRemoveDecision(NodeId nodeId, CoreMember member) {
+        if (isDrainingOrTerminal(member)) {
             log.debug("operatorRemove({}) ignored — already {} (await DrainCompleted)", nodeId, member.lifecycle());
             return;
         }
         writeDrainingAtom(nodeId, member, GenerationReason.MEMBER_REMOVED);
+    }
+
+    private static boolean isDrainingOrTerminal(CoreMember member) {
+        var state = member.lifecycle();
+        return state == NodeLifecycleState.DRAINING || state == NodeLifecycleState.DECOMMISSIONED || state == NodeLifecycleState.SHUTTING_DOWN;
     }
 
     @Contract private void operatorSetDesiredSize(int newSize) {
@@ -299,10 +339,13 @@ record HealthReconcilerRecord(NodeId self,
     }
 
     @Contract private void operatorDrain(NodeId nodeId) {
-        var current = snapshotRef.get();
-        var member = current.coreMembers().get(nodeId);
-        if (member == null) {return;}
-        if (member.lifecycle() == NodeLifecycleState.DRAINING || member.lifecycle() == NodeLifecycleState.DECOMMISSIONED || member.lifecycle() == NodeLifecycleState.SHUTTING_DOWN) {
+        Option.option(snapshotRef.get().coreMembers()
+                                     .get(nodeId))
+        .onPresent(member -> applyOperatorDrainDecision(nodeId, member));
+    }
+
+    private void applyOperatorDrainDecision(NodeId nodeId, CoreMember member) {
+        if (isDrainingOrTerminal(member)) {
             log.debug("operatorDrain({}) ignored — already {}", nodeId, member.lifecycle());
             return;
         }
@@ -323,19 +366,26 @@ record HealthReconcilerRecord(NodeId self,
 
     @Contract private void markSuspectedInMemory(NodeId nodeId) {
         var current = snapshotRef.get();
-        var member = current.coreMembers().get(nodeId);
-        if (member == null || member.healthHint() == HealthHint.SUSPECTED) {return;}
-        var updatedMap = replaceMember(current.coreMembers(), nodeId, member.withHealthHint(HealthHint.SUSPECTED));
-        updateAndBump(s -> s.withCoreMembers(updatedMap), GenerationReason.HEALTH_CHANGE);
+        Option.option(current.coreMembers().get(nodeId)).filter(member -> member.healthHint() != HealthHint.SUSPECTED)
+                     .onPresent(member -> applyHealthHintChange(current,
+                                                                nodeId,
+                                                                member.withHealthHint(HealthHint.SUSPECTED)));
     }
 
     @Contract private void clearSuspectedInMemory(NodeId nodeId) {
         var current = snapshotRef.get();
-        var member = current.coreMembers().get(nodeId);
-        if (member == null || member.healthHint() == HealthHint.HEALTHY) {return;}
-        var updatedMap = replaceMember(current.coreMembers(), nodeId, member.withHealthHint(HealthHint.HEALTHY));
-        updateAndBump(s -> s.withCoreMembers(updatedMap), GenerationReason.HEALTH_CHANGE);
+        Option.option(current.coreMembers().get(nodeId)).filter(member -> member.healthHint() != HealthHint.HEALTHY)
+                     .onPresent(member -> applyClearSuspected(current, nodeId, member));
+    }
+
+    private void applyClearSuspected(ClusterGenerationSnapshot current, NodeId nodeId, CoreMember member) {
+        applyHealthHintChange(current, nodeId, member.withHealthHint(HealthHint.HEALTHY));
         consecutivePingMisses.remove(nodeId);
+    }
+
+    private void applyHealthHintChange(ClusterGenerationSnapshot current, NodeId nodeId, CoreMember replacement) {
+        var updatedMap = replaceMember(current.coreMembers(), nodeId, replacement);
+        updateAndBump(s -> s.withCoreMembers(updatedMap), GenerationReason.HEALTH_CHANGE);
     }
 
     @Contract private void evictNode(NodeId nodeId, CoreMember member, GenerationReason reason) {
@@ -349,7 +399,7 @@ record HealthReconcilerRecord(NodeId self,
         var commands = new ArrayList<KVCommand<AetherKey>>();
         commands.add(new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId), leftValue));
         commands.addAll(handlePartitionsOf(nodeId));
-        applyCommandsAndBump(commands, reason);
+        applyCommandsWithAttemptTracking(commands, reason, Set.of(nodeId));
     }
 
     private List<KVCommand<AetherKey>> handlePartitionsOf(NodeId departedNode) {
@@ -479,21 +529,35 @@ record HealthReconcilerRecord(NodeId self,
     }
 
     @Contract private void applyCommandsAndBump(List<KVCommand<AetherKey>> commands, GenerationReason reason) {
+        applyCommandsWithAttemptTracking(commands, reason, Set.of());
+    }
+
+    @Contract private void applyCommandsWithAttemptTracking(List<KVCommand<AetherKey>> commands,
+                                                            GenerationReason reason,
+                                                            Set<NodeId> attemptedNodeIds) {
         if (commands.isEmpty()) {
             bumpCounter(reason);
             return;
         }
-        cluster.apply(commands).onFailure(cause -> log.error("HealthReconciler consensus apply failed: {}",
-                                                             cause.message()))
+        cluster.apply(commands).onFailure(cause -> recordConsensusApplyFailure(cause, attemptedNodeIds))
                      .onSuccess(_ -> bumpCounter(reason));
+    }
+
+    private void recordConsensusApplyFailure(Cause cause, Set<NodeId> attemptedNodeIds) {
+        consensusApplyFailed.incrementAndGet();
+        attemptedNodeIds.forEach(pendingRemovals::remove);
+        log.warn("HealthReconciler consensus apply failed (attempted nodes={}): {}", attemptedNodeIds, cause.message());
+    }
+
+    @Override public long consensusApplyFailedCount() {
+        return consensusApplyFailed.get();
     }
 
     @Contract private void bumpCounter(GenerationReason reason) {
         updateAndBump(UnaryOperator.identity(), reason);
     }
 
-    @Contract private void updateAndBump(UnaryOperator<ClusterGenerationSnapshot> transform,
-                                          GenerationReason reason) {
+    @Contract private void updateAndBump(UnaryOperator<ClusterGenerationSnapshot> transform, GenerationReason reason) {
         var previous = snapshotRef.get();
         var bumped = snapshotRef.updateAndGet(s -> transform.apply(s).withBumpedCounter(reason));
         generationChangedSink.emit(GenerationChangedNotice.generationChangedNotice(previous.epoch(),

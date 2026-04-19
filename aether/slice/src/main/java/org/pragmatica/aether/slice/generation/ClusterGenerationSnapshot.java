@@ -17,7 +17,6 @@ import java.util.Map;
 ///
 /// See `aether/docs/specs/cluster-generation-spec.md` §6.
 @Codec public record ClusterGenerationSnapshot(Epoch epoch,
-                                               long rabiaTerm,
                                                HlcTimestamp committedAt,
                                                GenerationReason reason,
                                                int desiredCoreSize,
@@ -28,21 +27,13 @@ import java.util.Map;
                                                ClusterQuiescence quiescence,
                                                String quiescenceDetail) {
     public ClusterGenerationSnapshot {
-        if (epoch == null) {epoch = Epoch.ZERO;}
-        if (committedAt == null) {committedAt = HlcTimestamp.ZERO;}
-        if (reason == null) {reason = GenerationReason.PERIODIC_REFRESH;}
-        coreMembers = coreMembers == null
-                     ? Map.of()
-                     : Map.copyOf(coreMembers);
-        communities = communities == null
-                     ? Map.of()
-                     : Map.copyOf(communities);
-        partitions = partitions == null
-                    ? Map.of()
-                    : Map.copyOf(partitions);
-        if (derivedMode == null) {derivedMode = ClusterMode.CORE_ONLY;}
-        if (quiescence == null) {quiescence = ClusterQuiescence.QUIESCED;}
-        if (quiescenceDetail == null) {quiescenceDetail = "";}
+        coreMembers = Map.copyOf(coreMembers);
+        communities = Map.copyOf(communities);
+        partitions = Map.copyOf(partitions);
+    }
+
+    public long rabiaTerm() {
+        return epoch.rabiaTerm();
     }
 
     public static ClusterGenerationSnapshot clusterGenerationSnapshot(Epoch epoch,
@@ -56,7 +47,6 @@ import java.util.Map;
                                                                       ClusterQuiescence quiescence,
                                                                       String quiescenceDetail) {
         return new ClusterGenerationSnapshot(epoch,
-                                             epoch.rabiaTerm(),
                                              committedAt,
                                              reason,
                                              desiredCoreSize,
@@ -70,7 +60,6 @@ import java.util.Map;
 
     public static ClusterGenerationSnapshot empty(long rabiaTerm) {
         return new ClusterGenerationSnapshot(Epoch.epoch(rabiaTerm, 0L),
-                                             rabiaTerm,
                                              HlcTimestamp.ZERO,
                                              GenerationReason.LEADER_ELECTED,
                                              0,
@@ -83,9 +72,7 @@ import java.util.Map;
     }
 
     public ClusterGenerationSnapshot withBumpedCounter(GenerationReason newReason) {
-        var nextEpoch = epoch.nextCounter();
-        return new ClusterGenerationSnapshot(nextEpoch,
-                                             nextEpoch.rabiaTerm(),
+        return new ClusterGenerationSnapshot(epoch.nextCounter(),
                                              committedAt,
                                              newReason,
                                              desiredCoreSize,
@@ -99,7 +86,6 @@ import java.util.Map;
 
     public ClusterGenerationSnapshot withCommittedAt(HlcTimestamp newCommittedAt) {
         return new ClusterGenerationSnapshot(epoch,
-                                             rabiaTerm,
                                              newCommittedAt,
                                              reason,
                                              desiredCoreSize,
@@ -113,7 +99,6 @@ import java.util.Map;
 
     public ClusterGenerationSnapshot withCoreMembers(Map<NodeId, CoreMember> newCoreMembers) {
         return new ClusterGenerationSnapshot(epoch,
-                                             rabiaTerm,
                                              committedAt,
                                              reason,
                                              desiredCoreSize,
@@ -127,7 +112,6 @@ import java.util.Map;
 
     public ClusterGenerationSnapshot withDesiredCoreSize(int newDesiredCoreSize) {
         return new ClusterGenerationSnapshot(epoch,
-                                             rabiaTerm,
                                              committedAt,
                                              reason,
                                              newDesiredCoreSize,

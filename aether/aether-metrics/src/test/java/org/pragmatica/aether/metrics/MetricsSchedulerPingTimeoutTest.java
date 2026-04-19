@@ -45,9 +45,9 @@ class MetricsSchedulerPingTimeoutTest {
                                                            () -> Epoch.epoch(7L, 0L));
         scheduler.onTopologyChange(new TopologyChangeNotification.NodeAdded(PEER_A, List.of(SELF, PEER_A)));
 
-        ((MetricsSchedulerImpl) scheduler).sendPingsNow();
-        ((MetricsSchedulerImpl) scheduler).sendPingsNow();
-        ((MetricsSchedulerImpl) scheduler).sendPingsNow();
+        scheduler.sendPingsNow();
+        scheduler.sendPingsNow();
+        scheduler.sendPingsNow();
 
         var pingTimeouts = captured.stream()
                                     .filter(s -> s instanceof HealthSignal.PingTimeout)
@@ -75,8 +75,8 @@ class MetricsSchedulerPingTimeoutTest {
                                                            () -> Epoch.epoch(7L, 0L));
         scheduler.onTopologyChange(new TopologyChangeNotification.NodeAdded(PEER_A, List.of(SELF, PEER_A)));
 
-        ((MetricsSchedulerImpl) scheduler).sendPingsNow();
-        ((MetricsSchedulerImpl) scheduler).sendPingsNow();
+        scheduler.sendPingsNow();
+        scheduler.sendPingsNow();
 
         assertThat(captured).isEmpty();
     }
@@ -97,11 +97,11 @@ class MetricsSchedulerPingTimeoutTest {
                                                            () -> Epoch.epoch(7L, 0L));
         scheduler.onTopologyChange(new TopologyChangeNotification.NodeAdded(PEER_A, List.of(SELF, PEER_A)));
 
-        ((MetricsSchedulerImpl) scheduler).sendPingsNow();
-        ((MetricsSchedulerImpl) scheduler).sendPingsNow();
+        scheduler.sendPingsNow();
+        scheduler.sendPingsNow();
         scheduler.onPongReceived(PEER_A);
-        ((MetricsSchedulerImpl) scheduler).sendPingsNow();
-        ((MetricsSchedulerImpl) scheduler).sendPingsNow();
+        scheduler.sendPingsNow();
+        scheduler.sendPingsNow();
 
         assertThat(captured).isEmpty();
     }
@@ -122,11 +122,11 @@ class MetricsSchedulerPingTimeoutTest {
                                                            () -> Epoch.epoch(7L, 0L));
         scheduler.onTopologyChange(new TopologyChangeNotification.NodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B)));
 
-        ((MetricsSchedulerImpl) scheduler).sendPingsNow();
+        scheduler.sendPingsNow();
         scheduler.onPongReceived(PEER_B);
-        ((MetricsSchedulerImpl) scheduler).sendPingsNow();
+        scheduler.sendPingsNow();
         scheduler.onPongReceived(PEER_B);
-        ((MetricsSchedulerImpl) scheduler).sendPingsNow();
+        scheduler.sendPingsNow();
 
         var peerATimeouts = captured.stream()
                                     .filter(s -> s instanceof HealthSignal.PingTimeout)

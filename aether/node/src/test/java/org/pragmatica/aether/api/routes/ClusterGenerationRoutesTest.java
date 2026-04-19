@@ -57,7 +57,6 @@ class ClusterGenerationRoutesTest {
                                                Epoch.epoch(7L, 0L),
                                                Epoch.epoch(7L, 142L));
             var snapshot = new ClusterGenerationSnapshot(Epoch.epoch(7L, 142L),
-                                                         7L,
                                                          HlcTimestamp.ZERO,
                                                          GenerationReason.PERIODIC_REFRESH,
                                                          5,

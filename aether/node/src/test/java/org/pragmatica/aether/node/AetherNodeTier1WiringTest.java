@@ -7,7 +7,6 @@ package org.pragmatica.aether.node;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.consensus.NodeId;
 import org.pragmatica.serialization.FrameworkCodecs;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -46,11 +45,4 @@ class AetherNodeTier1WiringTest {
         assertThat(encoded.length).isGreaterThan(0);
     }
 
-    @Test
-    void wiredNodeId_available() {
-        // Placeholder smoke check — keeps the test class binding the NodeId import even as
-        // the test evolves to cover end-to-end wiring.
-        var id = NodeId.nodeId("smoke").unwrap();
-        assertThat(id.id()).isEqualTo("smoke");
-    }
 }

@@ -43,38 +43,6 @@ class CommunityGenerationSnapshotTest {
     }
 
     @Test
-    void construct_nullMembers_normalizesToEmpty() {
-        var governor = NodeId.nodeId("gov-1").unwrap();
-
-        var snapshot = new CommunityGenerationSnapshot("pool-a",
-                                                       0L,
-                                                       Epoch.ZERO,
-                                                       governor,
-                                                       null,
-                                                       Epoch.ZERO,
-                                                       Set.of(),
-                                                       HlcTimestamp.ZERO);
-
-        assertThat(snapshot.members()).isEmpty();
-    }
-
-    @Test
-    void construct_nullPartitions_normalizesToEmpty() {
-        var governor = NodeId.nodeId("gov-1").unwrap();
-
-        var snapshot = new CommunityGenerationSnapshot("pool-a",
-                                                       0L,
-                                                       Epoch.ZERO,
-                                                       governor,
-                                                       List.of(),
-                                                       Epoch.ZERO,
-                                                       null,
-                                                       HlcTimestamp.ZERO);
-
-        assertThat(snapshot.partitionsHeld()).isEmpty();
-    }
-
-    @Test
     void empty_producesZeroTermAndEpoch() {
         var governor = NodeId.nodeId("gov-1").unwrap();
 

@@ -31,10 +31,7 @@ public sealed interface HealthSignal {
 
     record SpokesmanAssignmentFailed(NodeId coreNodeId, List<String> affectedCommunities, String reason) implements HealthSignal {
         public SpokesmanAssignmentFailed {
-            affectedCommunities = affectedCommunities == null
-                                 ? List.of()
-                                 : List.copyOf(affectedCommunities);
-            if (reason == null) {reason = "";}
+            affectedCommunities = List.copyOf(affectedCommunities);
         }
     }
 

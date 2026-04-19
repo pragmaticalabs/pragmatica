@@ -27,7 +27,14 @@ import java.util.Set;
 import static org.pragmatica.lang.Option.none;
 
 
-/// Value type stored in the consensus KVStore
+/// Value type stored in the consensus KVStore.
+///
+/// TODO(JBCT-NAM-01 scope): this sealed interface hosts many inner records (SliceTargetValue,
+/// NodeLifecycleValue, etc.), each with a valid `typeName.typeName(...)` factory. The CST rule
+/// currently walks inner records using the outer type's name as the expected factory prefix,
+/// producing false positives. Suppression removed at rule level would require per-nested-record
+/// annotation on every inner record — tracked for a follow-up rule fix; until then the inner
+/// factories themselves document intent via their own names.
 @Codec@CodecFor(ExecutionMode.class) @SuppressWarnings("JBCT-NAM-01") public sealed interface AetherValue {
     record SliceTargetValue(Version currentVersion,
                             int targetInstances,

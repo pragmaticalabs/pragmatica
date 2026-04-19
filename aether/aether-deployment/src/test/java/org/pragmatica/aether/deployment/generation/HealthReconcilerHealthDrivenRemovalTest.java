@@ -144,7 +144,6 @@ class HealthReconcilerHealthDrivenRemovalTest {
         var base = ClusterGenerationSnapshot.empty(1L).withDesiredCoreSize(3);
         var withMembers = base.withCoreMembers(members);
         var seeded = new ClusterGenerationSnapshot(withMembers.epoch(),
-                                                    withMembers.rabiaTerm(),
                                                     withMembers.committedAt(),
                                                     withMembers.reason(),
                                                     withMembers.desiredCoreSize(),

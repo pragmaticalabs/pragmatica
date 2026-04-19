@@ -31,14 +31,16 @@ class SpokesmanKeyTest {
 
     @Test
     void parse_missingPrefix_fails() {
-        SpokesmanKey.spokesmanKey("spokeman/node-core-1")
-                    .onSuccess(_ -> Assertions.fail("Expected failure on missing prefix"));
+        var result = SpokesmanKey.spokesmanKey("spokeman/node-core-1");
+
+        assertThat(result.isFailure()).isTrue();
     }
 
     @Test
     void parse_emptyNodeId_fails() {
-        SpokesmanKey.spokesmanKey("spokesman/")
-                    .onSuccess(_ -> Assertions.fail("Expected failure for empty node id"));
+        var result = SpokesmanKey.spokesmanKey("spokesman/");
+
+        assertThat(result.isFailure()).isTrue();
     }
 
     @Test

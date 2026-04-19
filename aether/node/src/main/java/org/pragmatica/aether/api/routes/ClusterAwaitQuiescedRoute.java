@@ -87,7 +87,7 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
     }
 
     static Result<TimeSpan> parseTimeout(Option<String> raw) {
-        return raw.fold(() -> Result.success(DEFAULT_TIMEOUT), ClusterAwaitQuiescedRoute::parseTimeoutString);
+        return raw.map(ClusterAwaitQuiescedRoute::parseTimeoutString).or(() -> Result.success(DEFAULT_TIMEOUT));
     }
 
     private static Result<TimeSpan> parseTimeoutString(String raw) {
@@ -119,16 +119,19 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
                                                                    long deadlineNanos) {
         var snapshot = nodeSupplier.get().nodeSnapshotCache()
                                        .current();
-        if (snapshotMatches(snapshot, requested)) {return Promise.success(buildResponse(snapshot.unwrap(), startNanos));}
+        return snapshot.filter(s -> matchesQuiesced(s, requested)).map(s -> Promise.success(buildResponse(s, startNanos)))
+                              .or(() -> waitOrTimeout(requested, startNanos, deadlineNanos));
+    }
+
+    private Promise<AwaitQuiescedResponse> waitOrTimeout(Epoch requested, long startNanos, long deadlineNanos) {
         if (System.nanoTime() >= deadlineNanos) {return timeoutResponse();}
         return Promise.<Boolean>promise(POLL_INTERVAL,
                                         p -> p.succeed(true))
                       .flatMap(_ -> pollUntilReadyOrTimeout(requested, startNanos, deadlineNanos));
     }
 
-    private static boolean snapshotMatches(Option<ClusterGenerationSnapshot> snapshot, Epoch requested) {
-        return snapshot.map(s -> s.epoch().isAtLeast(requested) && s.quiescence() == ClusterQuiescence.QUIESCED)
-                           .or(false);
+    private static boolean matchesQuiesced(ClusterGenerationSnapshot snapshot, Epoch requested) {
+        return snapshot.epoch().isAtLeast(requested) && snapshot.quiescence() == ClusterQuiescence.QUIESCED;
     }
 
     private static AwaitQuiescedResponse buildResponse(ClusterGenerationSnapshot snapshot, long startNanos) {
