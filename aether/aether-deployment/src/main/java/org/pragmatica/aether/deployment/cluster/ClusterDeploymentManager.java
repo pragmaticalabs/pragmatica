@@ -624,16 +624,9 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                 }
             }
 
-            /// Snapshot-delta-driven cleanup (spec §12/§13). Triggered when a `NodeLifecycleKey` transition
-            /// to `DECOMMISSIONED` is observed — the authoritative signal that a node has left the
-            /// coreMembers projection. Collects every dependent KV entry (NodeArtifact, SliceNode,
-            /// NodeRoutes) for the departed node and removes them in a single Rabia batch. Also wipes
-            /// in-memory slice state and transitional-timestamp caches for the node.
-            ///
-            /// Replaces the pre-existing periodic scan (`cleanupStaleNode*` on a 30s reconcile cadence).
-            /// The periodic scans remain as a safety-net but the delta path is primary.
             private void cleanupAfterLifecycleDepartedAtomic(NodeId departedNode) {
-                log.info("Snapshot-delta cleanup triggered for departed node {} (lifecycle=DECOMMISSIONED)", departedNode);
+                log.info("Snapshot-delta cleanup triggered for departed node {} (lifecycle=DECOMMISSIONED)",
+                         departedNode);
                 var sliceKeysToRemove = sliceStates.keySet().stream()
                                                           .filter(key -> key.nodeId().equals(departedNode))
                                                           .toList();
@@ -645,7 +638,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                 artifactKeysToRemove.stream().<KVCommand<AetherKey>>map(KVCommand.Remove::new)
                                            .forEach(consensusCommands::add);
                 sliceKeysToRemove.stream().<KVCommand<AetherKey>>map(KVCommand.Remove::new)
-                                         .forEach(consensusCommands::add);
+                                        .forEach(consensusCommands::add);
                 consensusCommands.addAll(nodeRouteCommands);
                 workerNodes.remove(departedNode);
                 if (consensusCommands.isEmpty()) {
@@ -773,10 +766,6 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             private void completeDrain(NodeId drainingNode) {
                 drainingNodes.remove(drainingNode);
                 log.info("Drain complete for node {}, emitting DrainCompleted signal to HealthReconciler", drainingNode);
-                // Spec §8 single-writer rule: CDM does NOT write NodeLifecycleKey directly. The leader's
-                // HealthReconciler owns every membership atom write. Emit a DrainCompleted signal — the
-                // reconciler reacts by writing `NodeLifecycleKey = DECOMMISSIONED` and rebalances partitions
-                // in the same Rabia batch.
                 healthSignalSink.emit(new HealthSignal.DrainCompleted(drainingNode, Epoch.ZERO));
             }
 
@@ -1637,10 +1626,6 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                           blueprints.size());
                 cleanupOrphanedSliceEntries();
                 cleanupStaleNodeRoutes();
-                // Evict KV entries whose nodeId is no longer HEALTHY — without this, phantom
-                // NodeArtifact / sliceState entries accumulate across destructive test suites
-                // and wedge subsequent `cluster.apply` writes once the forwarding layer tries
-                // to reach a dead node that CDM still thinks hosts a slice.
                 cleanupStaleNodeArtifactEntries();
                 cleanupStaleSliceEntries();
                 detectStuckTransitionalStates();

@@ -28,6 +28,8 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
+import org.pragmatica.aether.slice.generation.HealthSignal;
+import org.pragmatica.aether.slice.generation.OperatorIntent;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -345,6 +347,7 @@ import org.slf4j.LoggerFactory;
                                                  org.pragmatica.aether.config.cluster.NodeRole.CORE,
                                                  previousCount,
                                                  request.coreCount());
+        emitSetDesiredSizeSignal(request.coreCount());
         return applier.apply(List.of(scaleAction)).flatMap(_ -> storeScaledConfig(stored,
                                                                                   request.coreCount(),
                                                                                   newVersion))
@@ -352,6 +355,11 @@ import org.slf4j.LoggerFactory;
                                                                previousCount,
                                                                request.coreCount(),
                                                                newVersion));
+    }
+
+    private void emitSetDesiredSizeSignal(int newSize) {
+        nodeSupplier.get().healthSignalSink()
+                        .emit(new HealthSignal.OperatorAction(new OperatorIntent.SetDesiredSize(newSize)));
     }
 
     private static Promise<Object> validateScaleAsync(int coreCount, int coreMin, int coreMax) {

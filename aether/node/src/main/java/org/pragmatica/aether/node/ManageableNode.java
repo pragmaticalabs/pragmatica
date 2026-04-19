@@ -23,6 +23,7 @@ import org.pragmatica.aether.node.generation.NodeSnapshotCache;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
 import org.pragmatica.aether.slice.SliceStore;
+import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -96,5 +97,6 @@ public interface ManageableNode {
     long uptimeSeconds();
     List<NodeId> initialTopology();
     TopologyConfig topologyConfig();
+    HealthSignalSink healthSignalSink();
     @SuppressWarnings("JBCT-RET-01") void route(Message message);
 }

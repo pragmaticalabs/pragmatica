@@ -99,24 +99,25 @@ class NodeLifecycleValueTest {
                                                                  Epoch.epoch(3L, 4L),
                                                                  new HlcTimestamp(50L, "a"));
 
-            var next = original.withState(NodeLifecycleState.ON_DUTY);
+            var next = original.withState(NodeLifecycleState.ON_DUTY, new HlcTimestamp(200L, "b"));
 
             assertThat(next.transitionedAt()).isEqualTo(original.transitionedAt());
         }
 
         @Test
-        void withState_differentState_resetsTransitionedAtToZero() {
+        void withState_differentState_stampsTransitionedAtWithSuppliedHlc() {
             var original = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY,
                                                                  1000L,
                                                                  "h",
                                                                  1,
                                                                  Epoch.epoch(3L, 4L),
                                                                  new HlcTimestamp(50L, "a"));
+            var now = new HlcTimestamp(175L, "leader");
 
-            var next = original.withState(NodeLifecycleState.DRAINING);
+            var next = original.withState(NodeLifecycleState.DRAINING, now);
 
             assertThat(next.state()).isEqualTo(NodeLifecycleState.DRAINING);
-            assertThat(next.transitionedAt()).isEqualTo(HlcTimestamp.ZERO);
+            assertThat(next.transitionedAt()).isEqualTo(now);
         }
 
         @Test
@@ -128,11 +129,26 @@ class NodeLifecycleValueTest {
                                                                  Epoch.epoch(3L, 4L),
                                                                  HlcTimestamp.ZERO);
 
-            var next = original.withState(NodeLifecycleState.DRAINING);
+            var next = original.withState(NodeLifecycleState.DRAINING, new HlcTimestamp(99L, "leader"));
 
             assertThat(next.host()).isEqualTo("h");
             assertThat(next.port()).isEqualTo(1);
             assertThat(next.observedCoreEpoch()).isEqualTo(Epoch.epoch(3L, 4L));
+        }
+
+        @Test
+        void withState_differentState_receivedZeroTimestamp_keepsZero() {
+            var original = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY,
+                                                                 1000L,
+                                                                 "h",
+                                                                 1,
+                                                                 Epoch.epoch(3L, 4L),
+                                                                 new HlcTimestamp(50L, "a"));
+
+            var next = original.withState(NodeLifecycleState.DRAINING, HlcTimestamp.ZERO);
+
+            assertThat(next.state()).isEqualTo(NodeLifecycleState.DRAINING);
+            assertThat(next.transitionedAt()).isEqualTo(HlcTimestamp.ZERO);
         }
     }
 

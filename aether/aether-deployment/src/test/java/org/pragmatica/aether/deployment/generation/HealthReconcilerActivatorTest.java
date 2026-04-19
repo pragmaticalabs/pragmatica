@@ -13,10 +13,12 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SpokesmanKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
@@ -37,6 +39,7 @@ import org.pragmatica.lang.Unit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -54,6 +57,7 @@ class HealthReconcilerActivatorTest {
     private AtomicLong rabiaTerm;
     private HealthReconciler reconciler;
     private HealthReconcilerActivator activator;
+    private final java.util.concurrent.atomic.AtomicReference<Map<AetherKey, AetherValue>> kvSnapshotRef = new java.util.concurrent.atomic.AtomicReference<>(Map.of());
 
     @BeforeEach
     void setUp() {
@@ -61,6 +65,7 @@ class HealthReconcilerActivatorTest {
         hlcClock = HlcClock.hlcClock(SELF.id()).unwrap();
         isLeader = new AtomicBoolean(false);
         rabiaTerm = new AtomicLong(1L);
+        kvSnapshotRef.set(Map.of());
         reconciler = HealthReconciler.healthReconciler(SELF,
                                                         cluster,
                                                         ClusterGenerationProjector.clusterGenerationProjector(),
@@ -68,7 +73,14 @@ class HealthReconcilerActivatorTest {
                                                         rabiaTerm::get,
                                                         isLeader,
                                                         AutoHealConfig.DEFAULT);
-        activator = HealthReconcilerActivator.healthReconcilerActivator(reconciler, isLeader);
+        activator = HealthReconcilerActivator.healthReconcilerActivator(reconciler,
+                                                                         isLeader,
+                                                                         ClusterGenerationProjector.clusterGenerationProjector(),
+                                                                         kvSnapshotRef::get,
+                                                                         rabiaTerm::get,
+                                                                         hlcClock,
+                                                                         cluster,
+                                                                         () -> SELF);
     }
 
     private ClusterGenerationSnapshot seedWithTwoCoreNodes() {
@@ -161,12 +173,13 @@ class HealthReconcilerActivatorTest {
     void onSpokesmanPut_activeStatus_doesNotWriteAtoms() {
         activator.onLeaderChange(new LeaderChange(Option.some(SELF), true));
         seedWithTwoCoreNodes();
+        var baseline = cluster.appliedBatches().size();
 
         var value = SpokesmanValue.spokesmanValue(List.of("pool-a"), Epoch.epoch(1L, 0L), HlcTimestamp.ZERO, 1L)
                                    .withStatus(SpokesmanStatus.ACTIVE);
         activator.onSpokesmanPut(new ValuePut<>(new KVCommand.Put<>(SpokesmanKey.spokesmanKey(NODE_A), value), Option.none()));
 
-        assertThat(cluster.appliedBatches()).isEmpty();
+        assertThat(cluster.appliedBatches()).hasSize(baseline);
     }
 
     @Test
@@ -207,12 +220,125 @@ class HealthReconcilerActivatorTest {
     void onNodeLifecyclePut_onDuty_logsButDoesNotReact() {
         activator.onLeaderChange(new LeaderChange(Option.some(SELF), true));
         seedWithTwoCoreNodes();
+        var baseline = cluster.appliedBatches().size();
 
         var value = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY);
         activator.onNodeLifecyclePut(new ValuePut<>(new KVCommand.Put<>(NodeLifecycleKey.nodeLifecycleKey(NODE_A), value),
                                                      Option.none()));
 
-        assertThat(cluster.appliedBatches()).isEmpty();
+        assertThat(cluster.appliedBatches()).hasSize(baseline);
+    }
+
+    @Test
+    void onLeaderChange_becomingLeader_bootstrapsCoreDhtPartitionOwnership() {
+        // Spec §8 / §9.2: on leader gain, the activator ensures DhtPartitionOwnershipKey("core") exists.
+        // Seed KV with no partitions and a single core-member (self) so that the projector yields self as a live core member.
+        kvSnapshotRef.set(Map.of(NodeLifecycleKey.nodeLifecycleKey(SELF),
+                                 NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY)));
+
+        activator.onLeaderChange(new LeaderChange(Option.some(SELF), true));
+
+        var corePartitionWrites = cluster.appliedBatches().stream()
+                                         .flatMap(List::stream)
+                                         .filter(c -> c instanceof KVCommand.Put<?, ?> put
+                                                 && put.key() instanceof DhtPartitionOwnershipKey dpk
+                                                 && "core".equals(dpk.partitionId()))
+                                         .toList();
+        assertThat(corePartitionWrites).hasSize(1);
+        var value = (DhtPartitionOwnershipValue) ((KVCommand.Put<?, ?>) corePartitionWrites.getFirst()).value();
+        assertThat(value.ownerNodeId()).isEqualTo(SELF);
+        assertThat(value.ownerCommunityId()).isEqualTo("core");
+        assertThat(value.ownershipTerm()).isEqualTo(1L);
+    }
+
+    @Test
+    void onLeaderChange_becomingLeader_whenCoreOwnershipAlreadyOwnedByLeader_doesNotRewrite() {
+        // Idempotent bootstrap: if DhtPartitionOwnershipKey("core") already names this leader as owner, no rewrite.
+        kvSnapshotRef.set(Map.of(NodeLifecycleKey.nodeLifecycleKey(SELF),
+                                 NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY),
+                                 DhtPartitionOwnershipKey.dhtPartitionOwnershipKey("core"),
+                                 DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(SELF,
+                                                                                        "core",
+                                                                                        Epoch.epoch(1L, 0L),
+                                                                                        5L,
+                                                                                        HlcTimestamp.ZERO)));
+
+        activator.onLeaderChange(new LeaderChange(Option.some(SELF), true));
+
+        var corePartitionWrites = cluster.appliedBatches().stream()
+                                         .flatMap(List::stream)
+                                         .filter(c -> c instanceof KVCommand.Put<?, ?> put
+                                                 && put.key() instanceof DhtPartitionOwnershipKey dpk
+                                                 && "core".equals(dpk.partitionId()))
+                                         .toList();
+        assertThat(corePartitionWrites).isEmpty();
+    }
+
+    @Test
+    void onLeaderChange_becomingLeader_whenCoreOwnerNoLongerCoreMember_rewritesWithBumpedTerm() {
+        // Spec §8 / §9.2: recorded owner is not in current membership → leader takes over, ownershipTerm++.
+        kvSnapshotRef.set(Map.of(NodeLifecycleKey.nodeLifecycleKey(SELF),
+                                 NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY),
+                                 DhtPartitionOwnershipKey.dhtPartitionOwnershipKey("core"),
+                                 DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(NODE_B,
+                                                                                        "core",
+                                                                                        Epoch.epoch(1L, 0L),
+                                                                                        7L,
+                                                                                        HlcTimestamp.ZERO)));
+
+        activator.onLeaderChange(new LeaderChange(Option.some(SELF), true));
+
+        var corePartitionWrites = cluster.appliedBatches().stream()
+                                         .flatMap(List::stream)
+                                         .filter(c -> c instanceof KVCommand.Put<?, ?> put
+                                                 && put.key() instanceof DhtPartitionOwnershipKey dpk
+                                                 && "core".equals(dpk.partitionId()))
+                                         .toList();
+        assertThat(corePartitionWrites).hasSize(1);
+        var value = (DhtPartitionOwnershipValue) ((KVCommand.Put<?, ?>) corePartitionWrites.getFirst()).value();
+        assertThat(value.ownerNodeId()).isEqualTo(SELF);
+        assertThat(value.ownershipTerm()).isEqualTo(8L);
+    }
+
+    @Test
+    void onLeaderChange_becomingLeader_whenCoreOwnerIsDecommissionedMember_rewritesWithBumpedTerm() {
+        // Recorded owner exists in membership map but is DECOMMISSIONED → leader takes over.
+        kvSnapshotRef.set(Map.of(NodeLifecycleKey.nodeLifecycleKey(SELF),
+                                 NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY),
+                                 NodeLifecycleKey.nodeLifecycleKey(NODE_A),
+                                 NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED),
+                                 DhtPartitionOwnershipKey.dhtPartitionOwnershipKey("core"),
+                                 DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(NODE_A,
+                                                                                        "core",
+                                                                                        Epoch.epoch(1L, 0L),
+                                                                                        3L,
+                                                                                        HlcTimestamp.ZERO)));
+
+        activator.onLeaderChange(new LeaderChange(Option.some(SELF), true));
+
+        var corePartitionWrites = cluster.appliedBatches().stream()
+                                         .flatMap(List::stream)
+                                         .filter(c -> c instanceof KVCommand.Put<?, ?> put
+                                                 && put.key() instanceof DhtPartitionOwnershipKey dpk
+                                                 && "core".equals(dpk.partitionId()))
+                                         .toList();
+        assertThat(corePartitionWrites).hasSize(1);
+        var value = (DhtPartitionOwnershipValue) ((KVCommand.Put<?, ?>) corePartitionWrites.getFirst()).value();
+        assertThat(value.ownerNodeId()).isEqualTo(SELF);
+        assertThat(value.ownershipTerm()).isEqualTo(4L);
+    }
+
+    @Test
+    void onLeaderChange_steppingDown_doesNotBootstrapCorePartition() {
+        kvSnapshotRef.set(Map.of());
+        activator.onLeaderChange(new LeaderChange(Option.some(NODE_A), false));
+
+        var corePartitionWrites = cluster.appliedBatches().stream()
+                                         .flatMap(List::stream)
+                                         .filter(c -> c instanceof KVCommand.Put<?, ?> put
+                                                 && put.key() instanceof DhtPartitionOwnershipKey)
+                                         .toList();
+        assertThat(corePartitionWrites).isEmpty();
     }
 
     private static final class RecordingClusterNode implements ClusterNode<KVCommand<AetherKey>> {

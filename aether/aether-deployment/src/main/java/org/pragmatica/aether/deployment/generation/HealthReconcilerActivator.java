@@ -9,6 +9,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.GenerationReason;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
+import org.pragmatica.aether.slice.generation.PartitionOwner;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
@@ -21,15 +22,18 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
+import org.pragmatica.cluster.node.ClusterNode;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.hlc.HlcClock;
-import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
@@ -58,6 +62,10 @@ import org.slf4j.LoggerFactory;
 ///
 /// See `aether/docs/specs/cluster-generation-spec.md` §8.
 public interface HealthReconcilerActivator {
+    String CORE_PARTITION_ID = "core";
+
+    String CORE_COMMUNITY_ID = "core";
+
     @Contract void onLeaderChange(LeaderChange change);
     @Contract void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> notification);
     @Contract void onGovernorAnnouncementRemove(ValueRemove<GovernorAnnouncementKey, GovernorAnnouncementValue> notification);
@@ -67,12 +75,14 @@ public interface HealthReconcilerActivator {
 
     static HealthReconcilerActivator healthReconcilerActivator(HealthReconciler reconciler,
                                                                AtomicBoolean isLeaderGate) {
-        return healthReconcilerActivator(reconciler,
-                                         isLeaderGate,
-                                         ClusterGenerationProjector.clusterGenerationProjector(),
-                                         Map::of,
-                                         () -> 0L,
-                                         HlcClock.hlcClock("activator-default").unwrap());
+        return new HealthReconcilerActivatorRecord(reconciler,
+                                                   isLeaderGate,
+                                                   ClusterGenerationProjector.clusterGenerationProjector(),
+                                                   Map::of,
+                                                   () -> 0L,
+                                                   HlcClock.hlcClock("activator-default").unwrap(),
+                                                   Option.<ClusterNode<KVCommand<AetherKey>>>none(),
+                                                   reconciler::self);
     }
 
     static HealthReconcilerActivator healthReconcilerActivator(HealthReconciler reconciler,
@@ -86,7 +96,27 @@ public interface HealthReconcilerActivator {
                                                    projector,
                                                    kvSnapshotSupplier,
                                                    rabiaTermSupplier,
-                                                   hlcClock);
+                                                   hlcClock,
+                                                   Option.<ClusterNode<KVCommand<AetherKey>>>none(),
+                                                   reconciler::self);
+    }
+
+    static HealthReconcilerActivator healthReconcilerActivator(HealthReconciler reconciler,
+                                                               AtomicBoolean isLeaderGate,
+                                                               ClusterGenerationProjector projector,
+                                                               Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier,
+                                                               Supplier<Long> rabiaTermSupplier,
+                                                               HlcClock hlcClock,
+                                                               ClusterNode<KVCommand<AetherKey>> cluster,
+                                                               Supplier<NodeId> selfSupplier) {
+        return new HealthReconcilerActivatorRecord(reconciler,
+                                                   isLeaderGate,
+                                                   projector,
+                                                   kvSnapshotSupplier,
+                                                   rabiaTermSupplier,
+                                                   hlcClock,
+                                                   Option.some(cluster),
+                                                   selfSupplier);
     }
 }
 
@@ -95,20 +125,91 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
                                        ClusterGenerationProjector projector,
                                        Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier,
                                        Supplier<Long> rabiaTermSupplier,
-                                       HlcClock hlcClock) implements HealthReconcilerActivator {
+                                       HlcClock hlcClock,
+                                       Option<ClusterNode<KVCommand<AetherKey>>> cluster,
+                                       Supplier<NodeId> selfSupplier) implements HealthReconcilerActivator {
     private static final Logger log = LoggerFactory.getLogger(HealthReconcilerActivatorRecord.class);
 
     @Contract@Override public void onLeaderChange(LeaderChange change) {
         isLeaderGate.set(change.localNodeIsLeader());
         if (change.localNodeIsLeader()) {
             log.info("HealthReconciler becoming leader — projecting from committed atoms, then starting reconciler");
-            reconciler.seedSnapshot(projectFromCommittedAtoms());
+            var seeded = projectFromCommittedAtoms();
+            reconciler.seedSnapshot(seeded);
             reconciler.start();
+            bootstrapCorePartitionOwnership(seeded);
         } else {
             log.info("HealthReconciler stepping down — stopping reconciler");
             reconciler.stop();
             reconciler.seedSnapshot(ClusterGenerationSnapshot.empty(reconciler.currentEpoch().rabiaTerm()));
         }
+    }
+
+    @Contract private void bootstrapCorePartitionOwnership(ClusterGenerationSnapshot seeded) {
+        cluster.onPresent(clusterNode -> applyCoreBootstrap(clusterNode, seeded));
+    }
+
+    @Contract private void applyCoreBootstrap(ClusterNode<KVCommand<AetherKey>> clusterNode,
+                                              ClusterGenerationSnapshot seeded) {
+        var self = selfSupplier.get();
+        var existing = Option.option(seeded.partitions().get(CORE_PARTITION_ID));
+        var decision = decideCoreOwnership(existing, seeded, self);
+        decision.onPresent(command -> writeCoreBootstrap(clusterNode, command, existing, self));
+    }
+
+    private Option<KVCommand<AetherKey>> decideCoreOwnership(Option<PartitionOwner> existing,
+                                                             ClusterGenerationSnapshot seeded,
+                                                             NodeId self) {
+        return existing.fold(() -> Option.some(buildInitialCorePartition(seeded, self)),
+                             owner -> shouldRewriteCoreOwnership(owner, seeded, self)
+                                     ? Option.some(buildRewrittenCorePartition(owner, seeded, self))
+                                     : Option.none());
+    }
+
+    private static boolean shouldRewriteCoreOwnership(PartitionOwner owner,
+                                                      ClusterGenerationSnapshot seeded,
+                                                      NodeId self) {
+        var recordedOwner = owner.ownerNodeId();
+        if (recordedOwner.equals(self)) {return false;}
+        var recordedMember = seeded.coreMembers().get(recordedOwner);
+        if (recordedMember == null) {return true;}
+        var state = recordedMember.lifecycle();
+        return state == NodeLifecycleState.DECOMMISSIONED || state == NodeLifecycleState.SHUTTING_DOWN || state == NodeLifecycleState.DRAINING;
+    }
+
+    private KVCommand<AetherKey> buildInitialCorePartition(ClusterGenerationSnapshot seeded, NodeId self) {
+        return buildCorePartitionCommand(self, seeded.epoch(), 1L);
+    }
+
+    private KVCommand<AetherKey> buildRewrittenCorePartition(PartitionOwner owner,
+                                                             ClusterGenerationSnapshot seeded,
+                                                             NodeId self) {
+        return buildCorePartitionCommand(self, seeded.epoch(), owner.ownershipTerm() + 1L);
+    }
+
+    private KVCommand<AetherKey> buildCorePartitionCommand(NodeId owner, Epoch epoch, long ownershipTerm) {
+        var value = DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(owner,
+                                                                          CORE_COMMUNITY_ID,
+                                                                          epoch,
+                                                                          ownershipTerm,
+                                                                          hlcClock.now());
+        return new KVCommand.Put<AetherKey, AetherValue>(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey(CORE_PARTITION_ID),
+                                                         value);
+    }
+
+    @Contract private void writeCoreBootstrap(ClusterNode<KVCommand<AetherKey>> clusterNode,
+                                              KVCommand<AetherKey> command,
+                                              Option<PartitionOwner> existing,
+                                              NodeId self) {
+        existing.onPresent(owner -> log.info("Rewriting DhtPartitionOwnershipKey(\"core\"): previous owner {} is not a live core member — {} takes over (ownershipTerm {})",
+                                             owner.ownerNodeId(),
+                                             self,
+                                             owner.ownershipTerm() + 1L))
+        .onEmpty(() -> log.info("Bootstrapping DhtPartitionOwnershipKey(\"core\") with owner {} (ownershipTerm 1)",
+                                self));
+        clusterNode.apply(List.of(command))
+                         .onFailure(cause -> log.error("Core DhtPartitionOwnership bootstrap failed: {}",
+                                                       cause.message()));
     }
 
     private ClusterGenerationSnapshot projectFromCommittedAtoms() {

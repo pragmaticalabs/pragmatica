@@ -451,6 +451,7 @@ public interface AetherNode extends ManageableNode {
                           Option<ManagementServer> managementServer,
                           Option<DiscoveryProvider> discoveryProvider,
                           Option<CertificateRenewalScheduler> certRenewalScheduler,
+                          HealthSignalSink healthSignalSink,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
@@ -725,10 +726,6 @@ public interface AetherNode extends ManageableNode {
         var computeProvider = config.environment().flatMap(EnvironmentIntegration::compute);
         var lifecycleManager = NodeLifecycleManager.nodeLifecycleManager(computeProvider);
         var deploymentMap = DeploymentMap.deploymentMap();
-        // HealthSignalSink must exist before CDM — CDM emits DrainCompleted signals via the sink
-        // (spec §8 single-writer rule: CDM no longer writes NodeLifecycleKey directly). The stable
-        // sink is a forwarding lambda over an AtomicReference that HealthReconcilerActivator later
-        // populates; until then emissions become no-ops, which is correct for non-leader nodes.
         var healthSinkRef = new AtomicReference<HealthSignalSink>(HealthSignalSink.noop());
         HealthSignalSink stableHealthSink = signal -> healthSinkRef.get().emit(signal);
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
@@ -1050,7 +1047,9 @@ public interface AetherNode extends ManageableNode {
                                                                                             projectorEarly,
                                                                                             kvStore::snapshot,
                                                                                             rabiaTermSupplier,
-                                                                                            hlcClockEarly);
+                                                                                            hlcClockEarly,
+                                                                                            clusterNode,
+                                                                                            config::self);
         healthSinkRef.set(healthReconcilerActivator.sink());
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
@@ -1201,6 +1200,7 @@ public interface AetherNode extends ManageableNode {
                                   Option.empty(),
                                   discoveryProvider,
                                   certRenewalScheduler,
+                                  stableHealthSink,
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
         return RabiaNode.buildAndWireRouter(delegateRouter, allEntries)
@@ -1289,6 +1289,7 @@ public interface AetherNode extends ManageableNode {
                                                                               Option.some(managementServer),
                                                                               discoveryProvider,
                                                                               certRenewalScheduler,
+                                                                              stableHealthSink,
                                                                               startTimeMs);
                                                     }
                                                     return node;

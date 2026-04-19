@@ -8,6 +8,8 @@ import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.generation.HealthSignal;
+import org.pragmatica.aether.slice.generation.OperatorIntent;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -93,10 +95,32 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private Promise<TransitionResult> drainNode(String nodeIdStr) {
-        return checkDisruptionBudget(nodeIdStr).flatMap(_ -> transitionLifecycle(nodeIdStr,
-                                                                                 NodeLifecycleState.ON_DUTY,
-                                                                                 NodeLifecycleState.DRAINING,
-                                                                                 "drain"));
+        return checkDisruptionBudget(nodeIdStr).flatMap(_ -> emitDrainIntent(nodeIdStr));
+    }
+
+    private Promise<TransitionResult> emitDrainIntent(String nodeIdStr) {
+        return resolveNodeLifecycle(nodeIdStr).flatMap(current -> guardDrainIntent(nodeIdStr, current));
+    }
+
+    private Promise<TransitionResult> guardDrainIntent(String nodeIdStr, NodeLifecycleValue current) {
+        if (current.state() != NodeLifecycleState.ON_DUTY) {return Promise.success(new TransitionResult(false,
+                                                                                                        nodeIdStr,
+                                                                                                        current.state()
+                                                                                                                     .name(),
+                                                                                                        "Cannot drain from " + current.state() + " (must be ON_DUTY)"));}
+        return NodeId.nodeId(nodeIdStr).async()
+                            .map(nodeId -> emitDrainSignalAndBuildResult(nodeId, nodeIdStr));
+    }
+
+    private TransitionResult emitDrainSignalAndBuildResult(NodeId nodeId, String nodeIdStr) {
+        var result = new TransitionResult(true,
+                                          nodeIdStr,
+                                          NodeLifecycleState.DRAINING.name(),
+                                          "Transition to " + NodeLifecycleState.DRAINING + " initiated");
+        nodeSupplier.get().healthSignalSink()
+                        .emit(new HealthSignal.OperatorAction(new OperatorIntent.DrainMember(nodeId)));
+        auditAndEmitLifecycleTransition(result, NodeLifecycleState.DRAINING);
+        return result;
     }
 
     private Promise<TransitionResult> checkDisruptionBudget(String nodeIdStr) {

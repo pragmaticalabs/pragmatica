@@ -269,14 +269,64 @@ class HealthReconcilerTest {
         }
 
         @Test
-        void onSignal_operatorRemoveMember_writesLifecycleLeft() {
+        void onSignal_operatorRemoveMember_writesDrainingFirstNotDecommissioned() {
+            // Spec §8.2: OperatorAction(remove(n)) transitions via DRAINING. The final
+            // move to DECOMMISSIONED is driven by CDM's DrainCompleted signal.
             seedSnapshotWithThreeCoreNodes();
 
             reconciler.onSignal(new HealthSignal.OperatorAction(new OperatorIntent.RemoveMember(NODE_A)));
 
             var lifecycleWrites = cluster.writesTargetingLifecycle(NODE_A);
             assertThat(lifecycleWrites).hasSize(1);
-            assertThat(((AetherValue.NodeLifecycleValue) lifecycleWrites.getFirst().value()).state()).isEqualTo(NodeLifecycleState.DECOMMISSIONED);
+            assertThat(((AetherValue.NodeLifecycleValue) lifecycleWrites.getFirst().value()).state())
+                .isEqualTo(NodeLifecycleState.DRAINING);
+        }
+
+        @Test
+        void onSignal_operatorRemoveMember_whenAlreadyDraining_isNoOp() {
+            // Idempotent: duplicate RemoveMember during an in-flight drain must not re-write the atom.
+            var base = seedSnapshotWithThreeCoreNodes();
+            var members = new LinkedHashMap<>(base.coreMembers());
+            members.put(NODE_A,
+                         CoreMember.coreMember(NODE_A,
+                                               "host-a",
+                                               9001,
+                                               NodeLifecycleState.DRAINING,
+                                               HealthHint.SUSPECTED,
+                                               Epoch.epoch(1L, 0L),
+                                               Epoch.epoch(1L, 0L)));
+            reconciler.seedSnapshot(base.withCoreMembers(members));
+
+            reconciler.onSignal(new HealthSignal.OperatorAction(new OperatorIntent.RemoveMember(NODE_A)));
+
+            assertThat(cluster.writesTargetingLifecycle(NODE_A)).isEmpty();
+        }
+
+        @Test
+        void onSignal_operatorRemoveThenDrainCompleted_writesDrainingThenDecommissioned() {
+            // Full path: operator -> DRAINING, then CDM completes drain -> DECOMMISSIONED.
+            var base = seedSnapshotWithThreeCoreNodes();
+
+            reconciler.onSignal(new HealthSignal.OperatorAction(new OperatorIntent.RemoveMember(NODE_A)));
+            // Simulate the atom landing: flip NODE_A's lifecycle in the snapshot to DRAINING.
+            var members = new LinkedHashMap<>(base.coreMembers());
+            members.put(NODE_A,
+                         CoreMember.coreMember(NODE_A,
+                                               "host-a",
+                                               9001,
+                                               NodeLifecycleState.DRAINING,
+                                               HealthHint.SUSPECTED,
+                                               Epoch.epoch(1L, 0L),
+                                               Epoch.epoch(1L, 0L)));
+            reconciler.seedSnapshot(base.withCoreMembers(members));
+            reconciler.onSignal(new HealthSignal.DrainCompleted(NODE_A, Epoch.epoch(1L, 0L)));
+
+            var lifecycleWrites = cluster.writesTargetingLifecycle(NODE_A);
+            assertThat(lifecycleWrites).hasSize(2);
+            assertThat(((AetherValue.NodeLifecycleValue) lifecycleWrites.get(0).value()).state())
+                .isEqualTo(NodeLifecycleState.DRAINING);
+            assertThat(((AetherValue.NodeLifecycleValue) lifecycleWrites.get(1).value()).state())
+                .isEqualTo(NodeLifecycleState.DECOMMISSIONED);
         }
 
         @Test

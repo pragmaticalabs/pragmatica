@@ -621,10 +621,10 @@ import static org.pragmatica.lang.Option.none;
             return ! host.isEmpty() && port > 0;
         }
 
-        public NodeLifecycleValue withState(NodeLifecycleState newState) {
+        public NodeLifecycleValue withState(NodeLifecycleState newState, HlcTimestamp now) {
             var nextTransitionedAt = newState == state
                                     ? transitionedAt
-                                    : HlcTimestamp.ZERO;
+                                    : now;
             return new NodeLifecycleValue(newState,
                                           System.currentTimeMillis(),
                                           host,

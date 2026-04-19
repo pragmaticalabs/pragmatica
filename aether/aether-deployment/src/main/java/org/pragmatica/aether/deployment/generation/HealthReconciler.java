@@ -67,6 +67,7 @@ public interface HealthReconciler extends HealthSignalSink {
     @Contract void onSignal(HealthSignal signal);
     ClusterGenerationSnapshot currentSnapshot();
     Epoch currentEpoch();
+    NodeId self();
     @Contract void seedSnapshot(ClusterGenerationSnapshot snapshot);
 
     @Contract@Override default void emit(HealthSignal signal) {
@@ -200,11 +201,6 @@ record HealthReconcilerRecord(NodeId self,
         log.debug("QUIC disconnect from {} (counted as advisory miss {})", quic.nodeId(), missed);
     }
 
-    /// Handle drain-completion: CDM has re-homed every slice off the draining node and emits
-    /// this signal to request the authoritative lifecycle transition. Writes
-    /// `NodeLifecycleKey = DECOMMISSIONED` through the single-writer path. Idempotent — any
-    /// duplicate emission for the same node is absorbed because the member lookup fails
-    /// after the first write commits.
     @Contract private void handleDrainCompleted(HealthSignal.DrainCompleted drain) {
         var current = snapshotRef.get();
         var member = current.coreMembers().get(drain.nodeId());
@@ -265,7 +261,11 @@ record HealthReconcilerRecord(NodeId self,
         var current = snapshotRef.get();
         var member = current.coreMembers().get(nodeId);
         if (member == null) {return;}
-        evictNode(nodeId, member, GenerationReason.MEMBER_REMOVED);
+        if (member.lifecycle() == NodeLifecycleState.DRAINING || member.lifecycle() == NodeLifecycleState.DECOMMISSIONED || member.lifecycle() == NodeLifecycleState.SHUTTING_DOWN) {
+            log.debug("operatorRemove({}) ignored — already {} (await DrainCompleted)", nodeId, member.lifecycle());
+            return;
+        }
+        writeDrainingAtom(nodeId, member, GenerationReason.MEMBER_REMOVED);
     }
 
     @Contract private void operatorSetDesiredSize(int newSize) {
@@ -279,15 +279,23 @@ record HealthReconcilerRecord(NodeId self,
         var current = snapshotRef.get();
         var member = current.coreMembers().get(nodeId);
         if (member == null) {return;}
+        if (member.lifecycle() == NodeLifecycleState.DRAINING || member.lifecycle() == NodeLifecycleState.DECOMMISSIONED || member.lifecycle() == NodeLifecycleState.SHUTTING_DOWN) {
+            log.debug("operatorDrain({}) ignored — already {}", nodeId, member.lifecycle());
+            return;
+        }
+        writeDrainingAtom(nodeId, member, GenerationReason.HEALTH_CHANGE);
+    }
+
+    @Contract private void writeDrainingAtom(NodeId nodeId, CoreMember member, GenerationReason reason) {
         var draining = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING,
                                                              System.currentTimeMillis(),
                                                              member.host(),
                                                              member.port(),
-                                                             current.epoch(),
+                                                             snapshotRef.get().epoch(),
                                                              hlcClock.now());
         var commands = List.<KVCommand<AetherKey>>of(new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId),
                                                                                                draining));
-        applyCommandsAndBump(commands, GenerationReason.HEALTH_CHANGE);
+        applyCommandsAndBump(commands, reason);
     }
 
     @Contract private void markSuspectedInMemory(NodeId nodeId) {
