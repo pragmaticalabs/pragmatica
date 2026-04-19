@@ -10,10 +10,12 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.Phase;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -163,6 +165,8 @@ import static org.pragmatica.lang.Result.success;
             case ConsumerGroupKey _ -> "consumer-group";
             case ApiKeyKey _ -> "api-key";
             case ApiKeyAuditKey _ -> "api-key-audit";
+            case DhtPartitionOwnershipKey _ -> "dht-partition-ownership";
+            case SpokesmanKey _ -> "spokesman";
         };
     }
 
@@ -225,7 +229,24 @@ import static org.pragmatica.lang.Result.success;
             case ConsumerGroupValue v -> serializeConsumerGroup(v);
             case ApiKeyValue v -> serializeApiKey(v);
             case ApiKeyAuditValue v -> serializeApiKeyAudit(v);
+            case DhtPartitionOwnershipValue v -> serializeDhtPartitionOwnership(v);
+            case SpokesmanValue v -> serializeSpokesman(v);
         };
+    }
+
+    private static String serializeDhtPartitionOwnership(DhtPartitionOwnershipValue v) {
+        return v.ownerNodeId().id() + PIPE + v.ownerCommunityId() + PIPE + v.ownerEpoch().rabiaTerm() + PIPE + v.ownerEpoch()
+                                                                                                                           .localCounter() + PIPE + v.ownershipTerm() + PIPE + v.transferredAt()
+                                                                                                                                                                                              .packed() + PIPE + v.transferredAt()
+                                                                                                                                                                                                                                .nodeId();
+    }
+
+    private static String serializeSpokesman(SpokesmanValue v) {
+        return String.join(",", v.communities()) + PIPE + v.assignedEpoch().rabiaTerm() + PIPE + v.assignedEpoch()
+                                                                                                                .localCounter() + PIPE + v.assignedAt()
+                                                                                                                                                     .packed() + PIPE + v.assignedAt()
+                                                                                                                                                                                    .nodeId() + PIPE + v.version() + PIPE + v.status()
+                                                                                                                                                                                                                                    .name() + PIPE + v.failureReason();
     }
 
     private static String serializeSliceTarget(SliceTargetValue v) {
@@ -582,10 +603,12 @@ import static org.pragmatica.lang.Result.success;
                   ? Integer.parseInt(parts[3])
                   : 0;
         return NodeLifecycleKey.nodeLifecycleKey("node-lifecycle/" + identity)
-                                                .flatMap(key -> parseNodeLifecycleState(parts[0]).map(state -> new NodeLifecycleValue(state,
-                                                                                                                                      Long.parseLong(parts[1]),
-                                                                                                                                      host,
-                                                                                                                                      port))
+                                                .flatMap(key -> parseNodeLifecycleState(parts[0]).map(state -> NodeLifecycleValue.nodeLifecycleValue(state,
+                                                                                                                                                     Long.parseLong(parts[1]),
+                                                                                                                                                     host,
+                                                                                                                                                     port,
+                                                                                                                                                     Epoch.ZERO,
+                                                                                                                                                     HlcTimestamp.ZERO))
                                                                                        .map(val -> entry(key, val)));
     }
 
@@ -640,20 +663,20 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static GovernorAnnouncementValue buildGovernorAnnouncementValue(NodeId nodeId, String[] parts) {
-        if (parts.length == 3) {return new GovernorAnnouncementValue(nodeId,
-                                                                     Integer.parseInt(parts[1]),
-                                                                     List.of(),
-                                                                     "",
-                                                                     Long.parseLong(parts[2]));}
+        if (parts.length == 3) {return GovernorAnnouncementValue.governorAnnouncementValue(nodeId,
+                                                                                           Integer.parseInt(parts[1]),
+                                                                                           List.of(),
+                                                                                           "",
+                                                                                           Long.parseLong(parts[2]));}
         var members = parts[2].isEmpty()
                      ? List.<NodeId>of()
                      : Arrays.stream(parts[2].split(",")).map(id -> NodeId.nodeId(id).unwrap())
                                     .toList();
-        return new GovernorAnnouncementValue(nodeId,
-                                             Integer.parseInt(parts[1]),
-                                             members,
-                                             parts[3],
-                                             Long.parseLong(parts[4]));
+        return GovernorAnnouncementValue.governorAnnouncementValue(nodeId,
+                                                                   Integer.parseInt(parts[1]),
+                                                                   members,
+                                                                   parts[3],
+                                                                   Long.parseLong(parts[4]));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseNodeArtifactEntry(String identity, String raw) {

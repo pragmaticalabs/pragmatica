@@ -28,8 +28,8 @@ public record AutoHealConfig(TimeSpan retryInterval, TimeSpan startupCooldown, T
                                                                 timeSpan(3).seconds()).unwrap();
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
-                                                         TimeSpan startupCooldown,
-                                                         TimeSpan deficitHysteresis) {
+                                                        TimeSpan startupCooldown,
+                                                        TimeSpan deficitHysteresis) {
         return success(new AutoHealConfig(retryInterval, startupCooldown, deficitHysteresis));
     }
 }

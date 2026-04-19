@@ -100,7 +100,7 @@ class KVStoreSerializerTest {
         void toToml_ephemeralGovernorAnnouncement_excluded() {
             var key = GovernorAnnouncementKey.forCommunity("prod:us-east-1");
             var members = List.of(NodeId.nodeId("worker-1").unwrap(), NodeId.nodeId("worker-2").unwrap());
-            var value = new GovernorAnnouncementValue(
+            var value = GovernorAnnouncementValue.governorAnnouncementValue(
                 NodeId.nodeId("governor-1").unwrap(), 2, members, "0.0.0.0:7201", 1710072000000L);
 
             KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
@@ -357,7 +357,7 @@ class KVStoreSerializerTest {
 
             var key = GovernorAnnouncementKey.forCommunity("prod:us-east-1");
             var members = List.of(NodeId.nodeId("worker-a").unwrap());
-            entries.put(key, new GovernorAnnouncementValue(
+            entries.put(key, GovernorAnnouncementValue.governorAnnouncementValue(
                 NodeId.nodeId("governor-1").unwrap(), 1, members, "10.0.1.5:7201", 5000L));
 
             KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
@@ -452,6 +452,27 @@ class KVStoreSerializerTest {
         @Test
         void isEphemeral_governorAnnouncementKey_true() {
             assertThat(EphemeralKeys.isEphemeral(GovernorAnnouncementKey.forCommunity("test"))).isTrue();
+        }
+
+        @Test
+        void isEphemeral_dhtPartitionOwnershipKey_true() {
+            assertThat(EphemeralKeys.isEphemeral(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey("core"))).isTrue();
+        }
+
+        @Test
+        void isEphemeral_spokesmanKey_true() {
+            var nodeId = NodeId.nodeId("core-1").unwrap();
+            assertThat(EphemeralKeys.isEphemeral(SpokesmanKey.spokesmanKey(nodeId))).isTrue();
+        }
+
+        @Test
+        void isEphemeralSection_dhtPartitionOwnership_true() {
+            assertThat(EphemeralKeys.isEphemeralSection("dht-partition-ownership")).isTrue();
+        }
+
+        @Test
+        void isEphemeralSection_spokesman_true() {
+            assertThat(EphemeralKeys.isEphemeralSection("spokesman")).isTrue();
         }
 
         @Test

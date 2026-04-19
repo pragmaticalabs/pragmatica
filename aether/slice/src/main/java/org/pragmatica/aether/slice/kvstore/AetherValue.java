@@ -12,7 +12,9 @@ import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
@@ -419,15 +421,48 @@ import static org.pragmatica.lang.Option.none;
                                      int memberCount,
                                      List<NodeId> members,
                                      String tcpAddress,
-                                     long announcedAt) implements AetherValue {
+                                     long announcedAt,
+                                     long communityTerm,
+                                     Epoch communityEpoch,
+                                     Epoch observedCoreEpoch,
+                                     HlcTimestamp transitionedAt,
+                                     boolean dissolved) implements AetherValue {
+        public GovernorAnnouncementValue {
+            members = members == null
+                     ? List.of()
+                     : List.copyOf(members);
+            if (tcpAddress == null) {tcpAddress = "";}
+            if (communityEpoch == null) {communityEpoch = Epoch.ZERO;}
+            if (observedCoreEpoch == null) {observedCoreEpoch = Epoch.ZERO;}
+            if (transitionedAt == null) {transitionedAt = HlcTimestamp.ZERO;}
+        }
+
         public static GovernorAnnouncementValue governorAnnouncementValue(NodeId governorId, int memberCount) {
-            return new GovernorAnnouncementValue(governorId, memberCount, List.of(), "", System.currentTimeMillis());
+            return new GovernorAnnouncementValue(governorId,
+                                                 memberCount,
+                                                 List.of(),
+                                                 "",
+                                                 System.currentTimeMillis(),
+                                                 0L,
+                                                 Epoch.ZERO,
+                                                 Epoch.ZERO,
+                                                 HlcTimestamp.ZERO,
+                                                 false);
         }
 
         public static GovernorAnnouncementValue governorAnnouncementValue(NodeId governorId,
                                                                           int memberCount,
                                                                           long announcedAt) {
-            return new GovernorAnnouncementValue(governorId, memberCount, List.of(), "", announcedAt);
+            return new GovernorAnnouncementValue(governorId,
+                                                 memberCount,
+                                                 List.of(),
+                                                 "",
+                                                 announcedAt,
+                                                 0L,
+                                                 Epoch.ZERO,
+                                                 Epoch.ZERO,
+                                                 HlcTimestamp.ZERO,
+                                                 false);
         }
 
         public static GovernorAnnouncementValue governorAnnouncementValue(NodeId governorId,
@@ -437,11 +472,63 @@ import static org.pragmatica.lang.Option.none;
                                                  members.size(),
                                                  List.copyOf(members),
                                                  tcpAddress,
-                                                 System.currentTimeMillis());
+                                                 System.currentTimeMillis(),
+                                                 0L,
+                                                 Epoch.ZERO,
+                                                 Epoch.ZERO,
+                                                 HlcTimestamp.ZERO,
+                                                 false);
+        }
+
+        public static GovernorAnnouncementValue governorAnnouncementValue(NodeId governorId,
+                                                                          int memberCount,
+                                                                          List<NodeId> members,
+                                                                          String tcpAddress,
+                                                                          long announcedAt) {
+            return new GovernorAnnouncementValue(governorId,
+                                                 memberCount,
+                                                 members,
+                                                 tcpAddress,
+                                                 announcedAt,
+                                                 0L,
+                                                 Epoch.ZERO,
+                                                 Epoch.ZERO,
+                                                 HlcTimestamp.ZERO,
+                                                 false);
+        }
+
+        public static GovernorAnnouncementValue governorAnnouncementValue(NodeId governorId,
+                                                                          List<NodeId> members,
+                                                                          String tcpAddress,
+                                                                          long announcedAt,
+                                                                          long communityTerm,
+                                                                          Epoch communityEpoch,
+                                                                          Epoch observedCoreEpoch,
+                                                                          HlcTimestamp transitionedAt,
+                                                                          boolean dissolved) {
+            return new GovernorAnnouncementValue(governorId,
+                                                 members.size(),
+                                                 members,
+                                                 tcpAddress,
+                                                 announcedAt,
+                                                 communityTerm,
+                                                 communityEpoch,
+                                                 observedCoreEpoch,
+                                                 transitionedAt,
+                                                 dissolved);
         }
 
         public GovernorAnnouncementValue withMemberCount(int newCount) {
-            return new GovernorAnnouncementValue(governorId, newCount, members, tcpAddress, System.currentTimeMillis());
+            return new GovernorAnnouncementValue(governorId,
+                                                 newCount,
+                                                 members,
+                                                 tcpAddress,
+                                                 System.currentTimeMillis(),
+                                                 communityTerm,
+                                                 communityEpoch,
+                                                 observedCoreEpoch,
+                                                 transitionedAt,
+                                                 dissolved);
         }
 
         public GovernorAnnouncementValue withMembers(List<NodeId> newMembers, String newTcpAddress) {
@@ -449,7 +536,43 @@ import static org.pragmatica.lang.Option.none;
                                                  newMembers.size(),
                                                  List.copyOf(newMembers),
                                                  newTcpAddress,
-                                                 System.currentTimeMillis());
+                                                 System.currentTimeMillis(),
+                                                 communityTerm,
+                                                 communityEpoch,
+                                                 observedCoreEpoch,
+                                                 transitionedAt,
+                                                 dissolved);
+        }
+
+        public GovernorAnnouncementValue withGovernorChange(NodeId newGovernor,
+                                                            List<NodeId> newMembers,
+                                                            String newTcpAddress,
+                                                            Epoch newObservedCoreEpoch,
+                                                            HlcTimestamp newTransitionedAt) {
+            var nextTerm = communityTerm + 1;
+            return new GovernorAnnouncementValue(newGovernor,
+                                                 newMembers.size(),
+                                                 List.copyOf(newMembers),
+                                                 newTcpAddress,
+                                                 System.currentTimeMillis(),
+                                                 nextTerm,
+                                                 Epoch.epoch(nextTerm, 0L),
+                                                 newObservedCoreEpoch,
+                                                 newTransitionedAt,
+                                                 false);
+        }
+
+        public GovernorAnnouncementValue withDissolved() {
+            return new GovernorAnnouncementValue(governorId,
+                                                 memberCount,
+                                                 members,
+                                                 tcpAddress,
+                                                 System.currentTimeMillis(),
+                                                 communityTerm,
+                                                 communityEpoch,
+                                                 observedCoreEpoch,
+                                                 transitionedAt,
+                                                 true);
         }
     }
 
@@ -461,21 +584,37 @@ import static org.pragmatica.lang.Option.none;
         SHUTTING_DOWN
     }
 
-    record NodeLifecycleValue(NodeLifecycleState state, long updatedAt, String host, int port) implements AetherValue {
+    record NodeLifecycleValue(NodeLifecycleState state,
+                              long updatedAt,
+                              String host,
+                              int port,
+                              Epoch observedCoreEpoch,
+                              HlcTimestamp transitionedAt) implements AetherValue {
         public NodeLifecycleValue {
             if (host == null) {host = "";}
+            if (observedCoreEpoch == null) {observedCoreEpoch = Epoch.ZERO;}
+            if (transitionedAt == null) {transitionedAt = HlcTimestamp.ZERO;}
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state) {
-            return new NodeLifecycleValue(state, System.currentTimeMillis(), "", 0);
+            return new NodeLifecycleValue(state, System.currentTimeMillis(), "", 0, Epoch.ZERO, HlcTimestamp.ZERO);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, long updatedAt) {
-            return new NodeLifecycleValue(state, updatedAt, "", 0);
+            return new NodeLifecycleValue(state, updatedAt, "", 0, Epoch.ZERO, HlcTimestamp.ZERO);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, String host, int port) {
-            return new NodeLifecycleValue(state, System.currentTimeMillis(), host, port);
+            return new NodeLifecycleValue(state, System.currentTimeMillis(), host, port, Epoch.ZERO, HlcTimestamp.ZERO);
+        }
+
+        public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state,
+                                                            long updatedAt,
+                                                            String host,
+                                                            int port,
+                                                            Epoch observedCoreEpoch,
+                                                            HlcTimestamp transitionedAt) {
+            return new NodeLifecycleValue(state, updatedAt, host, port, observedCoreEpoch, transitionedAt);
         }
 
         public boolean hasAddress() {
@@ -483,7 +622,15 @@ import static org.pragmatica.lang.Option.none;
         }
 
         public NodeLifecycleValue withState(NodeLifecycleState newState) {
-            return new NodeLifecycleValue(newState, System.currentTimeMillis(), host, port);
+            var nextTransitionedAt = newState == state
+                                    ? transitionedAt
+                                    : HlcTimestamp.ZERO;
+            return new NodeLifecycleValue(newState,
+                                          System.currentTimeMillis(),
+                                          host,
+                                          port,
+                                          observedCoreEpoch,
+                                          nextTransitionedAt);
         }
     }
 
@@ -995,6 +1142,68 @@ import static org.pragmatica.lang.Option.none;
     record ConsumerGroupValue(NodeId assignedTo, String consumerId, long assignedAt) implements AetherValue {
         public static ConsumerGroupValue consumerGroupValue(NodeId assignedTo, String consumerId) {
             return new ConsumerGroupValue(assignedTo, consumerId, System.currentTimeMillis());
+        }
+    }
+
+    record DhtPartitionOwnershipValue(NodeId ownerNodeId,
+                                      String ownerCommunityId,
+                                      Epoch ownerEpoch,
+                                      long ownershipTerm,
+                                      HlcTimestamp transferredAt) implements AetherValue {
+        public DhtPartitionOwnershipValue {
+            if (ownerCommunityId == null) {ownerCommunityId = "";}
+            if (ownerEpoch == null) {ownerEpoch = Epoch.ZERO;}
+            if (transferredAt == null) {transferredAt = HlcTimestamp.ZERO;}
+        }
+
+        public static DhtPartitionOwnershipValue dhtPartitionOwnershipValue(NodeId ownerNodeId,
+                                                                            String ownerCommunityId,
+                                                                            Epoch ownerEpoch,
+                                                                            long ownershipTerm,
+                                                                            HlcTimestamp transferredAt) {
+            return new DhtPartitionOwnershipValue(ownerNodeId,
+                                                  ownerCommunityId,
+                                                  ownerEpoch,
+                                                  ownershipTerm,
+                                                  transferredAt);
+        }
+    }
+
+    @Codec enum SpokesmanStatus {
+        ASSIGNED,
+        ACTIVE,
+        FAILED
+    }
+
+    record SpokesmanValue(List<String> communities,
+                          Epoch assignedEpoch,
+                          HlcTimestamp assignedAt,
+                          long version,
+                          SpokesmanStatus status,
+                          String failureReason) implements AetherValue {
+        public SpokesmanValue {
+            communities = communities == null
+                         ? List.of()
+                         : List.copyOf(communities);
+            if (assignedEpoch == null) {assignedEpoch = Epoch.ZERO;}
+            if (assignedAt == null) {assignedAt = HlcTimestamp.ZERO;}
+            if (status == null) {status = SpokesmanStatus.ASSIGNED;}
+            if (failureReason == null) {failureReason = "";}
+        }
+
+        public static SpokesmanValue spokesmanValue(List<String> communities,
+                                                    Epoch assignedEpoch,
+                                                    HlcTimestamp assignedAt,
+                                                    long version) {
+            return new SpokesmanValue(communities, assignedEpoch, assignedAt, version, SpokesmanStatus.ASSIGNED, "");
+        }
+
+        public SpokesmanValue withStatus(SpokesmanStatus newStatus) {
+            return new SpokesmanValue(communities, assignedEpoch, assignedAt, version, newStatus, failureReason);
+        }
+
+        public SpokesmanValue withFailure(String reason) {
+            return new SpokesmanValue(communities, assignedEpoch, assignedAt, version, SpokesmanStatus.FAILED, reason);
         }
     }
 }

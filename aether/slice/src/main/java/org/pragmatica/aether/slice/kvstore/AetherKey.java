@@ -1170,6 +1170,56 @@ import static org.pragmatica.lang.Result.success;
         }
     }
 
+    record DhtPartitionOwnershipKey(String partitionId) implements AetherKey {
+        private static final String PREFIX = "dht-partition-ownership/";
+
+        @Override public String asString() {
+            return PREFIX + partitionId;
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02") public static DhtPartitionOwnershipKey dhtPartitionOwnershipKey(String partitionId) {
+            return new DhtPartitionOwnershipKey(partitionId);
+        }
+
+        public static Result<DhtPartitionOwnershipKey> parseDhtPartitionOwnershipKey(String key) {
+            if (!key.startsWith(PREFIX)) {return DHT_PARTITION_OWNERSHIP_KEY_FORMAT_ERROR.apply(key).result();}
+            var partitionPart = key.substring(PREFIX.length());
+            if (partitionPart.isEmpty()) {return DHT_PARTITION_OWNERSHIP_KEY_FORMAT_ERROR.apply(key).result();}
+            return success(new DhtPartitionOwnershipKey(partitionPart));
+        }
+    }
+
+    record SpokesmanKey(NodeId coreNodeId) implements AetherKey {
+        private static final String PREFIX = "spokesman/";
+
+        @Override public String asString() {
+            return PREFIX + coreNodeId.id();
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02") public static SpokesmanKey spokesmanKey(NodeId coreNodeId) {
+            return new SpokesmanKey(coreNodeId);
+        }
+
+        public static Result<SpokesmanKey> spokesmanKey(String key) {
+            if (!key.startsWith(PREFIX)) {return SPOKESMAN_KEY_FORMAT_ERROR.apply(key).result();}
+            var nodeIdPart = key.substring(PREFIX.length());
+            if (nodeIdPart.isEmpty()) {return SPOKESMAN_KEY_FORMAT_ERROR.apply(key).result();}
+            return NodeId.nodeId(nodeIdPart).map(SpokesmanKey::new);
+        }
+    }
+
+    Fn1<Cause, String> DHT_PARTITION_OWNERSHIP_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid dht-partition-ownership key format: %s");
+
+    Fn1<Cause, String> SPOKESMAN_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid spokesman key format: %s");
+
     record ConsumerGroupKey(String groupId, String streamName, int partition) implements AetherKey {
         private static final String PREFIX = "consumer-group/";
 
