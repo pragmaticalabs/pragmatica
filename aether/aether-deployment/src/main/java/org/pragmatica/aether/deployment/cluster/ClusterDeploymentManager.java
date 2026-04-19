@@ -49,6 +49,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue;
 import org.pragmatica.aether.slice.delegation.DelegatedComponent;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.HealthSignal;
+import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -191,6 +194,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                       MessageRouter router,
                       TopologyManager topologyManager,
                       SchemaOrchestratorService schemaOrchestrator,
+                      HealthSignalSink healthSignalSink,
                       Map<Artifact, Blueprint> blueprints,
                       Map<SliceNodeKey, SliceState> sliceStates,
                       Map<Artifact, Set<Artifact>> sliceDependencies,
@@ -615,8 +619,48 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                         cancelDrainEviction(nodeId);
                         reconcile();
                     }
+                    case DECOMMISSIONED -> cleanupAfterLifecycleDepartedAtomic(nodeId);
                     default -> {}
                 }
+            }
+
+            /// Snapshot-delta-driven cleanup (spec §12/§13). Triggered when a `NodeLifecycleKey` transition
+            /// to `DECOMMISSIONED` is observed — the authoritative signal that a node has left the
+            /// coreMembers projection. Collects every dependent KV entry (NodeArtifact, SliceNode,
+            /// NodeRoutes) for the departed node and removes them in a single Rabia batch. Also wipes
+            /// in-memory slice state and transitional-timestamp caches for the node.
+            ///
+            /// Replaces the pre-existing periodic scan (`cleanupStaleNode*` on a 30s reconcile cadence).
+            /// The periodic scans remain as a safety-net but the delta path is primary.
+            private void cleanupAfterLifecycleDepartedAtomic(NodeId departedNode) {
+                log.info("Snapshot-delta cleanup triggered for departed node {} (lifecycle=DECOMMISSIONED)", departedNode);
+                var sliceKeysToRemove = sliceStates.keySet().stream()
+                                                          .filter(key -> key.nodeId().equals(departedNode))
+                                                          .toList();
+                sliceKeysToRemove.forEach(sliceStates::remove);
+                sliceKeysToRemove.forEach(transitionalStateTimestamps::remove);
+                var artifactKeysToRemove = findNodeArtifactKeysForNode(departedNode);
+                var nodeRouteCommands = cleanupNodeRoutesForNode(departedNode);
+                var consensusCommands = new ArrayList<KVCommand<AetherKey>>();
+                artifactKeysToRemove.stream().<KVCommand<AetherKey>>map(KVCommand.Remove::new)
+                                           .forEach(consensusCommands::add);
+                sliceKeysToRemove.stream().<KVCommand<AetherKey>>map(KVCommand.Remove::new)
+                                         .forEach(consensusCommands::add);
+                consensusCommands.addAll(nodeRouteCommands);
+                workerNodes.remove(departedNode);
+                if (consensusCommands.isEmpty()) {
+                    log.debug("Snapshot-delta cleanup for {} — no dependent KV entries to remove", departedNode);
+                    return;
+                }
+                log.info("Snapshot-delta cleanup for {}: removing {} node-artifact(s), {} slice-node(s), {} node-route(s) atomically",
+                         departedNode,
+                         artifactKeysToRemove.size(),
+                         sliceKeysToRemove.size(),
+                         nodeRouteCommands.size());
+                cluster.apply(consensusCommands)
+                             .onFailure(cause -> log.error("Snapshot-delta cleanup for {} failed: {}",
+                                                           departedNode,
+                                                           cause.message()));
             }
 
             @Override public void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) {
@@ -728,13 +772,12 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
 
             private void completeDrain(NodeId drainingNode) {
                 drainingNodes.remove(drainingNode);
-                log.info("Drain complete for node {}, writing DECOMMISSIONED state", drainingNode);
-                var command = new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(drainingNode),
-                                                                        NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED));
-                cluster.apply(List.of(command))
-                             .onFailure(cause -> log.error("Failed to write DECOMMISSIONED for {}: {}",
-                                                           drainingNode,
-                                                           cause.message()));
+                log.info("Drain complete for node {}, emitting DrainCompleted signal to HealthReconciler", drainingNode);
+                // Spec §8 single-writer rule: CDM does NOT write NodeLifecycleKey directly. The leader's
+                // HealthReconciler owns every membership atom write. Emit a DrainCompleted signal — the
+                // reconciler reacts by writing `NodeLifecycleKey = DECOMMISSIONED` and rebalances partitions
+                // in the same Rabia batch.
+                healthSignalSink.emit(new HealthSignal.DrainCompleted(drainingNode, Epoch.ZERO));
             }
 
             private void handleSliceTargetChange(SliceTargetKey key, SliceTargetValue value) {
@@ -1741,7 +1784,8 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                         atomicity,
                                         coreMax,
                                         DEFAULT_RECONCILE_INTERVAL,
-                                        schemaOrchestrator);
+                                        schemaOrchestrator,
+                                        HealthSignalSink.noop());
     }
 
     static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
@@ -1754,6 +1798,30 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                                              int coreMax,
                                                              TimeSpan reconcileInterval,
                                                              SchemaOrchestratorService schemaOrchestrator) {
+        return clusterDeploymentManager(self,
+                                        cluster,
+                                        kvStore,
+                                        router,
+                                        initialTopology,
+                                        topologyManager,
+                                        atomicity,
+                                        coreMax,
+                                        reconcileInterval,
+                                        schemaOrchestrator,
+                                        HealthSignalSink.noop());
+    }
+
+    static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
+                                                             ClusterNode<KVCommand<AetherKey>> cluster,
+                                                             KVStore<AetherKey, AetherValue> kvStore,
+                                                             MessageRouter router,
+                                                             List<NodeId> initialTopology,
+                                                             TopologyManager topologyManager,
+                                                             DeploymentAtomicity atomicity,
+                                                             int coreMax,
+                                                             TimeSpan reconcileInterval,
+                                                             SchemaOrchestratorService schemaOrchestrator,
+                                                             HealthSignalSink healthSignalSink) {
         record clusterDeploymentManager(NodeId self,
                                         ClusterNode<KVCommand<AetherKey>> cluster,
                                         KVStore<AetherKey, AetherValue> kvStore,
@@ -1763,6 +1831,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                         int coreMax,
                                         TimeSpan reconcileInterval,
                                         SchemaOrchestratorService schemaOrchestrator,
+                                        HealthSignalSink healthSignalSink,
                                         Set<NodeId> seedNodes,
                                         AtomicReference<ClusterDeploymentState> state,
                                         AtomicReference<List<NodeId>> topologyRef) implements ClusterDeploymentManager {
@@ -1777,6 +1846,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                                                     router,
                                                                     topologyManager,
                                                                     schemaOrchestrator,
+                                                                    healthSignalSink,
                                                                     new ConcurrentHashMap<>(),
                                                                     new ConcurrentHashMap<>(),
                                                                     new ConcurrentHashMap<>(),
@@ -1913,6 +1983,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                             coreMax,
                                             reconcileInterval,
                                             schemaOrchestrator,
+                                            healthSignalSink,
                                             Set.copyOf(initialTopology),
                                             new AtomicReference<>(new ClusterDeploymentState.Dormant()),
                                             new AtomicReference<>(List.copyOf(initialTopology)));

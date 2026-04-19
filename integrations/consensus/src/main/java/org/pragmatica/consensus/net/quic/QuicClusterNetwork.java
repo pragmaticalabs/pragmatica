@@ -25,10 +25,7 @@ import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
 import io.netty.buffer.Unpooled;
@@ -51,12 +48,10 @@ import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.Server;
@@ -96,15 +91,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private final Map<NodeId, Map<StreamType, Queue<byte[]>>> outboundQueues = new ConcurrentHashMap<>();
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private final AtomicBoolean quorumEstablished = new AtomicBoolean(false);
-    private final AtomicReference<ScheduledFuture<?>> stabilizationTimer = new AtomicReference<>();
-    private final AtomicReference<ScheduledFuture<?>> quorumLossTimer = new AtomicReference<>();
-    private final AtomicReference<ScheduledFuture<?>> postEstablishGraceTimer = new AtomicReference<>();
-    private final AtomicBoolean inPostEstablishGrace = new AtomicBoolean(false);
-    /// Peers pending removal — deferred during hysteresis to prevent topology destruction on transient disconnects.
-    /// When hysteresis expires, all pending peers are removed. When hysteresis is cancelled (peer reconnects), cleared.
-    private final Set<NodeId> pendingRemovals = ConcurrentHashMap.newKeySet();
     private final QuicTransportMetrics quicMetrics = QuicTransportMetrics.quicTransportMetrics();
 
+    /// Retained for API compatibility with existing callers. All hysteresis/grace-window
+    /// buffering was removed in favour of authoritative single-writer semantics (spec §8) —
+    /// `HealthReconciler` decides whether membership atoms change; the QUIC view is purely
+    /// informational. Field is kept so constructors continue to accept the configuration
+    /// record without forcing a callsite rewrite.
+    @SuppressWarnings("unused")
     private final ClusterFormationConfig formationConfig;
     private volatile QuicDisconnectListener disconnectListener;
 
@@ -619,6 +613,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     // --- Internal: view change ---
 
+    /// Authoritative membership state for QUIC lives in `TopologyObserver`. This method:
+    ///   - ADD: registers the peer with `TopologyObserver` (already done at `onPeerConnected`) and
+    ///     emits an informational `TopologyChangeNotification.nodeAdded`. If quorum is now reached,
+    ///     fires `QuorumStateNotification.established` immediately.
+    ///   - REMOVE: fires a `HealthSignal.QuicDisconnect` via the listener (advisory; leader's
+    ///     `HealthReconciler` counts it), calls `topologyManager.unregisterPeer` directly (spec §12:
+    ///     QUIC is the authoritative source of "this peer is gone from my view"), and emits an
+    ///     informational `TopologyChangeNotification.nodeRemoved`. No hysteresis buffering — §8
+    ///     single-writer rule means `HealthReconciler` is the only component that decides whether
+    ///     membership atoms actually change.
+    ///   - SHUTDOWN: fires `QuorumStateNotification.disappeared` immediately.
     @SuppressWarnings("JBCT-PAT-01") // Switch expression with side effects
     private void processViewChange(ViewChangeOperation operation, NodeId peerId) {
         // Self should never appear in view changes — guard against cascading self-removal
@@ -636,40 +641,26 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         var viewChange = switch (operation) {
             case ADD -> {
-                pendingRemovals.remove(peerId);
-                cancelQuorumLossTimer();
-                if (currentlyHaveQuorum && !quorumEstablished.get()) {
-                    handleQuorumCandidate(activePeerCount, clusterSize);
+                if (currentlyHaveQuorum && quorumEstablished.compareAndSet(false, true)) {
+                    log.info("Quorum established with {} active peer(s) (need {})", activePeerCount, quorumSize);
+                    router.route(QuorumStateNotification.established());
                 }
                 yield TopologyChangeNotification.nodeAdded(peerId, currentView());
             }
             case REMOVE -> {
-                cancelStabilizationTimer();
-                // Advisory QUIC-level disconnect signal — fired BEFORE the grace/hysteresis gates so the
-                // leader's HealthReconciler can count every peer-link teardown even when the view change
-                // itself is deferred. Kept alongside the existing TopologyChangeNotification path.
+                // Advisory QUIC-level disconnect signal — leader's HealthReconciler counts it toward
+                // the ping-miss threshold. Kept alongside the TopologyChangeNotification emission;
+                // both are informational under spec §12. Only HealthReconciler authoritatively mutates
+                // lifecycle atoms.
                 disconnectListener.onDisconnect(peerId);
-                if (!currentlyHaveQuorum && quorumEstablished.get()) {
-                    // Defer peer-removal during quorum-loss hysteresis — prevents topology destruction on
-                    // transient disconnects. If peer reconnects within the window, pendingRemovals is
-                    // cleared. If hysteresis expires, all pending peers are removed.
-                    pendingRemovals.add(peerId);
-                    handleQuorumLossCandidate();
-                } else if (inPostEstablishGrace.get() && currentlyHaveQuorum && quorumEstablished.get()) {
-                    // Defer peer-removal during post-establish grace — absorbs transient drops that arrive
-                    // just after initial establishment without crossing the quorum threshold. Reconnect
-                    // within the grace window cancels the removal (ADD branch clears pendingRemovals);
-                    // grace expiry flushes any stuck removals in onPostEstablishGraceComplete.
-                    pendingRemovals.add(peerId);
-                } else {
-                    topologyManager.unregisterPeer(peerId);
+                topologyManager.unregisterPeer(peerId);
+                if (!currentlyHaveQuorum && quorumEstablished.compareAndSet(true, false)) {
+                    log.warn("Quorum lost — {} active peer(s), need {}", activePeerCount, quorumSize);
+                    router.route(QuorumStateNotification.disappeared());
                 }
                 yield TopologyChangeNotification.nodeRemoved(peerId, currentView());
             }
             case SHUTDOWN -> {
-                cancelStabilizationTimer();
-                cancelQuorumLossTimer();
-                cancelPostEstablishGraceTimer();
                 quorumEstablished.set(false);
                 router.route(QuorumStateNotification.disappeared());
                 yield TopologyChangeNotification.nodeDown(peerId);
@@ -678,117 +669,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         log.info("Routing topology change: {}", viewChange);
         router.route(viewChange);
-    }
-
-    /// Always wait the full stabilization window before firing ESTABLISHED, even when every peer is
-    /// already connected. Bursts of peer-add events at cold start (all nodes starting concurrently)
-    /// were previously short-circuited to "establish immediately", which exposed a race where a
-    /// transient QUIC disconnect arriving a few seconds later mutated the Rabia topology mid-flight
-    /// and left consensus stuck in Phase[0]. Always stabilizing absorbs that flap.
-    private void handleQuorumCandidate(int activePeerCount, int clusterSize) {
-        resetStabilizationTimer();
-    }
-
-    private void resetStabilizationTimer() {
-        cancelStabilizationTimer();
-        var window = formationConfig.stabilizationWindow();
-        var timer = SharedScheduler.schedule(this::onStabilizationComplete, window);
-        stabilizationTimer.set(timer);
-        log.info("Topology changed during formation — waiting {}ms for stabilization", window.millis());
-    }
-
-    private void onStabilizationComplete() {
-        var activePeerCount = peerLinks.size() - passivePeers.size();
-        var quorumSize = topologyManager.quorumSize();
-        var currentlyHaveQuorum = (activePeerCount + 1) >= quorumSize;
-        if (currentlyHaveQuorum && quorumEstablished.compareAndSet(false, true)) {
-            log.info("Topology stable for {}ms with {} peers — establishing quorum",
-                     formationConfig.stabilizationWindow().millis(), activePeerCount);
-            router.route(QuorumStateNotification.established());
-            startPostEstablishGrace();
-        }
-    }
-
-    /// Post-establish grace: after the cluster reports ESTABLISHED, buffer single-peer REMOVE events
-    /// (that still leave quorum intact) for a configurable window. A reconnect clears the buffer;
-    /// expiry flushes any stuck removals as real peer-unregister events. Inoculates against transient
-    /// QUIC drops that arrive just after establishment.
-    private void startPostEstablishGrace() {
-        cancelPostEstablishGraceTimer();
-        inPostEstablishGrace.set(true);
-        var grace = formationConfig.postEstablishGrace();
-        var timer = SharedScheduler.schedule(this::onPostEstablishGraceComplete, grace);
-        postEstablishGraceTimer.set(timer);
-        log.info("Post-establish grace started — buffering REMOVEs for {}ms", grace.millis());
-    }
-
-    private void onPostEstablishGraceComplete() {
-        inPostEstablishGrace.set(false);
-        if (pendingRemovals.isEmpty()) {
-            log.info("Post-establish grace expired cleanly — no deferred removals");
-            return;
-        }
-        var flushed = Set.copyOf(pendingRemovals);
-        pendingRemovals.clear();
-        log.warn("Post-establish grace expired with {} deferred REMOVE(s) — flushing: {}", flushed.size(), flushed);
-        for (var peer : flushed) {
-            topologyManager.unregisterPeer(peer);
-            // Also fire a TopologyChangeNotification so listeners (CTM, CDM) react at the moment
-            // the observer's topology actually shrinks. The initial processViewChange(REMOVE)
-            // already emitted nodeRemoved with the pre-flush view; that earlier notification's
-            // count can't reflect the removal while it's buffered in pendingRemovals.
-            router.route(TopologyChangeNotification.nodeRemoved(peer, currentView()));
-        }
-    }
-
-    private void cancelPostEstablishGraceTimer() {
-        var timer = postEstablishGraceTimer.getAndSet(null);
-        if (timer != null) {
-            timer.cancel(false);
-        }
-        inPostEstablishGrace.set(false);
-    }
-
-    private void cancelStabilizationTimer() {
-        var timer = stabilizationTimer.getAndSet(null);
-        if (timer != null) {timer.cancel(false);}
-    }
-
-    /// Defer quorum loss — start hysteresis timer. If quorum is restored within the window, cancel.
-    private void handleQuorumLossCandidate() {
-        cancelQuorumLossTimer();
-        var hysteresis = formationConfig.quorumLossHysteresis();
-        var timer = SharedScheduler.schedule(this::onQuorumLossConfirmed, hysteresis);
-        quorumLossTimer.set(timer);
-        log.info("Quorum lost — waiting {}ms before confirming (transient reconnection grace period)", hysteresis.millis());
-    }
-
-    private void onQuorumLossConfirmed() {
-        // Flush deferred removals — these peers didn't reconnect during the hysteresis window
-        var removedPeers = Set.copyOf(pendingRemovals);
-        pendingRemovals.clear();
-        removedPeers.forEach(peerId -> {
-            topologyManager.unregisterPeer(peerId);
-            router.route(TopologyChangeNotification.nodeRemoved(peerId, currentView()));
-        });
-        var activePeerCount = peerLinks.size() - passivePeers.size();
-        var quorumSize = topologyManager.quorumSize();
-        var currentlyHaveQuorum = (activePeerCount + 1) >= quorumSize;
-        if (!currentlyHaveQuorum && quorumEstablished.compareAndSet(true, false)) {
-            log.warn("Quorum loss confirmed after {}ms hysteresis — firing DISAPPEARED ({} active peers, need {}, removed {})",
-                     formationConfig.quorumLossHysteresis().millis(), activePeerCount, quorumSize, removedPeers.size());
-            router.route(QuorumStateNotification.disappeared());
-        } else {
-            log.info("Quorum restored during hysteresis window — loss cancelled ({} active peers, removed {} stale)",
-                     activePeerCount, removedPeers.size());
-        }
-    }
-
-    private void cancelQuorumLossTimer() {
-        var timer = quorumLossTimer.getAndSet(null);
-        if (timer != null) {timer.cancel(false);}
-        // Peers that were pending removal reconnected — clear them
-        pendingRemovals.clear();
     }
 
     private List<NodeId> currentView() {

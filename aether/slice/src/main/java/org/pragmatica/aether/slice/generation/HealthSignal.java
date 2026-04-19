@@ -23,6 +23,12 @@ public sealed interface HealthSignal {
 
     record QuicDisconnect(NodeId nodeId, Epoch observedAt) implements HealthSignal{}
 
+    /// Drain-eviction completion signal — emitted by `ClusterDeploymentManager` once
+    /// every live slice on the draining node has been re-homed. Consumed by the
+    /// leader's `HealthReconciler`, which authoritatively transitions the node's
+    /// `NodeLifecycleKey` to `DECOMMISSIONED` per spec §8 single-writer rule.
+    record DrainCompleted(NodeId nodeId, Epoch observedAt) implements HealthSignal{}
+
     record GovernorAnnounced(String communityId, NodeId governor, long communityTerm) implements HealthSignal{}
 
     record CommunityDissolved(String communityId) implements HealthSignal{}

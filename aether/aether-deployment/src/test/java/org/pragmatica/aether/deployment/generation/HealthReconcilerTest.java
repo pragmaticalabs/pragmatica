@@ -175,6 +175,30 @@ class HealthReconcilerTest {
         }
 
         @Test
+        void onSignal_drainCompleted_writesDecommissionedViaSingleWriter() {
+            // Spec §8: CDM delegates the lifecycle transition to HealthReconciler via DrainCompleted.
+            // HealthReconciler must write NodeLifecycleKey = DECOMMISSIONED authoritatively.
+            seedSnapshotWithThreeCoreNodes();
+
+            reconciler.onSignal(new HealthSignal.DrainCompleted(NODE_A, Epoch.epoch(1L, 0L)));
+
+            var lifecycleWrites = cluster.writesTargetingLifecycle(NODE_A);
+            assertThat(lifecycleWrites).hasSize(1);
+            assertThat(((AetherValue.NodeLifecycleValue) lifecycleWrites.getFirst().value()).state())
+                .isEqualTo(NodeLifecycleState.DECOMMISSIONED);
+        }
+
+        @Test
+        void onSignal_drainCompletedForUnknownNode_isNoOp() {
+            seedSnapshotWithThreeCoreNodes();
+            var unknown = NodeId.nodeId("never-seen").unwrap();
+
+            reconciler.onSignal(new HealthSignal.DrainCompleted(unknown, Epoch.epoch(1L, 0L)));
+
+            assertThat(cluster.applied()).isEmpty();
+        }
+
+        @Test
         void onSignal_governorAnnouncedForNewCommunity_assignsSpokesman() {
             seedSnapshotWithThreeCoreNodes();
 

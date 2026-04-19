@@ -143,6 +143,7 @@ record HealthReconcilerRecord(NodeId self,
             case HealthSignal.PingTimeout ping -> handlePingTimeout(ping);
             case HealthSignal.SwimHint swim -> handleSwimHint(swim);
             case HealthSignal.QuicDisconnect quic -> handleQuicDisconnect(quic);
+            case HealthSignal.DrainCompleted drain -> handleDrainCompleted(drain);
             case HealthSignal.GovernorAnnounced announced -> handleGovernorAnnounced(announced);
             case HealthSignal.CommunityDissolved dissolved -> handleCommunityDissolved(dissolved);
             case HealthSignal.SpokesmanAssignmentFailed failed -> handleSpokesmanAssignmentFailed(failed);
@@ -197,6 +198,22 @@ record HealthReconcilerRecord(NodeId self,
     @Contract private void handleQuicDisconnect(HealthSignal.QuicDisconnect quic) {
         var missed = consecutivePingMisses.merge(quic.nodeId(), 1, Integer::sum);
         log.debug("QUIC disconnect from {} (counted as advisory miss {})", quic.nodeId(), missed);
+    }
+
+    /// Handle drain-completion: CDM has re-homed every slice off the draining node and emits
+    /// this signal to request the authoritative lifecycle transition. Writes
+    /// `NodeLifecycleKey = DECOMMISSIONED` through the single-writer path. Idempotent — any
+    /// duplicate emission for the same node is absorbed because the member lookup fails
+    /// after the first write commits.
+    @Contract private void handleDrainCompleted(HealthSignal.DrainCompleted drain) {
+        var current = snapshotRef.get();
+        var member = current.coreMembers().get(drain.nodeId());
+        if (member == null || member.lifecycle() == NodeLifecycleState.DECOMMISSIONED) {
+            log.debug("DrainCompleted({}) ignored — member absent or already decommissioned", drain.nodeId());
+            return;
+        }
+        log.info("DrainCompleted({}) — writing DECOMMISSIONED via single-writer reconciler", drain.nodeId());
+        evictNode(drain.nodeId(), member, GenerationReason.MEMBER_REMOVED);
     }
 
     @Contract private void handleGovernorAnnounced(HealthSignal.GovernorAnnounced announced) {

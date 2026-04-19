@@ -9,6 +9,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
+import org.pragmatica.aether.slice.generation.HealthSignal;
+import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -34,6 +36,7 @@ import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -68,10 +71,12 @@ class ClusterDeploymentManagerTest {
     class DrainCompletionTests {
         private ClusterDeploymentManager cdm;
         private final List<KVCommand<AetherKey>> capturedCommands = new ArrayList<>();
+        private final CopyOnWriteArrayList<HealthSignal> capturedSignals = new CopyOnWriteArrayList<>();
 
         @BeforeEach
         void setUp() {
             capturedCommands.clear();
+            capturedSignals.clear();
             var initialTopology = List.of(NODE_1, NODE_2, NODE_3, DRAINING_NODE);
             var router = MessageRouter.mutable();
 
@@ -80,6 +85,8 @@ class ClusterDeploymentManagerTest {
             ClusterNode<KVCommand<AetherKey>> clusterNode = stubClusterNode(NODE_1, capturedCommands);
 
             TopologyManager topologyManager = stubTopologyManager(NODE_1, initialTopology);
+
+            HealthSignalSink capturingSink = capturedSignals::add;
 
             cdm = ClusterDeploymentManager.clusterDeploymentManager(NODE_1,
                                                                      clusterNode,
@@ -90,15 +97,17 @@ class ClusterDeploymentManagerTest {
                                                                      ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING,
                                                                      3,
                                                                      timeSpan(300).seconds(),
-                                                                     NO_OP_SCHEMA_ORCHESTRATOR);
+                                                                     NO_OP_SCHEMA_ORCHESTRATOR,
+                                                                     capturingSink);
         }
 
         @Test
-        void completeDrain_writesDecommissionedState() throws InterruptedException {
-            // Activate CDM as leader
+        void completeDrain_emitsDrainCompletedSignal() throws InterruptedException {
+            // Spec §8 single-writer rule: CDM MUST NOT write NodeLifecycleKey directly on drain
+            // completion. Instead it emits a DrainCompleted signal so HealthReconciler — the sole
+            // membership atom writer — can transition the lifecycle authoritatively.
             cdm.activate().await();
 
-            // Trigger drain for a node with no slices — drain completes immediately
             var drainingPut = new ValuePut<>(
                 new KVCommand.Put<>(
                     NodeLifecycleKey.nodeLifecycleKey(DRAINING_NODE),
@@ -109,17 +118,23 @@ class ClusterDeploymentManagerTest {
             // Give async operations time to complete
             Thread.sleep(500);
 
-            // Verify DECOMMISSIONED state was written via cluster.apply
-            assertThat(capturedCommands).isNotEmpty();
-            var putCommand = capturedCommands.stream()
+            // CDM MUST NOT write NodeLifecycleKey directly
+            var directLifecyclePuts = capturedCommands.stream()
                 .filter(KVCommand.Put.class::isInstance)
                 .map(cmd -> (KVCommand.Put<AetherKey, AetherValue>) cmd)
                 .filter(put -> put.key() instanceof NodeLifecycleKey)
-                .filter(put -> put.value() instanceof NodeLifecycleValue)
-                .findFirst();
-            assertThat(putCommand).isPresent();
-            var lifecycle = (NodeLifecycleValue) putCommand.get().value();
-            assertThat(lifecycle.state()).isEqualTo(NodeLifecycleState.DECOMMISSIONED);
+                .toList();
+            assertThat(directLifecyclePuts)
+                .as("CDM must not write NodeLifecycleKey directly (spec §8 single-writer)")
+                .isEmpty();
+
+            // DrainCompleted MUST be emitted via the health sink
+            var drainCompletedSignals = capturedSignals.stream()
+                .filter(HealthSignal.DrainCompleted.class::isInstance)
+                .map(HealthSignal.DrainCompleted.class::cast)
+                .toList();
+            assertThat(drainCompletedSignals).hasSize(1);
+            assertThat(drainCompletedSignals.getFirst().nodeId()).isEqualTo(DRAINING_NODE);
         }
     }
 

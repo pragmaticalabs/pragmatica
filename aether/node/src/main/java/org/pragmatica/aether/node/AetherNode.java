@@ -725,6 +725,12 @@ public interface AetherNode extends ManageableNode {
         var computeProvider = config.environment().flatMap(EnvironmentIntegration::compute);
         var lifecycleManager = NodeLifecycleManager.nodeLifecycleManager(computeProvider);
         var deploymentMap = DeploymentMap.deploymentMap();
+        // HealthSignalSink must exist before CDM — CDM emits DrainCompleted signals via the sink
+        // (spec §8 single-writer rule: CDM no longer writes NodeLifecycleKey directly). The stable
+        // sink is a forwarding lambda over an AtomicReference that HealthReconcilerActivator later
+        // populates; until then emissions become no-ops, which is correct for non-leader nodes.
+        var healthSinkRef = new AtomicReference<HealthSignalSink>(HealthSignalSink.noop());
+        HealthSignalSink stableHealthSink = signal -> healthSinkRef.get().emit(signal);
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,
@@ -735,7 +741,8 @@ public interface AetherNode extends ManageableNode {
                                                                                          config.topology().coreMax(),
                                                                                          config.timeouts().deployment()
                                                                                                         .reconciliationInterval(),
-                                                                                         schemaOrchestrator);
+                                                                                         schemaOrchestrator,
+                                                                                         stableHealthSink);
         var loadBalancerManager = config.environment().flatMap(EnvironmentIntegration::loadBalancer)
                                                     .map(provider -> LoadBalancerManager.loadBalancerManager(config.self(),
                                                                                                              kvStore,
@@ -761,8 +768,6 @@ public interface AetherNode extends ManageableNode {
                                                                                 .millis());
         metricsCollector.setInvocationMetricsProvider(invocationMetrics);
         metricsCollector.recordCustom("mgmt.port", config.managementPort());
-        var healthSinkRef = new AtomicReference<HealthSignalSink>(HealthSignalSink.noop());
-        HealthSignalSink stableHealthSink = signal -> healthSinkRef.get().emit(signal);
         var leaderTerm = new AtomicLong(0L);
         var isLeaderGate = new AtomicBoolean(false);
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
