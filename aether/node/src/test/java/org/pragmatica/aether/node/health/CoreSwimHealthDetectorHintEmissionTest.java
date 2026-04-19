@@ -32,11 +32,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Verifies that `CoreSwimHealthDetector` emits `HealthSignal.SwimHint` events
-/// through its injected sink on every state-transition callback, in addition
-/// to its existing `DisconnectNode` / `RemoveNode` routing.
-///
-/// Scope per Commit 4e: hints are emitted alongside existing behavior; no
-/// behavior is removed here.
+/// through its injected sink on every state-transition callback, alongside its
+/// `DisconnectNode` routing (RemoveNode emission removed per cluster-generation
+/// spec §13.1; HealthReconciler now owns the NodeLifecycleKey = LEFT write).
 class CoreSwimHealthDetectorHintEmissionTest {
     private static final NodeId SELF = new NodeId("node-1");
     private static final NodeId PEER_A = new NodeId("node-2");

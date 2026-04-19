@@ -119,8 +119,6 @@ public interface TopologyObserver extends TopologyManager {
                        GenerationSnapshotSource snapshotSource) implements TopologyObserver {
             private static final Logger log = LoggerFactory.getLogger(TopologyObserver.class);
 
-            private static final TimeSpan EVICTION_GRACE_PERIOD = TimeSpan.timeSpan(60).seconds();
-
             Manager(Map<NodeId, NodeState> nodeStatesById,
                     Map<NodeAddress, NodeId> nodeIdsByAddress,
                     MessageRouter router,
@@ -160,18 +158,17 @@ public interface TopologyObserver extends TopologyManager {
 
             private void initReconcile() {
                 if (active.get()) {
-                    // evictLongSuspectedPeers disabled — under transient network flaps the 60s
-                    // idle check could fire on a legitimate peer between backoff retries,
-                    // triggering a RemoveNode that cascaded into quorum loss. #166's phantom
-                    // NodeArtifact cleanup is now handled by CDM's periodic reconcile + tombstone-
-                    // aware initReconcile; standalone peer eviction would need a stronger signal
-                    // (sustained SWIM unreachability, cluster-wide consensus, ...) than idle-time.
                     // Re-add any configured core nodes that were removed due to disconnection.
                     // Without this, nodes removed from nodeStatesById are never reconnected
                     // because reconcile() only requests connections for nodes IN the map.
                     // Skip tombstoned nodes — these were explicitly removed (node killed/replaced)
                     // and must not be resurrected from config, otherwise they linger as phantoms
                     // alongside any CTM-provisioned replacement and inflate cluster count.
+                    //
+                    // Peer eviction on sustained SUSPECTED state is intentionally NOT handled here:
+                    // HealthReconciler on the leader consumes accumulated PingTimeout + SwimHint
+                    // signals and writes NodeLifecycleKey = LEFT via fenced atom updates, which
+                    // replaces the former idle-timer-based evictLongSuspectedPeers path.
                     config().coreNodes().stream()
                           .filter(node -> !nodeStatesById.containsKey(node.id()))
                           .filter(node -> !tombstonedNodes.contains(node.id()))
@@ -183,36 +180,6 @@ public interface TopologyObserver extends TopologyManager {
                     config().coreNodes()
                           .forEach(this::addNode);
                 }
-            }
-
-            /// Peers that have been SUSPECTED long enough — past `BackoffConfig.shouldDisable`
-            /// attempt threshold AND with their last attempt older than `evictionGracePeriod`
-            /// wall-clock time — get tombstoned and routed as RemoveNode. Downstream listeners
-            /// (CTM, CDM) react and consensus-level structures (clusterSize/quorum,
-            /// sliceState/NodeArtifact KV) stop lingering on unreachable addresses. Without this,
-            /// a CTM-provisioned node externally removed (e.g. `docker rm -f`) without a clean
-            /// shutdown stays in nodeStatesById indefinitely if QUIC never produces a hard
-            /// disconnect. The grace period avoids evicting peers during cluster formation when
-            /// they've briefly failed to connect but are still booting.
-            private void evictLongSuspectedPeers() {
-                var backoff = config.backoff();
-                var selfId = config.self();
-                var now = now();
-                var grace = EVICTION_GRACE_PERIOD;
-                nodeStatesById.values().stream()
-                              .filter(state -> state.health() == NodeHealth.SUSPECTED)
-                              .filter(state -> backoff.shouldDisable(state.failedAttempts()))
-                              .filter(state -> state.lastAttempt().plusMillis(grace.millis()).isBefore(now))
-                              .filter(state -> !state.info().id().equals(selfId))
-                              .map(state -> state.info().id())
-                              .toList()
-                              .forEach(id -> {
-                                  log.info("Evicting long-suspected peer {} (>= {} failed attempts, idle > {}ms)",
-                                           id,
-                                           backoff.maxAttempts(),
-                                           grace.millis());
-                                  router().route(new TopologyManagementMessage.RemoveNode(id));
-                              });
             }
 
             @Override

@@ -115,7 +115,6 @@ import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.worker.bootstrap.WorkerBootstrap;
 import org.pragmatica.aether.worker.deployment.WorkerDeploymentManager;
 import org.pragmatica.aether.worker.governor.DecisionRelay;
-import org.pragmatica.aether.worker.governor.GovernorCleanup;
 import org.pragmatica.aether.worker.governor.GovernorMesh;
 import org.pragmatica.aether.worker.group.GroupMembershipTracker;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
@@ -1378,7 +1377,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                       .or(WorkerConfig.DEFAULT_GROUP_NAME),
                                                                                    config.workerConfig().map(WorkerConfig::maxGroupSize)
                                                                                                       .or(WorkerConfig.DEFAULT_MAX_GROUP_SIZE));
-        var governorCleanup = GovernorCleanup.governorCleanup(mutationForwarder);
         var workerDeploymentManager = WorkerDeploymentManager.workerDeploymentManager(selfId,
                                                                                       sliceStore,
                                                                                       mutationForwarder,

@@ -8,7 +8,6 @@ package org.pragmatica.aether.node.health;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.messaging.MessageRouter;
@@ -64,39 +63,37 @@ class CoreSwimReconnectTest {
     }
 
     @Nested
-    class MassFaultyGuard {
+    class FaultyEmission {
         @Test
-        void massFaulty_moreThanHalf_suppressesRemoveNode() throws InterruptedException {
-            // With 4 peers (SWIM has 4 members excluding self), threshold is >2
-            // Simulate SWIM having 4 members by starting protocol would be needed,
-            // but without a running protocol the members() map is empty.
-            // The guard checks totalMembers > 0 && faultyCount > totalMembers/2.
-            // Without a running protocol, totalMembers=0 so guard won't trigger.
-            // This tests the single-failure path: when protocol is not running, all faults pass through.
-            var faultyA = SwimMember.swimMember(PEER_A, MemberState.FAULTY, 0,
-                                                new InetSocketAddress("127.0.0.2", 9101));
-
-            detector.onMemberFaulty(faultyA);
-            Thread.sleep(100);
-
-            // Without running SWIM protocol, totalMembers=0, so guard doesn't activate
-            // and the fault passes through normally
-            assertThat(removeNotifications).hasSize(1);
-            assertThat(disconnectNotifications).hasSize(1);
-        }
-
-        @Test
-        void singleFaulty_firesRemoveNode() throws InterruptedException {
+        void singleFaulty_routesDisconnectOnly_noRemoveNode() throws InterruptedException {
+            // Per cluster-generation-spec §13.1: CoreSwimHealthDetector no longer emits
+            // TopologyManagementMessage.RemoveNode on SWIM FAULTY. The authoritative
+            // NodeLifecycleKey = LEFT write now flows through HealthReconciler on the
+            // leader after consuming SwimHint + PingTimeout signals.
             var faultyMember = SwimMember.swimMember(PEER_A, MemberState.FAULTY, 0,
                                                      new InetSocketAddress("127.0.0.2", 9101));
 
             detector.onMemberFaulty(faultyMember);
             Thread.sleep(100);
 
-            assertThat(removeNotifications).hasSize(1);
-            assertThat(removeNotifications.getFirst().nodeId()).isEqualTo(PEER_A);
+            assertThat(removeNotifications).isEmpty();
             assertThat(disconnectNotifications).hasSize(1);
             assertThat(disconnectNotifications.getFirst().nodeId()).isEqualTo(PEER_A);
+        }
+
+        @Test
+        void massFaulty_localDisconnectGuardStillRoutesNothing() throws InterruptedException {
+            // Without a running SWIM protocol (members() empty), isLocalDisconnect returns
+            // false and the fault is allowed through. It must still produce only a
+            // DisconnectNode and never a RemoveNode.
+            var faultyA = SwimMember.swimMember(PEER_A, MemberState.FAULTY, 0,
+                                                new InetSocketAddress("127.0.0.2", 9101));
+
+            detector.onMemberFaulty(faultyA);
+            Thread.sleep(100);
+
+            assertThat(removeNotifications).isEmpty();
+            assertThat(disconnectNotifications).hasSize(1);
         }
     }
 
