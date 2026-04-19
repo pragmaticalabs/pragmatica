@@ -1198,6 +1198,35 @@ aether cluster topology
 # lb-passive        PASSIVE     HEALTHY       aether-lb                             0.0.0.0:7000
 ```
 
+### `aether cluster generation`
+
+Show the current cluster generation snapshot as observed by the queried node. The snapshot summarises the leader-projected epoch, core members, communities, and DHT partition ownership. See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.
+
+```bash
+aether cluster generation
+```
+
+| Option | Description |
+|--------|-------------|
+| `--format` | Output format: `table` (default), `json`, `value`, `csv` |
+
+Example:
+```bash
+aether cluster generation
+
+# Output (table):
+# Epoch:              7:142
+# Mode:               HIERARCHICAL
+# Quiescence:         QUIESCED
+# Rabia term:         7
+# Desired core size:  5
+# Core members:       5
+# Communities:        1
+# Partitions:         2
+```
+
+JSON output returns the full snapshot shape exposed by `GET /api/cluster/generation`.
+
 ### `aether cluster upgrade`
 
 Initiate a cluster version upgrade.

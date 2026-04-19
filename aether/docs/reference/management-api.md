@@ -1524,6 +1524,8 @@ Complete the deployment (finalize new version, decommission old). Requires leade
 
 Get live cluster topology with per-node details. Returns core/passive/worker counts from the actual connected topology (not static boot-time config).
 
+When a cluster generation snapshot is available the `coreCount` field is derived from the snapshot's `ON_DUTY`+`HEALTHY` core members, and the response additionally carries the current `epoch` string (`"rabiaTerm:localCounter"`). When no snapshot is available yet, `coreCount` falls back to `topologyManager.healthyActiveNodeCount()` and the `epoch` field is omitted.
+
 **Response:**
 ```json
 {
@@ -1551,7 +1553,76 @@ Get live cluster topology with per-node details. Returns core/passive/worker cou
       "zone": "",
       "address": "0.0.0.0:7000"
     }
+  ],
+  "epoch": "7:142"
+}
+```
+
+### GET /api/cluster/generation
+
+Get the current cluster generation snapshot as observed by the queried node. The snapshot is a leader-projected view of core members, communities, and DHT partition ownership at a specific epoch; every node caches the latest snapshot it received via pings and serves it locally. This endpoint is always safe to call — when no snapshot has been received yet it returns an empty skeleton with `epoch: null` and `mode: "unknown"` instead of a 503.
+
+See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.1 for the underlying model.
+
+**Response (snapshot present):**
+```json
+{
+  "epoch": { "rabiaTerm": 7, "localCounter": 142 },
+  "rabiaTerm": 7,
+  "mode": "HIERARCHICAL",
+  "quiescence": "QUIESCED",
+  "quiescenceDetail": "",
+  "core": {
+    "desiredSize": 5,
+    "members": [
+      {
+        "nodeId": "node-1",
+        "host": "aether-node-1",
+        "port": 6000,
+        "lifecycle": "ON_DUTY",
+        "healthHint": "HEALTHY",
+        "joinedEpoch": { "rabiaTerm": 7, "localCounter": 0 },
+        "lastSeenEpoch": { "rabiaTerm": 7, "localCounter": 142 }
+      }
+    ]
+  },
+  "communities": [
+    {
+      "communityId": "worker-pool-a",
+      "governorNodeId": "node-6",
+      "communityTerm": 3,
+      "communityEpoch": { "rabiaTerm": 3, "localCounter": 42 },
+      "memberCount": 4,
+      "health": { "healthy": 4, "suspected": 0, "faulty": 0 },
+      "partitions": ["worker-pool-a"],
+      "lastAckAtCore": { "rabiaTerm": 7, "localCounter": 140 },
+      "quiescence": "QUIESCED",
+      "quiescenceDetail": ""
+    }
+  ],
+  "partitions": [
+    {
+      "partitionId": "core",
+      "ownerNodeId": "node-1",
+      "ownerCommunityId": "core",
+      "ownerEpoch": { "rabiaTerm": 7, "localCounter": 0 },
+      "ownershipTerm": 1
+    }
   ]
+}
+```
+
+**Response (no snapshot yet):**
+```json
+{
+  "epoch": null,
+  "rabiaTerm": 0,
+  "mode": "unknown",
+  "quiescence": "UNKNOWN",
+  "quiescenceDetail": "",
+  "core": { "desiredSize": 0, "members": [] },
+  "communities": [],
+  "partitions": []
 }
 ```
 

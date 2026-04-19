@@ -19,6 +19,7 @@ import org.pragmatica.aether.api.routes.ApiKeyRoutes;
 import org.pragmatica.aether.api.routes.BackupRoutes;
 import org.pragmatica.aether.api.routes.ClusterConfigRoutes;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
+import org.pragmatica.aether.api.routes.ClusterGenerationRoutes;
 import org.pragmatica.aether.api.routes.ClusterTopologyRoutes;
 import org.pragmatica.aether.api.routes.ConfigRoutes;
 import org.pragmatica.aether.api.routes.ControllerRoutes;
@@ -282,6 +283,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                  sliceInvoker,
                                                                  scheduledTaskStateRegistry));
         routeSources.add(ClusterTopologyRoutes.clusterTopologyRoutes(nodeSupplier));
+        routeSources.add(ClusterGenerationRoutes.clusterGenerationRoutes(nodeSupplier));
         routeSources.add(nodeSupplier.get().clusterTopologyManager()
                                          .map(ClusterConfigApplier::clusterConfigApplier)
                                          .map(applier -> ClusterConfigRoutes.clusterConfigRoutes(nodeSupplier, applier))

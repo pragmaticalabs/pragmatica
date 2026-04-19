@@ -9,8 +9,11 @@ import org.pragmatica.aether.api.ManagementApiResponses.GovernorsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.TopologyNodeDetail;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
+import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeHealth;
@@ -77,7 +80,10 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                            .filter(id -> isHealthy(topologyManager, id))
                                            .map(NodeId::id)
                                            .toList();
-        var coreCount = coreNodeIds.size();
+        var snapshot = node.nodeSnapshotCache().current();
+        var coreCount = snapshot.map(ClusterTopologyRoutes::snapshotCoreCount)
+                                    .or(() -> topologyManager.healthyActiveNodeCount());
+        var epoch = snapshot.map(s -> s.epoch().toString());
         var workerCount = Math.max(0, connectedPeers.size() - coreCount);
         var nodeDetails = allNodeIds.stream().map(id -> buildNodeDetail(topologyManager,
                                                                         id,
@@ -90,7 +96,16 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                                  topologyConfig.clusterSize(),
                                                  coreNodeIds,
                                                  connectedPeers.size(),
-                                                 nodeDetails);
+                                                 nodeDetails,
+                                                 epoch);
+    }
+
+    private static int snapshotCoreCount(ClusterGenerationSnapshot snapshot) {
+        return (int) snapshot.coreMembers().values()
+                                         .stream()
+                                         .filter(member -> member.lifecycle() == NodeLifecycleState.ON_DUTY)
+                                         .filter(member -> member.healthHint() == HealthHint.HEALTHY)
+                                         .count();
     }
 
     private static boolean isHealthy(TopologyManager tm, NodeId id) {

@@ -19,6 +19,7 @@ import org.pragmatica.aether.metrics.MetricsCollector;
 import org.pragmatica.aether.metrics.artifact.ArtifactMetricsCollector;
 import org.pragmatica.aether.metrics.deployment.DeploymentMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.node.generation.NodeSnapshotCache;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
 import org.pragmatica.aether.slice.SliceStore;
@@ -82,6 +83,7 @@ public interface ManageableNode {
     Map<String, StorageFactory.StorageSetup> storageSetups();
     Option<ClusterTopologyManager> clusterTopologyManager();
     Option<CertificateRenewalScheduler> certRenewalScheduler();
+    NodeSnapshotCache nodeSnapshotCache();
     int connectedNodeCount();
     Map<String, Number> transportMetrics();
     Set<NodeId> connectedPeerIds();

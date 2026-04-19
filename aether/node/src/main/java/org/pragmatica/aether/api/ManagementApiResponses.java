@@ -311,9 +311,50 @@ public sealed interface ManagementApiResponses {
                                          int clusterSize,
                                          List<String> coreNodes,
                                          int connectedPeerCount,
-                                         List<TopologyNodeDetail> nodeDetails){}
+                                         List<TopologyNodeDetail> nodeDetails,
+                                         Option<String> epoch){}
 
     record TopologyNodeDetail(String nodeId, String role, String health, String hostname, String zone, String address){}
+
+    record ClusterGenerationResponse(Option<EpochInfo> epoch,
+                                     long rabiaTerm,
+                                     String mode,
+                                     String quiescence,
+                                     String quiescenceDetail,
+                                     ClusterGenerationCore core,
+                                     List<ClusterGenerationCommunity> communities,
+                                     List<ClusterGenerationPartition> partitions){}
+
+    record EpochInfo(long rabiaTerm, long localCounter){}
+
+    record ClusterGenerationCore(int desiredSize, List<ClusterGenerationMember> members){}
+
+    record ClusterGenerationMember(String nodeId,
+                                   String host,
+                                   int port,
+                                   String lifecycle,
+                                   String healthHint,
+                                   EpochInfo joinedEpoch,
+                                   EpochInfo lastSeenEpoch){}
+
+    record ClusterGenerationCommunity(String communityId,
+                                      String governorNodeId,
+                                      long communityTerm,
+                                      EpochInfo communityEpoch,
+                                      int memberCount,
+                                      ClusterGenerationHealth health,
+                                      List<String> partitions,
+                                      EpochInfo lastAckAtCore,
+                                      String quiescence,
+                                      String quiescenceDetail){}
+
+    record ClusterGenerationHealth(int healthy, int suspected, int faulty){}
+
+    record ClusterGenerationPartition(String partitionId,
+                                      String ownerNodeId,
+                                      String ownerCommunityId,
+                                      EpochInfo ownerEpoch,
+                                      long ownershipTerm){}
 
     record GovernorsResponse(List<GovernorInfo> governors){}
 
