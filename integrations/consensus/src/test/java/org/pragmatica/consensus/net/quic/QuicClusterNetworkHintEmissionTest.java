@@ -143,8 +143,6 @@ class QuicClusterNetworkHintEmissionTest {
                 return result;
             }
             @Override public void reconcile(NetworkServiceMessage.ConnectedNodesList connectedNodesList) {}
-            @Override public void handleAddNodeMessage(TopologyManagementMessage.AddNode message) {}
-            @Override public void handleRemoveNodeMessage(TopologyManagementMessage.RemoveNode removeNode) {}
             @Override public void registerPeer(NodeInfo peerInfo) {}
             @Override public void unregisterPeer(NodeId peerId) {}
             @Override public void handleDiscoverNodes(NetworkMessage.DiscoverNodes discoverNodes) {}

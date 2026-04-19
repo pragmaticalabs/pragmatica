@@ -25,9 +25,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// Verifies the public peer-registration API on `TopologyObserver`. These are the
-/// methods that network adapters now call directly instead of routing
-/// `TopologyManagementMessage.AddNode/RemoveNode` through the message router.
+/// Verifies the public peer-registration API on `TopologyObserver`. Network adapters
+/// call `registerPeer`/`unregisterPeer` directly on Hello handshake / confirmed peer
+/// departure; no `TopologyManagementMessage` routing is involved.
 class TopologyObserverTest {
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId PEER_A = nodeId("node-a").unwrap();
@@ -166,35 +166,12 @@ class TopologyObserverTest {
         }
 
         @Test
-        void unregisterPeer_tombstonesNodeAgainstReconciliation() {
-            // The tombstone path is the same one exercised by handleRemoveNodeMessage; verify
-            // direct unregister sets it by checking the legacy handler delegates symmetrically.
-            var observerA = newObserver(MessageRouter.mutable());
-            var observerB = newObserver(MessageRouter.mutable());
-
-            observerA.unregisterPeer(PEER_A);
-            observerB.handleRemoveNodeMessage(new TopologyManagementMessage.RemoveNode(PEER_A));
-
-            assertThat(observerA.topology()).isEqualTo(observerB.topology());
-        }
-    }
-
-    @Nested
-    class LegacyRouterHandlersDelegateToPublicApi {
-        @Test
-        void handleAddNodeMessage_delegatesToRegisterPeer() {
+        void unregisterPeer_tombstonesAgainstReconciliation() {
+            // unregisterPeer marks the peer as tombstoned so static-config reconciliation
+            // (initReconcile) will not resurrect it from config.coreNodes().
             var observer = newObserver(MessageRouter.mutable());
 
-            observer.handleAddNodeMessage(new TopologyManagementMessage.AddNode(INFO_NEW));
-
-            assertThat(observer.topology()).contains(NEW_PEER);
-        }
-
-        @Test
-        void handleRemoveNodeMessage_delegatesToUnregisterPeer() {
-            var observer = newObserver(MessageRouter.mutable());
-
-            observer.handleRemoveNodeMessage(new TopologyManagementMessage.RemoveNode(PEER_A));
+            observer.unregisterPeer(PEER_A);
 
             assertThat(observer.topology()).doesNotContain(PEER_A);
         }

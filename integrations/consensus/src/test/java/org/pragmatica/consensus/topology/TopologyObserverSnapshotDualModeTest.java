@@ -203,7 +203,7 @@ class TopologyObserverSnapshotDualModeTest {
             var observer = observerWith(source);
 
             var newPeer = NodeInfo.nodeInfo(PEER_C, NodeAddress.nodeAddress("localhost", 5003).unwrap());
-            observer.handleAddNodeMessage(new TopologyManagementMessage.AddNode(newPeer));
+            observer.registerPeer(newPeer);
 
             // Legacy in-memory state sees the new node: topology()/coreNodes() reflect it
             // because no snapshot is live.

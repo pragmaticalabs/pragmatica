@@ -141,7 +141,6 @@ import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.consensus.topology.TopologyObserver;
-import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
@@ -1907,8 +1906,6 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onConnectionFailed));
         entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionFailed.class,
                                               topologyManager::handleConnectionFailed));
-        entries.add(MessageRouter.Entry.route(TopologyManagementMessage.RemoveNode.class,
-                                              topologyManager::handleRemoveNodeMessage));
         entries.add(MessageRouter.Entry.route(OperationalEvent.AccessDenied.class, eventAggregator::onAccessDenied));
         entries.add(MessageRouter.Entry.route(OperationalEvent.NodeLifecycleChanged.class,
                                               eventAggregator::onNodeLifecycleChanged));

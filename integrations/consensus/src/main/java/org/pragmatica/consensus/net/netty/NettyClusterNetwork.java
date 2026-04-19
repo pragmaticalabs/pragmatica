@@ -195,8 +195,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
         channelEstablishedAt.put(hello.sender(), System.nanoTime());
         // Track passive peers
         trackPassiveRole(hello.sender(), unknownNodeInfo);
-        // Register BEFORE ConnectionEstablished if unknown — direct call replaces the legacy
-        // TopologyManagementMessage.AddNode router-routed path.
+        // Register BEFORE ConnectionEstablished if unknown — direct call on topology observer.
         unknownNodeInfo.onPresent(topologyManager::registerPeer);
         router.route(new NetworkServiceMessage.ConnectionEstablished(hello.sender()));
         processViewChange(ADD, hello.sender());

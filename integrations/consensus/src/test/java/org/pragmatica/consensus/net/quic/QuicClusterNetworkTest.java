@@ -209,7 +209,6 @@ class QuicClusterNetworkTest {
         router.addRoute(TopologyChangeNotification.NodeRemoved.class, _ -> {});
         router.addRoute(TopologyChangeNotification.NodeDown.class, _ -> {});
         router.addRoute(QuorumStateNotification.class, _ -> {});
-        router.addRoute(TopologyManagementMessage.AddNode.class, _ -> {});
         router.addRoute(NetworkServiceMessage.Send.class, _ -> {});
         router.addRoute(NetworkServiceMessage.ConnectedNodesList.class, _ -> {});
         return router;
@@ -289,8 +288,6 @@ class QuicClusterNetworkTest {
             }
 
             @Override public void reconcile(NetworkServiceMessage.ConnectedNodesList connectedNodesList) {}
-            @Override public void handleAddNodeMessage(TopologyManagementMessage.AddNode message) {}
-            @Override public void handleRemoveNodeMessage(TopologyManagementMessage.RemoveNode removeNode) {}
             @Override public void registerPeer(NodeInfo peerInfo) {}
             @Override public void unregisterPeer(NodeId peerId) {}
             @Override public void handleDiscoverNodes(NetworkMessage.DiscoverNodes discoverNodes) {}

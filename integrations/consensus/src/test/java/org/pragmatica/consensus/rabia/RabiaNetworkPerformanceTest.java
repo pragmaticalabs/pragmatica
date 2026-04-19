@@ -33,7 +33,6 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncRespo
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyConfig;
-import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -271,8 +270,6 @@ class RabiaNetworkPerformanceTest {
                                                 .expect("valid topology config");
 
             // Wire up topology manager message routes
-            router.addRoute(TopologyManagementMessage.AddNode.class, topologyManager::handleAddNodeMessage);
-            router.addRoute(TopologyManagementMessage.RemoveNode.class, topologyManager::handleRemoveNodeMessage);
             router.addRoute(NetworkMessage.DiscoverNodes.class, topologyManager::handleDiscoverNodes);
             router.addRoute(NetworkMessage.DiscoveredNodes.class, topologyManager::handleDiscoveredNodes);
             router.addRoute(NetworkServiceMessage.ConnectedNodesList.class, topologyManager::reconcile);

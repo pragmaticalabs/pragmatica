@@ -9,7 +9,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
-import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
@@ -37,16 +36,13 @@ class CoreSwimReconnectTest {
     private static final NodeId PEER_C = new NodeId("node-4");
     private static final NodeId PEER_D = new NodeId("node-5");
 
-    private final List<TopologyManagementMessage.RemoveNode> removeNotifications = new ArrayList<>();
     private final List<NetworkServiceMessage.DisconnectNode> disconnectNotifications = new ArrayList<>();
     private CoreSwimHealthDetector detector;
 
     @BeforeEach
     void setUp() {
-        removeNotifications.clear();
         disconnectNotifications.clear();
         var router = MessageRouter.mutable();
-        router.addRoute(TopologyManagementMessage.RemoveNode.class, removeNotifications::add);
         router.addRoute(NetworkServiceMessage.DisconnectNode.class, disconnectNotifications::add);
 
         var nodeSelf = NodeInfo.nodeInfo(SELF, NodeAddress.nodeAddress("127.0.0.1", 9001).unwrap());
@@ -65,9 +61,9 @@ class CoreSwimReconnectTest {
     @Nested
     class FaultyEmission {
         @Test
-        void singleFaulty_routesDisconnectOnly_noRemoveNode() throws InterruptedException {
+        void singleFaulty_routesDisconnectOnly() throws InterruptedException {
             // Per cluster-generation-spec §13.1: CoreSwimHealthDetector no longer emits
-            // TopologyManagementMessage.RemoveNode on SWIM FAULTY. The authoritative
+            // any topology-mutation message on SWIM FAULTY. The authoritative
             // NodeLifecycleKey = LEFT write now flows through HealthReconciler on the
             // leader after consuming SwimHint + PingTimeout signals.
             var faultyMember = SwimMember.swimMember(PEER_A, MemberState.FAULTY, 0,
@@ -76,23 +72,20 @@ class CoreSwimReconnectTest {
             detector.onMemberFaulty(faultyMember);
             Thread.sleep(100);
 
-            assertThat(removeNotifications).isEmpty();
             assertThat(disconnectNotifications).hasSize(1);
             assertThat(disconnectNotifications.getFirst().nodeId()).isEqualTo(PEER_A);
         }
 
         @Test
-        void massFaulty_localDisconnectGuardStillRoutesNothing() throws InterruptedException {
+        void massFaulty_localDisconnectGuardStillRoutesDisconnectOnly() throws InterruptedException {
             // Without a running SWIM protocol (members() empty), isLocalDisconnect returns
-            // false and the fault is allowed through. It must still produce only a
-            // DisconnectNode and never a RemoveNode.
+            // false and the fault is allowed through. It must produce only a DisconnectNode.
             var faultyA = SwimMember.swimMember(PEER_A, MemberState.FAULTY, 0,
                                                 new InetSocketAddress("127.0.0.2", 9101));
 
             detector.onMemberFaulty(faultyA);
             Thread.sleep(100);
 
-            assertThat(removeNotifications).isEmpty();
             assertThat(disconnectNotifications).hasSize(1);
         }
     }

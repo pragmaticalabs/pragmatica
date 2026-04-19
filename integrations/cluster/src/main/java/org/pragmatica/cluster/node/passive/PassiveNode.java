@@ -26,8 +26,6 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
-import org.pragmatica.consensus.topology.TopologyManagementMessage.AddNode;
-import org.pragmatica.consensus.topology.TopologyManagementMessage.RemoveNode;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.SetClusterSize;
 import org.pragmatica.lang.Option;
 import org.pragmatica.net.tcp.TlsConfig;
@@ -111,9 +109,7 @@ public interface PassiveNode<K extends StructuredKey, V> {
                                              delegateRouter, serverSsl, clientSsl);
 
         var topologyMgmtRoutes = SealedBuilder.from(TopologyManagementMessage.class)
-                                              .route(route(AddNode.class, topologyManager::handleAddNodeMessage),
-                                                     route(RemoveNode.class, topologyManager::handleRemoveNodeMessage),
-                                                     route(SetClusterSize.class, topologyManager::handleSetClusterSize));
+                                              .route(route(SetClusterSize.class, topologyManager::handleSetClusterSize));
 
         var networkMsgRoutes = SealedBuilder.from(NetworkMessage.class)
                                             .route(route(DiscoverNodes.class, topologyManager::handleDiscoverNodes),

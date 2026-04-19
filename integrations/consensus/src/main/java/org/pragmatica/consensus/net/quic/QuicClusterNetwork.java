@@ -434,8 +434,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         quicMetrics.onConnectionEstablished();
         installWritabilityHandler(connection, peerId);
 
-        // Register BEFORE ConnectionEstablished if unknown — direct call replaces the legacy
-        // TopologyManagementMessage.AddNode router-routed path.
+        // Register BEFORE ConnectionEstablished if unknown — direct call on topology observer.
         unknownNodeInfo.onPresent(topologyManager::registerPeer);
         router.route(new NetworkServiceMessage.ConnectionEstablished(peerId));
         processViewChange(ADD, peerId);
@@ -651,13 +650,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // itself is deferred. Kept alongside the existing TopologyChangeNotification path.
                 disconnectListener.onDisconnect(peerId);
                 if (!currentlyHaveQuorum && quorumEstablished.get()) {
-                    // Defer RemoveNode during quorum-loss hysteresis — prevents topology destruction on
+                    // Defer peer-removal during quorum-loss hysteresis — prevents topology destruction on
                     // transient disconnects. If peer reconnects within the window, pendingRemovals is
                     // cleared. If hysteresis expires, all pending peers are removed.
                     pendingRemovals.add(peerId);
                     handleQuorumLossCandidate();
                 } else if (inPostEstablishGrace.get() && currentlyHaveQuorum && quorumEstablished.get()) {
-                    // Defer RemoveNode during post-establish grace — absorbs transient drops that arrive
+                    // Defer peer-removal during post-establish grace — absorbs transient drops that arrive
                     // just after initial establishment without crossing the quorum threshold. Reconnect
                     // within the grace window cancels the removal (ADD branch clears pendingRemovals);
                     // grace expiry flushes any stuck removals in onPostEstablishGraceComplete.
@@ -712,7 +711,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     /// Post-establish grace: after the cluster reports ESTABLISHED, buffer single-peer REMOVE events
     /// (that still leave quorum intact) for a configurable window. A reconnect clears the buffer;
-    /// expiry flushes any stuck removals as real RemoveNode events. Inoculates against transient
+    /// expiry flushes any stuck removals as real peer-unregister events. Inoculates against transient
     /// QUIC drops that arrive just after establishment.
     private void startPostEstablishGrace() {
         cancelPostEstablishGraceTimer();

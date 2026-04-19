@@ -51,22 +51,13 @@ public interface TopologyObserver extends TopologyManager {
     @MessageReceiver
     void reconcile(NetworkServiceMessage.ConnectedNodesList connectedNodesList);
 
-    @MessageReceiver
-    void handleAddNodeMessage(TopologyManagementMessage.AddNode message);
-
-    @MessageReceiver
-    void handleRemoveNodeMessage(TopologyManagementMessage.RemoveNode removeNode);
-
     /// Idempotently add a peer to the topology. Network adapters call this directly when an
-    /// unknown peer completes the Hello handshake — replaces the legacy
-    /// `TopologyManagementMessage.AddNode` router-routed path while leaving the message type
-    /// intact for any remaining external callers.
+    /// unknown peer completes the Hello handshake (QUIC/Netty Hello handlers → `registerPeer`).
     @Contract void registerPeer(NodeInfo peerInfo);
 
     /// Idempotently remove a peer from the topology and tombstone it so static-config
     /// reconciliation will not resurrect it. Network adapters call this directly on confirmed
-    /// peer departures — replaces the legacy `TopologyManagementMessage.RemoveNode`
-    /// router-routed path while leaving the message type intact.
+    /// peer departures.
     @Contract void unregisterPeer(NodeId peerId);
 
     @MessageReceiver
@@ -210,16 +201,6 @@ public interface TopologyObserver extends TopologyManager {
                 Option.option(nodeStatesById.get(id))
                       .filter(state -> state.canAttemptConnection(now()))
                       .onPresent(_ -> requestConnection(id));
-            }
-
-            @Override
-            public void handleAddNodeMessage(TopologyManagementMessage.AddNode message) {
-                registerPeer(message.nodeInfo());
-            }
-
-            @Override
-            public void handleRemoveNodeMessage(TopologyManagementMessage.RemoveNode removeNode) {
-                unregisterPeer(removeNode.nodeId());
             }
 
             @Override

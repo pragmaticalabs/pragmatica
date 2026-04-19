@@ -6,7 +6,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.lang.Option;
@@ -61,8 +60,6 @@ class ClusterTopologyManagerIT {
                 topologyManager = tcpManager;
 
                 // Register routes for @MessageReceiver methods
-                router.addRoute(TopologyManagementMessage.AddNode.class, tcpManager::handleAddNodeMessage);
-                router.addRoute(TopologyManagementMessage.RemoveNode.class, tcpManager::handleRemoveNodeMessage);
                 router.addRoute(NetworkMessage.DiscoverNodes.class, tcpManager::handleDiscoverNodes);
                 router.addRoute(NetworkMessage.DiscoveredNodes.class, tcpManager::handleDiscoveredNodes);
                 router.addRoute(NetworkServiceMessage.ConnectedNodesList.class, tcpManager::reconcile);
