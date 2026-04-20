@@ -796,13 +796,19 @@ public interface AetherNode extends ManageableNode {
                                                                  isLeaderGate,
                                                                  config.autoHeal(),
                                                                  generationChangedSink);
-        Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier = () -> isLeaderGate.get()
-                                                                            ? Option.some(healthReconciler.currentSnapshot())
-                                                                            : Option.none();
-        cdmSnapshotSupplierRef.set(snapshotSupplier);
         java.util.function.Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder = serializer::encode;
         java.util.function.Function<byte[], Option<ClusterGenerationSnapshot>> snapshotDecoder = bytes -> decodeSnapshot(deserializer,
                                                                                                                          bytes);
+        var nodeSnapshotCache = NodeSnapshotCache.nodeSnapshotCache(config.self(), snapshotDecoder);
+        // Leader path: the HealthReconciler owns the authoritative snapshot and broadcasts it
+        // via ClusterSyncPing. Follower path: nodeSnapshotCache holds the last received snapshot.
+        // Consumers that live on any node (e.g. CDM delegated to a follower via the DEPLOYMENT
+        // task group) MUST fall back to the follower path — otherwise they see Option.none()
+        // on every non-leader node and allocation stalls with "No allocatable nodes".
+        Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier = () -> isLeaderGate.get()
+                                                                            ? Option.some(healthReconciler.currentSnapshot())
+                                                                            : nodeSnapshotCache.current();
+        cdmSnapshotSupplierRef.set(snapshotSupplier);
         var metricsScheduler = ClusterSyncScheduler.clusterSyncScheduler(config.self(),
                                                                          clusterNode.network(),
                                                                          metricsCollector,
@@ -816,7 +822,6 @@ public interface AetherNode extends ManageableNode {
                                                                          leaderEpochSupplier);
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
         metricsCollector.setPeerObservationBuffer(metricsScheduler);
-        var nodeSnapshotCache = NodeSnapshotCache.nodeSnapshotCache(config.self(), snapshotDecoder);
         Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT).filter(v -> v instanceof AetherValue.ClusterConfigValue)
                                                                                                 .map(v -> (AetherValue.ClusterConfigValue) v);
         java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> clusterCommandApplier = commands -> clusterNode.apply(commands);
