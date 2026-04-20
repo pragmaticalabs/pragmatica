@@ -10,29 +10,49 @@ import org.pragmatica.lang.Unit;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 
 
 /// Order persistence adapter.
 ///
-/// Demonstrates @PgSql patterns from the spec:
-/// - @Query with named parameters and joins
-/// - Auto-generated CRUD (findById, findByStatus, save, deleteById)
-/// - countByStatus, existsById
-/// - Query record parameter
-/// - Return type projection (OrderWithUserName = joined subset)
-/// - OrderBy clause in auto-generated methods
+/// Exercises the @PgSql surface against realistic SQL:
+/// - @Query with JOIN
+/// - @Query with subquery in WHERE
+/// - Explicit @Query INSERT / UPDATE
+/// - Auto-generated CRUD `save()` with full-row record expansion
+/// - Auto-generated CRUD with operator suffix `Not` and `OrderBy` narrowing
+/// - Advanced column types in return records: JSONB, UUID, GENERATED column.
+///
+/// All @Query parameters are String/Long/double so the generated factory's
+/// short-form type names resolve without requiring extra imports.
 @PgSql public interface OrderPersistence {
-    record OrderRow(long id, long userId, BigDecimal total, String status, Instant createdAt){}
+    record OrderRow(long id,
+                    long userId,
+                    BigDecimal total,
+                    String status,
+                    Instant createdAt,
+                    String metadata,
+                    UUID correlationId,
+                    BigDecimal totalWithTax){}
 
-    record CreateOrderRequest(long userId, BigDecimal total, String status){}
+    record OrderSummary(long id, long userId, BigDecimal total, String status){}
 
     record OrderWithUserName(long id, String userName, BigDecimal total, String status){}
 
-    @Query("SELECT o.id, u.name AS user_name, o.total, o.status FROM orders o JOIN users u ON o.user_id = u.id WHERE o.user_id = :userId") Promise<List<OrderWithUserName>> findOrdersWithUserName(Long userId);
+    @Query("SELECT o.id, u.name AS user_name, o.total, o.status " + "FROM orders o JOIN users u ON o.user_id = u.id " + "WHERE o.user_id = :userId") Promise<List<OrderWithUserName>> findOrdersWithUserName(Long userId);
 
-    @Query("INSERT INTO orders VALUES(:request) RETURNING *") Promise<OrderRow> createOrder(CreateOrderRequest request);
+    @Query("SELECT id, user_id, total, status FROM orders " + "WHERE user_id IN (SELECT id FROM users WHERE email LIKE :domain)") Promise<List<OrderSummary>> findOrdersByUserEmailDomain(String domain);
+    @Query("INSERT INTO orders (user_id, total, status) " + "VALUES (:userId, :total, :status) RETURNING *") Promise<OrderRow> createOrder(Long userId,
+                                                                                                                                           double total,
+                                                                                                                                           String status);
+
+    @Query("UPDATE orders SET status = :status WHERE id = :id") Promise<Unit> updateStatus(String status, Long id);
+
+    Promise<OrderRow> save(OrderRow order);
     @Table(OrderRow.class) Promise<Option<OrderRow>> findById(Long id);
+    @Table(OrderRow.class) Promise<Unit> deleteById(Long id);
     Promise<List<OrderRow>> findByStatusOrderByCreatedAtDesc(String status);
+    Promise<List<OrderRow>> findByStatusNot(String status);
     @Table(OrderRow.class) Promise<Long> countByStatus(String status);
     @Table(OrderRow.class) Promise<Boolean> existsById(Long id);
 }
