@@ -52,9 +52,6 @@ public interface HttpRoutePublisher {
                                 ClassLoader classLoader,
                                 Object sliceInstance,
                                 SliceInvokerFacade invokerFacade);
-    /// Pre-check: does this slice instance expose any HTTP routes? Runs the same
-    /// ServiceLoader discovery as publishRoutes but never mutates state or touches consensus.
-    /// Used by NodeDeploymentManager to decide whether the ROUTING state is needed.
     boolean hasRoutes(ClassLoader classLoader, Object sliceInstance);
     Promise<Unit> unpublishRoutes(Artifact artifact);
     Option<HttpRequestHandler> getHandler(Artifact artifact);
@@ -184,11 +181,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
 
     @Override public boolean hasRoutes(ClassLoader classLoader, Object sliceInstance) {
         var routerFactories = ServiceLoader.load(SliceRouterFactory.class, classLoader);
-        for (var factory : routerFactories) {
-            if (factory.sliceType().isInstance(sliceInstance) && factory instanceof RouteSource routeSource) {
-                return !routeMetadataExtractor.extract(routeSource, "").isEmpty();
-            }
-        }
+        for (var factory : routerFactories) {if (factory.sliceType().isInstance(sliceInstance) && factory instanceof RouteSource routeSource) {return ! routeMetadataExtractor.extract(routeSource,
+                                                                                                                                                                                       "")
+        .isEmpty();}}
         var handlerFactories = ServiceLoader.load(HttpRequestHandlerFactory.class, classLoader);
         return handlerFactories.iterator().hasNext();
     }
