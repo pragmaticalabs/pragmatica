@@ -598,7 +598,12 @@ public class RabiaEngine<C extends Command> {
 
     private void restoreState(SavedState<C> state) {
         syncResponses.clear();
+        // Always carry forward the source's lastCommittedPhase + pendingBatches even when
+        // the state-machine snapshot is empty. V0 decisions advance phase without touching
+        // the state machine, so a syncing node that ignores the empty-snapshot phase ends
+        // up perpetually `MAX_PHASE_AHEAD` behind and burns its retry budget on resyncs.
         if (state.snapshot().length == 0) {
+            applyRestoredState(state);
             activate();
             return;
         }

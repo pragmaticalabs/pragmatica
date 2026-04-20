@@ -83,14 +83,19 @@ class QuicClusterNetworkHintEmissionTest {
     }
 
     @Test
-    void disconnect_unknownPeer_doesNotEmitListener() {
+    void disconnect_unknownPeer_propagatesListenerForTopologyRemoval() {
+        // SWIM-driven DisconnectNode is the authoritative "this peer is gone" signal —
+        // even if we never had a live QUIC link, the REMOVE view-change must fire so
+        // topology and HealthReconciler see the departure. Otherwise peers whose
+        // connection tore down before lifecycle promotion stay in coreNodes forever.
         var captured = new CopyOnWriteArrayList<NodeId>();
         QuicDisconnectListener listener = captured::add;
         var network = createNetworkWithListener(NodeId.randomNodeId(), List.of(), MessageRouter.mutable(), listener);
 
-        network.disconnect(new NetworkServiceMessage.DisconnectNode(new NodeId("missing")));
+        var missing = new NodeId("missing");
+        network.disconnect(new NetworkServiceMessage.DisconnectNode(missing));
 
-        assertThat(captured).as("No listener fire for peer that was never connected").isEmpty();
+        assertThat(captured).as("REMOVE view-change fires listener even without a prior QUIC link").containsExactly(missing);
     }
 
     @Test

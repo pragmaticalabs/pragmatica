@@ -154,6 +154,18 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         emitHint(nodeId, HealthHint.HEALTHY);
     }
 
+    @SuppressWarnings("JBCT-RET-01") public void onNodeConnected(NodeInfo peer) {
+        swimProtocol.get()
+                        .onPresent(protocol -> {
+                                       var nodeId = peer.id();
+                                       if (protocol.members().containsKey(nodeId)) {protocol.markAlive(nodeId);} else {addAndLogSeedMember(protocol,
+                                                                                                                                           nodeId,
+                                                                                                                                           toSwimAddress(peer));}
+                                   });
+        clearLocalDisconnectFlag();
+        emitHint(peer.id(), HealthHint.HEALTHY);
+    }
+
     @Override@SuppressWarnings("JBCT-RET-01") public void onMemberJoined(SwimMember member) {
         log.info("SWIM member joined: {}", member.nodeId());
         clearLocalDisconnectFlag();

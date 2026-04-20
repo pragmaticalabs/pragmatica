@@ -291,8 +291,9 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
                                       int selfPort,
                                       Map<String, String> labels,
                                       Option<AetherConfig> aetherConfig) {
+        var selfHost = resolveHostname();
         var selfInfo = NodeInfo.nodeInfo(self,
-                                         nodeAddress("localhost", selfPort).expect("localhost is a valid node address"),
+                                         nodeAddress(selfHost, selfPort).expect("self host is a valid node address"),
                                          NodeRole.ACTIVE,
                                          labels);
         return findArg("--peers=").map(peersStr -> parsePeersFromString(peersStr, self, selfInfo))

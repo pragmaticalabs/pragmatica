@@ -227,33 +227,36 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @Override
-    @SuppressWarnings("JBCT-PAT-01") // Channel protection window check
+    @SuppressWarnings("JBCT-PAT-01") // Channel protection window check + always-emit REMOVE
     public void disconnect(DisconnectNode disconnectNode) {
         var nodeId = disconnectNode.nodeId();
         var connection = peerLinks.get(nodeId);
-        if (connection == null) {
-            log.debug("DisconnectNode for {} ignored: no connection in peerLinks", nodeId);
-            return;
+        // SWIM-driven DisconnectNode is the authoritative "this peer is gone" signal.
+        // We must always propagate REMOVE to topology so the snapshot prunes the peer,
+        // even if the QUIC link is already torn down (e.g., evicted earlier by send-path
+        // or never fully established). Otherwise CTM-provisioned replacements that die
+        // mid-flight stay in coreNodes forever — `coreCount=6` while `coreMax=5`.
+        if (connection != null) {
+            var establishedAt = connectionEstablishedAt.getOrDefault(nodeId, 0L);
+            var connectionAge = System.nanoTime() - establishedAt;
+            var protectionNanos = topologyManager.helloTimeout().nanos() * 3;
+            if (connectionAge < protectionNanos) {
+                log.debug("DisconnectNode for {} ignored: connection is fresh (protection window)", nodeId);
+                return;
+            }
+            if (peerLinks.remove(nodeId, connection)) {
+                connectionEstablishedAt.remove(nodeId);
+                passivePeers.remove(nodeId);
+                cleanupPeerQueues(nodeId);
+                quicMetrics.onConnectionClosed();
+                connection.close()
+                          .onSuccess(_ -> log.info("Node {} disconnected from node {}", self.id(), nodeId))
+                          .onFailure(cause -> log.warn("Node {} failed to disconnect from node {}: {}", self.id(), nodeId, cause.message()));
+            }
+        } else {
+            log.debug("DisconnectNode for {} — no peer link present, propagating REMOVE to topology only", nodeId);
         }
-        var establishedAt = connectionEstablishedAt.getOrDefault(nodeId, 0L);
-        var connectionAge = System.nanoTime() - establishedAt;
-        var protectionNanos = topologyManager.helloTimeout().nanos() * 3;
-        if (connectionAge < protectionNanos) {
-            log.debug("DisconnectNode for {} ignored: connection is fresh (protection window)", nodeId);
-            return;
-        }
-        if (!peerLinks.remove(nodeId, connection)) {
-            log.debug("DisconnectNode for {} ignored: connection already replaced", nodeId);
-            return;
-        }
-        connectionEstablishedAt.remove(nodeId);
-        passivePeers.remove(nodeId);
-        cleanupPeerQueues(nodeId);
-        quicMetrics.onConnectionClosed();
         processViewChange(REMOVE, nodeId);
-        connection.close()
-                  .onSuccess(_ -> log.info("Node {} disconnected from node {}", self.id(), nodeId))
-                  .onFailure(cause -> log.warn("Node {} failed to disconnect from node {}: {}", self.id(), nodeId, cause.message()));
     }
 
     @Override
@@ -362,10 +365,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (peerLinks.containsKey(peerId)) {
             return;
         }
-        // Bypass ConnectionDirection when this node has NO connections — it's joining an existing cluster
-        // and must initiate contact regardless of ID ordering. Once connected, normal rules apply.
-        if (!peerLinks.isEmpty() && !ConnectionDirection.shouldInitiate(self.id(), peerId)) {
-            log.debug("Skipping connection to {}: higher NodeId does not initiate", peerId);
+        // Strict ConnectionDirection: only the lower NodeId initiates. The higher NodeId
+        // accepts the inbound connection. The previous "bypass when peerLinks empty" caused
+        // both sides to dial concurrently at cold start — both Hellos completed, the second
+        // arrival closed its own QuicChannel as duplicate, and that close cascaded a
+        // CONNECTION_CLOSE to the OTHER side's `peerLinks` entry (the kept server-accepted
+        // view shared the same UDP flow), silently killing reachability for cluster pairs.
+        if (!ConnectionDirection.shouldInitiate(self.id(), peerId)) {
+            log.debug("Skipping connection to {}: higher NodeId does not initiate (waits for inbound)", peerId);
             return;
         }
         // Prevent concurrent connection attempts to the same peer (TOCTOU race between
@@ -459,15 +466,30 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return;
         }
         if (!connection.isActive()) {
-            // The send path observes an inactive connection, but does NOT own peer removal —
-            // QUIC's own channel-close handler is the authoritative path for `unregisterPeer`
-            // and `processViewChange(REMOVE)`. Otherwise transient send-path misses during
-            // initial handshake settlement (one direction ready, other still racing) would
-            // prematurely drop the peer and break Rabia consensus quorum.
-            log.debug("Node {} connection observed inactive on send path — letting lifecycle owner handle removal", peerId);
+            // QUIC has no separate channel-close callback firing into this class, so dead
+            // connections must be evicted by whoever notices them first — typically the
+            // send path. Past the formation protection window we evict, REMOVE, and let
+            // reconnect happen. Within the window we silently skip to absorb handshake-
+            // settlement races (server-side ready, client-side still racing).
+            evictStaleConnection(peerId, connection);
             return;
         }
         writeToStream(peerId, message, connection);
+    }
+
+    private void evictStaleConnection(NodeId peerId, QuicPeerConnection connection) {
+        if (!peerLinks.remove(peerId, connection)) {
+            log.debug("Node {} stale link already replaced — nothing to evict", peerId);
+            return;
+        }
+        connectionEstablishedAt.remove(peerId);
+        cleanupPeerQueues(peerId);
+        quicMetrics.onConnectionClosed();
+        log.warn("Node {} evicted stale (inactive) link from peerLinks — peer remains in topology, reconnect will follow", peerId);
+        // Re-dial the peer if we are the initiator side. Higher NodeIds wait for inbound.
+        if (ConnectionDirection.shouldInitiate(self.id(), peerId)) {
+            topologyManager.get(peerId).onPresent(this::connectPeer);
+        }
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Stream selection and write

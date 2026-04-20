@@ -122,6 +122,29 @@ class CoreSwimHealthDetectorHintEmissionTest {
                                           assertThat(hint.state()).isEqualTo(HealthHint.HEALTHY);
                                       });
         }
+
+        /// Regression: CTM-provisioned replacements join the cluster via QUIC Hello with
+        /// NodeIds that are NOT in the static `topologyConfig.coreNodes()` list (e.g.
+        /// `aether-core-node-0-XXX`). The id-only `onNodeConnected` overload could not
+        /// resolve them via static lookup so SWIM never gained membership for them, and
+        /// when their containers later died there was no probe failure to drive REMOVE —
+        /// the phantom stayed in `coreNodes` indefinitely, making `coreCount > coreMax`.
+        ///
+        /// The `onNodeConnected(NodeInfo)` overload carries the address learned at QUIC
+        /// Hello time so SWIM can seed the dynamic peer regardless of static config.
+        @Test
+        void onNodeConnected_withDynamicallyLearnedPeer_emitsHealthyHint() {
+            var dynamic = new NodeId("aether-core-node-0-deadbeef");
+            var info = NodeInfo.nodeInfo(dynamic, NodeAddress.nodeAddress("aether-core-node-0-deadbeef", 9001).unwrap());
+
+            detector.onNodeConnected(info);
+
+            assertThat(emittedSignals).singleElement()
+                                      .isInstanceOfSatisfying(HealthSignal.SwimHint.class, hint -> {
+                                          assertThat(hint.nodeId()).isEqualTo(dynamic);
+                                          assertThat(hint.state()).isEqualTo(HealthHint.HEALTHY);
+                                      });
+        }
     }
 
     @Nested
