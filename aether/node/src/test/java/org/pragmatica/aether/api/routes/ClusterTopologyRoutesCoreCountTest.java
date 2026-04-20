@@ -120,6 +120,7 @@ class ClusterTopologyRoutesCoreCountTest {
                                                        case "topologyConfig" -> topologyConfig;
                                                        case "connectedPeerIds" -> Set.of(NODE_1, NODE_2);
                                                        case "nodeSnapshotCache" -> cache;
+                                                       case "currentGenerationSnapshot" -> snapshot;
                                                        default -> throw new UnsupportedOperationException("Not in test proxy: " + method.getName());
                                                    });
     }

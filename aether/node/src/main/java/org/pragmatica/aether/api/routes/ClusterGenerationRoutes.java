@@ -50,8 +50,7 @@ public final class ClusterGenerationRoutes implements RouteSource {
     }
 
     private ClusterGenerationResponse buildGenerationResponse() {
-        return nodeSupplier.get().nodeSnapshotCache()
-                               .current()
+        return nodeSupplier.get().currentGenerationSnapshot()
                                .map(ClusterGenerationRoutes::toResponse)
                                .or(ClusterGenerationRoutes::emptyResponse);
     }

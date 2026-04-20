@@ -217,7 +217,12 @@ class HealthReconcilerActivatorTest {
     }
 
     @Test
-    void onNodeLifecyclePut_onDuty_logsButDoesNotReact() {
+    void onNodeLifecyclePut_onDuty_reprojectsMembershipWithoutApplyingConsensusBatch() {
+        // ON_DUTY does not trigger any atom writes (no DECOMMISSIONED rebalance signal),
+        // but the activator MUST re-project the snapshot so lifecycles that land AFTER the
+        // initial leader-election projection still make it into coreMembers(). Otherwise the
+        // snapshot is frozen at whatever subset of nodes had written their lifecycle atoms
+        // the instant the leader was elected.
         activator.onLeaderChange(new LeaderChange(Option.some(SELF), true));
         seedWithTwoCoreNodes();
         var baseline = cluster.appliedBatches().size();

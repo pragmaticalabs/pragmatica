@@ -449,6 +449,7 @@ public interface AetherNode extends ManageableNode {
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
                           NodeSnapshotCache nodeSnapshotCache,
+                          Supplier<Option<ClusterGenerationSnapshot>> generationSnapshotSupplier,
                           Option<ManagementServer> managementServer,
                           Option<DiscoveryProvider> discoveryProvider,
                           Option<CertificateRenewalScheduler> certRenewalScheduler,
@@ -462,6 +463,10 @@ public interface AetherNode extends ManageableNode {
 
             @Override public TopologyManager topologyManager() {
                 return clusterNode.topologyManager();
+            }
+
+            @Override public Option<ClusterGenerationSnapshot> currentGenerationSnapshot() {
+                return generationSnapshotSupplier.get();
             }
 
             @Override public Promise<Unit> start() {
@@ -1043,8 +1048,10 @@ public interface AetherNode extends ManageableNode {
                                                                                    swimHealthDetector,
                                                                                    clusterNode.network(),
                                                                                    rotatingEncryptor)));
+        var topologyForSwim = clusterNode.topologyManager();
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
-                                                 connection -> swimHealthDetector.onNodeConnected(connection.nodeId())));
+                                                 connection -> topologyForSwim.get(connection.nodeId()).onPresent(swimHealthDetector::onNodeConnected)
+                                                                                  .onEmpty(() -> swimHealthDetector.onNodeConnected(connection.nodeId()))));
         var healthReconcilerActivator = HealthReconcilerActivator.healthReconcilerActivator(healthReconciler,
                                                                                             isLeaderGate,
                                                                                             projectorEarly,
@@ -1200,6 +1207,7 @@ public interface AetherNode extends ManageableNode {
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
                                   nodeSnapshotCache,
+                                  spokesmanSnapshotSupplier,
                                   Option.empty(),
                                   discoveryProvider,
                                   certRenewalScheduler,
@@ -1289,6 +1297,7 @@ public interface AetherNode extends ManageableNode {
                                                                               eventLoopMetricsCollector,
                                                                               swimHealthDetector,
                                                                               nodeSnapshotCache,
+                                                                              spokesmanSnapshotSupplier,
                                                                               Option.some(managementServer),
                                                                               discoveryProvider,
                                                                               certRenewalScheduler,

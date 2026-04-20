@@ -81,6 +81,7 @@ public interface HealthReconciler extends HealthSignalSink {
     Epoch currentEpoch();
     NodeId self();
     @Contract void seedSnapshot(ClusterGenerationSnapshot snapshot);
+    @Contract void reseedMembership(ClusterGenerationSnapshot freshProjection);
     long consensusApplyFailedCount();
 
     @Contract@Override default void emit(HealthSignal signal) {
@@ -170,6 +171,18 @@ record HealthReconcilerRecord(NodeId self,
 
     @Contract@Override public void seedSnapshot(ClusterGenerationSnapshot snapshot) {
         snapshotRef.set(snapshot);
+    }
+
+    @Contract@Override public void reseedMembership(ClusterGenerationSnapshot freshProjection) {
+        if (!isLeader.get() || !started.get()) {return;}
+        var current = snapshotRef.get();
+        if (current.coreMembers().equals(freshProjection.coreMembers()) && current.desiredCoreSize() == freshProjection.desiredCoreSize()) {return;}
+        var reason = freshProjection.coreMembers().size() >= current.coreMembers().size()
+                    ? GenerationReason.MEMBER_ADDED
+                    : GenerationReason.MEMBER_REMOVED;
+        updateAndBump(s -> s.withCoreMembers(freshProjection.coreMembers())
+                                            .withDesiredCoreSize(freshProjection.desiredCoreSize()),
+                      reason);
     }
 
     @Contract@Override public void onSignal(HealthSignal signal) {

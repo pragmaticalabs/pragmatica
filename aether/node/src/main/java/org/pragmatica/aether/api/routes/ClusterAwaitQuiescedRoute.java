@@ -117,8 +117,7 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
     private Promise<AwaitQuiescedResponse> pollUntilReadyOrTimeout(Epoch requested,
                                                                    long startNanos,
                                                                    long deadlineNanos) {
-        var snapshot = nodeSupplier.get().nodeSnapshotCache()
-                                       .current();
+        var snapshot = nodeSupplier.get().currentGenerationSnapshot();
         return snapshot.filter(s -> matchesQuiesced(s, requested)).map(s -> Promise.success(buildResponse(s, startNanos)))
                               .or(() -> waitOrTimeout(requested, startNanos, deadlineNanos));
     }

@@ -80,7 +80,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                            .filter(id -> isHealthy(topologyManager, id))
                                            .map(NodeId::id)
                                            .toList();
-        var snapshot = node.nodeSnapshotCache().current();
+        var snapshot = node.currentGenerationSnapshot();
         var coreCount = snapshot.map(ClusterTopologyRoutes::snapshotCoreCount)
                                     .or(() -> topologyManager.healthyActiveNodeCount());
         var epoch = snapshot.map(s -> s.epoch().toString());
@@ -101,10 +101,15 @@ public final class ClusterTopologyRoutes implements RouteSource {
     }
 
     private static int snapshotCoreCount(ClusterGenerationSnapshot snapshot) {
+        // Count members whose lifecycle is live (ON_DUTY or JOINING). Transient SWIM hint
+        // states (SUSPECTED) should NOT pull the count below the actual membership —
+        // otherwise brief flap during chaos recovery makes `coreCount < desiredMin` even
+        // after the node has rejoined and is ON_DUTY. Terminal states (DRAINING / DECOMMISSIONED
+        // / SHUTTING_DOWN) still count as leaving.
         return (int) snapshot.coreMembers().values()
                                          .stream()
-                                         .filter(member -> member.lifecycle() == NodeLifecycleState.ON_DUTY)
-                                         .filter(member -> member.healthHint() == HealthHint.HEALTHY)
+                                         .filter(member -> member.lifecycle() == NodeLifecycleState.ON_DUTY
+                                                           || member.lifecycle() == NodeLifecycleState.JOINING)
                                          .count();
     }
 

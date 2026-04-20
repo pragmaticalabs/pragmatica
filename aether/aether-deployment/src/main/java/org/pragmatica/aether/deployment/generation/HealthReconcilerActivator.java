@@ -335,6 +335,7 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
     @Contract@Override public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> notification) {
         if (!isLeaderGate.get()) {return;}
         retryBootstrapIfNeeded();
+        reconciler.reseedMembership(projectFromCommittedAtoms());
         var state = notification.cause().value()
                                       .state();
         if (state != NodeLifecycleState.DECOMMISSIONED) {return;}

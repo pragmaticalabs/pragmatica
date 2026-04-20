@@ -123,6 +123,9 @@ class ClusterGenerationRoutesTest {
                                                        if ("nodeSnapshotCache".equals(method.getName())) {
                                                            return cache;
                                                        }
+                                                       if ("currentGenerationSnapshot".equals(method.getName())) {
+                                                           return cache.current();
+                                                       }
                                                        throw new UnsupportedOperationException("Not in test proxy: " + method.getName());
                                                    });
     }
