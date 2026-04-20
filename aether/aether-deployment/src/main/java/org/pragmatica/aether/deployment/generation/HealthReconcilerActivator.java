@@ -211,15 +211,8 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
     }
 
     @Contract private void writeClusterConfigSeed(ClusterNode<KVCommand<AetherKey>> clusterNode, int initialSize) {
-        // Seed bounds intentionally wider than `initialSize`: the seed is a *fallback* for
-        // bootstrap before any operator `/api/cluster/config` push. Pinning coreMax to
-        // initialSize would force the operator's next scale-up command to be rejected by
-        // the `/api/cluster/scale` validator (`coreCount > coreMax`) with no obvious recovery
-        // path — they'd have to push a full cluster-config.toml first. `3 <= coreCount <= SEED_CORE_MAX`
-        // matches standard cluster-config.toml defaults and keeps scale operations unblocked
-        // until the operator pushes their own config.
         var coreMax = Math.max(initialSize, SEED_CORE_MAX);
-        if (coreMax % 2 == 0) { coreMax += 1; }
+        if (coreMax % 2 == 0) {coreMax += 1;}
         var seed = ClusterConfigValue.clusterConfigValue("",
                                                          "",
                                                          "1.0.0",
@@ -229,7 +222,10 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
                                                          "bootstrap-seed",
                                                          1L);
         KVCommand<AetherKey> command = new KVCommand.Put<AetherKey, AetherValue>(ClusterConfigKey.CURRENT, seed);
-        log.info("Seeding ClusterConfigValue with coreCount={}, coreMin={}, coreMax={}", initialSize, SEED_CORE_MIN, coreMax);
+        log.info("Seeding ClusterConfigValue with coreCount={}, coreMin={}, coreMax={}",
+                 initialSize,
+                 SEED_CORE_MIN,
+                 coreMax);
         clusterNode.apply(List.of(command))
                          .onFailure(cause -> log.warn("ClusterConfigValue seed failed: {}",
                                                       cause.message()));
@@ -326,13 +322,6 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
         var partitions = collectPartitions(kv);
         var spokesmen = collectSpokesmen(kv);
         var term = rabiaTermSupplier.get();
-        // desiredCoreSize is the OPERATOR INTENT carried in ClusterConfigValue.coreCount,
-        // not the currently-registered lifecycle count. Reading lifecycles.size() here
-        // prevented `setDesiredSize(7)` from ever propagating through the snapshot:
-        // the atom was written but the next projection still reported `desiredCoreSize=5`,
-        // so CTM's reconcile saw `actual == configured` and skipped provisioning.
-        // Fall back to `lifecycles.size()` only when no ClusterConfigValue atom has been
-        // seeded yet (fresh cluster pre-bootstrap).
         var desiredCoreSize = collectDesiredCoreSize(kv).or(lifecycles.size());
         var input = ClusterGenerationProjector.ProjectionInput.projectionInput(term,
                                                                                0L,
@@ -350,9 +339,8 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
     }
 
     private static Option<Integer> collectDesiredCoreSize(Map<AetherKey, AetherValue> kv) {
-        return Option.option(kv.get(AetherKey.ClusterConfigKey.CURRENT))
-                                     .filter(v -> v instanceof AetherValue.ClusterConfigValue)
-                                     .map(v -> ((AetherValue.ClusterConfigValue) v).coreCount());
+        return Option.option(kv.get(AetherKey.ClusterConfigKey.CURRENT)).filter(v -> v instanceof AetherValue.ClusterConfigValue)
+                            .map(v -> ((AetherValue.ClusterConfigValue) v).coreCount());
     }
 
     private static Map<NodeId, NodeLifecycleValue> collectLifecycles(Map<AetherKey, AetherValue> kv) {
@@ -421,16 +409,13 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
     @Contract@Override public void onClusterConfigPut(ValuePut<ClusterConfigKey, AetherValue.ClusterConfigValue> notification) {
         if (!isLeaderGate.get()) {return;}
         retryBootstrapIfNeeded();
-        // ClusterConfigValue.coreCount carries operator intent for desiredCoreSize.
-        // Re-project so the snapshot's desiredCoreSize catches up; without this,
-        // CTM's reconcile never sees the new target and scaling stalls.
-        reconciler.reseedMembership(projectFromCommittedAtoms());
+        reconciler.requestReprojection(this::projectFromCommittedAtoms, "cluster-config-put");
     }
 
     @Contract@Override public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> notification) {
         if (!isLeaderGate.get()) {return;}
         retryBootstrapIfNeeded();
-        reconciler.reseedMembership(projectFromCommittedAtoms());
+        reconciler.requestReprojection(this::projectFromCommittedAtoms, "node-lifecycle-put");
         var state = notification.cause().value()
                                       .state();
         if (state != NodeLifecycleState.DECOMMISSIONED) {return;}

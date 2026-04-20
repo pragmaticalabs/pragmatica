@@ -51,7 +51,9 @@ import java.util.function.BooleanSupplier;
                                                               observation.observedEpochCounter())));
     }
 
-    private static void emitConnectivity(ClusterSyncPong pong, PeerConnectivityObservation observation, HealthSignalSink sink) {
+    private static void emitConnectivity(ClusterSyncPong pong,
+                                         PeerConnectivityObservation observation,
+                                         HealthSignalSink sink) {
         sink.emit(new HealthSignal.RemoteConnectivity(pong.sender(),
                                                       observation.peerId(),
                                                       translateConnectivity(observation.state()),

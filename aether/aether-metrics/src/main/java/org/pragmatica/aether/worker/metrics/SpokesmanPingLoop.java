@@ -309,11 +309,11 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
                           Option<ClusterGenerationSnapshot> maybeSnapshot) {
         var payload = maybeSnapshot.map(snapshotEncoder::apply).map(SnapshotPayload::snapshotPayload);
         var ping = new ClusterSyncPing(self,
-                                   allMetricsSupplier.get(),
-                                   rabiaTerm,
-                                   epoch.rabiaTerm(),
-                                   epoch.localCounter(),
-                                   payload);
+                                       allMetricsSupplier.get(),
+                                       rabiaTerm,
+                                       epoch.rabiaTerm(),
+                                       epoch.localCounter(),
+                                       payload);
         network.send(governor, ping);
     }
 

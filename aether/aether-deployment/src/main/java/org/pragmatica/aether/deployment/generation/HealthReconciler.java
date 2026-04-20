@@ -43,6 +43,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -63,9 +68,17 @@ import static org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot.e
 /// See `aether/docs/specs/cluster-generation-spec.md` §8.
 ///
 /// Dormant in Commit 2 — wiring to bootstrap happens in Commit 4.
-/// Thread-confinement assumption: `onSignal` / `seedSnapshot` / `start` / `stop` are
-/// expected to be driven from a single thread at a time (leader-change activator is
-/// responsible for serializing start/stop transitions against signal processing).
+///
+/// Thread-confinement contract:
+///   - `onSignal` / `seedSnapshot` / `start` / `stop` / `reseedMembership` are driven
+///     from a single thread at a time (leader-change activator serializes start/stop
+///     transitions against signal processing).
+///   - `requestReprojection(...)` is the single entry point for re-projection triggered
+///     by KV-Store notifications. It is safe to call from arbitrary KV notification
+///     threads: a dedicated single-thread executor owned by the reconciler serializes
+///     the supplied projection calls and funnels their results into `reseedMembership`.
+///     A dirty-bit collapses bursts so the queue cannot grow unbounded.
+///
 /// Internal maps are `ConcurrentHashMap` for safety against occasional out-of-order
 /// reads by introspection APIs (e.g. tests, debug dumps), but the decision pipeline
 /// itself is single-writer.
@@ -85,6 +98,7 @@ public interface HealthReconciler extends HealthSignalSink {
     NodeId self();
     @Contract void seedSnapshot(ClusterGenerationSnapshot snapshot);
     @Contract void reseedMembership(ClusterGenerationSnapshot freshProjection);
+    @Contract void requestReprojection(Supplier<ClusterGenerationSnapshot> reprojectionSupplier, String reason);
     long consensusApplyFailedCount();
 
     @Contract@Override default void emit(HealthSignal signal) {
@@ -131,7 +145,10 @@ public interface HealthReconciler extends HealthSignalSink {
                                           new AtomicBoolean(false),
                                           new AtomicReference<>(Epoch.ZERO),
                                           new AtomicLong(),
-                                          PeerObservationReducer.peerObservationReducer());
+                                          PeerObservationReducer.peerObservationReducer(),
+                                          new AtomicReference<>(),
+                                          new AtomicBoolean(false),
+                                          new AtomicReference<>(Option.<Supplier<ClusterGenerationSnapshot>>none()));
     }
 }
 
@@ -146,16 +163,16 @@ record HealthReconcilerRecord(NodeId self,
                               AutoHealConfig autoHealConfig,
                               GenerationChangedSink generationChangedSink,
                               AtomicReference<ClusterGenerationSnapshot> snapshotRef,
-                              // leader-only decision state; not replicated (see onSignal guard + stop() clears)
                               Map<NodeId, Integer> consecutivePingMisses,
-                              // leader-only decision state; not replicated
                               Map<NodeId, HealthHint> swimHints,
-                              // leader-only decision state; not replicated
                               Set<NodeId> pendingRemovals,
                               AtomicBoolean started,
                               AtomicReference<Epoch> startEpoch,
                               AtomicLong consensusApplyFailed,
-                              PeerObservationReducer peerObservationReducer) implements HealthReconciler {
+                              PeerObservationReducer peerObservationReducer,
+                              AtomicReference<ExecutorService> reprojectionExecutorRef,
+                              AtomicBoolean reprojectionDirty,
+                              AtomicReference<Option<Supplier<ClusterGenerationSnapshot>>> reprojectionSupplierRef) implements HealthReconciler {
     private static final Logger log = LoggerFactory.getLogger(HealthReconcilerRecord.class);
 
     private static final String CORE_COMMUNITY_ID = "core";
@@ -163,6 +180,7 @@ record HealthReconcilerRecord(NodeId self,
     @Contract@Override public void start(Epoch leaderEpoch) {
         startEpoch.set(leaderEpoch);
         started.set(true);
+        ensureReprojectionExecutor();
         log.debug("HealthReconciler started at epoch {}", leaderEpoch);
     }
 
@@ -172,7 +190,40 @@ record HealthReconcilerRecord(NodeId self,
         consecutivePingMisses.clear();
         swimHints.clear();
         pendingRemovals.clear();
+        reprojectionDirty.set(false);
+        reprojectionSupplierRef.set(Option.<Supplier<ClusterGenerationSnapshot>>none());
+        shutdownReprojectionExecutor();
         log.debug("HealthReconciler stopped (reason={})", reason);
+    }
+
+    private void ensureReprojectionExecutor() {
+        if (reprojectionExecutorRef.get() != null) {return;}
+        var executor = Executors.newSingleThreadExecutor(reprojectionThreadFactory(self));
+        if (!reprojectionExecutorRef.compareAndSet(null, executor)) {executor.shutdownNow();}
+    }
+
+    private static ThreadFactory reprojectionThreadFactory(NodeId self) {
+        return runnable -> {
+            var thread = new Thread(runnable, "aether-reconciler-" + self.id());
+            thread.setDaemon(true);
+            return thread;
+        };
+    }
+
+    private void shutdownReprojectionExecutor() {
+        var executor = reprojectionExecutorRef.getAndSet(null);
+        if (executor == null) {return;}
+        executor.shutdown();
+        awaitReprojectionExecutorTermination(executor);
+    }
+
+    @Contract private static void awaitReprojectionExecutorTermination(ExecutorService executor) {
+        try {
+            if (!executor.awaitTermination(1, TimeUnit.SECONDS)) {executor.shutdownNow();}
+        } catch (InterruptedException _) {
+            Thread.currentThread().interrupt();
+            executor.shutdownNow();
+        }
     }
 
     @Contract@Override public boolean isActive() {
@@ -189,6 +240,43 @@ record HealthReconcilerRecord(NodeId self,
 
     @Contract@Override public void seedSnapshot(ClusterGenerationSnapshot snapshot) {
         snapshotRef.set(snapshot);
+    }
+
+    @Contract@Override public void requestReprojection(Supplier<ClusterGenerationSnapshot> reprojectionSupplier,
+                                                       String reason) {
+        if (reprojectionSupplier == null) {return;}
+        if (!isLeader.get() || !started.get()) {return;}
+        reprojectionSupplierRef.set(Option.some(reprojectionSupplier));
+        reprojectionDirty.set(true);
+        var executor = reprojectionExecutorRef.get();
+        if (executor == null) {return;}
+        submitReprojectionDrain(executor, reason);
+    }
+
+    @Contract private void submitReprojectionDrain(ExecutorService executor, String reason) {
+        try {
+            executor.execute(() -> drainReprojection(reason));
+        } catch (RejectedExecutionException _) {
+            log.trace("Reprojection request rejected (executor shut down) reason={}", reason);
+        }
+    }
+
+    @Contract private void drainReprojection(String reason) {
+        while (reprojectionDirty.compareAndSet(true, false)) {
+            if (!isLeader.get() || !started.get()) {return;}
+            var supplier = reprojectionSupplierRef.get();
+            supplier.onPresent(fn -> runOneReprojection(fn, reason));
+        }
+    }
+
+    @Contract private void runOneReprojection(Supplier<ClusterGenerationSnapshot> supplier, String reason) {
+        try {
+            var fresh = supplier.get();
+            if (fresh == null) {return;}
+            reseedMembership(fresh);
+        } catch (RuntimeException e) {
+            log.warn("Reprojection failed (reason={}): {}", reason, e.getMessage());
+        }
     }
 
     @Contract@Override public void reseedMembership(ClusterGenerationSnapshot freshProjection) {

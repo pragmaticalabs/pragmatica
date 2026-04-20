@@ -67,13 +67,9 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
     Map<NodeId, Epoch> observedEpochs();
     @Contract void onPongReceived(NodeId nodeId);
     @Contract void sendPingsNow();
-    /// Buffer a follower-side SWIM observation for inclusion in the next outbound pong.
-    @Contract @Override void pushHealth(PeerHealthObservation observation);
-    /// Buffer a follower-side QUIC connectivity observation for inclusion in the next outbound pong.
-    @Contract @Override void pushConnectivity(PeerConnectivityObservation observation);
-    /// Atomically drain all buffered health observations.
+    @Contract@Override void pushHealth(PeerHealthObservation observation);
+    @Contract@Override void pushConnectivity(PeerConnectivityObservation observation);
     @Override List<PeerHealthObservation> drainHealth();
-    /// Atomically drain all buffered connectivity observations.
     @Override List<PeerConnectivityObservation> drainConnectivity();
 
     static ClusterSyncScheduler clusterSyncScheduler(NodeId self,
@@ -133,7 +129,9 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
                                             epochSupplier);
     }
 
-    static ClusterSyncScheduler clusterSyncScheduler(NodeId self, ClusterNetwork network, ClusterSyncCollector clusterSyncCollector) {
+    static ClusterSyncScheduler clusterSyncScheduler(NodeId self,
+                                                     ClusterNetwork network,
+                                                     ClusterSyncCollector clusterSyncCollector) {
         return clusterSyncScheduler(self,
                                     network,
                                     clusterSyncCollector,
@@ -144,9 +142,8 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
 class ClusterSyncSchedulerImpl implements ClusterSyncScheduler {
     private static final Logger log = LoggerFactory.getLogger(ClusterSyncSchedulerImpl.class);
 
-    /// Fallback cap when topology size is unknown (single-node bootstrap).
-    /// Normal cap is `(topologySize - 1) * PER_PEER_BURST`.
     private static final int PER_PEER_BURST = 4;
+
     private static final int MIN_BUFFER_CAP = 8;
 
     private final NodeId self;
@@ -175,8 +172,11 @@ class ClusterSyncSchedulerImpl implements ClusterSyncScheduler {
     private final Map<NodeId, AtomicInteger> missedPings = new ConcurrentHashMap<>();
 
     private final Object healthBufferLock = new Object();
+
     private final Deque<PeerHealthObservation> healthBuffer = new ArrayDeque<>();
+
     private final Object connectivityBufferLock = new Object();
+
     private final Deque<PeerConnectivityObservation> connectivityBuffer = new ArrayDeque<>();
 
     ClusterSyncSchedulerImpl(NodeId self,
@@ -340,7 +340,8 @@ class ClusterSyncSchedulerImpl implements ClusterSyncScheduler {
     }
 
     private int bufferCap() {
-        var peers = Math.max(topology.get().size() - 1, 0);
+        var peers = Math.max(topology.get().size() - 1,
+                             0);
         return Math.max(peers * PER_PEER_BURST, MIN_BUFFER_CAP);
     }
 

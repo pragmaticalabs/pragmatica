@@ -800,11 +800,6 @@ public interface AetherNode extends ManageableNode {
         java.util.function.Function<byte[], Option<ClusterGenerationSnapshot>> snapshotDecoder = bytes -> decodeSnapshot(deserializer,
                                                                                                                          bytes);
         var nodeSnapshotCache = NodeSnapshotCache.nodeSnapshotCache(config.self(), snapshotDecoder);
-        // Leader path: the HealthReconciler owns the authoritative snapshot and broadcasts it
-        // via ClusterSyncPing. Follower path: nodeSnapshotCache holds the last received snapshot.
-        // Consumers that live on any node (e.g. CDM delegated to a follower via the DEPLOYMENT
-        // task group) MUST fall back to the follower path — otherwise they see Option.none()
-        // on every non-leader node and allocation stalls with "No allocatable nodes".
         Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier = () -> isLeaderGate.get()
                                                                             ? Option.some(healthReconciler.currentSnapshot())
                                                                             : nodeSnapshotCache.current();
@@ -825,15 +820,10 @@ public interface AetherNode extends ManageableNode {
         Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT).filter(v -> v instanceof AetherValue.ClusterConfigValue)
                                                                                                 .map(v -> (AetherValue.ClusterConfigValue) v);
         java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> clusterCommandApplier = commands -> clusterNode.apply(commands);
-        // CTM must see the authoritative snapshot on the leader (where its reconcile runs).
-        // The leader's own nodeSnapshotCache is never populated (the leader doesn't ping itself),
-        // so a plain nodeSnapshotCache here would short-circuit every reconcile with
-        // "snapshot not yet projected". Route through a leader-aware source that reads the
-        // reconciler's snapshot on the leader and the cache on followers.
         var leaderAwareSnapshotSource = org.pragmatica.aether.node.generation.LeaderAwareSnapshotSource.leaderAwareSnapshotSource(isLeaderGate::get,
                                                                                                                                   () -> isLeaderGate.get()
-                                                                                                                                                       ? Option.some(healthReconciler.currentSnapshot())
-                                                                                                                                                       : Option.none(),
+                                                                                                                                       ? Option.some(healthReconciler.currentSnapshot())
+                                                                                                                                       : Option.none(),
                                                                                                                                   nodeSnapshotCache);
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,

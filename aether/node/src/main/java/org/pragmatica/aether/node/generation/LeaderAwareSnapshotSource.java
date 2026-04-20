@@ -35,13 +35,14 @@ record LeaderAwareSnapshotSourceRecord(BooleanSupplier isLeader,
                                        Supplier<Option<ClusterGenerationSnapshot>> leaderSnapshotSupplier,
                                        NodeSnapshotCache followerCache) implements LeaderAwareSnapshotSource {
     @Override public Option<MembershipView> currentMembershipView() {
-        if (isLeader.getAsBoolean()) {return leaderSnapshotSupplier.get().map(LeaderAwareSnapshotSourceRecord::toMembershipView);}
+        if (isLeader.getAsBoolean()) {return leaderSnapshotSupplier.get()
+                                                                       .map(LeaderAwareSnapshotSourceRecord::toMembershipView);}
         return followerCache.currentMembershipView();
     }
 
     @Override public long observedRabiaTerm() {
         if (isLeader.getAsBoolean()) {return leaderSnapshotSupplier.get().map(s -> s.epoch().rabiaTerm())
-                                                                                                .or(0L);}
+                                                                       .or(0L);}
         return followerCache.observedRabiaTerm();
     }
 

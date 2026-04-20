@@ -86,18 +86,7 @@ public interface ClusterSyncCollector {
 
     long DEFAULT_slidingWindowMs = 2 * 60 * 60 * 1000L;
 
-    /// Late-bound sink for leader-side fan-out of peer observations carried on
-    /// incoming `ClusterSyncPong`s. The collector receives pongs before
-    /// `AetherNode` has assembled every downstream dependency (the leader gate
-    /// and the health-signal sink), so the fan is attached after construction.
-    /// Defaults to a no-op; `AetherNode` wires the real fan once its collaborators
-    /// exist. Safe on followers — the fan itself gates on leadership.
     @Contract void setPongSignalFan(ClusterSyncPongSignalFan fan);
-
-    /// Late-bound drain source for follower-side peer observations. Populated
-    /// by `AetherNode` after `ClusterSyncScheduler` is built; defaults to the
-    /// no-op buffer so pre-wiring pong construction continues to emit empty
-    /// observation lists.
     @Contract void setPeerObservationBuffer(PeerObservationBuffer buffer);
 
     static ClusterSyncCollector clusterSyncCollector(NodeId self, ClusterNetwork network) {
