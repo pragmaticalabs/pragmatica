@@ -1812,10 +1812,6 @@ public interface AetherNode extends ManageableNode {
                                                          clusterDeploymentManager::onActivationDirectivePut)
                                                   .onRemove(AetherKey.ActivationDirectiveKey.class,
                                                             clusterDeploymentManager::onActivationDirectiveRemove)
-                                                  .onPut(AetherKey.GovernorAnnouncementKey.class,
-                                                         clusterDeploymentManager::onGovernorAnnouncementPut)
-                                                  .onRemove(AetherKey.GovernorAnnouncementKey.class,
-                                                            clusterDeploymentManager::onGovernorAnnouncementRemove)
                                                   .onPut(AetherKey.SchemaVersionKey.class,
                                                          clusterDeploymentManager::onSchemaVersionPut)
                                                   .onPut(AetherKey.NodeArtifactKey.class,

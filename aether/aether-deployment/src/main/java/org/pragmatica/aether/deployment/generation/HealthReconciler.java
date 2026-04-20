@@ -146,8 +146,11 @@ record HealthReconcilerRecord(NodeId self,
                               AutoHealConfig autoHealConfig,
                               GenerationChangedSink generationChangedSink,
                               AtomicReference<ClusterGenerationSnapshot> snapshotRef,
+                              // leader-only decision state; not replicated (see onSignal guard + stop() clears)
                               Map<NodeId, Integer> consecutivePingMisses,
+                              // leader-only decision state; not replicated
                               Map<NodeId, HealthHint> swimHints,
+                              // leader-only decision state; not replicated
                               Set<NodeId> pendingRemovals,
                               AtomicBoolean started,
                               AtomicReference<Epoch> startEpoch,

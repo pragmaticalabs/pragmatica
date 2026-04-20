@@ -133,8 +133,6 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
     @MessageReceiver void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
     @MessageReceiver void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut);
     @MessageReceiver void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove);
-    @MessageReceiver void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut);
-    @MessageReceiver void onGovernorAnnouncementRemove(ValueRemove<GovernorAnnouncementKey, GovernorAnnouncementValue> valueRemove);
     @MessageReceiver void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
     @MessageReceiver void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
     @MessageReceiver void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut);
@@ -180,10 +178,6 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
         default void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) {}
 
         default void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) {}
-
-        default void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut) {}
-
-        default void onGovernorAnnouncementRemove(ValueRemove<GovernorAnnouncementKey, GovernorAnnouncementValue> valueRemove) {}
 
         default void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {}
 
@@ -707,23 +701,6 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                     log.info("Worker node {} deregistered, total workers: {}", nodeId, workerNodes.size());
                     reconcile();
                 }
-            }
-
-            @Override public void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut) {
-                var communityId = valuePut.cause().key()
-                                                .communityId();
-                var announcement = valuePut.cause().value();
-                log.info("Governor announced for community '{}': {} with {} members (snapshot is authoritative for community list)",
-                         communityId,
-                         announcement.governorId(),
-                         announcement.memberCount());
-            }
-
-            @Override public void onGovernorAnnouncementRemove(ValueRemove<GovernorAnnouncementKey, GovernorAnnouncementValue> valueRemove) {
-                var communityId = valueRemove.cause().key()
-                                                   .communityId();
-                log.info("Governor departed for community '{}' (snapshot is authoritative for community list)",
-                         communityId);
             }
 
             private void startDrainEviction(NodeId drainingNode) {
@@ -1972,14 +1949,6 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
 
             @Override public void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) {
                 state.get().onActivationDirectiveRemove(valueRemove);
-            }
-
-            @Override public void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut) {
-                state.get().onGovernorAnnouncementPut(valuePut);
-            }
-
-            @Override public void onGovernorAnnouncementRemove(ValueRemove<GovernorAnnouncementKey, GovernorAnnouncementValue> valueRemove) {
-                state.get().onGovernorAnnouncementRemove(valueRemove);
             }
 
             @Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
