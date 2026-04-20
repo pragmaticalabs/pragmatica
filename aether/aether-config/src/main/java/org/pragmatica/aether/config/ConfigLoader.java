@@ -745,27 +745,26 @@ public final class ConfigLoader {
     private static final Duration DEFAULT_DURATION = Duration.ofSeconds(1);
 
     private static Duration parseDurationMs(String normalized) {
-        return Number.parseLong(normalized.substring(0, normalized.length() - 2))
-                     .map(Duration::ofMillis)
-                     .or(DEFAULT_DURATION);
+        return Number.parseLong(normalized.substring(0,
+                                                     normalized.length() - 2)).map(Duration::ofMillis)
+                               .or(DEFAULT_DURATION);
     }
 
     private static Duration parseDurationSeconds(String normalized) {
-        return Number.parseLong(normalized.substring(0, normalized.length() - 1))
-                     .map(Duration::ofSeconds)
-                     .or(DEFAULT_DURATION);
+        return Number.parseLong(normalized.substring(0,
+                                                     normalized.length() - 1)).map(Duration::ofSeconds)
+                               .or(DEFAULT_DURATION);
     }
 
     private static Duration parseDurationMinutes(String normalized) {
-        return Number.parseLong(normalized.substring(0, normalized.length() - 1))
-                     .map(Duration::ofMinutes)
-                     .or(DEFAULT_DURATION);
+        return Number.parseLong(normalized.substring(0,
+                                                     normalized.length() - 1)).map(Duration::ofMinutes)
+                               .or(DEFAULT_DURATION);
     }
 
     private static Duration parseDurationRaw(String normalized) {
-        return Number.parseLong(normalized)
-                     .map(Duration::ofSeconds)
-                     .or(DEFAULT_DURATION);
+        return Number.parseLong(normalized).map(Duration::ofSeconds)
+                               .or(DEFAULT_DURATION);
     }
 
     public sealed interface ConfigError extends Cause {
