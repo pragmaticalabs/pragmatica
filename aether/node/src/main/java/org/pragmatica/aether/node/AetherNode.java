@@ -518,6 +518,7 @@ public interface AetherNode extends ManageableNode {
                                                                                            eventLoopMetricsCollector.register(server.workerGroup());
                                                                                            log.info("Registered EventLoopGroups for metrics collection");
                                                                                        });
+                                                         adoptExistingLeaderIfAny();
                                                          clusterNode.leaderManager().triggerElection();
                                                          discoveryProvider.onPresent(this::registerWithDiscovery);
                                                          applyNodeIdTag();
@@ -525,6 +526,17 @@ public interface AetherNode extends ManageableNode {
                                         .onSuccess(_ -> printStartupBanner())
                                         .onFailure(cause -> log.error("Cluster formation failed: {}",
                                                                       cause.message()));
+            }
+
+            /// Adopt an existing committed leader from the kvStore before triggering election.
+            /// Incremental Rabia sync may not fire a ValuePut notification for LeaderKey, so a
+            /// newly-provisioned node joining an established cluster can start without knowing
+            /// a leader exists. Without this adoption, the node's LeaderManager has
+            /// hasEverHadLeader=false and will submit its own leader proposal after the
+            /// rank-based stagger, triggering a leader storm during scale-up operations.
+            private void adoptExistingLeaderIfAny() {
+                kvStore.forEach(LeaderKey.class, LeaderValue.class,
+                                (_, value) -> clusterNode.leaderManager().onLeaderCommitted(value.leader()));
             }
 
             private void registerWithDiscovery(DiscoveryProvider dp) {

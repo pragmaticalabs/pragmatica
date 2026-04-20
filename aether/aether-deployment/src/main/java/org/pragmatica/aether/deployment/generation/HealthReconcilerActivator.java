@@ -347,15 +347,6 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
                             .map(v -> ((AetherValue.ClusterConfigValue) v).coreCount());
     }
 
-    // FIXME(ssot): migrate the five collect*/collectDesiredCoreSize helpers to KVStore.forEach
-    // (integrations/cluster/.../KVStore.java#forEach(Class,Class,BiConsumer)) to remove the
-    // erasure-dependent `entry.getKey() instanceof X` cast pattern. Blocked on changing
-    // kvSnapshotSupplier from Supplier<Map<AetherKey,AetherValue>> to a KVStore-shaped API
-    // across four factory overloads and all call sites — deferred to a non-hotfix window.
-    // Rationale: the KV store holds mixed key types (AetherKey + LeaderKey from consensus layer).
-    // Iterating via entrySet erases the element type to Map.Entry so `instanceof` does not trigger
-    // an implicit `checkcast AetherKey` on the stream element, which would throw ClassCastException
-    // for any non-AetherKey entry (see regression test HealthReconcilerActivatorMixedKeyProjectionTest).
     private static Map<NodeId, NodeLifecycleValue> collectLifecycles(Map<AetherKey, AetherValue> kv) {
         return kv.entrySet().stream()
                           .filter(entry -> entry.getKey() instanceof NodeLifecycleKey && entry.getValue() instanceof NodeLifecycleValue)

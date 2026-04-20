@@ -312,6 +312,17 @@ public interface LeaderManager {
                     log.debug("Skipping election trigger: topology is empty");
                     return;
                 }
+                // If we already know of a committed leader, no proposal is needed.
+                // This prevents a newly-joined node (that adopted the existing leader via
+                // onLeaderCommitted before its first triggerElection) from starting a
+                // spurious election and causing leader churn during scale-up.
+                // Re-election paths (quorum flap, leader down) clear currentLeader first,
+                // so this guard does not block legitimate re-elections.
+                if (currentLeader.get().isPresent()) {
+                    log.debug("Skipping election trigger: leader {} already known",
+                              currentLeader.get());
+                    return;
+                }
                 var candidatePool = selectCandidatePool(topology);
                 var sortedCandidates = candidatePool.stream()
                                                     .sorted()

@@ -340,6 +340,54 @@ class LeaderManagerTest {
         }
 
         @Test
+        void triggerElection_afterAdoptingExistingLeader_doesNotSubmitProposal() throws InterruptedException {
+            // Bug Z scenario: a newly-provisioned CTM node joins an established cluster and
+            // would normally be the min-rank candidate (e.g., "aether-core-node-1-xyz" sorts
+            // before existing "node-1"). Before triggering election, AetherNode reads the
+            // already-committed leader from the kvStore and calls onLeaderCommitted(). After
+            // this adoption, triggerElection() must NOT submit a proposal — otherwise the
+            // new node would win and trigger leader churn during scale-up.
+            var minNode = nodes.getFirst(); // node-a - min-rank candidate
+            var localRouter = MessageRouter.mutable();
+            var localProposals = new CopyOnWriteArrayList<LeaderProposal>();
+            LeaderManager.LeaderProposalHandler handler = (candidate, viewSequence) -> {
+                localProposals.add(new LeaderProposal(candidate, viewSequence));
+                return Promise.unitPromise();
+            };
+            // self = min node, so WOULD submit a proposal if hasEverHadLeader=false
+            var localManager = LeaderManager.leaderManager(minNode, localRouter, handler, nodes);
+            localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
+            localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
+
+            // Build topology
+            var list = new ArrayList<NodeId>();
+            for (var nodeId : nodes) {
+                list.add(nodeId);
+                localRouter.route(nodeAdded(nodeId, list.stream().sorted().toList()));
+            }
+
+            // Establish quorum (sets active=true)
+            localRouter.route(QuorumStateNotification.established());
+
+            // Simulate adoption of existing leader from kvStore: an existing leader
+            // (node-c, a different node) is already committed in the cluster.
+            var existingLeader = nodes.getLast();
+            localManager.onLeaderCommitted(existingLeader);
+
+            // Now trigger election (as AetherNode does after adoption)
+            localManager.triggerElection();
+
+            // Wait past the base election delay + rank stagger + margin
+            Thread.sleep(3_000);
+
+            // The min node must NOT submit a proposal because a leader was already adopted.
+            // Without the adoption fix, hasEverHadLeader=false and min-rank would propose itself,
+            // causing leader churn.
+            assertThat(localProposals).isEmpty();
+            assertThat(localManager.leader()).isEqualTo(Option.some(existingLeader));
+        }
+
+        @Test
         void onQuorumDisappeared_sendsImmediateNotification() throws InterruptedException {
             // Setup cluster
             var list = new ArrayList<NodeId>();
