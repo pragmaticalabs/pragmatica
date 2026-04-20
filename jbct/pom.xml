@@ -43,6 +43,7 @@
 
     <modules>
         <module>jbct-parser</module>
+        <module>jbct-parser-benchmark</module>
         <module>jbct-core</module>
         <module>jbct-format</module>
         <module>jbct-lint</module>
