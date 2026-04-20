@@ -2,7 +2,6 @@ package org.pragmatica.aether.example.comprehensive;
 
 import org.pragmatica.aether.pg.codegen.annotation.Query;
 import org.pragmatica.aether.pg.codegen.annotation.Table;
-import org.pragmatica.aether.resource.db.PgSql;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -15,19 +14,23 @@ import java.util.List;
 
 /// Persistence for the analytics datasource.
 ///
-/// Bound via the custom @AnalyticsPgSql qualifier. The processor:
-/// 1. Reads its migrations from `schema/analytics/`.
-/// 2. Provisions a PgSqlConnector from the `database.analytics` config key.
+/// Bound via the custom `@AnalyticsPgSql` qualifier, which carries
+/// `@ResourceQualifier(type = PgSqlConnector.class, config = "database.analytics")`.
+/// The QueryAnnotationProcessor recognises the meta-annotation and:
+/// 1. Provisions a PgSqlConnector from `[database.analytics]` in resources.toml.
+/// 2. Reads migrations from `schema/analytics/` for compile-time validation.
 ///
 /// All queries here validate against the analytics schema and cannot reach
 /// tables from the primary schema.
-@PgSql public interface AnalyticsPersistence {
+@AnalyticsPgSql public interface AnalyticsPersistence {
     record OrderMetric(long id,
                        LocalDate eventDate,
                        long customerId,
                        int orderCount,
                        BigDecimal revenue,
                        Instant createdAt){}
+
+    record NewOrderMetric(LocalDate eventDate, long customerId, int orderCount, BigDecimal revenue){}
 
     record DailySnapshot(long id,
                          LocalDate snapshotDate,
@@ -37,8 +40,11 @@ import java.util.List;
 
     record RevenueTotal(long customerId, BigDecimal totalRevenue){}
 
+    record RevenueSum(BigDecimal totalRevenue){}
+
     @Table(OrderMetric.class) Promise<Option<OrderMetric>> findById(Long id);
     Promise<OrderMetric> save(OrderMetric metric);
+    @Table(OrderMetric.class) Promise<OrderMetric> insert(NewOrderMetric metric);
     @Table(OrderMetric.class) Promise<Unit> deleteById(Long id);
 
     @Query("SELECT customer_id, sum(revenue) AS total_revenue " + "FROM order_metrics " + "WHERE customer_id = :customerId " + "GROUP BY customer_id") Promise<List<RevenueTotal>> customerRevenue(Long customerId);
@@ -46,4 +52,7 @@ import java.util.List;
     @Query("SELECT id, event_date, customer_id, order_count, revenue, created_at " + "FROM order_metrics " + "WHERE customer_id = :customerId") Promise<List<OrderMetric>> metricsByCustomer(Long customerId);
 
     @Query("SELECT count(*) FROM daily_snapshot") Promise<Long> countSnapshots();
+
+    @Query("WITH recent AS (SELECT customer_id, revenue FROM order_metrics WHERE created_at > :since) " + "SELECT sum(revenue) AS total_revenue FROM recent WHERE customer_id = :customerId") Promise<RevenueSum> recentRevenueForCustomer(Instant since,
+                                                                                                                                                                                                                                           Long customerId);
 }

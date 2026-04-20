@@ -1,25 +1,14 @@
--- Analytics tables (in primary schema for this example).
+-- Primary schema seed data for local smoke runs.
 --
--- In production these would live in a separate database/schema; see the
--- AnalyticsPgSql qualifier for the intended multi-datasource pattern.
+-- Analytics-specific tables live under `schema/analytics/` and are loaded via
+-- the @AnalyticsPgSql qualifier; this file only touches primary tables.
 
-CREATE TABLE order_metrics (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    event_date DATE NOT NULL,
-    customer_id BIGINT NOT NULL,
-    order_count INTEGER NOT NULL DEFAULT 0,
-    revenue NUMERIC(14,2) NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+INSERT INTO customers (name, email, tier) VALUES
+    ('Alice', 'alice@example.com', 'gold'),
+    ('Bob', 'bob@example.com', 'silver'),
+    ('Carol', 'carol@example.com', 'bronze');
 
-CREATE TABLE daily_snapshot (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    snapshot_date DATE NOT NULL,
-    active_customers INTEGER NOT NULL,
-    total_orders INTEGER NOT NULL,
-    total_revenue NUMERIC(14,2) NOT NULL
-);
-
-CREATE INDEX idx_order_metrics_customer ON order_metrics (customer_id);
-CREATE INDEX idx_order_metrics_date ON order_metrics (event_date);
-CREATE INDEX idx_daily_snapshot_date ON daily_snapshot (snapshot_date);
+INSERT INTO products (sku, name, price) VALUES
+    ('SKU-001', 'Widget', 19.99),
+    ('SKU-002', 'Gadget', 49.50),
+    ('SKU-003', 'Gizmo', 99.00);
