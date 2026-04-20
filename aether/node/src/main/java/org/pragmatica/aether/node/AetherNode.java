@@ -825,11 +825,21 @@ public interface AetherNode extends ManageableNode {
         Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT).filter(v -> v instanceof AetherValue.ClusterConfigValue)
                                                                                                 .map(v -> (AetherValue.ClusterConfigValue) v);
         java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> clusterCommandApplier = commands -> clusterNode.apply(commands);
+        // CTM must see the authoritative snapshot on the leader (where its reconcile runs).
+        // The leader's own nodeSnapshotCache is never populated (the leader doesn't ping itself),
+        // so a plain nodeSnapshotCache here would short-circuit every reconcile with
+        // "snapshot not yet projected". Route through a leader-aware source that reads the
+        // reconciler's snapshot on the leader and the cache on followers.
+        var leaderAwareSnapshotSource = org.pragmatica.aether.node.generation.LeaderAwareSnapshotSource.leaderAwareSnapshotSource(isLeaderGate::get,
+                                                                                                                                  () -> isLeaderGate.get()
+                                                                                                                                                       ? Option.some(healthReconciler.currentSnapshot())
+                                                                                                                                                       : Option.none(),
+                                                                                                                                  nodeSnapshotCache);
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
                                                                                    deploymentMap,
-                                                                                   nodeSnapshotCache,
+                                                                                   leaderAwareSnapshotSource,
                                                                                    clusterConfigReader,
                                                                                    clusterCommandApplier);
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
@@ -1103,6 +1113,8 @@ public interface AetherNode extends ManageableNode {
                                                         healthReconcilerActivator::onSpokesmanPut)
                                                  .onPut(AetherKey.NodeLifecycleKey.class,
                                                         healthReconcilerActivator::onNodeLifecyclePut)
+                                                 .onPut(AetherKey.ClusterConfigKey.class,
+                                                        healthReconcilerActivator::onClusterConfigPut)
                                                  .build();
         allEntries.addAll(healthKvRouter.asRouteEntries());
         Supplier<Option<ClusterGenerationSnapshot>> spokesmanSnapshotSupplier = () -> isLeaderGate.get()
