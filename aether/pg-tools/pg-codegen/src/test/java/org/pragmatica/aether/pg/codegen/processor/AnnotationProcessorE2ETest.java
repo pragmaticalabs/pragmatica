@@ -569,6 +569,338 @@ class AnnotationProcessorE2ETest {
         }
     }
 
+    @Nested
+    class NonPrimitiveScalarReturn {
+        @Test
+        void promiseBigDecimal_generatesGetObjectMapperAndImport() throws Exception {
+            var source = """
+                package test;
+
+                import java.math.BigDecimal;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+
+                @PgSql
+                public interface TotalsRepo {
+
+                    @Query("SELECT sum(total) AS total_amount FROM orders WHERE status = :status")
+                    Promise<BigDecimal> totalByStatus(String status);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/TotalsRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.TotalsRepoFactory");
+            assertThat(generated).isNotNull();
+            assertThat(generated).contains("import java.math.BigDecimal;");
+            assertThat(generated).contains("Promise<BigDecimal> totalByStatus");
+            // Must use queryOne with an inline scalar mapper — no record mapper, no Result.all()
+            assertThat(generated).contains("queryOne");
+            assertThat(generated).contains("row.getObject(\"total_amount\", BigDecimal.class)");
+            assertThat(generated).doesNotContain("BigDecimal::new");
+            assertThat(generated).doesNotContain("Result.all()");
+        }
+
+        @Test
+        void promiseInstant_generatesGetObjectMapperAndImport() throws Exception {
+            var source = """
+                package test;
+
+                import java.time.Instant;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+
+                @PgSql
+                public interface TimeRepo {
+
+                    @Query("SELECT max(created_at) AS latest FROM orders")
+                    Promise<Instant> latestCreatedAt();
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/TimeRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.TimeRepoFactory");
+            assertThat(generated).isNotNull();
+            assertThat(generated).contains("import java.time.Instant;");
+            assertThat(generated).contains("Promise<Instant> latestCreatedAt");
+            assertThat(generated).contains("row.getObject(\"latest\", Instant.class)");
+        }
+
+        @Test
+        void promiseUUID_generatesGetObjectMapperAndImport() throws Exception {
+            var source = """
+                package test;
+
+                import java.util.UUID;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+
+                @PgSql
+                public interface UuidRepo {
+
+                    @Query("SELECT correlation_id FROM orders WHERE id = :id")
+                    Promise<UUID> correlationFor(Long id);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/UuidRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.UuidRepoFactory");
+            assertThat(generated).isNotNull();
+            assertThat(generated).contains("import java.util.UUID;");
+            assertThat(generated).contains("Promise<UUID> correlationFor");
+            assertThat(generated).contains("row.getObject(\"correlation_id\", UUID.class)");
+        }
+
+        @Test
+        void promiseLocalDate_generatesGetObjectMapperAndImport() throws Exception {
+            var source = """
+                package test;
+
+                import java.time.LocalDate;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+
+                @PgSql
+                public interface DateRepo {
+
+                    @Query("SELECT event_date FROM events WHERE id = :id")
+                    Promise<LocalDate> eventDate(Long id);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/DateRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.DateRepoFactory");
+            assertThat(generated).isNotNull();
+            assertThat(generated).contains("import java.time.LocalDate;");
+            assertThat(generated).contains("Promise<LocalDate> eventDate");
+            assertThat(generated).contains("row.getObject(\"event_date\", LocalDate.class)");
+        }
+
+        @Test
+        void promiseByteArray_generatesGetBytesMapper() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+
+                @PgSql
+                public interface BlobRepo {
+
+                    @Query("SELECT payload FROM blobs WHERE id = :id")
+                    Promise<byte[]> blob(Long id);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/BlobRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.BlobRepoFactory");
+            assertThat(generated).isNotNull();
+            assertThat(generated).contains("Promise<byte[]> blob");
+            assertThat(generated).contains("row.getBytes(\"payload\")");
+        }
+
+        @Test
+        void promiseOptionBigDecimal_generatesGetObjectMapperAndImport() throws Exception {
+            var source = """
+                package test;
+
+                import java.math.BigDecimal;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                @PgSql
+                public interface NullableTotalsRepo {
+
+                    @Query("SELECT sum(total) AS total_amount FROM orders WHERE status = :status")
+                    Promise<Option<BigDecimal>> totalByStatus(String status);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/NullableTotalsRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.NullableTotalsRepoFactory");
+            assertThat(generated).isNotNull();
+            assertThat(generated).contains("import java.math.BigDecimal;");
+            assertThat(generated).contains("Promise<Option<BigDecimal>> totalByStatus");
+            assertThat(generated).contains("queryOptional");
+            assertThat(generated).contains("row.getObject(\"total_amount\", BigDecimal.class)");
+        }
+
+        @Test
+        void promiseListUUID_generatesGetObjectMapperAndImport() throws Exception {
+            var source = """
+                package test;
+
+                import java.util.List;
+                import java.util.UUID;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+
+                @PgSql
+                public interface UuidListRepo {
+
+                    @Query("SELECT correlation_id FROM orders WHERE status = :status")
+                    Promise<List<UUID>> correlationIds(String status);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/UuidListRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.UuidListRepoFactory");
+            assertThat(generated).isNotNull();
+            assertThat(generated).contains("import java.util.UUID;");
+            assertThat(generated).contains("Promise<List<UUID>> correlationIds");
+            assertThat(generated).contains("queryList");
+            assertThat(generated).contains("row.getObject(\"correlation_id\", UUID.class)");
+        }
+
+        @Test
+        void promiseLong_stillUsesGetLong() throws Exception {
+            // Regression: make sure the existing primitive scalar path isn't broken.
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+
+                @PgSql
+                public interface SumRepo {
+
+                    @Query("SELECT sum(amount) AS total FROM items")
+                    Promise<Long> totalAmount();
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/SumRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.SumRepoFactory");
+            assertThat(generated).isNotNull();
+            assertThat(generated).contains("row.getLong(\"total\")");
+        }
+
+        @Test
+        void promiseBoolean_stillUsesGetBoolean() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+
+                @PgSql
+                public interface ExistsRepo {
+
+                    @Query("SELECT EXISTS(SELECT 1 FROM orders WHERE id = :id)")
+                    Promise<Boolean> existsById(Long id);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/ExistsRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.ExistsRepoFactory");
+            assertThat(generated).isNotNull();
+            assertThat(generated).contains("row.getBoolean(\"exists\")");
+        }
+
+        @Test
+        void promiseString_scalarReturnUsesGetString() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+
+                @PgSql
+                public interface StringRepo {
+
+                    @Query("SELECT name FROM users WHERE id = :id")
+                    Promise<String> nameById(Long id);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/StringRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.StringRepoFactory");
+            assertThat(generated).isNotNull();
+            assertThat(generated).contains("Promise<String> nameById");
+            assertThat(generated).contains("row.getString(\"name\")");
+        }
+
+        @Test
+        void promiseUnknownClass_emitsCompileError() throws Exception {
+            // A user class that isn't a record and isn't in JavaTypeAccessor.SCALARS.
+            var other = """
+                package test;
+
+                public class Foo {}
+                """;
+            var repo = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+
+                @PgSql
+                public interface BadRepo {
+
+                    @Query("SELECT f FROM foos")
+                    Promise<Foo> fetch();
+                }
+                """;
+
+            var result = TestCompilationHelper.compileWithProcessor(
+                java.util.List.of(
+                    new TestCompilationHelper.SourceEntry("test/Foo.java", other),
+                    new TestCompilationHelper.SourceEntry("test/BadRepo.java", repo)
+                ),
+                tempDir
+            );
+
+            assertThat(result.diagnostics()).contains("unsupported scalar type");
+        }
+    }
+
     // --- Delegate to shared helper ---
 
     private TestCompilationHelper.CompilationResult compileWithProcessor(String sourceCode, String fileName) throws Exception {

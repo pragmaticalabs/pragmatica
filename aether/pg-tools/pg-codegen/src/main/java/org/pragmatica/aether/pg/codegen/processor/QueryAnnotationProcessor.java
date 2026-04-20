@@ -210,6 +210,9 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     TypeMirrorResolver.ResolvedReturn resolved,
     Query queryAnnotation,
     Option<Schema> schemaOpt) {
+        if (!validateMapperShape(execElement, methodName, resolved)) {
+            return null;
+        }
         var sql = queryAnnotation.value();
         var originalParams = extractMethodParams(execElement);
         // Validate parameter usage BEFORE record expansion so that the pre-expansion SQL's :record
@@ -238,7 +241,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                originalParams,
                                                bodyParams,
                                                mapperColumns,
-                                               resolved.needsMapper());}
+                                               resolved.needsMapper(),
+                                               resolved.scalarAccessor());}
         return FactoryGenerator.MethodInfo.withSharedParams(methodName,
                                                FactoryGenerator.toSqlConstantName(methodName),
                                                rewritten.sql(),
@@ -247,7 +251,31 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                resolved.innerTypeName(),
                                                reorderedParams(originalParams, rewritten.parameterOrder()),
                                                mapperColumns,
-                                               resolved.needsMapper());
+                                               resolved.needsMapper(),
+                                               resolved.scalarAccessor());
+    }
+
+    /// Verifies that the return type is usable: either a record, a known scalar, or a scalar ReturnKind
+    /// (LONG/BOOLEAN/UNIT). Emits a descriptive compile error for unknown non-record inner types (e.g.
+    /// user classes that aren't records and aren't in `JavaTypeAccessor.SCALARS`).
+    private boolean validateMapperShape(ExecutableElement execElement,
+                                        String methodName,
+                                        TypeMirrorResolver.ResolvedReturn resolved) {
+        if (!resolved.needsMapper()) {
+            return true;
+        }
+        var returnType = execElement.getReturnType();
+        var innerElement = TypeMirrorResolver.innerTypeElement(returnType);
+        if (innerElement != null && innerElement.getKind() == ElementKind.RECORD) {
+            return true;
+        }
+        // No inner element (e.g. byte[]) or not a record: only allow if it's a scalar (handled elsewhere).
+        // Already handled if scalarAccessor present.
+        if (resolved.scalarAccessor().isPresent()) {
+            return true;
+        }
+        error(ProcessorError.unsupportedScalarReturn(methodName, resolved.innerTypeName()), execElement);
+        return false;
     }
 
     private FactoryGenerator.MethodInfo analyzeCrudMethod(
@@ -256,6 +284,9 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     TypeMirrorResolver.ResolvedReturn resolved,
     Option<Schema> schemaOpt,
     TypeElement interfaceElement) {
+        if (!validateMapperShape(execElement, methodName, resolved)) {
+            return null;
+        }
         var parsed = MethodNameParser.parse(methodName);
         if ( parsed == null) {
             error(ProcessorError.unrecognizedMethodName(methodName), execElement);
@@ -310,7 +341,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                params,
                                                recordExpansion.bodyParams(),
                                                mapperColumns,
-                                               resolved.needsMapper());}
+                                               resolved.needsMapper(),
+                                               resolved.scalarAccessor());}
         return FactoryGenerator.MethodInfo.withSharedParams(methodName,
                                                FactoryGenerator.toSqlConstantName(methodName),
                                                crudSql,
@@ -319,7 +351,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                resolved.innerTypeName(),
                                                params,
                                                mapperColumns,
-                                               resolved.needsMapper());
+                                               resolved.needsMapper(),
+                                               resolved.scalarAccessor());
     }
 
     private FactoryGenerator.MethodInfo buildCrudMethodInfoWithoutSchema(
@@ -344,7 +377,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                params,
                                                recordExpansion.bodyParams(),
                                                mapperColumns,
-                                               resolved.needsMapper());}
+                                               resolved.needsMapper(),
+                                               resolved.scalarAccessor());}
         return FactoryGenerator.MethodInfo.withSharedParams(methodName,
                                                FactoryGenerator.toSqlConstantName(methodName),
                                                sql,
@@ -353,7 +387,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                resolved.innerTypeName(),
                                                params,
                                                mapperColumns,
-                                               resolved.needsMapper());
+                                               resolved.needsMapper(),
+                                               resolved.scalarAccessor());
     }
 
     private String generateCrudSqlWithoutSchema(
@@ -467,54 +502,10 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
 
     private static FactoryGenerator.MapperColumn toMapperColumn(TypeMirrorResolver.FieldInfo field) {
         var columnName = NamingConvention.toSnakeCase(field.name());
-        var accessor = accessorInfoForJavaType(field.typeName());
+        var accessor = JavaTypeAccessor.forField(field.typeName());
         return new FactoryGenerator.MapperColumn(columnName, accessor.method(), field.name(), accessor.typeArg());
     }
 
-    private record AccessorInfo(String method, String typeArg){}
-
-    private static AccessorInfo accessorInfoForJavaType(String javaTypeName) {
-        if ( javaTypeName.endsWith("[]") && !javaTypeName.equals("byte[]")) {
-            return arrayAccessorInfo(javaTypeName);
-        }
-        return switch (javaTypeName) {case "long", "java.lang.Long" -> new AccessorInfo("getLong", "");case "int", "java.lang.Integer" -> new AccessorInfo("getInt",
-                                                                                                                                                           "");case "double", "java.lang.Double" -> new AccessorInfo("getDouble",
-                                                                                                                                                                                                                     "");case "boolean", "java.lang.Boolean" -> new AccessorInfo("getBoolean",
-                                                                                                                                                                                                                                                                                 "");case "byte[]" -> new AccessorInfo("getBytes",
-                                                                                                                                                                                                                                                                                                                       "");case "java.lang.String", "String" -> new AccessorInfo("getString",
-                                                                                                                                                                                                                                                                                                                                                                                 "");case "java.math.BigDecimal" -> new AccessorInfo("getObject",
-                                                                                                                                                                                                                                                                                                                                                                                                                                     "java.math.BigDecimal.class");case "java.time.Instant" -> new AccessorInfo("getObject",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                "java.time.Instant.class");case "java.time.LocalDateTime" -> new AccessorInfo("getObject",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              "java.time.LocalDateTime.class");case "java.time.LocalDate" -> new AccessorInfo("getObject",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              "java.time.LocalDate.class");case "java.util.UUID" -> new AccessorInfo("getObject",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     "java.util.UUID.class");default -> new AccessorInfo("getString",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         "");};
-    }
-
-    /// Resolves the row accessor for an array-typed record field.
-    ///
-    /// The generator emits `row.getObject(column, Element[].class)` using boxed element types
-    /// (Integer, Long, etc.), which matches the array decoding contract exposed by the
-    /// postgres-async driver through the `RowAccessor` facade.
-    private static AccessorInfo arrayAccessorInfo(String javaTypeName) {
-        var elementType = javaTypeName.substring(0, javaTypeName.length() - 2);
-        var boxed = switch (elementType) {
-            case "int", "java.lang.Integer", "Integer" -> "Integer";
-            case "long", "java.lang.Long", "Long" -> "Long";
-            case "short", "java.lang.Short", "Short" -> "Short";
-            case "double", "java.lang.Double", "Double" -> "Double";
-            case "float", "java.lang.Float", "Float" -> "Float";
-            case "boolean", "java.lang.Boolean", "Boolean" -> "Boolean";
-            case "java.lang.String", "String" -> "String";
-            case "java.math.BigDecimal" -> "java.math.BigDecimal";
-            case "java.util.UUID" -> "java.util.UUID";
-            case "java.time.Instant" -> "java.time.Instant";
-            case "java.time.LocalDate" -> "java.time.LocalDate";
-            case "java.time.LocalDateTime" -> "java.time.LocalDateTime";
-            default -> elementType;
-        };
-        return new AccessorInfo("getObject", boxed + "[].class");
-    }
 
     private static List<String> extractParamNames(ExecutableElement execElement) {
         return execElement.getParameters().stream()
@@ -981,6 +972,12 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                     }
                 }
             }
+        }
+        // Scalar return types: ensure the accessor's imported FQN is present (covers
+        // Promise<BigDecimal>, Promise<Option<UUID>>, Promise<List<Instant>>, etc.).
+        for (var methodInfo : methods) {
+            methodInfo.scalarAccessor().onPresent(accessor ->
+                accessor.importStatement().onPresent(imports::add));
         }
         return imports;
     }

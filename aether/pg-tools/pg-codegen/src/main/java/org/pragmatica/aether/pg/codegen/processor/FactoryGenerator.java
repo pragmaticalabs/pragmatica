@@ -6,9 +6,8 @@ package org.pragmatica.aether.pg.codegen.processor;
 
 import org.pragmatica.aether.pg.codegen.NamingConvention;
 import org.pragmatica.aether.pg.codegen.TypeMapper;
-import org.pragmatica.aether.pg.schema.model.Column;
-import org.pragmatica.aether.pg.schema.model.Schema;
 import org.pragmatica.aether.pg.schema.model.Table;
+import org.pragmatica.lang.Option;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -35,7 +34,8 @@ public final class FactoryGenerator {
                              List<MethodParam> signatureParams,
                              List<MethodParam> params,
                              List<MapperColumn> mapperColumns,
-                             boolean needsMapper) {
+                             boolean needsMapper,
+                             Option<JavaTypeAccessor.AccessorInfo> scalarAccessor) {
         public static MethodInfo withSharedParams(String methodName,
                                                   String sqlConstantName,
                                                   String sql,
@@ -44,7 +44,8 @@ public final class FactoryGenerator {
                                                   String innerTypeName,
                                                   List<MethodParam> params,
                                                   List<MapperColumn> mapperColumns,
-                                                  boolean needsMapper) {
+                                                  boolean needsMapper,
+                                                  Option<JavaTypeAccessor.AccessorInfo> scalarAccessor) {
             return new MethodInfo(methodName,
                                   sqlConstantName,
                                   sql,
@@ -54,7 +55,8 @@ public final class FactoryGenerator {
                                   params,
                                   params,
                                   mapperColumns,
-                                  needsMapper);
+                                  needsMapper,
+                                  scalarAccessor);
         }
     }
 
@@ -185,11 +187,44 @@ public final class FactoryGenerator {
             sb.append(",\n                    ").append(factoryClassName)
                      .append("::map");
             sb.append(toMapperMethodSuffix(method.innerTypeName));
-        } else if (method.returnKind == MethodAnalyzer.ReturnKind.LONG || method.returnKind == MethodAnalyzer.ReturnKind.BOOLEAN) {appendScalarMapper(sb,
-                                                                                                                                                      method.returnKind,
-                                                                                                                                                      method.sql);}
+        } else if (method.scalarAccessor().isPresent()) {
+            appendGenericScalarMapper(sb, method);
+        } else if (method.returnKind == MethodAnalyzer.ReturnKind.LONG || method.returnKind == MethodAnalyzer.ReturnKind.BOOLEAN) {
+            appendScalarMapper(sb, method.returnKind, method.sql);
+        }
         for (var param : method.params) {sb.append(", ").append(param.accessor());}
         sb.append(");\n");
+    }
+
+    private static void appendGenericScalarMapper(StringBuilder sb, MethodInfo method) {
+        var accessor = method.scalarAccessor().expect("checked with isPresent above");
+        var columnName = inferScalarColumnName(method.sql, method.returnKind);
+        sb.append(",\n                    row -> row.").append(accessor.method())
+                 .append("(\"")
+                 .append(columnName)
+                 .append('"');
+        if (!accessor.typeArg().isEmpty()) {
+            sb.append(", ").append(simplifyAccessorTypeArg(accessor.typeArg()));
+        }
+        sb.append(")");
+    }
+
+    private static String simplifyAccessorTypeArg(String typeArg) {
+        // The stored type arg is always a class literal, e.g. "java.math.BigDecimal.class".
+        // Since the factory imports the FQN, emit the simple class literal for readability.
+        if (!typeArg.endsWith(".class")) {
+            return typeArg;
+        }
+        var withoutClass = typeArg.substring(0, typeArg.length() - ".class".length());
+        // Handle array class literals: "Integer[]", "java.time.Instant[]"
+        var isArray = withoutClass.endsWith("[]");
+        var base = isArray ? withoutClass.substring(0, withoutClass.length() - 2) : withoutClass;
+        var lastDot = base.lastIndexOf('.');
+        if (lastDot < 0) {
+            return typeArg;
+        }
+        var simple = base.substring(lastDot + 1);
+        return simple + (isArray ? "[]" : "") + ".class";
     }
 
     private static void appendUnitMethodBody(StringBuilder sb, MethodInfo method) {
@@ -211,20 +246,127 @@ public final class FactoryGenerator {
     }
 
     private static String inferScalarColumnName(String sql, MethodAnalyzer.ReturnKind kind) {
-        var upper = sql.toUpperCase();
+        var outer = outerSelectClause(sql);
+        var upper = outer.toUpperCase();
         var asIdx = upper.indexOf(" AS ");
         if (asIdx >= 0) {
-            var afterAs = sql.substring(asIdx + 4).trim();
+            var afterAs = outer.substring(asIdx + 4).trim();
             var spaceIdx = afterAs.indexOf(' ');
-            return spaceIdx >= 0
+            var alias = spaceIdx >= 0
                   ? afterAs.substring(0, spaceIdx).toLowerCase()
                   : afterAs.toLowerCase();
+            // Strip surrounding parens/quotes/commas if the alias ended at one of them.
+            return cleanIdentifier(alias);
+        }
+        var firstSelectItem = firstSelectItem(outer);
+        if (firstSelectItem != null) {
+            return firstSelectItem;
         }
         if (kind == MethodAnalyzer.ReturnKind.BOOLEAN && upper.contains("EXISTS")) {return "exists";}
         if (kind == MethodAnalyzer.ReturnKind.LONG && upper.contains("COUNT")) {return "count";}
         return kind == MethodAnalyzer.ReturnKind.BOOLEAN
               ? "exists"
               : "count";
+    }
+
+    /// Extracts the outer (top-level) SELECT clause text, skipping over CTE bodies and
+    /// other parenthesised subqueries. Used to infer the column name for a scalar
+    /// `@Query` return where `SELECT ... AS alias` is inside the outer projection.
+    private static String outerSelectClause(String sql) {
+        // Walk the SQL tracking parenthesis depth; record every top-level "SELECT " occurrence
+        // and return the substring starting at the last one.
+        var lastSelect = -1;
+        var depth = 0;
+        var upper = sql.toUpperCase();
+        var n = sql.length();
+        for (var i = 0; i < n; i++) {
+            var c = sql.charAt(i);
+            if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+            } else if (depth == 0 && (c == 'S' || c == 's')) {
+                if (i + 6 <= n && upper.startsWith("SELECT", i)
+                    && (i == 0 || !Character.isLetterOrDigit(sql.charAt(i - 1)))
+                    && (i + 6 == n || !Character.isLetterOrDigit(sql.charAt(i + 6)))) {
+                    lastSelect = i;
+                }
+            }
+        }
+        return lastSelect >= 0 ? sql.substring(lastSelect) : sql;
+    }
+
+    private static String cleanIdentifier(String raw) {
+        var sb = new StringBuilder();
+        for (var c : raw.toCharArray()) {
+            if (Character.isLetterOrDigit(c) || c == '_') {
+                sb.append(c);
+            } else {
+                break;
+            }
+        }
+        return sb.toString();
+    }
+
+    /// Extracts the PostgreSQL-assigned column name for the first item of a scalar SELECT.
+    ///
+    /// Handles:
+    ///  - `SELECT col FROM ...`                  -> `col`
+    ///  - `SELECT t.col FROM ...`                -> `col`
+    ///  - `SELECT sum(x) FROM ...`               -> `sum`
+    ///  - `SELECT max(x) FROM ...`               -> `max`
+    ///  - `SELECT EXISTS(...) FROM ...`          -> `exists`
+    ///
+    /// Returns null when the shape is not recognisable; the caller falls back to the kind-based
+    /// default (`count` / `exists`).
+    private static String firstSelectItem(String sql) {
+        var upper = sql.toUpperCase();
+        var selectIdx = upper.indexOf("SELECT");
+        if (selectIdx < 0) {
+            return null;
+        }
+        var rest = sql.substring(selectIdx + "SELECT".length()).trim();
+        // Skip DISTINCT modifier.
+        if (rest.toUpperCase().startsWith("DISTINCT ")) {
+            rest = rest.substring("DISTINCT ".length()).trim();
+        }
+        // Find end of first projection item (comma at depth 0, or FROM).
+        var depth = 0;
+        var end = rest.length();
+        for (var i = 0; i < rest.length(); i++) {
+            var c = rest.charAt(i);
+            if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+            } else if (depth == 0 && (c == ',' || (c == ' ' && startsWithFrom(rest, i)))) {
+                end = i;
+                break;
+            }
+        }
+        var item = rest.substring(0, end).trim();
+        if (item.isEmpty() || item.equals("*")) {
+            return null;
+        }
+        // Function call → postgres names the column by the function.
+        var openParen = item.indexOf('(');
+        if (openParen > 0) {
+            return item.substring(0, openParen).trim().toLowerCase();
+        }
+        // Bare column reference, possibly qualified.
+        var lastDot = item.lastIndexOf('.');
+        var bare = lastDot >= 0 ? item.substring(lastDot + 1) : item;
+        // Strip trailing cast/modifier noise.
+        return bare.toLowerCase();
+    }
+
+    private static boolean startsWithFrom(String text, int index) {
+        var i = index;
+        while (i < text.length() && Character.isWhitespace(text.charAt(i))) {
+            i++;
+        }
+        return i + 4 <= text.length() && text.substring(i, i + 4).equalsIgnoreCase("FROM")
+               && (i + 4 == text.length() || Character.isWhitespace(text.charAt(i + 4)));
     }
 
     private static void appendRecordClose(StringBuilder sb, String factoryMethod) {

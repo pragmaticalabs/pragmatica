@@ -41,6 +41,13 @@ public final class ProcessorError {
         return PREFIX + "Method '" + methodName + "' must return Promise<T>, Promise<Option<T>>, Promise<List<T>>, Promise<Unit>, Promise<Long>, or Promise<Boolean>";
     }
 
+    public static String unsupportedScalarReturn(String methodName, String typeName) {
+        return PREFIX + "Method '" + methodName + "' returns unsupported scalar type '" + typeName
+               + "'. Expected a record, Long, Boolean, String, Unit, or one of: BigDecimal, Instant, LocalDate, "
+               + "LocalDateTime, LocalTime, OffsetDateTime, OffsetTime, UUID, Duration, byte[], Short, Integer, "
+               + "Double, Float.";
+    }
+
     public static String cannotInferTable(String methodName) {
         return PREFIX + "Cannot infer table for method '" + methodName + "'; add @Table annotation";
     }
