@@ -7,7 +7,6 @@ import org.pragmatica.aether.example.comprehensive.AnalyticsPersistence.OrderMet
 import org.pragmatica.aether.example.comprehensive.BasePersistence.CustomerOrder;
 import org.pragmatica.aether.example.comprehensive.BasePersistence.CustomerRevenue;
 import org.pragmatica.aether.example.comprehensive.BasePersistence.OrderDetail;
-import org.pragmatica.aether.example.comprehensive.BasePersistence.OrderTotal;
 import org.pragmatica.aether.example.comprehensive.BasePersistence.ProductSales;
 import org.pragmatica.aether.example.comprehensive.BasePersistence.ProductWithTags;
 import org.pragmatica.aether.example.comprehensive.CrudPersistence.CustomerRow;
@@ -87,7 +86,7 @@ class ComprehensivePersistenceTest {
             var result = slice.recentOrderTotal(NOW, new BigDecimal("10.00"), 1L).await()
                               .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
 
-            result.onSuccess(total -> assertThat(total.totalAmount()).isEqualTo(new BigDecimal("297.00")));
+            result.onSuccess(total -> assertThat(total).isEqualTo(new BigDecimal("297.00")));
         }
 
         @Test void productsWithTag_delegates_toBase() {
@@ -175,10 +174,10 @@ class ComprehensivePersistenceTest {
                                                                 new BigDecimal("19.99"),
                                                                 new String[]{"premium", "new"})));
         }
-        @Override public Promise<OrderTotal> recentOrderTotalForCustomer(Instant since,
+        @Override public Promise<BigDecimal> recentOrderTotalForCustomer(Instant since,
                                                                           BigDecimal minTotal,
                                                                           Long customerId) {
-            return Promise.success(new OrderTotal(new BigDecimal("297.00")));
+            return Promise.success(new BigDecimal("297.00"));
         }
     }
 
@@ -212,8 +211,8 @@ class ComprehensivePersistenceTest {
         @Override public Promise<List<AnalyticsPersistence.RevenueTotal>> customerRevenue(Long customerId) { return Promise.success(List.of()); }
         @Override public Promise<List<OrderMetric>> metricsByCustomer(Long customerId) { return Promise.success(List.of()); }
         @Override public Promise<Long> countSnapshots() { return Promise.success(42L); }
-        @Override public Promise<AnalyticsPersistence.RevenueSum> recentRevenueForCustomer(Instant since, Long customerId) {
-            return Promise.success(new AnalyticsPersistence.RevenueSum(BigDecimal.ZERO));
+        @Override public Promise<BigDecimal> recentRevenueForCustomer(Instant since, Long customerId) {
+            return Promise.success(BigDecimal.ZERO);
         }
     }
 }

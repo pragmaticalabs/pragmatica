@@ -2,7 +2,6 @@ package org.pragmatica.aether.example.comprehensive;
 
 import org.pragmatica.aether.example.comprehensive.BasePersistence.CustomerOrder;
 import org.pragmatica.aether.example.comprehensive.BasePersistence.CustomerRevenue;
-import org.pragmatica.aether.example.comprehensive.BasePersistence.OrderTotal;
 import org.pragmatica.aether.example.comprehensive.BasePersistence.ProductWithTags;
 import org.pragmatica.aether.example.comprehensive.CrudPersistence.CustomerRow;
 import org.pragmatica.aether.slice.annotation.Slice;
@@ -22,7 +21,7 @@ import java.util.List;
     Promise<List<CustomerRevenue>> revenue(Boolean active);
     Promise<Option<CustomerRow>> customer(Long customerId);
     Promise<Long> snapshotCount();
-    Promise<OrderTotal> recentOrderTotal(Instant since, BigDecimal minTotal, Long customerId);
+    Promise<BigDecimal> recentOrderTotal(Instant since, BigDecimal minTotal, Long customerId);
     Promise<List<ProductWithTags>> productsWithTag(String tag);
 
     static OrderSlice orderSlice(BasePersistence base, CrudPersistence crud, AnalyticsPersistence analytics) {
@@ -43,7 +42,7 @@ import java.util.List;
                 return analytics.countSnapshots();
             }
 
-            @Override public Promise<OrderTotal> recentOrderTotal(Instant since, BigDecimal minTotal, Long customerId) {
+            @Override public Promise<BigDecimal> recentOrderTotal(Instant since, BigDecimal minTotal, Long customerId) {
                 return base.recentOrderTotalForCustomer(since, minTotal, customerId);
             }
 

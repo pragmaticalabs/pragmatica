@@ -40,8 +40,6 @@ import java.util.List;
 
     record RevenueTotal(long customerId, BigDecimal totalRevenue){}
 
-    record RevenueSum(BigDecimal totalRevenue){}
-
     @Table(OrderMetric.class) Promise<Option<OrderMetric>> findById(Long id);
     Promise<OrderMetric> save(OrderMetric metric);
     @Table(OrderMetric.class) Promise<OrderMetric> insert(NewOrderMetric metric);
@@ -53,6 +51,6 @@ import java.util.List;
 
     @Query("SELECT count(*) FROM daily_snapshot") Promise<Long> countSnapshots();
 
-    @Query("WITH recent AS (SELECT customer_id, revenue FROM order_metrics WHERE created_at > :since) " + "SELECT sum(revenue) AS total_revenue FROM recent WHERE customer_id = :customerId") Promise<RevenueSum> recentRevenueForCustomer(Instant since,
+    @Query("WITH recent AS (SELECT customer_id, revenue FROM order_metrics WHERE created_at > :since) " + "SELECT sum(revenue) AS total_revenue FROM recent WHERE customer_id = :customerId") Promise<BigDecimal> recentRevenueForCustomer(Instant since,
                                                                                                                                                                                                                                            Long customerId);
 }

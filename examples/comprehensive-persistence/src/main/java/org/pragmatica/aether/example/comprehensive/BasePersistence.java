@@ -20,6 +20,7 @@ import java.util.UUID;
 /// - Common Table Expressions (`WITH`)
 /// - `TEXT[]` array columns mapped to `String[]`
 /// - Non-primitive `@Query` parameters (`BigDecimal`, `Instant`, `UUID`)
+/// - Non-primitive scalar returns (`Promise<BigDecimal>` from an aggregate query)
 /// - Narrow projections for each shape so the validator rewrites `SELECT *`.
 @PgSql public interface BasePersistence {
     record CustomerOrder(long orderId,
@@ -53,8 +54,6 @@ import java.util.UUID;
 
     record ProductWithTags(long id, String sku, String name, BigDecimal price, String[] tags){}
 
-    record OrderTotal(BigDecimal totalAmount){}
-
     @Query("SELECT o.id AS order_id, c.id AS customer_id, c.name AS customer_name, " + "c.email AS customer_email, o.total AS order_total, o.status AS order_status, " + "o.created_at AS order_created_at " + "FROM customers c JOIN orders o ON o.customer_id = c.id " + "WHERE o.status = :status") Promise<List<CustomerOrder>> findCustomerOrdersByStatus(String status);
 
     @Query("SELECT c.id AS customer_id, c.name AS customer_name, " + "count(o.id) AS order_count, sum(o.total) AS total_revenue, " + "min(o.total) AS min_order_value, max(o.total) AS max_order_value " + "FROM customers c LEFT JOIN orders o ON o.customer_id = c.id " + "WHERE c.active = :active " + "GROUP BY c.id, c.name") Promise<List<CustomerRevenue>> customerRevenueReport(Boolean active);
@@ -74,7 +73,7 @@ import java.util.UUID;
 
     @Query("SELECT id, sku, name, price, tags FROM products WHERE :tag = ANY(tags)") Promise<List<ProductWithTags>> productsWithTag(String tag);
 
-    @Query("WITH recent_orders AS (" + "  SELECT id, total, customer_id FROM orders " + "  WHERE created_at > :since AND total > :minTotal" + ") " + "SELECT sum(total) AS total_amount FROM recent_orders WHERE customer_id = :customerId") Promise<OrderTotal> recentOrderTotalForCustomer(Instant since,
+    @Query("WITH recent_orders AS (" + "  SELECT id, total, customer_id FROM orders " + "  WHERE created_at > :since AND total > :minTotal" + ") " + "SELECT sum(total) AS total_amount FROM recent_orders WHERE customer_id = :customerId") Promise<BigDecimal> recentOrderTotalForCustomer(Instant since,
                                                                                                                                                                                                                                                                                              BigDecimal minTotal,
                                                                                                                                                                                                                                                                                              Long customerId);
 }

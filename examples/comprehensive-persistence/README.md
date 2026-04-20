@@ -38,6 +38,7 @@ comprehensive-persistence/
 | `GENERATED ALWAYS AS (expr) STORED` | `orders.total_with_tax` — exempted from INSERT coverage |
 | `TEXT[]` array column | `products.tags` → mapped to `String[]` via `row.getObject("tags", String[].class)` |
 | Non-primitive `@Query` parameters | `UUID` in `findByCorrelationId`, `Instant`/`BigDecimal` in `recentOrderTotalForCustomer` — imports auto-collected in generated factory |
+| Non-primitive scalar return types | `Promise<BigDecimal>` from `recentOrderTotalForCustomer` and `recentRevenueForCustomer` — row accessor inferred via `TypeMapper` |
 | Common Table Expression (`WITH`) | `recentOrderTotalForCustomer` and `recentRevenueForCustomer` — CTE alias registered in validator scope |
 | JOINs with alias resolution | `findCustomerOrdersByStatus`, `productSalesReport` |
 | Aggregates + `GROUP BY` | `customerRevenueReport`, `productSalesReport` |
