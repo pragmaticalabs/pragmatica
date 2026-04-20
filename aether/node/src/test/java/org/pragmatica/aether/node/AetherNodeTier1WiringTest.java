@@ -14,7 +14,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// Verifies Tier 1 snapshot publication wiring: the node codec round-trips a
 /// `ClusterGenerationSnapshot`, so the leader encoder + follower decoder used
-/// by `MetricsScheduler` / `NodeSnapshotCache` are genuinely invertible rather
+/// by `ClusterSyncScheduler` / `NodeSnapshotCache` are genuinely invertible rather
 /// than silently dropped as in Commit 3's no-op hooks (spec §7.2).
 class AetherNodeTier1WiringTest {
     @Test

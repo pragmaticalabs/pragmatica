@@ -5,7 +5,7 @@
 package org.pragmatica.aether.controller;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.metrics.MetricsCollector;
+import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -82,7 +82,7 @@ public interface DecisionTreeController extends ClusterController {
 
         @Override public Promise<ControlDecisions> evaluate(ControlContext context) {
             var currentConfig = this.config;
-            var avgCpu = context.avgMetric(MetricsCollector.CPU_USAGE);
+            var avgCpu = context.avgMetric(ClusterSyncCollector.CPU_USAGE);
             log.debug("Evaluating: avgCpu={}, blueprints={}",
                       avgCpu,
                       context.blueprints().size());

@@ -12,9 +12,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
 import org.pragmatica.cluster.metrics.CommunityReport;
-import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPing;
-import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPong;
-import org.pragmatica.cluster.metrics.MetricsMessage.SnapshotPayload;
+import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
+import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
+import org.pragmatica.cluster.metrics.ClusterSyncMessage.SnapshotPayload;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -47,9 +47,9 @@ import org.slf4j.LoggerFactory;
 /// relayed `ClusterGenerationSnapshot` to each assigned community's governor
 /// every 500ms (configurable).
 ///
-/// Responses (Tier 2 `MetricsPong` from governors) are aggregated into a
+/// Responses (Tier 2 `ClusterSyncPong` from governors) are aggregated into a
 /// `CommunityReport` per community. The resulting list is published via the
-/// `MetricsCollector` `communityReportSupplier` so that the core node's own
+/// `ClusterSyncCollector` `communityReportSupplier` so that the core node's own
 /// Tier 1 pong (leader-bound) can piggyback it.
 ///
 /// Lifecycle:
@@ -64,7 +64,7 @@ public interface SpokesmanPingLoop {
     @Contract void stop();
     @MessageReceiver@Contract void onSpokesmanPut(ValuePut<SpokesmanKey, SpokesmanValue> notification);
     @MessageReceiver@Contract void onSpokesmanRemove(ValueRemove<SpokesmanKey, SpokesmanValue> notification);
-    @MessageReceiver@Contract void onMetricsPong(MetricsPong pong);
+    @MessageReceiver@Contract void onClusterSyncPong(ClusterSyncPong pong);
     boolean isActive();
     List<CommunityReport> currentReports();
 
@@ -238,7 +238,7 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
         deactivate();
     }
 
-    @Override@Contract public void onMetricsPong(MetricsPong pong) {
+    @Override@Contract public void onClusterSyncPong(ClusterSyncPong pong) {
         if (!active.get()) {return;}
         Option.option(governorToCommunity.get().get(pong.sender()))
                      .onPresent(communityId -> aggregatePong(communityId, pong));
@@ -308,7 +308,7 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
                           Epoch epoch,
                           Option<ClusterGenerationSnapshot> maybeSnapshot) {
         var payload = maybeSnapshot.map(snapshotEncoder::apply).map(SnapshotPayload::snapshotPayload);
-        var ping = new MetricsPing(self,
+        var ping = new ClusterSyncPing(self,
                                    allMetricsSupplier.get(),
                                    rabiaTerm,
                                    epoch.rabiaTerm(),
@@ -317,13 +317,13 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
         network.send(governor, ping);
     }
 
-    private void aggregatePong(String communityId, MetricsPong pong) {
+    private void aggregatePong(String communityId, ClusterSyncPong pong) {
         reports.updateAndGet(current -> mergeReport(current, communityId, pong));
     }
 
     private static Map<String, CommunityReport> mergeReport(Map<String, CommunityReport> current,
                                                             String communityId,
-                                                            MetricsPong pong) {
+                                                            ClusterSyncPong pong) {
         var partitionsHeld = Option.option(current.get(communityId)).map(CommunityReport::partitionsHeld)
                                           .or(Set.of());
         var members = lifecycleCount(pong);
@@ -343,7 +343,7 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
         return Map.copyOf(fresh);
     }
 
-    private static LifecycleCounts lifecycleCount(MetricsPong pong) {
+    private static LifecycleCounts lifecycleCount(ClusterSyncPong pong) {
         var state = pong.lifecycleState();
         var healthy = "ON_DUTY".equals(state) || "JOINING".equals(state)
                      ? 1

@@ -12,7 +12,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.ClusterController.Blueprint;
 import org.pragmatica.aether.controller.ClusterController.BlueprintChange;
 import org.pragmatica.aether.controller.ClusterController.ControlContext;
-import org.pragmatica.aether.metrics.MetricsCollector;
+import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.consensus.NodeId;
 
 import java.util.List;
@@ -140,14 +140,14 @@ class DecisionTreeControllerTest {
 
     private static ControlContext contextWithCpu(double cpuValue, int instances) {
         var nodeId = NodeId.randomNodeId();
-        var metrics = Map.of(nodeId, Map.of(MetricsCollector.CPU_USAGE, cpuValue));
+        var metrics = Map.of(nodeId, Map.of(ClusterSyncCollector.CPU_USAGE, cpuValue));
         var blueprints = Map.of(TEST_ARTIFACT, new Blueprint(TEST_ARTIFACT, instances, 1));
         return new ControlContext(metrics, blueprints, List.of(nodeId));
     }
 
     private static ControlContext contextWithCpuAndMinInstances(double cpuValue, int instances, int minInstances) {
         var nodeId = NodeId.randomNodeId();
-        var metrics = Map.of(nodeId, Map.of(MetricsCollector.CPU_USAGE, cpuValue));
+        var metrics = Map.of(nodeId, Map.of(ClusterSyncCollector.CPU_USAGE, cpuValue));
         var blueprints = Map.of(TEST_ARTIFACT, new Blueprint(TEST_ARTIFACT, instances, minInstances));
         return new ControlContext(metrics, blueprints, List.of(nodeId));
     }

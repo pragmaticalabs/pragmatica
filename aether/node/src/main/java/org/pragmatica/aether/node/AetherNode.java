@@ -64,8 +64,8 @@ import org.pragmatica.aether.metrics.ComprehensiveSnapshotCollector;
 import org.pragmatica.aether.deployment.generation.ClusterGenerationProjector;
 import org.pragmatica.aether.deployment.generation.HealthReconciler;
 import org.pragmatica.aether.deployment.generation.HealthReconcilerActivator;
-import org.pragmatica.aether.metrics.MetricsCollector;
-import org.pragmatica.aether.metrics.MetricsScheduler;
+import org.pragmatica.aether.metrics.ClusterSyncCollector;
+import org.pragmatica.aether.metrics.ClusterSyncScheduler;
 import org.pragmatica.aether.metrics.MinuteAggregator;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -125,7 +125,7 @@ import org.pragmatica.aether.worker.mutation.MutationForwarder;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
-import org.pragmatica.cluster.metrics.MetricsMessage;
+import org.pragmatica.cluster.metrics.ClusterSyncMessage;
 import org.pragmatica.cluster.node.ForwardingClusterNode;
 import org.pragmatica.cluster.node.SwitchableClusterNode;
 import org.pragmatica.cluster.node.forward.ForwardApplyRequest;
@@ -215,7 +215,7 @@ public interface AetherNode extends ManageableNode {
     Promise<Unit> stop();
     KVStore<AetherKey, AetherValue> kvStore();
     SliceStore sliceStore();
-    MetricsCollector metricsCollector();
+    ClusterSyncCollector metricsCollector();
     DeploymentMetricsCollector deploymentMetricsCollector();
     ControlLoop controlLoop();
     SliceInvoker sliceInvoker();
@@ -410,8 +410,8 @@ public interface AetherNode extends ManageableNode {
                           ClusterDeploymentManager clusterDeploymentManager,
                           EndpointRegistry endpointRegistry,
                           HttpRouteRegistry httpRouteRegistry,
-                          MetricsCollector metricsCollector,
-                          MetricsScheduler metricsScheduler,
+                          ClusterSyncCollector metricsCollector,
+                          ClusterSyncScheduler metricsScheduler,
                           DeploymentMetricsCollector deploymentMetricsCollector,
                           DeploymentMetricsScheduler deploymentMetricsScheduler,
                           ControlLoop controlLoop,
@@ -764,11 +764,11 @@ public interface AetherNode extends ManageableNode {
         var scheduledTaskRegistry = ScheduledTaskRegistry.scheduledTaskRegistry();
         var scheduledTaskStateRegistry = ScheduledTaskStateRegistry.scheduledTaskStateRegistry();
         var httpRouteRegistry = HttpRouteRegistry.httpRouteRegistry();
-        var metricsCollector = MetricsCollector.metricsCollector(config.self(),
-                                                                 clusterNode.network(),
-                                                                 config.timeouts().observability()
-                                                                                .metricsSlidingWindow()
-                                                                                .millis());
+        var metricsCollector = ClusterSyncCollector.clusterSyncCollector(config.self(),
+                                                                         clusterNode.network(),
+                                                                         config.timeouts().observability()
+                                                                                        .metricsSlidingWindow()
+                                                                                        .millis());
         metricsCollector.setInvocationMetricsProvider(invocationMetrics);
         metricsCollector.recordCustom("mgmt.port", config.managementPort());
         var leaderTerm = new AtomicLong(0L);
@@ -792,17 +792,17 @@ public interface AetherNode extends ManageableNode {
         java.util.function.Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder = serializer::encode;
         java.util.function.Function<byte[], Option<ClusterGenerationSnapshot>> snapshotDecoder = bytes -> decodeSnapshot(deserializer,
                                                                                                                          bytes);
-        var metricsScheduler = MetricsScheduler.metricsScheduler(config.self(),
-                                                                 clusterNode.network(),
-                                                                 metricsCollector,
-                                                                 config.timeouts().cluster()
-                                                                                .pingInterval(),
-                                                                 rabiaTermSupplier,
-                                                                 snapshotSupplier,
-                                                                 snapshotEncoder,
-                                                                 stableHealthSink,
-                                                                 MetricsScheduler.DEFAULT_PING_TIMEOUT_THRESHOLD,
-                                                                 leaderEpochSupplier);
+        var metricsScheduler = ClusterSyncScheduler.clusterSyncScheduler(config.self(),
+                                                                         clusterNode.network(),
+                                                                         metricsCollector,
+                                                                         config.timeouts().cluster()
+                                                                                        .pingInterval(),
+                                                                         rabiaTermSupplier,
+                                                                         snapshotSupplier,
+                                                                         snapshotEncoder,
+                                                                         stableHealthSink,
+                                                                         ClusterSyncScheduler.DEFAULT_PING_TIMEOUT_THRESHOLD,
+                                                                         leaderEpochSupplier);
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
         var nodeSnapshotCache = NodeSnapshotCache.nodeSnapshotCache(config.self(), snapshotDecoder);
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
@@ -1100,7 +1100,7 @@ public interface AetherNode extends ManageableNode {
                                                               spokesmanPingLoop::onSpokesmanRemove)
                                                     .build();
         allEntries.addAll(spokesmanKvRouter.asRouteEntries());
-        metricsCollector.addPongListener(spokesmanPingLoop::onMetricsPong);
+        metricsCollector.addPongListener(spokesmanPingLoop::onClusterSyncPong);
         var streamMaxMemoryBytes = resolveStreamMaxMemoryBytes();
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes);
         var streamSegmentIndex = new SegmentIndex();
@@ -1680,8 +1680,8 @@ public interface AetherNode extends ManageableNode {
                                                                     ScheduledTaskStateRegistry scheduledTaskStateRegistry,
                                                                     ScheduledTaskManager scheduledTaskManager,
                                                                     HttpRouteRegistry httpRouteRegistry,
-                                                                    MetricsCollector metricsCollector,
-                                                                    MetricsScheduler metricsScheduler,
+                                                                    ClusterSyncCollector metricsCollector,
+                                                                    ClusterSyncScheduler metricsScheduler,
                                                                     NodeSnapshotCache nodeSnapshotCache,
                                                                     DeploymentMetricsCollector deploymentMetricsCollector,
                                                                     DeploymentMetricsScheduler deploymentMetricsScheduler,
@@ -1878,9 +1878,9 @@ public interface AetherNode extends ManageableNode {
                                               metricsCollector::onTopologyChange));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
                                               metricsCollector::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(MetricsMessage.MetricsPing.class, metricsCollector::onMetricsPing));
-        entries.add(MessageRouter.Entry.route(MetricsMessage.MetricsPing.class, nodeSnapshotCache::onMetricsPing));
-        entries.add(MessageRouter.Entry.route(MetricsMessage.MetricsPong.class, metricsCollector::onMetricsPong));
+        entries.add(MessageRouter.Entry.route(ClusterSyncMessage.ClusterSyncPing.class, metricsCollector::onClusterSyncPing));
+        entries.add(MessageRouter.Entry.route(ClusterSyncMessage.ClusterSyncPing.class, nodeSnapshotCache::onClusterSyncPing));
+        entries.add(MessageRouter.Entry.route(ClusterSyncMessage.ClusterSyncPong.class, metricsCollector::onClusterSyncPong));
         entries.add(MessageRouter.Entry.route(DeploymentMetricsMessage.DeploymentMetricsPing.class,
                                               deploymentMetricsCollector::onDeploymentMetricsPing));
         entries.add(MessageRouter.Entry.route(DeploymentMetricsMessage.DeploymentMetricsPong.class,

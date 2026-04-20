@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-class MetricsSchedulerSnapshotTest {
+class ClusterSyncSchedulerSnapshotTest {
     private static final NodeId SELF = NodeId.nodeId("self").unwrap();
     private static final NodeId PEER_A = NodeId.nodeId("peer-a").unwrap();
     private static final NodeId PEER_B = NodeId.nodeId("peer-b").unwrap();
@@ -29,9 +29,9 @@ class MetricsSchedulerSnapshotTest {
 
     @Test
     void observedEpoch_recordsHigherEpochOnly() {
-        var scheduler = MetricsScheduler.metricsScheduler(SELF,
+        var scheduler = ClusterSyncScheduler.clusterSyncScheduler(SELF,
                                                            new NoopNetwork(),
-                                                           new NoopCollector(),
+                                                           new NoopClusterSyncCollector(),
                                                            org.pragmatica.lang.io.TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
                                                            () -> Option.some(ClusterGenerationSnapshot.empty(7L)),
@@ -48,9 +48,9 @@ class MetricsSchedulerSnapshotTest {
 
     @Test
     void observedEpoch_acceptsHigherTermOverlower() {
-        var scheduler = MetricsScheduler.metricsScheduler(SELF,
+        var scheduler = ClusterSyncScheduler.clusterSyncScheduler(SELF,
                                                            new NoopNetwork(),
-                                                           new NoopCollector(),
+                                                           new NoopClusterSyncCollector(),
                                                            org.pragmatica.lang.io.TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
                                                            () -> Option.some(ClusterGenerationSnapshot.empty(7L)),
@@ -64,9 +64,9 @@ class MetricsSchedulerSnapshotTest {
 
     @Test
     void observedEpochs_startEmptyBeforeAnyPong() {
-        var scheduler = MetricsScheduler.metricsScheduler(SELF,
+        var scheduler = ClusterSyncScheduler.clusterSyncScheduler(SELF,
                                                            new NoopNetwork(),
-                                                           new NoopCollector(),
+                                                           new NoopClusterSyncCollector(),
                                                            org.pragmatica.lang.io.TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
                                                            Option::none,
@@ -78,9 +78,9 @@ class MetricsSchedulerSnapshotTest {
     @Test
     void snapshotSupplier_emptyOption_schedulerStillConstructible() {
         var ref = new AtomicReference<Option<ClusterGenerationSnapshot>>(Option.none());
-        var scheduler = MetricsScheduler.metricsScheduler(SELF,
+        var scheduler = ClusterSyncScheduler.clusterSyncScheduler(SELF,
                                                            new NoopNetwork(),
-                                                           new NoopCollector(),
+                                                           new NoopClusterSyncCollector(),
                                                            org.pragmatica.lang.io.TimeSpan.timeSpan(1).seconds(),
                                                            () -> 0L,
                                                            ref::get,

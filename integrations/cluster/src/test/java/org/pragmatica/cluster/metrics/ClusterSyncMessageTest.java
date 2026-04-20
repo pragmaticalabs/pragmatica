@@ -6,9 +6,9 @@ package org.pragmatica.cluster.metrics;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPing;
-import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPong;
-import org.pragmatica.cluster.metrics.MetricsMessage.SnapshotPayload;
+import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
+import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
+import org.pragmatica.cluster.metrics.ClusterSyncMessage.SnapshotPayload;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
@@ -19,16 +19,16 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-class MetricsMessageTest {
+class ClusterSyncMessageTest {
     private static final NodeId SELF = NodeId.nodeId("self").unwrap();
     private static final NodeId PEER = NodeId.nodeId("peer").unwrap();
 
     @Nested
     class PingConstruction {
         @Test
-        void metricsPing_fullFields_populatesRecord() {
+        void clusterSyncPing_fullFields_populatesRecord() {
             var payload = SnapshotPayload.snapshotPayload(new byte[]{1, 2, 3});
-            var ping = new MetricsPing(SELF,
+            var ping = new ClusterSyncPing(SELF,
                                          Map.of(SELF, Map.of("cpu", 0.5)),
                                          7L,
                                          7L,
@@ -43,8 +43,8 @@ class MetricsMessageTest {
         }
 
         @Test
-        void metricsPing_backwardCompatFactory_populatesZeroEpoch() {
-            var ping = MetricsPing.metricsPing(SELF, Map.of(SELF, Map.of("cpu", 0.5)));
+        void clusterSyncPing_backwardCompatFactory_populatesZeroEpoch() {
+            var ping = ClusterSyncPing.clusterSyncPing(SELF, Map.of(SELF, Map.of("cpu", 0.5)));
 
             assertThat(ping.rabiaTerm()).isZero();
             assertThat(ping.epochTerm()).isZero();
@@ -54,7 +54,7 @@ class MetricsMessageTest {
 
         @Test
         void construct_nullSnapshot_normalizesToNone() {
-            var ping = new MetricsPing(SELF, Map.of(), 0L, 0L, 0L, null);
+            var ping = new ClusterSyncPing(SELF, Map.of(), 0L, 0L, 0L, null);
 
             assertThat(ping.snapshot()).isEqualTo(Option.none());
         }
@@ -63,11 +63,11 @@ class MetricsMessageTest {
     @Nested
     class PongConstruction {
         @Test
-        void metricsPong_fullFields_populatesRecord() {
+        void clusterSyncPong_fullFields_populatesRecord() {
             var governor = NodeId.nodeId("gov-1").unwrap();
             var report = CommunityReport.communityReport("pool-a", 1L, 1L, 2L, governor, 3, 3, 0, 0, Set.of("p"), 10L);
 
-            var pong = new MetricsPong(PEER,
+            var pong = new ClusterSyncPong(PEER,
                                          Map.of("heap", 0.7),
                                          5L,
                                          5L,
@@ -84,8 +84,8 @@ class MetricsMessageTest {
         }
 
         @Test
-        void metricsPong_backwardCompatFactory_populatesDefaults() {
-            var pong = MetricsPong.metricsPong(PEER, Map.of("cpu", 0.2));
+        void clusterSyncPong_backwardCompatFactory_populatesDefaults() {
+            var pong = ClusterSyncPong.clusterSyncPong(PEER, Map.of("cpu", 0.2));
 
             assertThat(pong.observedRabiaTerm()).isZero();
             assertThat(pong.observedEpochTerm()).isZero();
@@ -95,14 +95,14 @@ class MetricsMessageTest {
 
         @Test
         void construct_nullReports_normalizesToEmpty() {
-            var pong = new MetricsPong(PEER, Map.of(), 0L, 0L, 0L, "ON_DUTY", null);
+            var pong = new ClusterSyncPong(PEER, Map.of(), 0L, 0L, 0L, "ON_DUTY", null);
 
             assertThat(pong.communityReports()).isEmpty();
         }
 
         @Test
         void construct_nullLifecycleState_normalizesToEmpty() {
-            var pong = new MetricsPong(PEER, Map.of(), 0L, 0L, 0L, null, List.of());
+            var pong = new ClusterSyncPong(PEER, Map.of(), 0L, 0L, 0L, null, List.of());
 
             assertThat(pong.lifecycleState()).isEmpty();
         }

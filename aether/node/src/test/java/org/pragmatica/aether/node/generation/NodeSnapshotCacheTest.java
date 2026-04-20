@@ -7,8 +7,8 @@ package org.pragmatica.aether.node.generation;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPing;
-import org.pragmatica.cluster.metrics.MetricsMessage.SnapshotPayload;
+import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
+import org.pragmatica.cluster.metrics.ClusterSyncMessage.SnapshotPayload;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
@@ -32,8 +32,8 @@ class NodeSnapshotCacheTest {
         return _ -> Option.some(snapshot);
     }
 
-    private static MetricsPing ping(long rabiaTerm, Epoch epoch, Option<SnapshotPayload> snapshot) {
-        return new MetricsPing(LEADER,
+    private static ClusterSyncPing ping(long rabiaTerm, Epoch epoch, Option<SnapshotPayload> snapshot) {
+        return new ClusterSyncPing(LEADER,
                                Map.of(),
                                rabiaTerm,
                                epoch.rabiaTerm(),
@@ -51,11 +51,11 @@ class NodeSnapshotCacheTest {
     }
 
     @Test
-    void onMetricsPing_firstValidPing_updatesAllFields() {
+    void onClusterSyncPing_firstValidPing_updatesAllFields() {
         var snapshot = ClusterGenerationSnapshot.empty(5L);
         var cache = NodeSnapshotCache.nodeSnapshotCache(SELF, decoderReturning(snapshot));
 
-        cache.onMetricsPing(ping(5L, Epoch.epoch(5L, 3L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
+        cache.onClusterSyncPing(ping(5L, Epoch.epoch(5L, 3L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
 
         assertThat(cache.observedRabiaTerm()).isEqualTo(5L);
         assertThat(cache.observedEpoch()).isEqualTo(Epoch.epoch(5L, 3L));
@@ -64,12 +64,12 @@ class NodeSnapshotCacheTest {
     }
 
     @Test
-    void onMetricsPing_staleRabiaTerm_rejects() {
+    void onClusterSyncPing_staleRabiaTerm_rejects() {
         var firstSnapshot = ClusterGenerationSnapshot.empty(7L);
         var cache = NodeSnapshotCache.nodeSnapshotCache(SELF, decoderReturning(firstSnapshot));
-        cache.onMetricsPing(ping(7L, Epoch.epoch(7L, 1L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
+        cache.onClusterSyncPing(ping(7L, Epoch.epoch(7L, 1L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
 
-        cache.onMetricsPing(ping(6L, Epoch.epoch(6L, 99L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
+        cache.onClusterSyncPing(ping(6L, Epoch.epoch(6L, 99L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
 
         assertThat(cache.observedRabiaTerm()).isEqualTo(7L);
         assertThat(cache.observedEpoch()).isEqualTo(Epoch.epoch(7L, 1L));
@@ -77,15 +77,15 @@ class NodeSnapshotCacheTest {
     }
 
     @Test
-    void onMetricsPing_newerRabiaTerm_acceptsAndResetsEpoch() {
+    void onClusterSyncPing_newerRabiaTerm_acceptsAndResetsEpoch() {
         var firstSnapshot = ClusterGenerationSnapshot.empty(7L);
         var laterSnapshot = ClusterGenerationSnapshot.empty(8L);
         var snapshotRef = new java.util.concurrent.atomic.AtomicReference<>(firstSnapshot);
         var cache = NodeSnapshotCache.nodeSnapshotCache(SELF, _ -> Option.some(snapshotRef.get()));
-        cache.onMetricsPing(ping(7L, Epoch.epoch(7L, 99L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
+        cache.onClusterSyncPing(ping(7L, Epoch.epoch(7L, 99L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
 
         snapshotRef.set(laterSnapshot);
-        cache.onMetricsPing(ping(8L, Epoch.epoch(8L, 0L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
+        cache.onClusterSyncPing(ping(8L, Epoch.epoch(8L, 0L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
 
         assertThat(cache.observedRabiaTerm()).isEqualTo(8L);
         assertThat(cache.observedEpoch()).isEqualTo(Epoch.epoch(8L, 0L));
@@ -93,50 +93,50 @@ class NodeSnapshotCacheTest {
     }
 
     @Test
-    void onMetricsPing_sameEpochReordered_ignores() {
+    void onClusterSyncPing_sameEpochReordered_ignores() {
         var firstSnapshot = ClusterGenerationSnapshot.empty(4L);
         var laterSnapshot = ClusterGenerationSnapshot.empty(4L).withDesiredCoreSize(42);
         var snapshotRef = new java.util.concurrent.atomic.AtomicReference<>(firstSnapshot);
         var cache = NodeSnapshotCache.nodeSnapshotCache(SELF, _ -> Option.some(snapshotRef.get()));
-        cache.onMetricsPing(ping(4L, Epoch.epoch(4L, 10L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
+        cache.onClusterSyncPing(ping(4L, Epoch.epoch(4L, 10L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
 
         snapshotRef.set(laterSnapshot);
-        cache.onMetricsPing(ping(4L, Epoch.epoch(4L, 5L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
-        cache.onMetricsPing(ping(4L, Epoch.epoch(4L, 10L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
+        cache.onClusterSyncPing(ping(4L, Epoch.epoch(4L, 5L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
+        cache.onClusterSyncPing(ping(4L, Epoch.epoch(4L, 10L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
 
         assertThat(cache.observedEpoch()).isEqualTo(Epoch.epoch(4L, 10L));
         assertThat(cache.current().unwrap()).isEqualTo(firstSnapshot);
     }
 
     @Test
-    void onMetricsPing_strictlyNewerEpoch_accepts() {
+    void onClusterSyncPing_strictlyNewerEpoch_accepts() {
         var firstSnapshot = ClusterGenerationSnapshot.empty(3L);
         var laterSnapshot = ClusterGenerationSnapshot.empty(3L).withDesiredCoreSize(7);
         var snapshotRef = new java.util.concurrent.atomic.AtomicReference<>(firstSnapshot);
         var cache = NodeSnapshotCache.nodeSnapshotCache(SELF, _ -> Option.some(snapshotRef.get()));
-        cache.onMetricsPing(ping(3L, Epoch.epoch(3L, 1L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
+        cache.onClusterSyncPing(ping(3L, Epoch.epoch(3L, 1L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
 
         snapshotRef.set(laterSnapshot);
-        cache.onMetricsPing(ping(3L, Epoch.epoch(3L, 2L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
+        cache.onClusterSyncPing(ping(3L, Epoch.epoch(3L, 2L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
 
         assertThat(cache.observedEpoch()).isEqualTo(Epoch.epoch(3L, 2L));
         assertThat(cache.current().unwrap()).isEqualTo(laterSnapshot);
     }
 
     @Test
-    void onMetricsPing_snapshotAbsent_retainsPreviousSnapshot() {
+    void onClusterSyncPing_snapshotAbsent_retainsPreviousSnapshot() {
         var firstSnapshot = ClusterGenerationSnapshot.empty(2L);
         var cache = NodeSnapshotCache.nodeSnapshotCache(SELF, decoderReturning(firstSnapshot));
-        cache.onMetricsPing(ping(2L, Epoch.epoch(2L, 1L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
+        cache.onClusterSyncPing(ping(2L, Epoch.epoch(2L, 1L), Option.some(new SnapshotPayload(PAYLOAD_BYTES))));
 
-        cache.onMetricsPing(ping(2L, Epoch.epoch(2L, 2L), Option.none()));
+        cache.onClusterSyncPing(ping(2L, Epoch.epoch(2L, 2L), Option.none()));
 
         assertThat(cache.observedEpoch()).isEqualTo(Epoch.epoch(2L, 2L));
         assertThat(cache.current().unwrap()).isEqualTo(firstSnapshot);
     }
 
     @Test
-    void onMetricsPing_concurrent_consistent() throws InterruptedException {
+    void onClusterSyncPing_concurrent_consistent() throws InterruptedException {
         var snapshot = ClusterGenerationSnapshot.empty(1L);
         var cache = NodeSnapshotCache.nodeSnapshotCache(SELF, decoderReturning(snapshot));
 
@@ -177,7 +177,7 @@ class NodeSnapshotCacheTest {
         ready.countDown();
         awaitUnchecked(start);
         for (int i = 1; i <= pingsPerThread; i++) {
-            cache.onMetricsPing(ping(1L,
+            cache.onClusterSyncPing(ping(1L,
                                      Epoch.epoch(1L, (long) i),
                                      Option.some(new SnapshotPayload(new byte[]{(byte) threadIndex, (byte) i}))));
         }

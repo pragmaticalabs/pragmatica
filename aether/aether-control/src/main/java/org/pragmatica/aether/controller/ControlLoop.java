@@ -8,7 +8,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.ClusterController.BlueprintChange;
 import org.pragmatica.aether.controller.ClusterController.ControlContext;
 import org.pragmatica.aether.controller.CompositeLoadFactor.LoadFactorResult;
-import org.pragmatica.aether.metrics.MetricsCollector;
+import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -84,7 +84,7 @@ import org.slf4j.LoggerFactory;
 
     static ControlLoop controlLoop(NodeId self,
                                    ClusterController controller,
-                                   MetricsCollector metricsCollector,
+                                   ClusterSyncCollector metricsCollector,
                                    Option<InvocationMetricsCollector> invocationMetricsCollector,
                                    ClusterNode<KVCommand<AetherKey>> cluster,
                                    KVStore<AetherKey, AetherValue> kvStore,
@@ -93,7 +93,7 @@ import org.slf4j.LoggerFactory;
                                    Consumer<ScalingEvent> eventPublisher) {
         record controlLoop(NodeId self,
                            ClusterController controller,
-                           MetricsCollector metricsCollector,
+                           ClusterSyncCollector metricsCollector,
                            Option<InvocationMetricsCollector> invocationMetricsCollector,
                            ClusterNode<KVCommand<AetherKey>> cluster,
                            KVStore<AetherKey, AetherValue> kvStore,
@@ -376,7 +376,7 @@ import org.slf4j.LoggerFactory;
             }
 
             private Double extractCpuUsage(Map<String, Double> nodeMetrics) {
-                return nodeMetrics.get(MetricsCollector.CPU_USAGE);
+                return nodeMetrics.get(ClusterSyncCollector.CPU_USAGE);
             }
 
             private double calculateP95LatencyMs(InvocationMetricsCollector imc) {

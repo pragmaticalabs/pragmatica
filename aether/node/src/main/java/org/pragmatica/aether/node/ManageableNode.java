@@ -15,7 +15,7 @@ import org.pragmatica.aether.slice.delegation.TaskGroupAssignmentRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRouteRegistry;
 import org.pragmatica.aether.metrics.ComprehensiveSnapshotCollector;
-import org.pragmatica.aether.metrics.MetricsCollector;
+import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.artifact.ArtifactMetricsCollector;
 import org.pragmatica.aether.metrics.deployment.DeploymentMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
@@ -58,7 +58,7 @@ public interface ManageableNode {
     NodeId self();
     KVStore<AetherKey, AetherValue> kvStore();
     SliceStore sliceStore();
-    MetricsCollector metricsCollector();
+    ClusterSyncCollector metricsCollector();
     DeploymentMetricsCollector deploymentMetricsCollector();
     ControlLoop controlLoop();
     BlueprintService blueprintService();

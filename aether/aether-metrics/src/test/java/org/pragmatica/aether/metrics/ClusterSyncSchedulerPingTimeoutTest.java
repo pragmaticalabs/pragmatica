@@ -20,11 +20,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// Verifies that `MetricsScheduler` emits `HealthSignal.PingTimeout` on its
+/// Verifies that `ClusterSyncScheduler` emits `HealthSignal.PingTimeout` on its
 /// per-target miss counter after K consecutive ticks without a pong, and that
 /// `onPongReceived` resets the counter so the signal stops firing — per spec
 /// §8.1 (leader-side PingTimeout emission source).
-class MetricsSchedulerPingTimeoutTest {
+class ClusterSyncSchedulerPingTimeoutTest {
     private static final NodeId SELF = NodeId.nodeId("self").unwrap();
     private static final NodeId PEER_A = NodeId.nodeId("peer-a").unwrap();
     private static final NodeId PEER_B = NodeId.nodeId("peer-b").unwrap();
@@ -33,9 +33,9 @@ class MetricsSchedulerPingTimeoutTest {
     void kMissedPings_emitsPingTimeoutSignalWithMissedCount() {
         var captured = new CopyOnWriteArrayList<HealthSignal>();
         HealthSignalSink sink = captured::add;
-        var scheduler = MetricsScheduler.metricsScheduler(SELF,
+        var scheduler = ClusterSyncScheduler.clusterSyncScheduler(SELF,
                                                            new NoopNetwork(),
-                                                           new NoopCollector(),
+                                                           new NoopClusterSyncCollector(),
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
                                                            () -> Option.some(ClusterGenerationSnapshot.empty(7L)),
@@ -63,9 +63,9 @@ class MetricsSchedulerPingTimeoutTest {
     void missedPingsBelowThreshold_noSignalEmitted() {
         var captured = new CopyOnWriteArrayList<HealthSignal>();
         HealthSignalSink sink = captured::add;
-        var scheduler = MetricsScheduler.metricsScheduler(SELF,
+        var scheduler = ClusterSyncScheduler.clusterSyncScheduler(SELF,
                                                            new NoopNetwork(),
-                                                           new NoopCollector(),
+                                                           new NoopClusterSyncCollector(),
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
                                                            Option::none,
@@ -85,9 +85,9 @@ class MetricsSchedulerPingTimeoutTest {
     void onPongReceived_resetsMissedCounter() {
         var captured = new CopyOnWriteArrayList<HealthSignal>();
         HealthSignalSink sink = captured::add;
-        var scheduler = MetricsScheduler.metricsScheduler(SELF,
+        var scheduler = ClusterSyncScheduler.clusterSyncScheduler(SELF,
                                                            new NoopNetwork(),
-                                                           new NoopCollector(),
+                                                           new NoopClusterSyncCollector(),
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
                                                            Option::none,
@@ -110,9 +110,9 @@ class MetricsSchedulerPingTimeoutTest {
     void kMissedPings_perTargetIsIndependent() {
         var captured = new CopyOnWriteArrayList<HealthSignal>();
         HealthSignalSink sink = captured::add;
-        var scheduler = MetricsScheduler.metricsScheduler(SELF,
+        var scheduler = ClusterSyncScheduler.clusterSyncScheduler(SELF,
                                                            new NoopNetwork(),
-                                                           new NoopCollector(),
+                                                           new NoopClusterSyncCollector(),
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
                                                            Option::none,

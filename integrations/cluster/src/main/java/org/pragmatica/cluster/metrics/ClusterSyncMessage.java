@@ -12,9 +12,14 @@ import org.pragmatica.serialization.Codec;
 import java.util.List;
 import java.util.Map;
 
-/// Messages for metrics exchange between nodes.
-/// Uses Ping-Pong pattern: leader pings nodes with aggregated cluster metrics,
-/// nodes respond with their own metrics.
+/// Tier 1 cluster-sync wire protocol — the ping/pong chain carrying snapshot,
+/// lifecycle, metrics, and (post refactor) peer observations between the
+/// Rabia leader and core members.
+///
+/// Uses a Ping-Pong pattern: the leader pings every core member with the
+/// current cluster-generation snapshot and aggregated metrics; each node
+/// responds with a pong containing its own metrics, lifecycle state, and
+/// observed epoch.
 ///
 /// Extended in Commit 3 of the ClusterGeneration rollout to carry ephemeral
 /// generation snapshots, Rabia-term / epoch fencing, observed lifecycle state,
@@ -29,7 +34,7 @@ import java.util.Map;
 ///
 /// See `aether/docs/specs/cluster-generation-spec.md` §7.
 @Codec
-public sealed interface MetricsMessage extends ProtocolMessage {
+public sealed interface ClusterSyncMessage extends ProtocolMessage {
     /// Opaque, self-describing snapshot payload. Contents are a serialized
     /// `ClusterGenerationSnapshot` (core-only knowledge); consumers decode
     /// against their locally-imported `aether/slice` types.
@@ -43,8 +48,8 @@ public sealed interface MetricsMessage extends ProtocolMessage {
         }
     }
 
-    /// Metrics ping sent by the Rabia leader to core members (Tier 1) or by a
-    /// Spokesman core node to its assigned community governors (Tier 2).
+    /// Cluster-sync ping sent by the Rabia leader to core members (Tier 1) or
+    /// by a Spokesman core node to its assigned community governors (Tier 2).
     ///
     /// @param sender          ping originator
     /// @param allMetrics      existing per-node metrics map (heartbeat payload)
@@ -52,26 +57,26 @@ public sealed interface MetricsMessage extends ProtocolMessage {
     /// @param epochTerm       epoch's `rabiaTerm` part (duplicated for fencing)
     /// @param epochCounter    epoch's `localCounter` part
     /// @param snapshot        `Some(payload)` on epoch change; `None` on heartbeat
-    record MetricsPing(NodeId sender,
-                       Map<NodeId, Map<String, Double>> allMetrics,
-                       long rabiaTerm,
-                       long epochTerm,
-                       long epochCounter,
-                       Option<SnapshotPayload> snapshot) implements MetricsMessage {
-        public MetricsPing {
+    record ClusterSyncPing(NodeId sender,
+                           Map<NodeId, Map<String, Double>> allMetrics,
+                           long rabiaTerm,
+                           long epochTerm,
+                           long epochCounter,
+                           Option<SnapshotPayload> snapshot) implements ClusterSyncMessage {
+        public ClusterSyncPing {
             if (snapshot == null) {snapshot = Option.none();}
         }
 
         /// Backward-compatible factory for legacy call sites that have no epoch info.
         /// Produces a term/epoch of zero and no snapshot — receivers treat it as a
         /// pre-migration heartbeat.
-        public static MetricsPing metricsPing(NodeId sender, Map<NodeId, Map<String, Double>> allMetrics) {
-            return new MetricsPing(sender, allMetrics, 0L, 0L, 0L, Option.none());
+        public static ClusterSyncPing clusterSyncPing(NodeId sender, Map<NodeId, Map<String, Double>> allMetrics) {
+            return new ClusterSyncPing(sender, allMetrics, 0L, 0L, 0L, Option.none());
         }
     }
 
-    /// Metrics pong returned by core members to the leader (Tier 1) or by governors
-    /// to their assigned Spokesman core node (Tier 2).
+    /// Cluster-sync pong returned by core members to the leader (Tier 1) or by
+    /// governors to their assigned Spokesman core node (Tier 2).
     ///
     /// @param sender              pong originator
     /// @param metrics             existing per-node metrics map
@@ -82,14 +87,14 @@ public sealed interface MetricsMessage extends ProtocolMessage {
     ///                            (cluster/ module stays decoupled from aether/slice enums)
     /// @param communityReports    Spokesman core nodes aggregate assigned communities
     ///                            here; empty otherwise
-    record MetricsPong(NodeId sender,
-                       Map<String, Double> metrics,
-                       long observedRabiaTerm,
-                       long observedEpochTerm,
-                       long observedEpochCounter,
-                       String lifecycleState,
-                       List<CommunityReport> communityReports) implements MetricsMessage {
-        public MetricsPong {
+    record ClusterSyncPong(NodeId sender,
+                           Map<String, Double> metrics,
+                           long observedRabiaTerm,
+                           long observedEpochTerm,
+                           long observedEpochCounter,
+                           String lifecycleState,
+                           List<CommunityReport> communityReports) implements ClusterSyncMessage {
+        public ClusterSyncPong {
             if (lifecycleState == null) {lifecycleState = "";}
             communityReports = communityReports == null
                               ? List.of()
@@ -98,8 +103,8 @@ public sealed interface MetricsMessage extends ProtocolMessage {
 
         /// Backward-compatible factory for legacy call sites. Emits zero epoch,
         /// empty lifecycle, no community reports.
-        public static MetricsPong metricsPong(NodeId sender, Map<String, Double> metrics) {
-            return new MetricsPong(sender, metrics, 0L, 0L, 0L, "", List.of());
+        public static ClusterSyncPong clusterSyncPong(NodeId sender, Map<String, Double> metrics) {
+            return new ClusterSyncPong(sender, metrics, 0L, 0L, 0L, "", List.of());
         }
     }
 }

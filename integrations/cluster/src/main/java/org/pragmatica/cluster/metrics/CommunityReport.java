@@ -11,7 +11,7 @@ import java.util.Set;
 
 
 /// Per-community health report produced by a Spokesman (Tier 2) and piggybacked on
-/// that core node's Tier 1 `MetricsPong` to the leader.
+/// that core node's Tier 1 `ClusterSyncPong` to the leader.
 ///
 /// See `aether/docs/specs/cluster-generation-spec.md` §7.3.
 @Codec public record CommunityReport(String communityId,

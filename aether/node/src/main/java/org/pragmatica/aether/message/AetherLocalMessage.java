@@ -25,7 +25,7 @@ import org.pragmatica.messaging.Message;
 /// when building routes in {@link org.pragmatica.aether.node.AetherNode}.
 ///
 ///
-/// Note: Network messages (InvocationMessage, MetricsMessage, etc.) extend
+/// Note: Network messages (InvocationMessage, ClusterSyncMessage, etc.) extend
 /// ProtocolMessage and are handled separately through the cluster network layer.
 ///
 /// @see RouteGroup

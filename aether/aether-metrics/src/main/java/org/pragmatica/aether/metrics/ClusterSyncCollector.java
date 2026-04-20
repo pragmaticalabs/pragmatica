@@ -8,9 +8,9 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.cluster.metrics.CommunityReport;
-import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPing;
-import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPong;
-import org.pragmatica.cluster.metrics.MetricsMessage.SnapshotPayload;
+import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
+import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
+import org.pragmatica.cluster.metrics.ClusterSyncMessage.SnapshotPayload;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
@@ -35,18 +35,23 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 
-/// Collects and manages metrics for a single node.
+/// Tier 1 cluster-sync collector. Runs on every node.
+///
+/// Named "cluster-sync collector" because it sits on the receive-side of the
+/// Tier 1 ping/pong chain: it aggregates per-node metrics as one payload of
+/// the sync protocol, tracks epoch fencing, and caches the last-received
+/// snapshot payload.
 ///
 /// Responsibilities:
 ///   - Collect JVM metrics (CPU, heap usage)
 ///   - Track per-method call stats (count, duration)
 ///   - Store custom metrics from slices
 ///   - Store received metrics from other nodes
-///   - Handle MetricsPing/MetricsPong messages (with epoch fencing — Commit 3)
+///   - Handle ClusterSyncPing/ClusterSyncPong messages (with epoch fencing — Commit 3)
 ///   - Track locally observed `rabiaTerm` + `epoch` + the last-received snapshot payload
 ///   - Provide a hook for aggregating `CommunityReport`s (used by `SpokesmanPingLoop`
 ///     when this node owns Spokesman duty)
-public interface MetricsCollector {
+public interface ClusterSyncCollector {
     String CPU_USAGE = "cpu.usage";
 
     String HEAP_USED = "heap.used";
@@ -67,8 +72,8 @@ public interface MetricsCollector {
 
     @Contract void removeNode(NodeId nodeId);
     @MessageReceiver@Contract void onTopologyChange(TopologyChangeNotification topologyChange);
-    @MessageReceiver@Contract void onMetricsPing(MetricsPing ping);
-    @MessageReceiver@Contract void onMetricsPong(MetricsPong pong);
+    @MessageReceiver@Contract void onClusterSyncPing(ClusterSyncPing ping);
+    @MessageReceiver@Contract void onClusterSyncPong(ClusterSyncPong pong);
     long observedRabiaTerm();
     Epoch observedEpoch();
     Option<SnapshotPayload> lastObservedSnapshot();
@@ -76,21 +81,21 @@ public interface MetricsCollector {
     List<CommunityReport> collectCommunityReports();
     @Contract void setLifecycleStateSupplier(Supplier<String> supplier);
     @Contract void setCommunityReportSupplier(Supplier<List<CommunityReport>> supplier);
-    @Contract void addPongListener(Consumer<MetricsPong> listener);
+    @Contract void addPongListener(Consumer<ClusterSyncPong> listener);
 
     long DEFAULT_slidingWindowMs = 2 * 60 * 60 * 1000L;
 
-    static MetricsCollector metricsCollector(NodeId self, ClusterNetwork network) {
-        return new MetricsCollectorImpl(self, network, DEFAULT_slidingWindowMs);
+    static ClusterSyncCollector clusterSyncCollector(NodeId self, ClusterNetwork network) {
+        return new ClusterSyncCollectorImpl(self, network, DEFAULT_slidingWindowMs);
     }
 
-    static MetricsCollector metricsCollector(NodeId self, ClusterNetwork network, long slidingWindowMs) {
-        return new MetricsCollectorImpl(self, network, slidingWindowMs);
+    static ClusterSyncCollector clusterSyncCollector(NodeId self, ClusterNetwork network, long slidingWindowMs) {
+        return new ClusterSyncCollectorImpl(self, network, slidingWindowMs);
     }
 }
 
-/// Implementation of MetricsCollector.
-class MetricsCollectorImpl implements MetricsCollector {
+/// Implementation of ClusterSyncCollector.
+class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     private final long slidingWindowMs;
     private final int ringBufferCapacity;
     private final NodeId self;
@@ -118,9 +123,9 @@ class MetricsCollectorImpl implements MetricsCollector {
 
     private final AtomicReference<Supplier<List<CommunityReport>>> communityReportSupplier = new AtomicReference<>(List::of);
 
-    private final CopyOnWriteArrayList<Consumer<MetricsPong>> pongListeners = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<Consumer<ClusterSyncPong>> pongListeners = new CopyOnWriteArrayList<>();
 
-    MetricsCollectorImpl(NodeId self, ClusterNetwork network, long slidingWindowMs) {
+    ClusterSyncCollectorImpl(NodeId self, ClusterNetwork network, long slidingWindowMs) {
         this.self = self;
         this.network = network;
         this.slidingWindowMs = slidingWindowMs;
@@ -184,7 +189,7 @@ class MetricsCollectorImpl implements MetricsCollector {
         }
     }
 
-    @Override@Contract public void onMetricsPing(MetricsPing ping) {
+    @Override@Contract public void onClusterSyncPing(ClusterSyncPing ping) {
         if (!acceptPingFencing(ping)) {return;}
         ping.allMetrics().forEach(this::storeRemoteMetrics);
         var incomingEpoch = Epoch.epoch(ping.epochTerm(), ping.epochCounter());
@@ -193,7 +198,7 @@ class MetricsCollectorImpl implements MetricsCollector {
         network.send(ping.sender(), pong);
     }
 
-    @Override@Contract public void onMetricsPong(MetricsPong pong) {
+    @Override@Contract public void onClusterSyncPong(ClusterSyncPong pong) {
         if (!pong.sender().equals(self)) {
             remoteMetrics.put(pong.sender(), pong.metrics());
             addToHistory(pong.sender(), pong.metrics());
@@ -229,11 +234,11 @@ class MetricsCollectorImpl implements MetricsCollector {
         communityReportSupplier.set(supplier);
     }
 
-    @Override@Contract public void addPongListener(Consumer<MetricsPong> listener) {
+    @Override@Contract public void addPongListener(Consumer<ClusterSyncPong> listener) {
         pongListeners.add(listener);
     }
 
-    private boolean acceptPingFencing(MetricsPing ping) {
+    private boolean acceptPingFencing(ClusterSyncPing ping) {
         var currentTerm = observedRabiaTerm.get();
         if (ping.rabiaTerm() <currentTerm) {return false;}
         if (ping.rabiaTerm() > currentTerm) {observedRabiaTerm.set(ping.rabiaTerm());}
@@ -247,15 +252,15 @@ class MetricsCollectorImpl implements MetricsCollector {
         snapshot.onPresent(payload -> lastObservedSnapshot.set(Option.some(payload)));
     }
 
-    private MetricsPong buildPong() {
+    private ClusterSyncPong buildPong() {
         var epoch = observedEpoch.get();
-        return new MetricsPong(self,
-                               collectLocal(),
-                               observedRabiaTerm.get(),
-                               epoch.rabiaTerm(),
-                               epoch.localCounter(),
-                               currentLifecycleState(),
-                               collectCommunityReports());
+        return new ClusterSyncPong(self,
+                                   collectLocal(),
+                                   observedRabiaTerm.get(),
+                                   epoch.rabiaTerm(),
+                                   epoch.localCounter(),
+                                   currentLifecycleState(),
+                                   collectCommunityReports());
     }
 
     private void collectCpuMetrics(Map<String, Double> metrics) {

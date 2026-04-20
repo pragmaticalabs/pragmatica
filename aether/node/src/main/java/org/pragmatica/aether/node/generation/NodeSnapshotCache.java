@@ -9,8 +9,8 @@ import org.pragmatica.aether.slice.generation.CoreMember;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
-import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPing;
-import org.pragmatica.cluster.metrics.MetricsMessage.SnapshotPayload;
+import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
+import org.pragmatica.cluster.metrics.ClusterSyncMessage.SnapshotPayload;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.MembershipView;
@@ -30,7 +30,7 @@ import org.slf4j.LoggerFactory;
 
 /// Per-node cache of the latest `ClusterGenerationSnapshot` received from the leader.
 ///
-/// Every node (leader and followers alike) receives Tier 1 `MetricsPing`s that carry
+/// Every node (leader and followers alike) receives Tier 1 `ClusterSyncPing`s that carry
 /// the leader's current Rabia term, epoch, and — on epoch advance — an opaque
 /// `SnapshotPayload` containing a serialized `ClusterGenerationSnapshot`. This cache
 /// fences incoming pings against `(observedRabiaTerm, observedEpoch)` and retains the
@@ -60,7 +60,7 @@ public interface NodeSnapshotCache extends GenerationSnapshotSource {
         return current().map(NodeSnapshotCache::toMembershipView);
     }
 
-    @MessageReceiver@Contract void onMetricsPing(MetricsPing ping);
+    @MessageReceiver@Contract void onClusterSyncPing(ClusterSyncPing ping);
 
     private static MembershipView toMembershipView(ClusterGenerationSnapshot snapshot) {
         var coreMembers = snapshot.coreMembers();
@@ -98,20 +98,20 @@ record NodeSnapshotCacheRecord(NodeId self,
         return stateRef.get().epoch();
     }
 
-    @Override@Contract public void onMetricsPing(MetricsPing ping) {
+    @Override@Contract public void onClusterSyncPing(ClusterSyncPing ping) {
         var incomingEpoch = Epoch.epoch(ping.epochTerm(), ping.epochCounter());
         var updated = stateRef.updateAndGet(current -> applyPing(current, ping, incomingEpoch));
         logTransition(ping, incomingEpoch, updated);
     }
 
-    private NodeSnapshotCache.State applyPing(NodeSnapshotCache.State current, MetricsPing ping, Epoch incomingEpoch) {
+    private NodeSnapshotCache.State applyPing(NodeSnapshotCache.State current, ClusterSyncPing ping, Epoch incomingEpoch) {
         if (ping.rabiaTerm() <current.rabiaTerm()) {return current;}
         if (ping.rabiaTerm() > current.rabiaTerm()) {return acceptNewTerm(ping, incomingEpoch, current);}
         if (!incomingEpoch.isStrictlyAfter(current.epoch())) {return current;}
         return acceptSameTerm(ping, incomingEpoch, current);
     }
 
-    private NodeSnapshotCache.State acceptNewTerm(MetricsPing ping,
+    private NodeSnapshotCache.State acceptNewTerm(ClusterSyncPing ping,
                                                   Epoch incomingEpoch,
                                                   NodeSnapshotCache.State current) {
         var nextSnapshot = ping.snapshot().flatMap(this::decodePayload);
@@ -119,7 +119,7 @@ record NodeSnapshotCacheRecord(NodeId self,
         return new NodeSnapshotCache.State(ping.rabiaTerm(), incomingEpoch, retained);
     }
 
-    private NodeSnapshotCache.State acceptSameTerm(MetricsPing ping,
+    private NodeSnapshotCache.State acceptSameTerm(ClusterSyncPing ping,
                                                    Epoch incomingEpoch,
                                                    NodeSnapshotCache.State current) {
         var nextSnapshot = ping.snapshot().flatMap(this::decodePayload);
@@ -131,7 +131,7 @@ record NodeSnapshotCacheRecord(NodeId self,
         return snapshotDecoder.apply(payload.bytes());
     }
 
-    @Contract private void logTransition(MetricsPing ping, Epoch incomingEpoch, NodeSnapshotCache.State updated) {
+    @Contract private void logTransition(ClusterSyncPing ping, Epoch incomingEpoch, NodeSnapshotCache.State updated) {
         if (updated.rabiaTerm() != ping.rabiaTerm() && ping.rabiaTerm() <updated.rabiaTerm()) {
             log.trace("Node {} rejected stale-term ping from {}: pingTerm={}, observedTerm={}",
                       self,

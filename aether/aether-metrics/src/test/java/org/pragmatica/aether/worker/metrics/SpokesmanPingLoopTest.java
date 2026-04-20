@@ -12,7 +12,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SpokesmanKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
-import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPong;
+import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -135,11 +135,11 @@ class SpokesmanPingLoopTest {
     @Nested
     class PongAggregation {
         @Test
-        void onMetricsPong_fromKnownGovernor_producesCommunityReport() {
+        void onClusterSyncPong_fromKnownGovernor_producesCommunityReport() {
             activateWith(List.of("pool-a"));
 
-            var pong = new MetricsPong(GOV_A, Map.of(), 7L, 7L, 3L, "ON_DUTY", List.of());
-            loop.onMetricsPong(pong);
+            var pong = new ClusterSyncPong(GOV_A, Map.of(), 7L, 7L, 3L, "ON_DUTY", List.of());
+            loop.onClusterSyncPong(pong);
 
             var reports = loop.currentReports();
             assertThat(reports).hasSize(1);
@@ -150,21 +150,21 @@ class SpokesmanPingLoopTest {
         }
 
         @Test
-        void onMetricsPong_fromUnknownSender_isIgnored() {
+        void onClusterSyncPong_fromUnknownSender_isIgnored() {
             activateWith(List.of("pool-a"));
             var stranger = NodeId.nodeId("stranger").unwrap();
 
-            loop.onMetricsPong(new MetricsPong(stranger, Map.of(), 7L, 7L, 3L, "ON_DUTY", List.of()));
+            loop.onClusterSyncPong(new ClusterSyncPong(stranger, Map.of(), 7L, 7L, 3L, "ON_DUTY", List.of()));
 
             assertThat(loop.currentReports()).isEmpty();
         }
 
         @Test
-        void onMetricsPong_twoGovernors_producesTwoReports() {
+        void onClusterSyncPong_twoGovernors_producesTwoReports() {
             activateWith(List.of("pool-a", "pool-b"));
 
-            loop.onMetricsPong(new MetricsPong(GOV_A, Map.of(), 7L, 7L, 3L, "ON_DUTY", List.of()));
-            loop.onMetricsPong(new MetricsPong(GOV_B, Map.of(), 7L, 7L, 5L, "ON_DUTY", List.of()));
+            loop.onClusterSyncPong(new ClusterSyncPong(GOV_A, Map.of(), 7L, 7L, 3L, "ON_DUTY", List.of()));
+            loop.onClusterSyncPong(new ClusterSyncPong(GOV_B, Map.of(), 7L, 7L, 5L, "ON_DUTY", List.of()));
 
             assertThat(loop.currentReports())
                   .extracting("communityId")
