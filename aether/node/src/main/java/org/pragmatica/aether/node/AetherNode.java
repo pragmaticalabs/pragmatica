@@ -65,6 +65,7 @@ import org.pragmatica.aether.deployment.generation.ClusterGenerationProjector;
 import org.pragmatica.aether.deployment.generation.HealthReconciler;
 import org.pragmatica.aether.deployment.generation.HealthReconcilerActivator;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
+import org.pragmatica.aether.metrics.ClusterSyncPongSignalFan;
 import org.pragmatica.aether.metrics.ClusterSyncScheduler;
 import org.pragmatica.aether.metrics.MinuteAggregator;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
@@ -773,6 +774,7 @@ public interface AetherNode extends ManageableNode {
         metricsCollector.recordCustom("mgmt.port", config.managementPort());
         var leaderTerm = new AtomicLong(0L);
         var isLeaderGate = new AtomicBoolean(false);
+        metricsCollector.setPongSignalFan(ClusterSyncPongSignalFan.clusterSyncPongSignalFan(stableHealthSink, isLeaderGate::get));
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
         Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.get(), 0L);
         var hlcClockEarly = HlcClock.hlcClock(config.self().id()).unwrap();

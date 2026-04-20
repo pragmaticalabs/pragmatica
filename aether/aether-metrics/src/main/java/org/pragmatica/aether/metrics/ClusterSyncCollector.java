@@ -85,6 +85,14 @@ public interface ClusterSyncCollector {
 
     long DEFAULT_slidingWindowMs = 2 * 60 * 60 * 1000L;
 
+    /// Late-bound sink for leader-side fan-out of peer observations carried on
+    /// incoming `ClusterSyncPong`s. The collector receives pongs before
+    /// `AetherNode` has assembled every downstream dependency (the leader gate
+    /// and the health-signal sink), so the fan is attached after construction.
+    /// Defaults to a no-op; `AetherNode` wires the real fan once its collaborators
+    /// exist. Safe on followers — the fan itself gates on leadership.
+    @Contract void setPongSignalFan(ClusterSyncPongSignalFan fan);
+
     static ClusterSyncCollector clusterSyncCollector(NodeId self, ClusterNetwork network) {
         return new ClusterSyncCollectorImpl(self, network, DEFAULT_slidingWindowMs);
     }
@@ -124,6 +132,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     private final AtomicReference<Supplier<List<CommunityReport>>> communityReportSupplier = new AtomicReference<>(List::of);
 
     private final CopyOnWriteArrayList<Consumer<ClusterSyncPong>> pongListeners = new CopyOnWriteArrayList<>();
+
+    private final AtomicReference<ClusterSyncPongSignalFan> pongSignalFan = new AtomicReference<>(_ -> {});
 
     ClusterSyncCollectorImpl(NodeId self, ClusterNetwork network, long slidingWindowMs) {
         this.self = self;
@@ -203,7 +213,12 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
             remoteMetrics.put(pong.sender(), pong.metrics());
             addToHistory(pong.sender(), pong.metrics());
         }
+        pongSignalFan.get().fan(pong);
         pongListeners.forEach(listener -> listener.accept(pong));
+    }
+
+    @Override@Contract public void setPongSignalFan(ClusterSyncPongSignalFan fan) {
+        pongSignalFan.set(fan);
     }
 
     @Override public long observedRabiaTerm() {
@@ -260,7 +275,9 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
                                    epoch.rabiaTerm(),
                                    epoch.localCounter(),
                                    currentLifecycleState(),
-                                   collectCommunityReports());
+                                   collectCommunityReports(),
+                                   List.of(),
+                                   List.of());
     }
 
     private void collectCpuMetrics(Map<String, Double> metrics) {

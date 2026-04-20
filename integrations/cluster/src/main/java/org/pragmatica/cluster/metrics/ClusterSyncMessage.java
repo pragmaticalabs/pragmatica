@@ -87,24 +87,36 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
     ///                            (cluster/ module stays decoupled from aether/slice enums)
     /// @param communityReports    Spokesman core nodes aggregate assigned communities
     ///                            here; empty otherwise
+    /// @param peerHealth          per-peer SWIM health observations collected by the sender
+    ///                            since its last pong; empty on leaders and during steady state
+    /// @param peerConnectivity    per-peer QUIC connectivity observations collected by the
+    ///                            sender since its last pong; empty on leaders and during steady state
     record ClusterSyncPong(NodeId sender,
                            Map<String, Double> metrics,
                            long observedRabiaTerm,
                            long observedEpochTerm,
                            long observedEpochCounter,
                            String lifecycleState,
-                           List<CommunityReport> communityReports) implements ClusterSyncMessage {
+                           List<CommunityReport> communityReports,
+                           List<PeerHealthObservation> peerHealth,
+                           List<PeerConnectivityObservation> peerConnectivity) implements ClusterSyncMessage {
         public ClusterSyncPong {
             if (lifecycleState == null) {lifecycleState = "";}
             communityReports = communityReports == null
                               ? List.of()
                               : List.copyOf(communityReports);
+            peerHealth = peerHealth == null
+                        ? List.of()
+                        : List.copyOf(peerHealth);
+            peerConnectivity = peerConnectivity == null
+                              ? List.of()
+                              : List.copyOf(peerConnectivity);
         }
 
         /// Backward-compatible factory for legacy call sites. Emits zero epoch,
-        /// empty lifecycle, no community reports.
+        /// empty lifecycle, no community reports, no peer observations.
         public static ClusterSyncPong clusterSyncPong(NodeId sender, Map<String, Double> metrics) {
-            return new ClusterSyncPong(sender, metrics, 0L, 0L, 0L, "", List.of());
+            return new ClusterSyncPong(sender, metrics, 0L, 0L, 0L, "", List.of(), List.of(), List.of());
         }
     }
 }

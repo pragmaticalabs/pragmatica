@@ -36,4 +36,16 @@ public sealed interface HealthSignal {
     }
 
     record OperatorAction(OperatorIntent intent) implements HealthSignal{}
+
+    /// Remote SWIM hint emitted by the leader-side `ClusterSyncPongSignalFan` on
+    /// receipt of a `PeerHealthObservation` piggybacked on a follower's pong.
+    /// `observer` is the node that reported the hint; `peer` is the node the
+    /// hint is about. Carries the observer's epoch at the time of the observation
+    /// so the leader's reconciler can epoch-fence stale reports (commit 5).
+    record RemoteSwimHint(NodeId observer, NodeId peer, HealthHint hint, Epoch observedAtEpoch) implements HealthSignal{}
+
+    /// Remote QUIC connectivity observation emitted by the leader-side
+    /// `ClusterSyncPongSignalFan`. Same semantics as `RemoteSwimHint` but for
+    /// transport-level connectivity state.
+    record RemoteConnectivity(NodeId observer, NodeId peer, ConnectivityReport state, Epoch observedAtEpoch) implements HealthSignal{}
 }

@@ -126,7 +126,8 @@ public interface HealthReconciler extends HealthSignalSink {
                                           new ConcurrentHashMap<>(),
                                           ConcurrentHashMap.newKeySet(),
                                           new AtomicBoolean(false),
-                                          new AtomicLong());
+                                          new AtomicLong(),
+                                          PeerObservationReducer.peerObservationReducer());
     }
 }
 
@@ -145,7 +146,8 @@ record HealthReconcilerRecord(NodeId self,
                               Map<NodeId, HealthHint> swimHints,
                               Set<NodeId> pendingRemovals,
                               AtomicBoolean started,
-                              AtomicLong consensusApplyFailed) implements HealthReconciler {
+                              AtomicLong consensusApplyFailed,
+                              PeerObservationReducer peerObservationReducer) implements HealthReconciler {
     private static final Logger log = LoggerFactory.getLogger(HealthReconcilerRecord.class);
 
     private static final String CORE_COMMUNITY_ID = "core";
@@ -197,6 +199,30 @@ record HealthReconcilerRecord(NodeId self,
             case HealthSignal.CommunityDissolved dissolved -> handleCommunityDissolved(dissolved);
             case HealthSignal.SpokesmanAssignmentFailed failed -> handleSpokesmanAssignmentFailed(failed);
             case HealthSignal.OperatorAction action -> handleOperatorAction(action.intent());
+            case HealthSignal.RemoteSwimHint remote -> handleRemoteSwimHint(remote);
+            case HealthSignal.RemoteConnectivity remote -> handleRemoteConnectivity(remote);
+        }
+    }
+
+    @Contract private void handleRemoteSwimHint(HealthSignal.RemoteSwimHint remote) {
+        var current = snapshotRef.get();
+        if (!current.coreMembers().containsKey(remote.peer())) {return;}
+        peerObservationReducer.recordHint(remote.observer(), remote.peer(), remote.hint(), remote.observedAtEpoch());
+        var totalObservers = current.coreMembers().size();
+        var resolved = peerObservationReducer.resolvedHint(remote.peer(), totalObservers);
+        var currentHint = Option.option(current.coreMembers().get(remote.peer()))
+                                .map(CoreMember::healthHint)
+                                .or(HealthHint.HEALTHY);
+        if (resolved == currentHint) {return;}
+        handleSwimHint(new HealthSignal.SwimHint(remote.peer(), resolved, remote.observedAtEpoch()));
+    }
+
+    @Contract private void handleRemoteConnectivity(HealthSignal.RemoteConnectivity remote) {
+        if (!snapshotRef.get().coreMembers().containsKey(remote.peer())) {return;}
+        switch (remote.state()){
+            case DISCONNECTED, STALE -> handleQuicDisconnect(new HealthSignal.QuicDisconnect(remote.peer(),
+                                                                                             remote.observedAtEpoch()));
+            case CONNECTED -> {}
         }
     }
 

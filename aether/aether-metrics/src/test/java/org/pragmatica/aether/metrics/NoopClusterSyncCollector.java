@@ -42,4 +42,5 @@ final class NoopClusterSyncCollector implements ClusterSyncCollector {
     @Override public void setLifecycleStateSupplier(Supplier<String> supplier) {}
     @Override public void setCommunityReportSupplier(Supplier<List<CommunityReport>> supplier) {}
     @Override public void addPongListener(Consumer<ClusterSyncPong> listener) {}
+    @Override public void setPongSignalFan(ClusterSyncPongSignalFan fan) {}
 }

@@ -73,7 +73,9 @@ class ClusterSyncMessageTest {
                                          5L,
                                          12L,
                                          "ON_DUTY",
-                                         List.of(report));
+                                         List.of(report),
+                                         List.of(),
+                                         List.of());
 
             assertThat(pong.sender()).isEqualTo(PEER);
             assertThat(pong.observedRabiaTerm()).isEqualTo(5L);
@@ -81,6 +83,8 @@ class ClusterSyncMessageTest {
             assertThat(pong.observedEpochCounter()).isEqualTo(12L);
             assertThat(pong.lifecycleState()).isEqualTo("ON_DUTY");
             assertThat(pong.communityReports()).containsExactly(report);
+            assertThat(pong.peerHealth()).isEmpty();
+            assertThat(pong.peerConnectivity()).isEmpty();
         }
 
         @Test
@@ -91,20 +95,61 @@ class ClusterSyncMessageTest {
             assertThat(pong.observedEpochTerm()).isZero();
             assertThat(pong.lifecycleState()).isEmpty();
             assertThat(pong.communityReports()).isEmpty();
+            assertThat(pong.peerHealth()).isEmpty();
+            assertThat(pong.peerConnectivity()).isEmpty();
         }
 
         @Test
         void construct_nullReports_normalizesToEmpty() {
-            var pong = new ClusterSyncPong(PEER, Map.of(), 0L, 0L, 0L, "ON_DUTY", null);
+            var pong = new ClusterSyncPong(PEER, Map.of(), 0L, 0L, 0L, "ON_DUTY", null, List.of(), List.of());
 
             assertThat(pong.communityReports()).isEmpty();
         }
 
         @Test
         void construct_nullLifecycleState_normalizesToEmpty() {
-            var pong = new ClusterSyncPong(PEER, Map.of(), 0L, 0L, 0L, null, List.of());
+            var pong = new ClusterSyncPong(PEER, Map.of(), 0L, 0L, 0L, null, List.of(), List.of(), List.of());
 
             assertThat(pong.lifecycleState()).isEmpty();
+        }
+
+        @Test
+        void construct_nullPeerObservations_normalizeToEmpty() {
+            var pong = new ClusterSyncPong(PEER, Map.of(), 0L, 0L, 0L, "ON_DUTY", List.of(), null, null);
+
+            assertThat(pong.peerHealth()).isEmpty();
+            assertThat(pong.peerConnectivity()).isEmpty();
+        }
+
+        @Test
+        void clusterSyncPong_carriesPeerObservations_roundTripsFields() {
+            var peerA = NodeId.nodeId("peer-a").unwrap();
+            var peerB = NodeId.nodeId("peer-b").unwrap();
+            var healthObs = new PeerHealthObservation(peerA,
+                                                      HealthHintWire.SUSPECTED,
+                                                      7L,
+                                                      42L);
+            var connObs = new PeerConnectivityObservation(peerB,
+                                                          ConnectivityState.DISCONNECTED,
+                                                          7L,
+                                                          43L);
+
+            var pong = new ClusterSyncPong(PEER,
+                                           Map.of(),
+                                           7L,
+                                           7L,
+                                           44L,
+                                           "ON_DUTY",
+                                           List.of(),
+                                           List.of(healthObs),
+                                           List.of(connObs));
+
+            assertThat(pong.peerHealth()).containsExactly(healthObs);
+            assertThat(pong.peerConnectivity()).containsExactly(connObs);
+            assertThat(pong.peerHealth().getFirst().peerId()).isEqualTo(peerA);
+            assertThat(pong.peerHealth().getFirst().hint()).isEqualTo(HealthHintWire.SUSPECTED);
+            assertThat(pong.peerConnectivity().getFirst().peerId()).isEqualTo(peerB);
+            assertThat(pong.peerConnectivity().getFirst().state()).isEqualTo(ConnectivityState.DISCONNECTED);
         }
     }
 
