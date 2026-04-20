@@ -47,11 +47,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// the CTM has no local `configuredSize`/`desiredSize` caches — everything flows
 /// through the snapshot, and `setDesiredSize` is a thin `ClusterConfigValue` write.
 class ClusterTopologyManagerSnapshotDrivenDeficitTest {
-    private static final NodeId SELF = nodeId("node-self").unwrap();
-    private static final NodeId PEER_A = nodeId("node-a").unwrap();
-    private static final NodeId PEER_B = nodeId("node-b").unwrap();
-    private static final NodeId PEER_C = nodeId("node-c").unwrap();
-    private static final NodeId PEER_D = nodeId("node-d").unwrap();
+    // NodeIds prefixed with `aether-core-` mark CTM-provisioned nodes (see
+    // `ClusterTopologyManagerRecord.isProvisionedByCtm`). Termination candidates must be
+    // provisioned — the hard filter excludes fixtures that the compute provider cannot
+    // actually terminate. Test peers use the provisioned-style prefix so surplus selection
+    // admits them as candidates.
+    private static final NodeId SELF = nodeId("aether-core-self").unwrap();
+    private static final NodeId PEER_A = nodeId("aether-core-a").unwrap();
+    private static final NodeId PEER_B = nodeId("aether-core-b").unwrap();
+    private static final NodeId PEER_C = nodeId("aether-core-c").unwrap();
+    private static final NodeId PEER_D = nodeId("aether-core-d").unwrap();
 
     private static final NodeInfo INFO_SELF = NodeInfo.nodeInfo(SELF, NodeAddress.nodeAddress("localhost", 5000).unwrap());
     private static final NodeInfo INFO_A = NodeInfo.nodeInfo(PEER_A, NodeAddress.nodeAddress("localhost", 5001).unwrap());

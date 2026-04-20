@@ -11,8 +11,11 @@ import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -418,8 +421,15 @@ import static org.pragmatica.lang.Unit.unit;
 
     private List<NodeId> selectNodesForTermination(int count) {
         var selfId = observer.self().id();
+        // HARD filter to CTM-provisioned nodes only. Compose fixtures / SSH-seeded primary
+        // nodes appear in topology but the compute provider has no cloud tag for them —
+        // attempting to terminate loops forever (see handleTerminationFailure in
+        // NodeLifecycleManager.logMismatch). Removing them from the candidate set means
+        // scale-down converges to "as close to desired as we can given the provisioned pool",
+        // which is the correct semantic in a mixed fixture+provisioned deployment.
         var activeNodes = observer.topology().stream()
                                            .filter(id -> !id.equals(selfId))
+                                           .filter(ClusterTopologyManagerRecord::isProvisionedByCtm)
                                            .toList();
         var emptyNodes = deploymentMap.nodesWithoutSlices(activeNodes);
         var hostCounts = buildHostCounts(activeNodes);
@@ -490,7 +500,23 @@ import static org.pragmatica.lang.Unit.unit;
     private void handleTerminationSuccess(NodeId nodeId) {
         nodeJoinTimes.remove(nodeId);
         log.info("CTM: Node {} terminated successfully", nodeId);
+        writeDecommissionedAtom(nodeId);
         reconcile();
+    }
+
+    private void writeDecommissionedAtom(NodeId nodeId) {
+        // When a node is physically terminated by the compute provider, SIGKILL bypasses
+        // the node's own NodeDeploymentManager graceful-drain path — its NodeLifecycleKey
+        // atom stays at ON_DUTY in KV. Without explicitly transitioning the atom here, the
+        // leader's next snapshot projection still counts the dead node as healthy on-duty,
+        // `healthyOnDutyCount()` stays inflated, and surplus reconcile loops forever
+        // chasing a "surplus" that the provider already removed.
+        @SuppressWarnings("unchecked")
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId),
+                                                                                                      NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED));
+        commandApplier.apply(List.of(command)).onFailure(cause -> log.warn("CTM: failed to write DECOMMISSIONED atom for {}: {}",
+                                                                           nodeId,
+                                                                           cause.message()));
     }
 
     private void provisionNodes(int count) {
