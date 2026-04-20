@@ -125,14 +125,15 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) imple
     }
 
     private static Promise<Unit> logMismatch(String operation, NodeId nodeId, int count) {
-        if (count == 0) {log.warn("No cloud instance found with tag {}={} — skipping {}",
-                                  NODE_ID_TAG,
-                                  nodeId.id(),
-                                  operation);} else {log.warn("Found {} cloud instances with tag {}={} — expected 1, skipping {}",
-                                                              count,
-                                                              NODE_ID_TAG,
-                                                              nodeId.id(),
-                                                              operation);}
-        return Promise.success(Unit.unit());
+        // Return a FAILURE (not fake success) so CTM's handleTerminationSuccess/Failure path
+        // can pick a different candidate instead of believing the node is gone. Without this,
+        // compose-fixture nodes that have no cloud-tag match were being "terminated successfully"
+        // from CTM's point of view, while remaining alive — scale-down looped terminating the
+        // same fixture repeatedly and never picked the actually-provisioned nodes.
+        var reason = count == 0
+                    ? "no cloud instance with tag " + NODE_ID_TAG + "=" + nodeId.id()
+                    : "found " + count + " instances with tag " + NODE_ID_TAG + "=" + nodeId.id() + " (expected 1)";
+        log.warn("{} of {} skipped: {}", operation, nodeId.id(), reason);
+        return EnvironmentError.operationNotSupported(operation + ": " + reason).promise();
     }
 }

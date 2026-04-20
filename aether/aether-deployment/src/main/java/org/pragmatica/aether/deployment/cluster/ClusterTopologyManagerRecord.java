@@ -453,12 +453,27 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private Comparator<NodeId> surplusNodeComparator(Set<NodeId> emptyNodes, Map<String, Long> hostCounts) {
-        return Comparator.<NodeId, Boolean>comparing(id -> !isSpotInstance(id))
-                         .thenComparing(id -> hostCount(id, hostCounts),
-                                        Comparator.reverseOrder())
-                         .thenComparing(id -> !emptyNodes.contains(id))
-                         .thenComparing(id -> nodeJoinTimes.getOrDefault(id, Instant.EPOCH),
-                                        Comparator.reverseOrder());
+        // Termination priority (earlier wins):
+        // 1. NOT a fixture — CTM-provisioned nodes (id prefix `aether-core-`) can actually be
+        //    terminated by the compute provider; fixture nodes (compose / SSH-seeded primaries)
+        //    appear in the topology but the provider has no cloud tag for them and termination
+        //    becomes a no-op. Prefer provisioned nodes so we don't loop trying to terminate
+        //    peers we cannot actually remove.
+        // 2. Spot instances next — cheaper to reclaim.
+        // 3. Fuller hosts — compact cluster footprint.
+        // 4. Empty nodes — terminate those without slice load first.
+        // 5. Most recently joined — retain longer-running members.
+        return Comparator.<NodeId, Boolean>comparing(id -> !isProvisionedByCtm(id))
+                                   .thenComparing(id -> !isSpotInstance(id))
+                                   .thenComparing(id -> hostCount(id, hostCounts),
+                                                  Comparator.reverseOrder())
+                                   .thenComparing(id -> !emptyNodes.contains(id))
+                                   .thenComparing(id -> nodeJoinTimes.getOrDefault(id, Instant.EPOCH),
+                                                  Comparator.reverseOrder());
+    }
+
+    private static boolean isProvisionedByCtm(NodeId nodeId) {
+        return nodeId.id().startsWith("aether-core-");
     }
 
     private void terminateNodes(List<NodeId> nodes) {
