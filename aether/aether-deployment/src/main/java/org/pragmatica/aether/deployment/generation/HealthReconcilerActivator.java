@@ -11,11 +11,13 @@ import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.generation.PartitionOwner;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SpokesmanKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
@@ -88,6 +90,7 @@ public interface HealthReconcilerActivator {
                                                                                   clock,
                                                                                   Option.<ClusterNode<KVCommand<AetherKey>>>none(),
                                                                                   reconciler::self,
+                                                                                  () -> 0,
                                                                                   new AtomicBoolean(false),
                                                                                   new AtomicInteger()));
     }
@@ -106,6 +109,7 @@ public interface HealthReconcilerActivator {
                                                    hlcClock,
                                                    Option.<ClusterNode<KVCommand<AetherKey>>>none(),
                                                    reconciler::self,
+                                                   () -> 0,
                                                    new AtomicBoolean(false),
                                                    new AtomicInteger());
     }
@@ -126,6 +130,29 @@ public interface HealthReconcilerActivator {
                                                    hlcClock,
                                                    Option.some(cluster),
                                                    selfSupplier,
+                                                   () -> 0,
+                                                   new AtomicBoolean(false),
+                                                   new AtomicInteger());
+    }
+
+    static HealthReconcilerActivator healthReconcilerActivator(HealthReconciler reconciler,
+                                                               AtomicBoolean isLeaderGate,
+                                                               ClusterGenerationProjector projector,
+                                                               Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier,
+                                                               Supplier<Long> rabiaTermSupplier,
+                                                               HlcClock hlcClock,
+                                                               ClusterNode<KVCommand<AetherKey>> cluster,
+                                                               Supplier<NodeId> selfSupplier,
+                                                               Supplier<Integer> initialCoreSizeSupplier) {
+        return new HealthReconcilerActivatorRecord(reconciler,
+                                                   isLeaderGate,
+                                                   projector,
+                                                   kvSnapshotSupplier,
+                                                   rabiaTermSupplier,
+                                                   hlcClock,
+                                                   Option.some(cluster),
+                                                   selfSupplier,
+                                                   initialCoreSizeSupplier,
                                                    new AtomicBoolean(false),
                                                    new AtomicInteger());
     }
@@ -139,6 +166,7 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
                                        HlcClock hlcClock,
                                        Option<ClusterNode<KVCommand<AetherKey>>> cluster,
                                        Supplier<NodeId> selfSupplier,
+                                       Supplier<Integer> initialCoreSizeSupplier,
                                        AtomicBoolean bootstrapComplete,
                                        AtomicInteger bootstrapAttempts) implements HealthReconcilerActivator {
     private static final Logger log = LoggerFactory.getLogger(HealthReconcilerActivatorRecord.class);
@@ -154,6 +182,7 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
             reconciler.seedSnapshot(seeded);
             reconciler.start(Epoch.epoch(rabiaTermSupplier.get(), 0L));
             attemptBootstrap(seeded);
+            seedClusterConfigIfMissing();
         } else {
             log.info("HealthReconciler stepping down — stopping reconciler");
             isLeaderGate.set(false);
@@ -167,6 +196,33 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
     @Contract private void attemptBootstrap(ClusterGenerationSnapshot seeded) {
         if (bootstrapComplete.get()) {return;}
         cluster.onPresent(clusterNode -> applyCoreBootstrap(clusterNode, seeded));
+    }
+
+    @Contract private void seedClusterConfigIfMissing() {
+        var existing = kvSnapshotSupplier.get().get(ClusterConfigKey.CURRENT);
+        if (existing instanceof ClusterConfigValue) {return;}
+        var initialSize = initialCoreSizeSupplier.get();
+        if (initialSize <3) {
+            log.debug("Skipping ClusterConfigValue seed: initial core size {} below quorum minimum", initialSize);
+            return;
+        }
+        cluster.onPresent(clusterNode -> writeClusterConfigSeed(clusterNode, initialSize));
+    }
+
+    @Contract private void writeClusterConfigSeed(ClusterNode<KVCommand<AetherKey>> clusterNode, int initialSize) {
+        var seed = ClusterConfigValue.clusterConfigValue("",
+                                                         "",
+                                                         "1.0.0",
+                                                         initialSize,
+                                                         initialSize,
+                                                         initialSize,
+                                                         "bootstrap-seed",
+                                                         1L);
+        KVCommand<AetherKey> command = new KVCommand.Put<AetherKey, AetherValue>(ClusterConfigKey.CURRENT, seed);
+        log.info("Seeding ClusterConfigValue with coreCount={} (initial topology size)", initialSize);
+        clusterNode.apply(List.of(command))
+                         .onFailure(cause -> log.warn("ClusterConfigValue seed failed: {}",
+                                                      cause.message()));
     }
 
     @Contract private void retryBootstrapIfNeeded() {

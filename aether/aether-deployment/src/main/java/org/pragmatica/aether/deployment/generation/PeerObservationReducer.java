@@ -75,7 +75,7 @@ record PeerObservationReducerRecord(Map<NodeId, Map<NodeId, HintEntry>> observat
                              .count();
     }
 
-    private static void pruneOlderThan(Map<NodeId, HintEntry> perPeer, Epoch before) {
+    @Contract private static void pruneOlderThan(Map<NodeId, HintEntry> perPeer, Epoch before) {
         perPeer.entrySet().removeIf(e -> before.isStrictlyAfter(e.getValue().observedAt()));
     }
 

@@ -11,6 +11,10 @@ import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
@@ -39,10 +43,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// Verifies that `ClusterTopologyManagerRecord` reads cluster size from the
 /// snapshot-backed `MembershipView` (when present) and triggers provisioning without
-/// running an independent deficit-hysteresis timer chain. Each `reconcile()` call is
-/// driven by an external trigger (snapshot delta, topology event, or the single
-/// safety-net poll); there is no per-deficit `scheduleRecheck` or
-/// `attemptProvisionAfterHysteresis` defer.
+/// running an independent deficit-hysteresis timer chain. After the commit-3 refactor
+/// the CTM has no local `configuredSize`/`desiredSize` caches — everything flows
+/// through the snapshot, and `setDesiredSize` is a thin `ClusterConfigValue` write.
 class ClusterTopologyManagerSnapshotDrivenDeficitTest {
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId PEER_A = nodeId("node-a").unwrap();
@@ -59,6 +62,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
     private StubSnapshotSource snapshotSource;
     private TopologyObserver observer;
     private RecordingLifecycleManager lifecycleManager;
+    private StubClusterConfigStore configStore;
     private ClusterTopologyManager ctm;
 
     @BeforeEach
@@ -71,6 +75,9 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                         List.of(INFO_SELF, INFO_A, INFO_B, INFO_C, INFO_D));
         observer = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
         lifecycleManager = new RecordingLifecycleManager();
+        // Seed a baseline ClusterConfigValue so setDesiredSize() can write-through.
+        configStore = new StubClusterConfigStore();
+        configStore.seed(5);
         // Use a long retry interval so the safety-net timer never fires during the test —
         // we drive reconciliation purely via setDesiredSize / topology events.
         var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(), timeSpan(1).millis()).unwrap();
@@ -78,7 +85,9 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                                             lifecycleManager,
                                                             autoHeal,
                                                             DeploymentMap.deploymentMap(),
-                                                            snapshotSource);
+                                                            snapshotSource,
+                                                            configStore::current,
+                                                            configStore::apply);
     }
 
     @Test
@@ -90,8 +99,8 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                             5),
                                1L);
         ctm.activate();
-        // Trigger a reconcile via setDesiredSize (which calls reconcile internally)
-        ctm.setDesiredSize(5);
+        // Topology event triggers reconcile; snapshot-driven deficit provisioning fires
+        ctm.onNodeReady(PEER_A);
         // Expect one provisioning attempt - no hysteresis defer
         assertThat(lifecycleManager.provisionCount.get()).isGreaterThanOrEqualTo(1);
         assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Reconciling.class);
@@ -106,9 +115,52 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                             5),
                                1L);
         ctm.activate();
-        ctm.setDesiredSize(5);
         assertThat(lifecycleManager.provisionCount.get()).isZero();
         assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Converged.class);
+    }
+
+    @Test
+    void reconcile_terminatesSurplus_whenSnapshotReportsOverCapacity() {
+        // Snapshot reports 7 healthy ON_DUTY but desired core size is 5
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            7,
+                                            5),
+                               1L);
+        ctm.activate();
+        // Topology change triggers reconcile; snapshot surplus drives termination.
+        ctm.onTopologyChange(org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        assertThat(lifecycleManager.terminateCount.get()).isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
+    void setDesiredSize_writesClusterConfigValueAtom_withIncrementedVersion() {
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            5,
+                                            5),
+                               1L);
+        ctm.activate();
+        var before = configStore.currentVersion();
+        var result = ctm.setDesiredSize(7);
+        assertThat(result.isSuccess()).isTrue();
+        var after = configStore.current().unwrap();
+        assertThat(after.coreCount()).isEqualTo(7);
+        assertThat(after.configVersion()).isEqualTo(before + 1);
+        assertThat(configStore.applyCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void setDesiredSize_belowQuorum_rejectedWithoutAtomWrite() {
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            5,
+                                            5),
+                               1L);
+        ctm.activate();
+        var result = ctm.setDesiredSize(2);
+        assertThat(result.isFailure()).isTrue();
+        assertThat(configStore.applyCount.get()).isZero();
     }
 
     @Test
@@ -119,7 +171,6 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                             5),
                                1L);
         ctm.activate();
-        ctm.setDesiredSize(5);
         assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Converged.class);
 
         // Snapshot advances to a new term reporting deficit
@@ -128,9 +179,8 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                             3,
                                             5),
                                2L);
-        // External trigger (would be a topology change in production) — call reconcile
-        ctm.onNodeReady(PEER_A);
-        ctm.setDesiredSize(5);
+        // External trigger (topology event in production) drives reconcile
+        ctm.onTopologyChange(org.pragmatica.consensus.topology.TopologyChangeNotification.nodeDown(PEER_C));
         assertThat(lifecycleManager.provisionCount.get()).isGreaterThanOrEqualTo(1);
     }
 
@@ -154,6 +204,45 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
 
         @Override public long observedRabiaTerm() {
             return term.get();
+        }
+    }
+
+    /// Simulates the kv-store `ClusterConfigValue` atom plus the `cluster.apply` path
+    /// that CTM uses for `setDesiredSize` write-through.
+    private static final class StubClusterConfigStore {
+        final AtomicInteger applyCount = new AtomicInteger();
+        private final AtomicReference<Option<ClusterConfigValue>> current = new AtomicReference<>(Option.none());
+
+        void seed(int coreCount) {
+            current.set(Option.some(new ClusterConfigValue("",
+                                                           "",
+                                                           "1.0.0",
+                                                           coreCount,
+                                                           3,
+                                                           9,
+                                                           "test",
+                                                           1L,
+                                                           System.currentTimeMillis())));
+        }
+
+        Option<ClusterConfigValue> current() {
+            return current.get();
+        }
+
+        long currentVersion() {
+            return current.get().map(ClusterConfigValue::configVersion).or(0L);
+        }
+
+        Promise<List<Object>> apply(List<KVCommand<AetherKey>> commands) {
+            applyCount.incrementAndGet();
+            for (var command : commands) {
+                if (command instanceof KVCommand.Put<?, ?> put
+                    && put.key() instanceof AetherKey.ClusterConfigKey
+                    && put.value() instanceof ClusterConfigValue configValue) {
+                    current.set(Option.some(configValue));
+                }
+            }
+            return Promise.success(List.of());
         }
     }
 

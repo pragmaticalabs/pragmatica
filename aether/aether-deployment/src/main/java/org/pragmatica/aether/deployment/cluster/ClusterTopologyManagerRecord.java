@@ -9,9 +9,15 @@ import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.consensus.topology.MembershipView;
 import org.pragmatica.consensus.topology.NodeHealth;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
@@ -19,7 +25,6 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.NodeState;
-import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -39,9 +44,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
@@ -54,7 +59,13 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 /// Implementation of ClusterTopologyManager that delegates read-only operations to
-/// TopologyObserver and manages cluster size via a NodeReconcilerState state machine.
+/// TopologyObserver and reads all membership-size state from
+/// [GenerationSnapshotSource.currentMembershipView()]. No local shadow caches of
+/// configured/desired sizes; see clustersync-refactor-spec §"Commit 3".
+///
+/// Scale operations propagate through exactly one path:
+/// `setDesiredSize` writes `ClusterConfigValue` atom → snapshot publishes the new
+/// `desiredCoreSize` → CTM reconcile reads from snapshot → takes action.
 ///
 /// Snapshot-delta-driven: deficit detection is wired to `GenerationSnapshotSource` so a
 /// changed snapshot (term advance) triggers `reconcile()` directly. A single safety-net
@@ -69,12 +80,11 @@ import static org.pragmatica.lang.Unit.unit;
                                                                      AutoHealConfig autoHealConfig,
                                                                      DeploymentMap deploymentMap,
                                                                      GenerationSnapshotSource snapshotSource,
-                                                                     AtomicInteger configuredSizeRef,
-                                                                     AtomicInteger desiredSizeRef,
+                                                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                                      AtomicReference<NodeReconcilerState> stateRef,
                                                                      AtomicBoolean active,
                                                                      ConcurrentHashMap<NodeId, Instant> nodeJoinTimes,
-                                                                     AtomicLong lastObservedRabiaTerm,
                                                                      CancellableTask safetyNetTimer) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
 
@@ -86,19 +96,19 @@ import static org.pragmatica.lang.Unit.unit;
                                                                      NodeLifecycleManager lifecycleManager,
                                                                      AutoHealConfig config,
                                                                      DeploymentMap deploymentMap,
-                                                                     GenerationSnapshotSource snapshotSource) {
-        var initialSize = observer.clusterSize();
+                                                                     GenerationSnapshotSource snapshotSource,
+                                                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier) {
         return new ClusterTopologyManagerRecord(observer,
                                                 lifecycleManager,
                                                 config,
                                                 deploymentMap,
                                                 snapshotSource,
-                                                new AtomicInteger(initialSize),
-                                                new AtomicInteger(initialSize),
+                                                clusterConfigReader,
+                                                commandApplier,
                                                 new AtomicReference<>(new NodeReconcilerState.Inactive("not yet activated")),
                                                 new AtomicBoolean(false),
                                                 new ConcurrentHashMap<>(),
-                                                new AtomicLong(0L),
                                                 CancellableTask.cancellableTask());
     }
 
@@ -109,19 +119,53 @@ import static org.pragmatica.lang.Unit.unit;
     @Override public Result<Unit> setDesiredSize(int size) {
         if (size <MINIMUM_CLUSTER_SIZE) {return Causes.cause("Cluster size cannot be below " + MINIMUM_CLUSTER_SIZE + " (quorum requirement)")
                                                             .result();}
-        configuredSizeRef.set(size);
-        desiredSizeRef.set(size);
-        observer.handleSetClusterSize(new TopologyManagementMessage.SetClusterSize(size));
-        reconcile();
+        return writeDesiredCoreCount(size);
+    }
+
+    private Result<Unit> writeDesiredCoreCount(int size) {
+        var existing = clusterConfigReader.get();
+        if (existing.isEmpty()) {return Causes.cause("ClusterConfigValue atom missing — bootstrap must seed it before scale operations are accepted")
+                                                    .result();}
+        var updated = withCoreCount(existing.unwrap(), size);
+        @SuppressWarnings("unchecked") var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
+                                                                                                                                    updated);
+        commandApplier.apply(List.of(command)).onFailure(cause -> log.warn("CTM: failed to write ClusterConfigValue coreCount={}: {}",
+                                                                           size,
+                                                                           cause.message()))
+                            .onSuccess(_ -> log.info("CTM: wrote ClusterConfigValue coreCount={} (configVersion={})",
+                                                     size,
+                                                     updated.configVersion()));
         return Result.success(unit());
     }
 
+    private static ClusterConfigValue withCoreCount(ClusterConfigValue existing, int newCoreCount) {
+        return new ClusterConfigValue(existing.tomlContent(),
+                                      existing.clusterName(),
+                                      existing.version(),
+                                      newCoreCount,
+                                      existing.coreMin(),
+                                      existing.coreMax(),
+                                      existing.deploymentType(),
+                                      existing.configVersion() + 1,
+                                      System.currentTimeMillis());
+    }
+
     @Override public int desiredSize() {
-        return desiredSizeRef.get();
+        return snapshotDesiredCoreSize();
     }
 
     @Override public int configuredSize() {
-        return configuredSizeRef.get();
+        return snapshotDesiredCoreSize();
+    }
+
+    private int snapshotDesiredCoreSize() {
+        return snapshotSource.currentMembershipView().map(MembershipView::desiredCoreSize)
+                                                   .or(0);
+    }
+
+    private int snapshotHealthyOnDutyCount() {
+        return snapshotSource.currentMembershipView().map(MembershipView::healthyOnDutyCount)
+                                                   .or(0);
     }
 
     @Override public void onNodeReady(NodeId nodeId) {
@@ -171,16 +215,28 @@ import static org.pragmatica.lang.Unit.unit;
 
     private void activateWithCurrentTopology() {
         var actual = observer.healthyActiveNodeCount();
-        var desired = configuredSizeRef.get();
+        var desired = activationDesiredSize();
         var readyCount = observer.readyNodeCount();
         var effectiveActual = Math.max(actual, readyCount);
         var clusterWasFormed = readyCount > 0;
         log.info("CTM: Activated, desired={}, active={}, ready={}", desired, actual, readyCount);
+        if (desired == 0) {
+            transitionTo(new NodeReconcilerState.Converged());
+            log.info("CTM: Activated without desiredCoreSize (snapshot not yet projected); awaiting snapshot bump");
+            return;
+        }
         if (effectiveActual >= desired) {
             transitionTo(new NodeReconcilerState.Converged());
             log.info("CTM: Cluster at target size, skipping formation");
         } else if (clusterWasFormed && effectiveActual >= desired - 1) {activateWithLeaderFailover(effectiveActual,
                                                                                                    desired);} else {activateWithFormation();}
+    }
+
+    private int activationDesiredSize() {
+        var fromSnapshot = snapshotDesiredCoreSize();
+        return fromSnapshot > 0
+              ? fromSnapshot
+              : observer.healthyActiveNodeCount();
     }
 
     private void activateWithLeaderFailover(int effectiveActual, int desired) {
@@ -261,7 +317,8 @@ import static org.pragmatica.lang.Unit.unit;
         if (!active.get()) {return;}
         if (! (stateRef.get() instanceof NodeReconcilerState.Forming)) {return;}
         var actual = observer.healthyActiveNodeCount();
-        var desired = configuredSizeRef.get();
+        var desired = snapshotDesiredCoreSize();
+        if (desired == 0) {return;}
         if (actual >= desired) {
             transitionTo(new NodeReconcilerState.Converged());
             log.info("CTM: Cluster formation complete ({}/{})", actual, desired);
@@ -276,7 +333,6 @@ import static org.pragmatica.lang.Unit.unit;
 
     private void reconcile() {
         if (!active.get()) {return;}
-        observeSnapshotDelta();
         var currentState = stateRef.get();
         if (currentState instanceof NodeReconcilerState.Inactive) {return;}
         if (currentState instanceof NodeReconcilerState.Forming) {
@@ -286,17 +342,10 @@ import static org.pragmatica.lang.Unit.unit;
         reconcileActive(currentState);
     }
 
-    private void observeSnapshotDelta() {
-        var observed = snapshotSource.observedRabiaTerm();
-        var previous = lastObservedRabiaTerm.getAndSet(observed);
-        if (observed > previous) {log.debug("CTM: snapshot term advanced {} -> {}, re-evaluating cluster size",
-                                            previous,
-                                            observed);}
-    }
-
     private void reconcileForming() {
         var actual = observer.healthyActiveNodeCount();
-        var configured = configuredSizeRef.get();
+        var configured = snapshotDesiredCoreSize();
+        if (configured == 0) {return;}
         if (actual >= configured) {
             transitionTo(new NodeReconcilerState.Converged());
             log.info("CTM: Cluster formation complete ({}/{})", actual, configured);
@@ -304,17 +353,16 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private void reconcileActive(NodeReconcilerState currentState) {
-        var actual = observer.healthyActiveNodeCount();
-        var configured = configuredSizeRef.get();
+        var snapshot = snapshotSource.currentMembershipView();
+        if (snapshot.isEmpty()) {return;}
+        var configured = snapshot.unwrap().desiredCoreSize();
+        if (configured == 0) {return;}
+        var actual = snapshotHealthyOnDutyCount();
         if (actual == configured) {
-            desiredSizeRef.set(configured);
             if (! (currentState instanceof NodeReconcilerState.Converged)) {transitionTo(new NodeReconcilerState.Converged());}
             return;
         }
-        if (actual <configured) {
-            desiredSizeRef.set(configured);
-            handleDeficit(actual, configured);
-        } else {handleSurplus(actual, configured);}
+        if (actual <configured) {handleDeficit(actual, configured);} else {handleSurplus(actual, configured);}
     }
 
     private void handleDeficit(int actual, int desired) {
@@ -350,7 +398,6 @@ import static org.pragmatica.lang.Unit.unit;
         var surplus = actual - configured;
         if (!lifecycleManager.isCloudManaged()) {
             log.info("CTM: Cluster has {} surplus nodes but no ComputeProvider, cannot auto-terminate", surplus);
-            desiredSizeRef.set(actual);
             transitionTo(new NodeReconcilerState.Converged());
             return;
         }
@@ -453,10 +500,7 @@ import static org.pragmatica.lang.Unit.unit;
                                      .flatMap(nodeId -> observer.get(nodeId).stream())
                                      .map(ClusterTopologyManagerRecord::formatPeerEntry)
                                      .collect(Collectors.joining(","));
-        return Map.of("aether.peers",
-                      peers,
-                      "aether.core-max",
-                      String.valueOf(configuredSizeRef.get()));
+        return Map.of("aether.peers", peers, "aether.core-max", String.valueOf(snapshotDesiredCoreSize()));
     }
 
     private boolean isHealthyPeer(NodeId nodeId) {

@@ -812,11 +812,16 @@ public interface AetherNode extends ManageableNode {
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
         metricsCollector.setPeerObservationBuffer(metricsScheduler);
         var nodeSnapshotCache = NodeSnapshotCache.nodeSnapshotCache(config.self(), snapshotDecoder);
+        Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT).filter(v -> v instanceof AetherValue.ClusterConfigValue)
+                                                                                                .map(v -> (AetherValue.ClusterConfigValue) v);
+        java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> clusterCommandApplier = commands -> clusterNode.apply(commands);
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
                                                                                    deploymentMap,
-                                                                                   nodeSnapshotCache);
+                                                                                   nodeSnapshotCache,
+                                                                                   clusterConfigReader,
+                                                                                   clusterCommandApplier);
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, repository, artifactStore);
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
@@ -1061,6 +1066,8 @@ public interface AetherNode extends ManageableNode {
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> topologyForSwim.get(connection.nodeId()).onPresent(swimHealthDetector::onNodeConnected)
                                                                                   .onEmpty(() -> swimHealthDetector.onNodeConnected(connection.nodeId()))));
+        Supplier<Integer> initialCoreSizeSupplier = () -> config.topology().coreNodes()
+                                                                         .size();
         var healthReconcilerActivator = HealthReconcilerActivator.healthReconcilerActivator(healthReconciler,
                                                                                             isLeaderGate,
                                                                                             projectorEarly,
@@ -1068,7 +1075,8 @@ public interface AetherNode extends ManageableNode {
                                                                                             rabiaTermSupplier,
                                                                                             hlcClockEarly,
                                                                                             clusterNode,
-                                                                                            config::self);
+                                                                                            config::self,
+                                                                                            initialCoreSizeSupplier);
         healthSinkRef.set(healthReconcilerActivator.sink());
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
         attachQuicFollowerWiring(clusterNode.network(), isLeaderGate::get, metricsScheduler, leaderEpochSupplier);
@@ -1328,11 +1336,6 @@ public interface AetherNode extends ManageableNode {
             markReadyWithAddress(ctm, nodeId, lifecycleValue);
             ctm.onNodeReady(nodeId);
         }
-    }
-
-    @SuppressWarnings("JBCT-RET-01") private static void propagateScale(ValuePut<AetherKey.ClusterConfigKey, AetherValue> put,
-                                                                        ClusterTopologyManager ctm) {
-        if (put.cause().value() instanceof AetherValue.ClusterConfigValue configValue) {ctm.setDesiredSize(configValue.coreCount());}
     }
 
     private static void markReadyWithAddress(ClusterTopologyManager ctm,
@@ -1796,8 +1799,6 @@ public interface AetherNode extends ManageableNode {
                                                          clusterDeploymentManager::onNodeLifecyclePut)
                                                   .onPut(AetherKey.NodeLifecycleKey.class,
                                                          put -> notifyCtmOnDuty(put, clusterTopologyManager))
-                                                  .onPut(AetherKey.ClusterConfigKey.class,
-                                                         put -> propagateScale(put, clusterTopologyManager))
                                                   .onRemove(AetherKey.NodeLifecycleKey.class,
                                                             remove -> clusterTopologyManager.observer()
                                                                                                      .markDeparted(remove.cause().key()
