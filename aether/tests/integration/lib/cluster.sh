@@ -407,11 +407,20 @@ leader_api_post() {
         direct_api_post "$path" "$body"
         return
     fi
-    local node_num
-    node_num=$(echo "$leader" | sed 's/node-//')
-    local port=$((MGMT_PORT + node_num - 1))
-    curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-        -d "$body" "http://${TARGET_HOST}:${port}${path}"
+    # Resolve leader to a host-visible port only if it's a fixture compose node
+    # (node-1..5). CTM-provisioned replacements carry ids like `aether-core-node-0-XXX`
+    # and are only reachable on the Docker overlay network — we cannot dial them from
+    # the test host, so we hit the compose endpoint and let the server-side route
+    # forward to the consensus leader internally.
+    if [[ "$leader" =~ ^node-([0-9]+)$ ]]; then
+        local node_num="${BASH_REMATCH[1]}"
+        local port=$((MGMT_PORT + node_num - 1))
+        curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+            -d "$body" "http://${TARGET_HOST}:${port}${path}"
+        return
+    fi
+    log_info "Leader '${leader}' is not host-exposed; dispatching via cluster endpoint for internal forwarding" >&2
+    direct_api_post "$path" "$body"
 }
 
 # ---------------------------------------------------------------------------

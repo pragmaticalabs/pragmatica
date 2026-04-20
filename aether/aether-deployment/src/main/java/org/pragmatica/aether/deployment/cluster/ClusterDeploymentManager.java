@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintResourcesKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
@@ -32,6 +33,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintResourcesValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
@@ -564,7 +566,22 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             }
 
             private boolean shouldPromoteToCore(int currentCoreCount) {
-                return coreMax == 0 || currentCoreCount <coreMax;
+                var effectiveMax = effectiveCoreMax();
+                return effectiveMax == 0 || currentCoreCount < effectiveMax;
+            }
+
+            /// Resolve the current cap for CORE role assignment. Prefers the live
+            /// `ClusterConfigValue.coreCount` written via the `/api/cluster/scale` endpoint so
+            /// that `POST /api/cluster/scale coreCount=7` can actually promote the newly
+            /// provisioned nodes to CORE instead of pinning them at the startup `coreMax`.
+            /// Falls back to the constructor-supplied `coreMax` when no cluster config atom
+            /// has been seeded (fresh cluster before any `/api/cluster/config` call).
+            private int effectiveCoreMax() {
+                return kvStore.get(ClusterConfigKey.CURRENT)
+                                      .flatMap(v -> v instanceof ClusterConfigValue cfg
+                                                    ? Option.some(cfg.coreCount())
+                                                    : Option.<Integer>none())
+                                      .or(coreMax);
             }
 
             private void updateTopology(List<NodeId> topology) {
