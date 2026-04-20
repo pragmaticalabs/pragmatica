@@ -11,6 +11,7 @@ import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.SnapshotPayload;
+import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.lang.Option;
@@ -43,4 +44,5 @@ final class NoopClusterSyncCollector implements ClusterSyncCollector {
     @Override public void setCommunityReportSupplier(Supplier<List<CommunityReport>> supplier) {}
     @Override public void addPongListener(Consumer<ClusterSyncPong> listener) {}
     @Override public void setPongSignalFan(ClusterSyncPongSignalFan fan) {}
+    @Override public void setPeerObservationBuffer(PeerObservationBuffer buffer) {}
 }

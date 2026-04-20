@@ -11,6 +11,7 @@ import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.SnapshotPayload;
+import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
@@ -93,6 +94,12 @@ public interface ClusterSyncCollector {
     /// exist. Safe on followers — the fan itself gates on leadership.
     @Contract void setPongSignalFan(ClusterSyncPongSignalFan fan);
 
+    /// Late-bound drain source for follower-side peer observations. Populated
+    /// by `AetherNode` after `ClusterSyncScheduler` is built; defaults to the
+    /// no-op buffer so pre-wiring pong construction continues to emit empty
+    /// observation lists.
+    @Contract void setPeerObservationBuffer(PeerObservationBuffer buffer);
+
     static ClusterSyncCollector clusterSyncCollector(NodeId self, ClusterNetwork network) {
         return new ClusterSyncCollectorImpl(self, network, DEFAULT_slidingWindowMs);
     }
@@ -134,6 +141,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     private final CopyOnWriteArrayList<Consumer<ClusterSyncPong>> pongListeners = new CopyOnWriteArrayList<>();
 
     private final AtomicReference<ClusterSyncPongSignalFan> pongSignalFan = new AtomicReference<>(_ -> {});
+
+    private final AtomicReference<PeerObservationBuffer> peerObservationBuffer = new AtomicReference<>(PeerObservationBuffer.NOOP);
 
     ClusterSyncCollectorImpl(NodeId self, ClusterNetwork network, long slidingWindowMs) {
         this.self = self;
@@ -221,6 +230,12 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         pongSignalFan.set(fan);
     }
 
+    @Override@Contract public void setPeerObservationBuffer(PeerObservationBuffer buffer) {
+        peerObservationBuffer.set(buffer == null
+                                  ? PeerObservationBuffer.NOOP
+                                  : buffer);
+    }
+
     @Override public long observedRabiaTerm() {
         return observedRabiaTerm.get();
     }
@@ -269,6 +284,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     private ClusterSyncPong buildPong() {
         var epoch = observedEpoch.get();
+        var buffer = peerObservationBuffer.get();
         return new ClusterSyncPong(self,
                                    collectLocal(),
                                    observedRabiaTerm.get(),
@@ -276,8 +292,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
                                    epoch.localCounter(),
                                    currentLifecycleState(),
                                    collectCommunityReports(),
-                                   List.of(),
-                                   List.of());
+                                   buffer.drainHealth(),
+                                   buffer.drainConnectivity());
     }
 
     private void collectCpuMetrics(Map<String, Double> metrics) {

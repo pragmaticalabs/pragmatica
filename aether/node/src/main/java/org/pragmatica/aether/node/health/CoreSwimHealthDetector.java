@@ -8,6 +8,9 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
+import org.pragmatica.cluster.metrics.HealthHintWire;
+import org.pragmatica.cluster.metrics.PeerHealthObservation;
+import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -32,6 +35,7 @@ import java.net.InetSocketAddress;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 import io.netty.channel.EventLoopGroup;
@@ -66,6 +70,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private final Deserializer deserializer;
     private final HealthSignalSink signalSink;
     private final Supplier<Epoch> epochSupplier;
+    private final BooleanSupplier isLeaderSupplier;
+    private final PeerObservationBuffer observationBuffer;
     private volatile GossipEncryptor encryptor;
 
     private final AtomicReference<Option<SwimProtocol>> swimProtocol = new AtomicReference<>(none());
@@ -84,13 +90,19 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                    Serializer serializer,
                                    Deserializer deserializer,
                                    HealthSignalSink signalSink,
-                                   Supplier<Epoch> epochSupplier) {
+                                   Supplier<Epoch> epochSupplier,
+                                   BooleanSupplier isLeaderSupplier,
+                                   PeerObservationBuffer observationBuffer) {
         this.router = router;
         this.topologyConfig = topologyConfig;
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.signalSink = signalSink;
         this.epochSupplier = epochSupplier;
+        this.isLeaderSupplier = isLeaderSupplier;
+        this.observationBuffer = observationBuffer == null
+                                ? PeerObservationBuffer.NOOP
+                                : observationBuffer;
         this.encryptor = GossipEncryptor.none();
     }
 
@@ -103,7 +115,9 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                           serializer,
                                           deserializer,
                                           HealthSignalSink.noop(),
-                                          () -> Epoch.ZERO);
+                                          () -> Epoch.ZERO,
+                                          () -> true,
+                                          PeerObservationBuffer.NOOP);
     }
 
     public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
@@ -112,7 +126,32 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                 Deserializer deserializer,
                                                                 HealthSignalSink signalSink,
                                                                 Supplier<Epoch> epochSupplier) {
-        return new CoreSwimHealthDetector(router, topologyConfig, serializer, deserializer, signalSink, epochSupplier);
+        return new CoreSwimHealthDetector(router,
+                                          topologyConfig,
+                                          serializer,
+                                          deserializer,
+                                          signalSink,
+                                          epochSupplier,
+                                          () -> true,
+                                          PeerObservationBuffer.NOOP);
+    }
+
+    public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
+                                                                TopologyConfig topologyConfig,
+                                                                Serializer serializer,
+                                                                Deserializer deserializer,
+                                                                HealthSignalSink signalSink,
+                                                                Supplier<Epoch> epochSupplier,
+                                                                BooleanSupplier isLeaderSupplier,
+                                                                PeerObservationBuffer observationBuffer) {
+        return new CoreSwimHealthDetector(router,
+                                          topologyConfig,
+                                          serializer,
+                                          deserializer,
+                                          signalSink,
+                                          epochSupplier,
+                                          isLeaderSupplier,
+                                          observationBuffer);
     }
 
     public Promise<Unit> start() {
@@ -151,7 +190,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     @SuppressWarnings("JBCT-RET-01") public void onNodeConnected(NodeId nodeId) {
         swimProtocol.get().onPresent(protocol -> readdOrMarkAlive(protocol, nodeId));
         clearLocalDisconnectFlag();
-        emitHint(nodeId, HealthHint.HEALTHY);
+        reportHint(nodeId, HealthHint.HEALTHY);
     }
 
     @SuppressWarnings("JBCT-RET-01") public void onNodeConnected(NodeInfo peer) {
@@ -163,35 +202,71 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                                                                                            toSwimAddress(peer));}
                                    });
         clearLocalDisconnectFlag();
-        emitHint(peer.id(), HealthHint.HEALTHY);
+        reportHint(peer.id(), HealthHint.HEALTHY);
     }
 
     @Override@SuppressWarnings("JBCT-RET-01") public void onMemberJoined(SwimMember member) {
         log.info("SWIM member joined: {}", member.nodeId());
         clearLocalDisconnectFlag();
-        emitHint(member.nodeId(), HealthHint.HEALTHY);
+        reportHint(member.nodeId(), HealthHint.HEALTHY);
     }
 
     @Override@SuppressWarnings("JBCT-RET-01") public void onMemberSuspect(SwimMember member) {
         log.warn("SWIM member suspected: {}", member.nodeId());
-        emitHint(member.nodeId(), HealthHint.SUSPECTED);
+        reportHint(member.nodeId(), HealthHint.SUSPECTED);
     }
 
     @Override@SuppressWarnings("JBCT-RET-01") public void onMemberFaulty(SwimMember member) {
+        if (!isLeaderSupplier.getAsBoolean()) {
+            log.warn("SWIM member faulty: {} — follower sensor, buffering observation upstream", member.nodeId());
+            bufferHealthObservation(member.nodeId(), HealthHint.FAULTY);
+            return;
+        }
         if (isLocalDisconnect(member)) {return;}
         log.error("SWIM member faulty: {}, routing DisconnectNode", member.nodeId());
         router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(member.nodeId()));
-        emitHint(member.nodeId(), HealthHint.FAULTY);
+        emitLeaderHint(member.nodeId(), HealthHint.FAULTY);
     }
 
     @Override@SuppressWarnings("JBCT-RET-01") public void onMemberLeft(NodeId leftNodeId) {
+        if (!isLeaderSupplier.getAsBoolean()) {
+            log.warn("SWIM member left: {} — follower sensor, buffering FAULTY observation upstream", leftNodeId);
+            bufferHealthObservation(leftNodeId, HealthHint.FAULTY);
+            return;
+        }
         log.warn("SWIM member left: {}, routing DisconnectNode", leftNodeId);
         router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(leftNodeId));
-        emitHint(leftNodeId, HealthHint.FAULTY);
+        emitLeaderHint(leftNodeId, HealthHint.FAULTY);
     }
 
-    private void emitHint(NodeId nodeId, HealthHint hint) {
+    /// Followers buffer observations upstream via `ClusterSyncPong`; leaders
+    /// fire the hint directly into their local `HealthReconciler`.
+    private void reportHint(NodeId nodeId, HealthHint hint) {
+        if (isLeaderSupplier.getAsBoolean()) {
+            emitLeaderHint(nodeId, hint);
+        } else {
+            bufferHealthObservation(nodeId, hint);
+        }
+    }
+
+    private void emitLeaderHint(NodeId nodeId, HealthHint hint) {
         signalSink.emit(new HealthSignal.SwimHint(nodeId, hint, epochSupplier.get()));
+    }
+
+    private void bufferHealthObservation(NodeId nodeId, HealthHint hint) {
+        var epoch = epochSupplier.get();
+        observationBuffer.pushHealth(new PeerHealthObservation(nodeId,
+                                                               toWire(hint),
+                                                               epoch.rabiaTerm(),
+                                                               epoch.localCounter()));
+    }
+
+    private static HealthHintWire toWire(HealthHint hint) {
+        return switch (hint) {
+            case HEALTHY -> HealthHintWire.HEALTHY;
+            case SUSPECTED -> HealthHintWire.SUSPECTED;
+            case FAULTY -> HealthHintWire.FAULTY;
+        };
     }
 
     public boolean isLocallyDisconnected() {

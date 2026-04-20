@@ -806,6 +806,7 @@ public interface AetherNode extends ManageableNode {
                                                                          ClusterSyncScheduler.DEFAULT_PING_TIMEOUT_THRESHOLD,
                                                                          leaderEpochSupplier);
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
+        metricsCollector.setPeerObservationBuffer(metricsScheduler);
         var nodeSnapshotCache = NodeSnapshotCache.nodeSnapshotCache(config.self(), snapshotDecoder);
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
@@ -1044,7 +1045,9 @@ public interface AetherNode extends ManageableNode {
                                                                                serializer,
                                                                                deserializer,
                                                                                stableHealthSink,
-                                                                               leaderEpochSupplier);
+                                                                               leaderEpochSupplier,
+                                                                               isLeaderGate::get,
+                                                                               metricsScheduler);
         allEntries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
                                                  notification -> startSwimOnQuorum(notification,
                                                                                    swimHealthDetector,
@@ -1064,6 +1067,7 @@ public interface AetherNode extends ManageableNode {
                                                                                             config::self);
         healthSinkRef.set(healthReconcilerActivator.sink());
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
+        attachQuicFollowerWiring(clusterNode.network(), isLeaderGate::get, metricsScheduler, leaderEpochSupplier);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForReconciler(change,
                                                                                        leaderTerm,
@@ -1352,6 +1356,30 @@ public interface AetherNode extends ManageableNode {
                                                                                                   epochSupplier.get()));
             quicNetwork.setDisconnectListener(listener);
         }
+    }
+
+    /// Wire the follower-side path so that REMOVE view-changes buffer a
+    /// `PeerConnectivityObservation` for the next `ClusterSyncPong` instead of
+    /// mutating local health state directly. See `clustersync-refactor-spec.md`
+    /// commit 2.
+    private static void attachQuicFollowerWiring(ClusterNetwork network,
+                                                 java.util.function.BooleanSupplier isLeaderSupplier,
+                                                 org.pragmatica.cluster.metrics.PeerObservationBuffer buffer,
+                                                 Supplier<Epoch> epochSupplier) {
+        if (!(network instanceof QuicClusterNetwork quicNetwork)) {return;}
+        org.pragmatica.consensus.net.quic.PeerConnectivityReporter reporter =
+            (peerId, term, counter) -> buffer.pushConnectivity(
+                new org.pragmatica.cluster.metrics.PeerConnectivityObservation(
+                    peerId,
+                    org.pragmatica.cluster.metrics.ConnectivityState.DISCONNECTED,
+                    term,
+                    counter));
+        org.pragmatica.consensus.net.quic.QuicClusterNetwork.ObservedEpochSupplier epochAdapter =
+            new org.pragmatica.consensus.net.quic.QuicClusterNetwork.ObservedEpochSupplier() {
+                @Override public long term() {return epochSupplier.get().rabiaTerm();}
+                @Override public long counter() {return epochSupplier.get().localCounter();}
+            };
+        quicNetwork.setFollowerObservationWiring(isLeaderSupplier, reporter, epochAdapter);
     }
 
     private static Option<NodeId> lookupGovernor(KVStore<AetherKey, AetherValue> kvStore, String communityId) {

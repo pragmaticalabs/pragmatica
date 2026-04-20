@@ -26,6 +26,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 import java.util.stream.Stream;
 
 import io.netty.buffer.Unpooled;
@@ -34,6 +35,7 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.util.concurrent.Future;
+
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.ClusterFormationConfig;
@@ -102,6 +104,31 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private final ClusterFormationConfig formationConfig;
     private volatile QuicDisconnectListener disconnectListener;
 
+    /// Leader-gate supplier. When `false`, REMOVE view-changes report a
+    /// connectivity observation upstream via `PeerConnectivityReporter`
+    /// instead of invoking the local disconnect listener (which feeds the
+    /// local `HealthReconciler`).
+    /// See `aether/docs/specs/clustersync-refactor-spec.md` commit 2.
+    private volatile BooleanSupplier isLeaderSupplier;
+    private volatile PeerConnectivityReporter connectivityReporter;
+    private volatile ObservedEpochSupplier observedEpochSupplier;
+
+    /// Minimal cross-module shape for the follower's observed epoch — keeps the
+    /// consensus module free of `aether/slice` types. Upper layers translate.
+    public interface ObservedEpochSupplier {
+        /// Rabia term currently observed by this node.
+        long term();
+        /// Local epoch counter currently observed by this node.
+        long counter();
+
+        static ObservedEpochSupplier zero() {
+            return new ObservedEpochSupplier() {
+                @Override public long term() {return 0L;}
+                @Override public long counter() {return 0L;}
+            };
+        }
+    }
+
     private volatile QuicClusterServer server;
     private volatile QuicClusterClient client;
 
@@ -140,6 +167,21 @@ public class QuicClusterNetwork implements ClusterNetwork {
                               QuicSslContext clientSslContext,
                               ClusterFormationConfig formationConfig,
                               QuicDisconnectListener disconnectListener) {
+        this(topologyManager, serializer, deserializer, router, serverSslContext, clientSslContext,
+             formationConfig, disconnectListener, () -> true, PeerConnectivityReporter.noop(), ObservedEpochSupplier.zero());
+    }
+
+    public QuicClusterNetwork(TopologyObserver topologyManager,
+                              Serializer serializer,
+                              Deserializer deserializer,
+                              MessageRouter router,
+                              QuicSslContext serverSslContext,
+                              QuicSslContext clientSslContext,
+                              ClusterFormationConfig formationConfig,
+                              QuicDisconnectListener disconnectListener,
+                              BooleanSupplier isLeaderSupplier,
+                              PeerConnectivityReporter connectivityReporter,
+                              ObservedEpochSupplier observedEpochSupplier) {
         this.self = topologyManager.self();
         this.topologyManager = topologyManager;
         this.serializer = serializer;
@@ -149,6 +191,20 @@ public class QuicClusterNetwork implements ClusterNetwork {
         this.clientSslContext = clientSslContext;
         this.formationConfig = formationConfig;
         this.disconnectListener = disconnectListener;
+        this.isLeaderSupplier = isLeaderSupplier == null ? () -> true : isLeaderSupplier;
+        this.connectivityReporter = connectivityReporter == null ? PeerConnectivityReporter.noop() : connectivityReporter;
+        this.observedEpochSupplier = observedEpochSupplier == null ? ObservedEpochSupplier.zero() : observedEpochSupplier;
+    }
+
+    /// Late-bound leader gate + connectivity reporter. Follower REMOVE view-changes
+    /// report connectivity observations via the reporter instead of invoking the
+    /// local disconnect listener.
+    public void setFollowerObservationWiring(BooleanSupplier isLeaderSupplier,
+                                             PeerConnectivityReporter connectivityReporter,
+                                             ObservedEpochSupplier observedEpochSupplier) {
+        this.isLeaderSupplier = isLeaderSupplier == null ? () -> true : isLeaderSupplier;
+        this.connectivityReporter = connectivityReporter == null ? PeerConnectivityReporter.noop() : connectivityReporter;
+        this.observedEpochSupplier = observedEpochSupplier == null ? ObservedEpochSupplier.zero() : observedEpochSupplier;
     }
 
     /// Attach a QUIC-disconnect listener post-construction. Higher layers (e.g.
@@ -665,11 +721,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 yield TopologyChangeNotification.nodeAdded(peerId, currentView());
             }
             case REMOVE -> {
-                // Advisory QUIC-level disconnect signal — leader's HealthReconciler counts it toward
-                // the ping-miss threshold. Kept alongside the TopologyChangeNotification emission;
-                // both are informational under spec §12. Only HealthReconciler authoritatively mutates
-                // lifecycle atoms.
-                disconnectListener.onDisconnect(peerId);
+                // Advisory QUIC-level disconnect signal. On the leader this feeds the local
+                // `HealthReconciler`; on a follower the observation is buffered into the next
+                // outbound `ClusterSyncPong` so the leader folds it through PeerObservationReducer
+                // (ClusterSync refactor commit 2 — followers are sensor-only).
+                // `topologyManager.unregisterPeer` stays put on both roles: it is local transport
+                // hygiene (drops the peer from the QUIC peer table), not a cluster-membership decision.
+                reportPeerRemoval(peerId);
                 topologyManager.unregisterPeer(peerId);
                 if (!currentlyHaveQuorum && quorumEstablished.compareAndSet(true, false)) {
                     log.warn("Quorum lost — {} active peer(s), need {}", activePeerCount, quorumSize);
@@ -686,6 +744,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         log.info("Routing topology change: {}", viewChange);
         router.route(viewChange);
+    }
+
+    private void reportPeerRemoval(NodeId peerId) {
+        if (isLeaderSupplier.getAsBoolean()) {
+            disconnectListener.onDisconnect(peerId);
+            return;
+        }
+        var epoch = observedEpochSupplier;
+        connectivityReporter.onPeerDisconnected(peerId, epoch.term(), epoch.counter());
     }
 
     private List<NodeId> currentView() {

@@ -13,6 +13,10 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
+import org.pragmatica.cluster.metrics.HealthHintWire;
+import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
+import org.pragmatica.cluster.metrics.PeerHealthObservation;
+import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
@@ -26,27 +30,32 @@ import org.pragmatica.swim.SwimMember.MemberState;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Verifies that `CoreSwimHealthDetector` emits `HealthSignal.SwimHint` events
-/// through its injected sink on every state-transition callback, alongside its
-/// `DisconnectNode` routing (RemoveNode emission removed per cluster-generation
-/// spec §13.1; HealthReconciler now owns the NodeLifecycleKey = LEFT write).
+/// Verifies leader/follower paths of `CoreSwimHealthDetector`:
+///   - **Leader:** state-transition callbacks emit `HealthSignal.SwimHint` through
+///     the injected sink and `onMemberFaulty`/`onMemberLeft` route `DisconnectNode`.
+///   - **Follower:** callbacks DO NOT emit through the sink — observations buffer
+///     into the `PeerObservationBuffer` for upstream delivery on the next pong
+///     (ClusterSync refactor commit 2). `DisconnectNode` routing is leader-only.
 class CoreSwimHealthDetectorHintEmissionTest {
     private static final NodeId SELF = new NodeId("node-1");
     private static final NodeId PEER_A = new NodeId("node-2");
     private static final NodeId PEER_B = new NodeId("node-3");
 
     private final List<HealthSignal> emittedSignals = new ArrayList<>();
+    private RecordingBuffer buffer;
     private CoreSwimHealthDetector detector;
 
     @BeforeEach
     void setUp() {
         emittedSignals.clear();
         HealthSignalSink sink = emittedSignals::add;
+        buffer = new RecordingBuffer();
         var router = MessageRouter.mutable();
         var nodeA = NodeInfo.nodeInfo(SELF, NodeAddress.nodeAddress("127.0.0.1", 9001).unwrap());
         var nodeB = NodeInfo.nodeInfo(PEER_A, NodeAddress.nodeAddress("127.0.0.2", 9001).unwrap());
@@ -56,7 +65,23 @@ class CoreSwimHealthDetectorHintEmissionTest {
         Serializer serializer = Mockito.mock(Serializer.class);
         Deserializer deserializer = Mockito.mock(Deserializer.class);
         detector = CoreSwimHealthDetector.coreSwimHealthDetector(router, topologyConfig, serializer, deserializer,
-                                                                   sink, () -> Epoch.epoch(7L, 3L));
+                                                                   sink, () -> Epoch.epoch(7L, 3L),
+                                                                   () -> true, buffer);
+    }
+
+    private CoreSwimHealthDetector followerDetector() {
+        HealthSignalSink sink = emittedSignals::add;
+        var router = MessageRouter.mutable();
+        var nodeA = NodeInfo.nodeInfo(SELF, NodeAddress.nodeAddress("127.0.0.1", 9001).unwrap());
+        var nodeB = NodeInfo.nodeInfo(PEER_A, NodeAddress.nodeAddress("127.0.0.2", 9001).unwrap());
+        var nodeC = NodeInfo.nodeInfo(PEER_B, NodeAddress.nodeAddress("127.0.0.3", 9001).unwrap());
+        var topologyConfig = new TopologyConfig(SELF, 3, timeSpan(1).seconds(), timeSpan(10).seconds(),
+                                                 List.of(nodeA, nodeB, nodeC));
+        Serializer serializer = Mockito.mock(Serializer.class);
+        Deserializer deserializer = Mockito.mock(Deserializer.class);
+        return CoreSwimHealthDetector.coreSwimHealthDetector(router, topologyConfig, serializer, deserializer,
+                                                              sink, () -> Epoch.epoch(7L, 3L),
+                                                              () -> false, buffer);
     }
 
     @Nested
@@ -162,5 +187,88 @@ class CoreSwimHealthDetectorHintEmissionTest {
 
             assertThat(emittedSignals).isEmpty();
         }
+    }
+
+    /// Commit 2: on a follower node the detector is a pure sensor — observations
+    /// push into the upstream buffer and the local reconciler sink is untouched.
+    @Nested
+    class FollowerSensorOnly {
+        @Test
+        void onMemberFaulty_follower_buffersObservation_andSinkIsSilent() {
+            var follower = followerDetector();
+            var faultyMember = SwimMember.swimMember(PEER_A, MemberState.FAULTY, 0,
+                                                      new InetSocketAddress("127.0.0.2", 9002));
+
+            follower.onMemberFaulty(faultyMember);
+
+            assertThat(emittedSignals).as("follower must not emit local health signals").isEmpty();
+            assertThat(buffer.health()).singleElement()
+                                       .satisfies(obs -> {
+                                           assertThat(obs.peerId()).isEqualTo(PEER_A);
+                                           assertThat(obs.hint()).isEqualTo(HealthHintWire.FAULTY);
+                                           assertThat(obs.observedEpochTerm()).isEqualTo(7L);
+                                           assertThat(obs.observedEpochCounter()).isEqualTo(3L);
+                                       });
+        }
+
+        @Test
+        void onMemberSuspect_follower_buffersSuspectedObservation() {
+            var follower = followerDetector();
+            var suspect = SwimMember.swimMember(PEER_A, MemberState.SUSPECT, 0,
+                                                  new InetSocketAddress("127.0.0.2", 9002));
+
+            follower.onMemberSuspect(suspect);
+
+            assertThat(emittedSignals).isEmpty();
+            assertThat(buffer.health()).singleElement()
+                                       .satisfies(obs -> assertThat(obs.hint()).isEqualTo(HealthHintWire.SUSPECTED));
+        }
+
+        @Test
+        void onMemberLeft_follower_buffersFaultyObservation_noSinkEmit() {
+            var follower = followerDetector();
+
+            follower.onMemberLeft(PEER_B);
+
+            assertThat(emittedSignals).isEmpty();
+            assertThat(buffer.health()).singleElement()
+                                       .satisfies(obs -> {
+                                           assertThat(obs.peerId()).isEqualTo(PEER_B);
+                                           assertThat(obs.hint()).isEqualTo(HealthHintWire.FAULTY);
+                                       });
+        }
+
+        @Test
+        void onMemberJoined_follower_buffersHealthyObservation() {
+            var follower = followerDetector();
+            var member = SwimMember.swimMember(PEER_A, new InetSocketAddress("127.0.0.2", 9002));
+
+            follower.onMemberJoined(member);
+
+            assertThat(emittedSignals).isEmpty();
+            assertThat(buffer.health()).singleElement()
+                                       .satisfies(obs -> assertThat(obs.hint()).isEqualTo(HealthHintWire.HEALTHY));
+        }
+    }
+
+    private static final class RecordingBuffer implements PeerObservationBuffer {
+        private final List<PeerHealthObservation> health = new CopyOnWriteArrayList<>();
+        private final List<PeerConnectivityObservation> connectivity = new CopyOnWriteArrayList<>();
+
+        @Override public void pushHealth(PeerHealthObservation observation) {health.add(observation);}
+        @Override public void pushConnectivity(PeerConnectivityObservation observation) {connectivity.add(observation);}
+        @Override public List<PeerHealthObservation> drainHealth() {
+            var snapshot = List.copyOf(health);
+            health.clear();
+            return snapshot;
+        }
+        @Override public List<PeerConnectivityObservation> drainConnectivity() {
+            var snapshot = List.copyOf(connectivity);
+            connectivity.clear();
+            return snapshot;
+        }
+
+        List<PeerHealthObservation> health() {return List.copyOf(health);}
+        List<PeerConnectivityObservation> connectivity() {return List.copyOf(connectivity);}
     }
 }

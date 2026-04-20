@@ -12,6 +12,9 @@ import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.SnapshotPayload;
+import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
+import org.pragmatica.cluster.metrics.PeerHealthObservation;
+import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -27,6 +30,9 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.lang.concurrent.CancellableTask;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -51,7 +57,7 @@ import org.slf4j.LoggerFactory;
 /// `ClusterGenerationSnapshot` serialized as a `SnapshotPayload`. The
 /// scheduler tracks the last-sent epoch per target node to decide between
 /// full-snapshot and heartbeat-only ping bodies (see spec §7.5).
-public interface ClusterSyncScheduler extends DelegatedComponent {
+public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservationBuffer {
     int DEFAULT_PING_TIMEOUT_THRESHOLD = 3;
 
     @MessageReceiver@Contract void onTopologyChange(TopologyChangeNotification topologyChange);
@@ -61,6 +67,14 @@ public interface ClusterSyncScheduler extends DelegatedComponent {
     Map<NodeId, Epoch> observedEpochs();
     @Contract void onPongReceived(NodeId nodeId);
     @Contract void sendPingsNow();
+    /// Buffer a follower-side SWIM observation for inclusion in the next outbound pong.
+    @Contract @Override void pushHealth(PeerHealthObservation observation);
+    /// Buffer a follower-side QUIC connectivity observation for inclusion in the next outbound pong.
+    @Contract @Override void pushConnectivity(PeerConnectivityObservation observation);
+    /// Atomically drain all buffered health observations.
+    @Override List<PeerHealthObservation> drainHealth();
+    /// Atomically drain all buffered connectivity observations.
+    @Override List<PeerConnectivityObservation> drainConnectivity();
 
     static ClusterSyncScheduler clusterSyncScheduler(NodeId self,
                                                      ClusterNetwork network,
@@ -130,6 +144,11 @@ public interface ClusterSyncScheduler extends DelegatedComponent {
 class ClusterSyncSchedulerImpl implements ClusterSyncScheduler {
     private static final Logger log = LoggerFactory.getLogger(ClusterSyncSchedulerImpl.class);
 
+    /// Fallback cap when topology size is unknown (single-node bootstrap).
+    /// Normal cap is `(topologySize - 1) * PER_PEER_BURST`.
+    private static final int PER_PEER_BURST = 4;
+    private static final int MIN_BUFFER_CAP = 8;
+
     private final NodeId self;
     private final ClusterNetwork network;
     private final ClusterSyncCollector clusterSyncCollector;
@@ -154,6 +173,11 @@ class ClusterSyncSchedulerImpl implements ClusterSyncScheduler {
     private final Map<NodeId, Epoch> observedEpoch = new ConcurrentHashMap<>();
 
     private final Map<NodeId, AtomicInteger> missedPings = new ConcurrentHashMap<>();
+
+    private final Object healthBufferLock = new Object();
+    private final Deque<PeerHealthObservation> healthBuffer = new ArrayDeque<>();
+    private final Object connectivityBufferLock = new Object();
+    private final Deque<PeerConnectivityObservation> connectivityBuffer = new ArrayDeque<>();
 
     ClusterSyncSchedulerImpl(NodeId self,
                              ClusterNetwork network,
@@ -248,6 +272,12 @@ class ClusterSyncSchedulerImpl implements ClusterSyncScheduler {
 
     private void stopPinging() {
         pingTask.cancel();
+        synchronized (healthBufferLock) {
+            healthBuffer.clear();
+        }
+        synchronized (connectivityBufferLock) {
+            connectivityBuffer.clear();
+        }
     }
 
     private void sendPingsToAllNodes() {
@@ -267,6 +297,51 @@ class ClusterSyncSchedulerImpl implements ClusterSyncScheduler {
 
     @Override@Contract public void sendPingsNow() {
         sendPingsToAllNodes();
+    }
+
+    @Override@Contract public void pushHealth(PeerHealthObservation observation) {
+        if (observation == null) {return;}
+        synchronized (healthBufferLock) {
+            if (healthBuffer.size() >= bufferCap()) {
+                healthBuffer.pollFirst();
+                log.trace("peer-health buffer overflow; dropping oldest observation");
+            }
+            healthBuffer.offerLast(observation);
+        }
+    }
+
+    @Override@Contract public void pushConnectivity(PeerConnectivityObservation observation) {
+        if (observation == null) {return;}
+        synchronized (connectivityBufferLock) {
+            if (connectivityBuffer.size() >= bufferCap()) {
+                connectivityBuffer.pollFirst();
+                log.trace("peer-connectivity buffer overflow; dropping oldest observation");
+            }
+            connectivityBuffer.offerLast(observation);
+        }
+    }
+
+    @Override public List<PeerHealthObservation> drainHealth() {
+        synchronized (healthBufferLock) {
+            if (healthBuffer.isEmpty()) {return List.of();}
+            var drained = new ArrayList<>(healthBuffer);
+            healthBuffer.clear();
+            return List.copyOf(drained);
+        }
+    }
+
+    @Override public List<PeerConnectivityObservation> drainConnectivity() {
+        synchronized (connectivityBufferLock) {
+            if (connectivityBuffer.isEmpty()) {return List.of();}
+            var drained = new ArrayList<>(connectivityBuffer);
+            connectivityBuffer.clear();
+            return List.copyOf(drained);
+        }
+    }
+
+    private int bufferCap() {
+        var peers = Math.max(topology.get().size() - 1, 0);
+        return Math.max(peers * PER_PEER_BURST, MIN_BUFFER_CAP);
     }
 
     private void sendOnePing(NodeId nodeId,

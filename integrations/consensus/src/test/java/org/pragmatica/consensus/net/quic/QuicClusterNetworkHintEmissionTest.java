@@ -99,6 +99,51 @@ class QuicClusterNetworkHintEmissionTest {
     }
 
     @Test
+    void disconnect_followerPath_buffersConnectivityObservation_skipsDisconnectListener() {
+        // Commit 2 (ClusterSync refactor): on a follower node, REMOVE view-changes
+        // must NOT invoke the disconnect listener (which would feed the local
+        // HealthReconciler). Instead, a PeerConnectivityObservation is pushed to the
+        // upstream buffer via the PeerConnectivityReporter so the leader folds it.
+        var listenerInvocations = new CopyOnWriteArrayList<NodeId>();
+        QuicDisconnectListener listener = listenerInvocations::add;
+        var reported = new CopyOnWriteArrayList<ReportedDisconnect>();
+        PeerConnectivityReporter reporter = (peerId, term, counter) ->
+            reported.add(new ReportedDisconnect(peerId, term, counter));
+        QuicClusterNetwork.ObservedEpochSupplier epoch = new QuicClusterNetwork.ObservedEpochSupplier() {
+            @Override public long term() {return 11L;}
+            @Override public long counter() {return 4L;}
+        };
+        var network = createNetworkWithListener(NodeId.randomNodeId(), List.of(), MessageRouter.mutable(), listener);
+        network.setFollowerObservationWiring(() -> false, reporter, epoch);
+
+        var missing = new NodeId("missing");
+        network.disconnect(new NetworkServiceMessage.DisconnectNode(missing));
+
+        assertThat(listenerInvocations).as("follower must NOT invoke local disconnect listener").isEmpty();
+        assertThat(reported).as("follower pushes PeerConnectivityObservation upstream")
+                            .containsExactly(new ReportedDisconnect(missing, 11L, 4L));
+    }
+
+    @Test
+    void disconnect_leaderPath_stillInvokesDisconnectListener_noUpstreamReport() {
+        var listenerInvocations = new CopyOnWriteArrayList<NodeId>();
+        QuicDisconnectListener listener = listenerInvocations::add;
+        var reported = new CopyOnWriteArrayList<ReportedDisconnect>();
+        PeerConnectivityReporter reporter = (peerId, term, counter) ->
+            reported.add(new ReportedDisconnect(peerId, term, counter));
+        var network = createNetworkWithListener(NodeId.randomNodeId(), List.of(), MessageRouter.mutable(), listener);
+        network.setFollowerObservationWiring(() -> true, reporter, QuicClusterNetwork.ObservedEpochSupplier.zero());
+
+        var missing = new NodeId("missing");
+        network.disconnect(new NetworkServiceMessage.DisconnectNode(missing));
+
+        assertThat(listenerInvocations).containsExactly(missing);
+        assertThat(reported).as("leader does not duplicate into the upstream buffer").isEmpty();
+    }
+
+    private record ReportedDisconnect(NodeId peerId, long term, long counter) {}
+
+    @Test
     void defaultConstructor_usesNoopListener_withoutCrashing() {
         var nodeId = NodeId.randomNodeId();
         var address = NodeAddress.nodeAddress("127.0.0.1", 19999).fold(_ -> fail("bad address"), a -> a);
