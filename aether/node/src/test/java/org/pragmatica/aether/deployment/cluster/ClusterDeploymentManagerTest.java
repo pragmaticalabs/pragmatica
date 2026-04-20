@@ -14,14 +14,22 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
+import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
+import org.pragmatica.aether.slice.generation.CoreMember;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.HealthHint;
+import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -36,16 +44,19 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 
 import static org.pragmatica.lang.utils.Causes.cause;
 
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -87,8 +98,44 @@ class ClusterDeploymentManagerTest {
         clusterNode = new TestClusterNode(self);
         kvStore = new TestKVStore();
         router = MessageRouter.mutable();
-        manager = ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router, List.of(self, node2, node3),
-                                                                      clusterNode.topologyManager(), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
+        manager = buildManager(List.of(self, node2, node3), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT);
+    }
+
+    // Derive snapshot directly from TestKVStore NodeLifecycleKey entries — tests seed these via
+    // addTopology(), and the snapshot-derived activeNodes()/drainingNodes() now read from here.
+    private Supplier<Option<ClusterGenerationSnapshot>> kvBackedSnapshotSupplier() {
+        return () -> {
+            var members = new LinkedHashMap<NodeId, CoreMember>();
+            kvStore.forEach(NodeLifecycleKey.class,
+                            NodeLifecycleValue.class,
+                            (key, value) -> members.put(key.nodeId(),
+                                                         CoreMember.coreMember(key.nodeId(),
+                                                                               "host",
+                                                                               9000,
+                                                                               value.state(),
+                                                                               HealthHint.HEALTHY,
+                                                                               Epoch.epoch(1L, 0L),
+                                                                               Epoch.epoch(1L, 0L))));
+            if (members.isEmpty()) {return Option.none();}
+            return Option.some(ClusterGenerationSnapshot.empty(1L).withDesiredCoreSize(members.size())
+                                                                    .withCoreMembers(members));
+        };
+    }
+
+    private ClusterDeploymentManager buildManager(List<NodeId> initialTopology,
+                                                   ClusterDeploymentManager.DeploymentAtomicity atomicity) {
+        return ClusterDeploymentManager.clusterDeploymentManager(self,
+                                                                  clusterNode,
+                                                                  kvStore,
+                                                                  router,
+                                                                  initialTopology,
+                                                                  clusterNode.topologyManager(),
+                                                                  atomicity,
+                                                                  0,
+                                                                  ClusterDeploymentManager.DEFAULT_RECONCILE_INTERVAL,
+                                                                  NO_OP_SCHEMA,
+                                                                  HealthSignalSink.noop(),
+                                                                  kvBackedSnapshotSupplier());
     }
 
     // === Leader State Tests ===
@@ -187,9 +234,7 @@ class ClusterDeploymentManagerTest {
     @Test
     void no_allocation_when_no_nodes_available() {
         // Create manager with empty initial topology
-        var emptyTopologyManager = ClusterDeploymentManager.clusterDeploymentManager(
-            self, clusterNode, kvStore, router, List.of(),
-            clusterNode.topologyManager(), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
+        var emptyTopologyManager = buildManager(List.of(), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT);
         emptyTopologyManager.activate();
         clusterNode.appliedCommands.clear();
 
@@ -646,10 +691,7 @@ class ClusterDeploymentManagerTest {
         kvStore.put(targetKey, targetValue);
 
         // Create a new CDM that will rebuild from KVStore on leader activation
-        var restoredManager = ClusterDeploymentManager.clusterDeploymentManager(
-            self, clusterNode, kvStore, router, List.of(self, node2, node3),
-            clusterNode.topologyManager(),
-            ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
+        var restoredManager = buildManager(List.of(self, node2, node3), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT);
 
         // Become leader triggers rebuildStateFromKVStore
         restoredManager.activate();
@@ -815,8 +857,7 @@ class ClusterDeploymentManagerTest {
     }
 
     private ClusterDeploymentManager createAllOrNothingManager() {
-        return ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router, List.of(self, node2, node3),
-            clusterNode.topologyManager(), ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING, 0, NO_OP_SCHEMA);
+        return buildManager(List.of(self, node2, node3), ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING);
     }
 
     private void sendAppBlueprintPut(ClusterDeploymentManager mgr, ExpandedBlueprint blueprint) {

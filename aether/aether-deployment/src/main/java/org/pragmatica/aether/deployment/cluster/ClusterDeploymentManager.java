@@ -51,6 +51,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue;
 import org.pragmatica.aether.slice.delegation.DelegatedComponent;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
+import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
+import org.pragmatica.aether.slice.generation.CoreMember;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
@@ -91,6 +93,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -197,14 +200,13 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                       TopologyManager topologyManager,
                       SchemaOrchestratorService schemaOrchestrator,
                       HealthSignalSink healthSignalSink,
+                      Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
                       Map<Artifact, Blueprint> blueprints,
                       Map<SliceNodeKey, SliceState> sliceStates,
                       Map<Artifact, Set<Artifact>> sliceDependencies,
                       Set<ArtifactBase> activeRoutings,
-                      AtomicReference<List<NodeId>> activeNodes,
                       AtomicInteger allocationIndex,
                       AtomicBoolean deactivated,
-                      Set<NodeId> drainingNodes,
                       Map<String, Integer> retryCounters,
                       Map<BlueprintId, InFlightBlueprint> inFlightBlueprints,
                       Set<BlueprintId> restoringBlueprints,
@@ -213,7 +215,6 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                       int coreMax,
                       Set<NodeId> seedNodes,
                       Set<NodeId> workerNodes,
-                      Map<String, GovernorAnnouncementValue> communityGovernors,
                       Map<SliceNodeKey, Long> transitionalStateTimestamps,
                       TimeSpan reconcileInterval,
                       CancellableTask reconcileTimer) implements ClusterDeploymentState {
@@ -274,9 +275,10 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             }
 
             private void resumeDrainEvictions() {
-                if (drainingNodes.isEmpty()) {return;}
-                log.info("Resuming drain evictions for {} nodes", drainingNodes.size());
-                drainingNodes.forEach(this::evictNextSliceFromNode);
+                var draining = drainingNodes();
+                if (draining.isEmpty()) {return;}
+                log.info("Resuming drain evictions for {} nodes", draining.size());
+                draining.forEach(this::evictNextSliceFromNode);
             }
 
             private void recoverStalledSchemaMigrations() {
@@ -344,18 +346,9 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                                                                                                                      sliceTargetValue);
                     case SliceNodeKey _ -> {}
                     case AetherKey.VersionRoutingKey routingKey -> activeRoutings.add(routingKey.artifactBase());
-                    case NodeLifecycleKey lifecycleKey when value instanceof NodeLifecycleValue lifecycleValue -> restoreDrainingNode(lifecycleKey,
-                                                                                                                                      lifecycleValue);
                     case ActivationDirectiveKey activationKey when value instanceof ActivationDirectiveValue activationValue -> restoreWorkerNode(activationKey,
                                                                                                                                                   activationValue);
                     default -> {}
-                }
-            }
-
-            private void restoreDrainingNode(NodeLifecycleKey key, NodeLifecycleValue value) {
-                if (value.state() == NodeLifecycleState.DRAINING) {
-                    drainingNodes.add(key.nodeId());
-                    log.info("Restored draining node: {}", key.nodeId());
                 }
             }
 
@@ -522,18 +515,13 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             @Override public void onTopologyChange(TopologyChangeNotification topologyChange) {
                 log.info("Received topology change: {}", topologyChange);
                 switch (topologyChange){
-                    case NodeAdded(NodeId addedNode, List<NodeId> topology) -> {
-                        updateTopology(topology);
+                    case NodeAdded(NodeId addedNode, List<NodeId>_) -> {
                         if (!seedNodes.contains(addedNode)) {assignNodeRole(addedNode);}
                         reconcile();
                     }
-                    case NodeRemoved(NodeId removedNode, List<NodeId> topology) -> {
-                        updateTopology(topology);
-                        handleNodeRemoval(removedNode).onSuccess(_ -> reconcile());
-                    }
-                    case NodeDown(NodeId downNode, List<NodeId> topology) -> {
+                    case NodeRemoved(NodeId removedNode, List<NodeId>_) -> handleNodeRemoval(removedNode).onSuccess(_ -> reconcile());
+                    case NodeDown(NodeId downNode, List<NodeId>_) -> {
                         log.warn("Node {} is down, triggering immediate reconciliation", downNode);
-                        updateTopology(topology);
                         handleNodeRemoval(downNode).onSuccess(_ -> reconcile());
                     }
                     default -> {}
@@ -541,7 +529,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             }
 
             private void assignNodeRole(NodeId addedNode) {
-                var currentCoreCount = activeNodes.get().size();
+                var currentCoreCount = activeNodes().size();
                 if (shouldPromoteToCore(currentCoreCount)) {
                     log.info("Promoting node {} to core consensus participant (core count: {}/{})",
                              addedNode,
@@ -577,15 +565,39 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                   .or(coreMax);
             }
 
-            private void updateTopology(List<NodeId> topology) {
-                activeNodes.set(topology.stream().filter(id -> !topologyManager.isPassive(id))
-                                               .toList());
+            private List<NodeId> activeNodes() {
+                return snapshotSupplier.get().map(snapshot -> snapshot.coreMembers().values()
+                                                                                  .stream()
+                                                                                  .filter(m -> m.lifecycle() != NodeLifecycleState.DECOMMISSIONED)
+                                                                                  .map(CoreMember::nodeId)
+                                                                                  .filter(id -> !topologyManager.isPassive(id))
+                                                                                  .toList())
+                                           .or(List::of);
+            }
+
+            private Set<NodeId> drainingNodes() {
+                return snapshotSupplier.get().map(snapshot -> snapshot.coreMembers().values()
+                                                                                  .stream()
+                                                                                  .filter(m -> m.lifecycle() == NodeLifecycleState.DRAINING)
+                                                                                  .map(CoreMember::nodeId)
+                                                                                  .collect(Collectors.toUnmodifiableSet()))
+                                           .or(Set::of);
+            }
+
+            private Set<String> activeCommunityIds() {
+                return snapshotSupplier.get().map(snapshot -> Set.copyOf(snapshot.communities().keySet()))
+                                           .or(Set::of);
+            }
+
+            private Option<GovernorAnnouncementValue> communityGovernor(String communityId) {
+                return kvStore.get(GovernorAnnouncementKey.forCommunity(communityId)).filter(GovernorAnnouncementValue.class::isInstance)
+                                  .map(GovernorAnnouncementValue.class::cast);
             }
 
             private List<NodeId> allocatableNodes() {
-                return activeNodes.get().stream()
-                                      .filter(this::isNodeOnDuty)
-                                      .toList();
+                return activeNodes().stream()
+                                  .filter(this::isNodeOnDuty)
+                                  .toList();
             }
 
             AllocationPool buildAllocationPool() {
@@ -594,17 +606,24 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             }
 
             private Map<String, List<NodeId>> buildCommunityWorkerMap() {
-                if (communityGovernors.isEmpty()) {return Map.of();}
+                var communityIds = activeCommunityIds();
+                if (communityIds.isEmpty()) {return Map.of();}
                 var result = new HashMap<String, List<NodeId>>();
-                communityGovernors.forEach((communityId, announcement) -> result.put(communityId,
-                                                                                     announcement.members().isEmpty()
-                                                                                     ? List.of(announcement.governorId())
-                                                                                     : announcement.members()));
+                communityIds.forEach(communityId -> communityGovernor(communityId).onPresent(announcement -> result.put(communityId,
+                                                                                                                        announcement.members()
+                                                                                                                                            .isEmpty()
+                                                                                                                        ? List.of(announcement.governorId())
+                                                                                                                        : announcement.members())));
                 return Map.copyOf(result);
             }
 
             private Map<String, GovernorAnnouncementValue> activeCommunities() {
-                return Map.copyOf(communityGovernors);
+                var communityIds = activeCommunityIds();
+                if (communityIds.isEmpty()) {return Map.of();}
+                var result = new HashMap<String, GovernorAnnouncementValue>();
+                communityIds.forEach(communityId -> communityGovernor(communityId).onPresent(announcement -> result.put(communityId,
+                                                                                                                        announcement)));
+                return Map.copyOf(result);
             }
 
             private boolean isNodeOnDuty(NodeId nodeId) {
@@ -694,8 +713,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                 var communityId = valuePut.cause().key()
                                                 .communityId();
                 var announcement = valuePut.cause().value();
-                communityGovernors.put(communityId, announcement);
-                log.info("Governor announced for community '{}': {} with {} members",
+                log.info("Governor announced for community '{}': {} with {} members (snapshot is authoritative for community list)",
                          communityId,
                          announcement.governorId(),
                          announcement.memberCount());
@@ -704,26 +722,21 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             @Override public void onGovernorAnnouncementRemove(ValueRemove<GovernorAnnouncementKey, GovernorAnnouncementValue> valueRemove) {
                 var communityId = valueRemove.cause().key()
                                                    .communityId();
-                communityGovernors.remove(communityId);
-                log.info("Governor departed for community '{}'", communityId);
+                log.info("Governor departed for community '{}' (snapshot is authoritative for community list)",
+                         communityId);
             }
 
             private void startDrainEviction(NodeId drainingNode) {
-                if (!drainingNodes.add(drainingNode)) {
-                    log.debug("Drain eviction already in progress for {}", drainingNode);
-                    return;
-                }
                 log.info("Starting drain eviction for node {}", drainingNode);
                 evictNextSliceFromNode(drainingNode);
             }
 
             private void cancelDrainEviction(NodeId nodeId) {
-                if (drainingNodes.remove(nodeId)) {log.info("Cancelled drain eviction for node {} (returned to ON_DUTY)",
-                                                            nodeId);}
+                log.info("Cancelling drain eviction for node {} (returned to ON_DUTY)", nodeId);
             }
 
             private void evictNextSliceFromNode(NodeId drainingNode) {
-                if (deactivated.get() || !drainingNodes.contains(drainingNode)) {return;}
+                if (deactivated.get() || !drainingNodes().contains(drainingNode)) {return;}
                 var slicesOnNode = sliceStates.keySet().stream()
                                                      .filter(key -> key.nodeId().equals(drainingNode))
                                                      .filter(key -> isLiveState(sliceStates.getOrDefault(key,
@@ -754,7 +767,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             }
 
             private void checkReplacementAndUnload(SliceNodeKey originalKey) {
-                if (deactivated.get() || !drainingNodes.contains(originalKey.nodeId())) {return;}
+                if (deactivated.get() || !drainingNodes().contains(originalKey.nodeId())) {return;}
                 var artifact = originalKey.artifact();
                 var drainingNode = originalKey.nodeId();
                 var hasActiveReplacement = sliceStates.entrySet().stream()
@@ -774,7 +787,6 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             }
 
             private void completeDrain(NodeId drainingNode) {
-                drainingNodes.remove(drainingNode);
                 log.info("Drain complete for node {}, emitting DrainCompleted signal to HealthReconciler", drainingNode);
                 healthSignalSink.emit(new HealthSignal.DrainCompleted(drainingNode, Epoch.ZERO));
             }
@@ -1174,7 +1186,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             }
 
             void cleanupStaleNodeRoutes() {
-                var currentNodes = new HashSet<>(activeNodes.get());
+                var currentNodes = new HashSet<>(activeNodes());
                 var commands = new ArrayList<KVCommand<AetherKey>>();
                 kvStore.forEach(NodeRoutesKey.class,
                                 NodeRoutesValue.class,
@@ -1194,7 +1206,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             }
 
             void cleanupStaleSliceEntries() {
-                var currentNodes = new HashSet<>(activeNodes.get());
+                var currentNodes = new HashSet<>(activeNodes());
                 var staleKeys = sliceStates.keySet().stream()
                                                   .filter(key -> !currentNodes.contains(key.nodeId()))
                                                   .toList();
@@ -1209,7 +1221,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             }
 
             void cleanupStaleNodeArtifactEntries() {
-                var currentNodes = new HashSet<>(activeNodes.get());
+                var currentNodes = new HashSet<>(activeNodes());
                 var staleKeys = new ArrayList<NodeArtifactKey>();
                 kvStore.forEach(NodeArtifactKey.class,
                                 NodeArtifactValue.class,
@@ -1400,7 +1412,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             }
 
             private List<SliceNodeKey> getCurrentInstances(Artifact artifact) {
-                var currentNodes = activeNodes.get();
+                var currentNodes = activeNodes();
                 return sliceStates.entrySet().stream()
                                            .filter(entry -> entry.getKey().artifact()
                                                                         .equals(artifact))
@@ -1591,8 +1603,8 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             @SuppressWarnings("JBCT-RET-01") private void removeWorkerDirective(Artifact artifact) {
                 var commands = new ArrayList<KVCommand<AetherKey>>();
                 commands.add(new KVCommand.Remove<>(WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact)));
-                for (var communityId : communityGovernors.keySet()) {commands.add(new KVCommand.Remove<>(WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact,
-                                                                                                                                                         communityId)));}
+                for (var communityId : activeCommunityIds()) {commands.add(new KVCommand.Remove<>(WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact,
+                                                                                                                                                  communityId)));}
                 cluster.apply(commands)
                              .onFailure(cause -> log.debug("No worker directive to remove for {}: {}",
                                                            artifact,
@@ -1612,7 +1624,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                 }
                 log.debug("Performing cluster reconciliation with {} blueprints and {} active nodes",
                           blueprints.size(),
-                          activeNodes.get().size());
+                          activeNodes().size());
                 var reconciled = 0;
                 var blueprintSnapshot = List.copyOf(blueprints.values());
                 for (var blueprint : blueprintSnapshot) {
@@ -1642,8 +1654,9 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             }
 
             private boolean hasInstancesOnDrainingNodes(Artifact artifact) {
+                var draining = drainingNodes();
                 return sliceStates.keySet().stream()
-                                         .anyMatch(key -> key.artifact().equals(artifact) && drainingNodes.contains(key.nodeId()));
+                                         .anyMatch(key -> key.artifact().equals(artifact) && draining.contains(key.nodeId()));
             }
 
             private void emitScalingEvent(Artifact artifact, int currentCount, int desiredCount) {
@@ -1780,7 +1793,8 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                         coreMax,
                                         DEFAULT_RECONCILE_INTERVAL,
                                         schemaOrchestrator,
-                                        HealthSignalSink.noop());
+                                        HealthSignalSink.noop(),
+                                        Option::none);
     }
 
     static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
@@ -1803,7 +1817,8 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                         coreMax,
                                         reconcileInterval,
                                         schemaOrchestrator,
-                                        HealthSignalSink.noop());
+                                        HealthSignalSink.noop(),
+                                        Option::none);
     }
 
     static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
@@ -1817,6 +1832,32 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                                              TimeSpan reconcileInterval,
                                                              SchemaOrchestratorService schemaOrchestrator,
                                                              HealthSignalSink healthSignalSink) {
+        return clusterDeploymentManager(self,
+                                        cluster,
+                                        kvStore,
+                                        router,
+                                        initialTopology,
+                                        topologyManager,
+                                        atomicity,
+                                        coreMax,
+                                        reconcileInterval,
+                                        schemaOrchestrator,
+                                        healthSignalSink,
+                                        Option::none);
+    }
+
+    static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
+                                                             ClusterNode<KVCommand<AetherKey>> cluster,
+                                                             KVStore<AetherKey, AetherValue> kvStore,
+                                                             MessageRouter router,
+                                                             List<NodeId> initialTopology,
+                                                             TopologyManager topologyManager,
+                                                             DeploymentAtomicity atomicity,
+                                                             int coreMax,
+                                                             TimeSpan reconcileInterval,
+                                                             SchemaOrchestratorService schemaOrchestrator,
+                                                             HealthSignalSink healthSignalSink,
+                                                             Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier) {
         record clusterDeploymentManager(NodeId self,
                                         ClusterNode<KVCommand<AetherKey>> cluster,
                                         KVStore<AetherKey, AetherValue> kvStore,
@@ -1827,14 +1868,13 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                         TimeSpan reconcileInterval,
                                         SchemaOrchestratorService schemaOrchestrator,
                                         HealthSignalSink healthSignalSink,
+                                        Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
                                         Set<NodeId> seedNodes,
-                                        AtomicReference<ClusterDeploymentState> state,
-                                        AtomicReference<List<NodeId>> topologyRef) implements ClusterDeploymentManager {
+                                        AtomicReference<ClusterDeploymentState> state) implements ClusterDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(clusterDeploymentManager.class);
 
             @Override public Promise<Unit> activate() {
                 deactivateCurrentState();
-                var activeNodes = new AtomicReference<>(topologyRef.get());
                 var activeState = new ClusterDeploymentState.Active(self,
                                                                     cluster,
                                                                     kvStore,
@@ -1842,14 +1882,13 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                                                     topologyManager,
                                                                     schemaOrchestrator,
                                                                     healthSignalSink,
+                                                                    snapshotSupplier,
                                                                     new ConcurrentHashMap<>(),
                                                                     new ConcurrentHashMap<>(),
                                                                     new ConcurrentHashMap<>(),
                                                                     ConcurrentHashMap.newKeySet(),
-                                                                    activeNodes,
                                                                     new AtomicInteger(0),
                                                                     new AtomicBoolean(false),
-                                                                    ConcurrentHashMap.newKeySet(),
                                                                     new ConcurrentHashMap<>(),
                                                                     new ConcurrentHashMap<>(),
                                                                     ConcurrentHashMap.newKeySet(),
@@ -1859,18 +1898,16 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                                                     seedNodes,
                                                                     ConcurrentHashMap.newKeySet(),
                                                                     new ConcurrentHashMap<>(),
-                                                                    new ConcurrentHashMap<>(),
                                                                     reconcileInterval,
                                                                     CancellableTask.cancellableTask());
                 state.set(activeState);
-                activeNodes.set(topologyRef.get());
                 log.info("Node {} became leader, activating cluster deployment manager with {} known nodes",
                          self,
-                         activeNodes.get().size());
+                         activeState.activeNodes().size());
                 activeState.rebuildStateFromKVStore();
                 activeState.reconcile();
                 activeState.startReconcileTimer();
-                SharedScheduler.schedule(() -> deferredTopologyRecheck(activeState, activeNodes), timeSpan(2).seconds());
+                SharedScheduler.schedule(() -> deferredTopologyRecheck(activeState), timeSpan(2).seconds());
                 return Promise.unitPromise();
             }
 
@@ -1889,10 +1926,8 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                 return state.get() instanceof ClusterDeploymentState.Active;
             }
 
-            private void deferredTopologyRecheck(ClusterDeploymentState.Active activeState,
-                                                 AtomicReference<List<NodeId>> activeNodes) {
+            private void deferredTopologyRecheck(ClusterDeploymentState.Active activeState) {
                 if (activeState.deactivated().get()) {return;}
-                activeNodes.set(topologyRef.get());
                 activeState.cleanupStaleNodeRoutes();
                 activeState.cleanupStaleSliceEntries();
                 activeState.cleanupStaleNodeArtifactEntries();
@@ -1960,12 +1995,6 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             }
 
             @Override public void onTopologyChange(TopologyChangeNotification topologyChange) {
-                switch (topologyChange){
-                    case NodeAdded(_, List<NodeId> newTopology) -> topologyRef.set(List.copyOf(newTopology));
-                    case NodeRemoved(_, List<NodeId> newTopology) -> topologyRef.set(List.copyOf(newTopology));
-                    case NodeDown(_, List<NodeId> newTopology) -> topologyRef.set(List.copyOf(newTopology));
-                    default -> {}
-                }
                 state.get().onTopologyChange(topologyChange);
             }
         }
@@ -1979,8 +2008,8 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                             reconcileInterval,
                                             schemaOrchestrator,
                                             healthSignalSink,
+                                            snapshotSupplier,
                                             Set.copyOf(initialTopology),
-                                            new AtomicReference<>(new ClusterDeploymentState.Dormant()),
-                                            new AtomicReference<>(List.copyOf(initialTopology)));
+                                            new AtomicReference<>(new ClusterDeploymentState.Dormant()));
     }
 }

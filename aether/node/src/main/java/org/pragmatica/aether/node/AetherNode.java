@@ -738,6 +738,9 @@ public interface AetherNode extends ManageableNode {
         var deploymentMap = DeploymentMap.deploymentMap();
         var healthSinkRef = new AtomicReference<HealthSignalSink>(HealthSignalSink.noop());
         HealthSignalSink stableHealthSink = signal -> healthSinkRef.get().emit(signal);
+        var cdmSnapshotSupplierRef = new AtomicReference<Supplier<Option<ClusterGenerationSnapshot>>>(Option::none);
+        Supplier<Option<ClusterGenerationSnapshot>> stableCdmSnapshotSupplier = () -> cdmSnapshotSupplierRef.get()
+                                                                                                                .get();
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,
@@ -749,7 +752,8 @@ public interface AetherNode extends ManageableNode {
                                                                                          config.timeouts().deployment()
                                                                                                         .reconciliationInterval(),
                                                                                          schemaOrchestrator,
-                                                                                         stableHealthSink);
+                                                                                         stableHealthSink,
+                                                                                         stableCdmSnapshotSupplier);
         var loadBalancerManager = config.environment().flatMap(EnvironmentIntegration::loadBalancer)
                                                     .map(provider -> LoadBalancerManager.loadBalancerManager(config.self(),
                                                                                                              kvStore,
@@ -795,6 +799,7 @@ public interface AetherNode extends ManageableNode {
         Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier = () -> isLeaderGate.get()
                                                                             ? Option.some(healthReconciler.currentSnapshot())
                                                                             : Option.none();
+        cdmSnapshotSupplierRef.set(snapshotSupplier);
         java.util.function.Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder = serializer::encode;
         java.util.function.Function<byte[], Option<ClusterGenerationSnapshot>> snapshotDecoder = bytes -> decodeSnapshot(deserializer,
                                                                                                                          bytes);
