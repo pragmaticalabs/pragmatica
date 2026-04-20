@@ -101,9 +101,16 @@ public final class ClusterTopologyRoutes implements RouteSource {
     }
 
     private static int snapshotCoreCount(ClusterGenerationSnapshot snapshot) {
+        // Strict ON_DUTY + HEALTHY. Commits 1–6 of the ClusterSync refactor (single-source-
+        // of-truth membership via leader-driven snapshot + sensor-only followers) ensure
+        // transient SWIM SUSPECTED hints no longer pull the published snapshot's healthHint
+        // down — only the leader's multi-observer reducer decides the authoritative hint.
+        // The previous `|| JOINING` workaround is no longer needed and masks legitimate
+        // degraded-state reporting.
         return (int) snapshot.coreMembers().values()
                                          .stream()
-                                         .filter(member -> member.lifecycle() == NodeLifecycleState.ON_DUTY || member.lifecycle() == NodeLifecycleState.JOINING)
+                                         .filter(member -> member.lifecycle() == NodeLifecycleState.ON_DUTY)
+                                         .filter(member -> member.healthHint() == HealthHint.HEALTHY)
                                          .count();
     }
 
