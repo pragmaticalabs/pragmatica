@@ -260,6 +260,11 @@ drop_ctm_replacements() {
 ## Restart all stopped containers of the active cluster + drop any CTM-provisioned
 ## replacements. This is a TEST LIFECYCLE primitive (not race compensation) — destructive
 ## suites kill nodes; before the next suite runs we bring the cluster back to baseline.
+##
+## After container restoration, wait for the topology to settle to the expected
+## NODE_COUNT (default 5). SWIM-driven membership reconciliation can take 15-30s
+## to remove phantoms left by CTM auto-heal — without this barrier the next suite
+## sees `expected 5, got 6` and cascades into a flood of false failures.
 restart_all_nodes() {
     log_info "Restoring cluster to baseline (CLUSTER_NAME=${CLUSTER_NAME:-aether-b-node-})..."
     if [ "$CLOUD_MODE" = "true" ]; then
@@ -270,6 +275,8 @@ restart_all_nodes() {
     fi
     local prefix="${CLUSTER_NAME:-aether-b-node-}"
     remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=${prefix}' --filter 'status=exited' -q | xargs -r docker start" 2>/dev/null
+    wait_for_node_count "${NODE_COUNT:-5}" 60 || \
+        log_warn "restart_all_nodes: cluster did not settle to ${NODE_COUNT:-5} nodes within 60s"
 }
 
 kill_node() {

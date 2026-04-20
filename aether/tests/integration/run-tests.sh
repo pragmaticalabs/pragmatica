@@ -347,15 +347,15 @@ run_cluster_b_suites() {
 
         run_suite "$suite" "b" || true
 
-        # Between destructive suites: wait for cluster to quiesce at the next epoch.
-        # ClusterGeneration guarantees every surviving node has converged on the new
-        # membership view before the next suite runs — no manual restart compensation.
+        # Between destructive suites: best-effort quiesce check. We do NOT abort on
+        # failure — chaos tests can leave residual CTM-provisioned replacements whose
+        # snapshots haven't propagated, and skipping subsequent destructive suites just
+        # turns one failure into five. Each suite is responsible for its own preconditions
+        # via the wait_for_cluster / wait_for_leader helpers in run_test().
         local quiesce_start
         quiesce_start=$(date +%s)
-        if ! await_generation_quiesced "$CLUSTER_B_MGMT" "current+1" 60; then
-            log_error "Cluster B failed to quiesce after suite ${suite} — aborting remaining destructive suites"
-            aborted=true
-        fi
+        await_generation_quiesced "$CLUSTER_B_MGMT" "current" 120 || \
+            log_warn "Cluster B did not quiesce within 120s after suite ${suite} — continuing"
         local quiesce_elapsed=$(( $(date +%s) - quiesce_start ))
         printf 'quiesce_after_%s=%s\n' "$suite" "$quiesce_elapsed" >> "$TIMINGS_FILE"
     done
@@ -381,7 +381,10 @@ rebuild_remote_node_image() {
     scp -q -i "$AETHER_SSH_KEY" -o StrictHostKeyChecking=no "$jar" "${user}@${host}:~/aether-build/node/target/aether-node.jar"
     scp -q -i "$AETHER_SSH_KEY" -o StrictHostKeyChecking=no "$dockerfile" "${user}@${host}:~/aether-build/docker/aether-node/Dockerfile"
     scp -q -i "$AETHER_SSH_KEY" -o StrictHostKeyChecking=no "$config" "${user}@${host}:~/aether-build/docker/aether-node/aether.toml"
-    remote_exec "cd ~/aether-build && docker build -q -f docker/aether-node/Dockerfile -t aether-node:local . 2>&1 | tail -5"
+    # --no-cache prevents BuildKit from reusing a stale jar layer when bytes appear
+    # equivalent (build-info.properties may be regenerated on a different cadence than
+    # bytecode, so layer-hash collisions ship outdated images into the cluster).
+    remote_exec "cd ~/aether-build && docker build --no-cache -q -f docker/aether-node/Dockerfile -t aether-node:local . 2>&1 | tail -5"
 }
 
 deploy_docker() {

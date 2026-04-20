@@ -32,21 +32,27 @@ export AETHER_API_KEY="${API_KEY}"
 AETHER_CLI="aether -c ${TARGET_HOST}:${LB_PORT}"
 NODE_COUNT="${NODE_COUNT:-5}"
 
-# Try CLI command against available nodes (failover on connection failure)
-# Tries ports MGMT_PORT, MGMT_PORT+1, ... MGMT_PORT+NODE_COUNT-1
-# The CLI itself enforces --request-timeout (default 60s) on every HTTP call.
+# Try CLI command against available nodes (failover on connection failure).
+# Tries the LB endpoint first (if set), then falls back to iterating direct node ports
+# MGMT_PORT, MGMT_PORT+1, ... MGMT_PORT+NODE_COUNT-1.
+#
+# Without the fallback, a dead node that happens to be pointed at by LB_MGMT_ENDPOINT
+# (or the "LB fallback to direct" case when no real LB is deployed) blocks every CLI
+# query for the full request-timeout window — wait_for_leader then times out even
+# though a new leader has already been elected on a surviving node.
 aether_failover() {
-    # If LB endpoint is known, use it directly
+    # --request-timeout is an integer number of seconds (CLI: "--request-timeout=<requestTimeoutSeconds>")
+    local timeout="${AETHER_CLI_TIMEOUT:-5}"
     if [ -n "${LB_MGMT_ENDPOINT:-}" ]; then
         local lb_host_port="${LB_MGMT_ENDPOINT#http://}"
-        aether -c "${lb_host_port}" --api-key "${API_KEY}" "$@" 2>/dev/null
-        return $?
+        local result
+        result=$(aether -c "${lb_host_port}" --api-key "${API_KEY}" "--request-timeout=${timeout}" "$@" 2>/dev/null) && { echo "$result"; return 0; }
     fi
     local base_port="${MGMT_PORT}"
     for i in $(seq 0 $((NODE_COUNT - 1))); do
         local port=$((base_port + i))
         local result
-        result=$(aether -c "${TARGET_HOST}:${port}" --api-key "${API_KEY}" "$@" 2>/dev/null) && { echo "$result"; return 0; }
+        result=$(aether -c "${TARGET_HOST}:${port}" --api-key "${API_KEY}" "--request-timeout=${timeout}" "$@" 2>/dev/null) && { echo "$result"; return 0; }
     done
     return 1
 }

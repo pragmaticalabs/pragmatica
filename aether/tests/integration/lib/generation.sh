@@ -130,16 +130,18 @@ record_quiesced_timing() {
 # ---------------------------------------------------------------------------
 
 # Resolve "current", "current+N", or literal "T:C" against the live snapshot.
+# Retries up to ~10s if the snapshot is temporarily missing (e.g., during leader
+# transition right after a destructive test) so the runner doesn't false-abort.
 _resolve_epoch() {
     local endpoint="$1" spec="$2"
     case "$spec" in
         current)
-            generation_current "$endpoint"
+            _resolve_with_retry "$endpoint"
             ;;
         current+*)
             local bump="${spec#current+}"
             local now
-            now=$(generation_current "$endpoint") || return 1
+            now=$(_resolve_with_retry "$endpoint") || return 1
             local term="${now%%:*}" counter="${now##*:}"
             printf '%s:%s' "$term" "$((counter + bump))"
             ;;
@@ -151,6 +153,16 @@ _resolve_epoch() {
             return 1
             ;;
     esac
+}
+
+_resolve_with_retry() {
+    local endpoint="$1"
+    local now
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        now=$(generation_current "$endpoint") && { printf '%s' "$now"; return 0; }
+        sleep 1
+    done
+    return 1
 }
 
 # Milliseconds since epoch — portable between GNU and BSD date.
