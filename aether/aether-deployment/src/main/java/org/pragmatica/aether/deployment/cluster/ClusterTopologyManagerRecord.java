@@ -378,7 +378,10 @@ import static org.pragmatica.lang.Unit.unit;
         var deficit = desired - actual;
         if (!lifecycleManager.isCloudManaged()) {
             var next = new NodeReconcilerState.Reconciling(desired, actual, List.of(), List.of(), Instant.now());
-            if (!stateRef.compareAndSet(current, next)) {return;}
+            if (!stateRef.compareAndSet(current, next)) {
+                log.warn("CTM: state CAS lost (deficit, no-cloud) — observed={}, expected={}, next={}", stateRef.get(), current, next);
+                return;
+            }
             log.debug("CTM: Cluster deficit of {} but no ComputeProvider, cannot auto-provision", deficit);
             return;
         }
@@ -388,7 +391,10 @@ import static org.pragmatica.lang.Unit.unit;
                                                        buildInFlightList(batchSize),
                                                        List.of(),
                                                        Instant.now());
-        if (!stateRef.compareAndSet(current, next)) {return;}
+        if (!stateRef.compareAndSet(current, next)) {
+            log.warn("CTM: state CAS lost (deficit, provision) — observed={}, expected={}, next={}", stateRef.get(), current, next);
+            return;
+        }
         log.info("CTM: Cluster at {}/{}, provisioning {} replacement(s)", actual, desired, batchSize);
         provisionNodes(batchSize);
     }
@@ -411,7 +417,10 @@ import static org.pragmatica.lang.Unit.unit;
             return;
         }
         var next = new NodeReconcilerState.Reconciling(configured, actual, List.of(), nodesToTerminate, Instant.now());
-        if (!stateRef.compareAndSet(current, next)) {return;}
+        if (!stateRef.compareAndSet(current, next)) {
+            log.warn("CTM: state CAS lost (surplus, terminate) — observed={}, expected={}, next={}", stateRef.get(), current, next);
+            return;
+        }
         log.info("CTM: Cluster at {}/{}, terminating {} surplus node(s): {}",
                  actual,
                  configured,

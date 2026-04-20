@@ -99,6 +99,10 @@ public interface HealthReconciler extends HealthSignalSink {
     @Contract void seedSnapshot(ClusterGenerationSnapshot snapshot);
     @Contract void reseedMembership(ClusterGenerationSnapshot freshProjection);
     @Contract void requestReprojection(Supplier<ClusterGenerationSnapshot> reprojectionSupplier, String reason);
+    /// Variant used by internal failure-recovery paths (e.g. evictNode apply failure): reuses the
+    /// supplier most recently captured via the 2-arg overload. No-op if no supplier has been
+    /// captured yet (reconciler was never driven by the activator).
+    @Contract void requestReprojection(String reason);
     long consensusApplyFailedCount();
 
     @Contract@Override default void emit(HealthSignal signal) {
@@ -247,6 +251,15 @@ record HealthReconcilerRecord(NodeId self,
         if (reprojectionSupplier == null) {return;}
         if (!isLeader.get() || !started.get()) {return;}
         reprojectionSupplierRef.set(Option.some(reprojectionSupplier));
+        reprojectionDirty.set(true);
+        var executor = reprojectionExecutorRef.get();
+        if (executor == null) {return;}
+        submitReprojectionDrain(executor, reason);
+    }
+
+    @Contract@Override public void requestReprojection(String reason) {
+        if (!isLeader.get() || !started.get()) {return;}
+        if (reprojectionSupplierRef.get().isEmpty()) {return;}
         reprojectionDirty.set(true);
         var executor = reprojectionExecutorRef.get();
         if (executor == null) {return;}
@@ -715,6 +728,11 @@ record HealthReconcilerRecord(NodeId self,
         consensusApplyFailed.incrementAndGet();
         attemptedNodeIds.forEach(pendingRemovals::remove);
         log.warn("HealthReconciler consensus apply failed (attempted nodes={}): {}", attemptedNodeIds, cause.message());
+        // The eviction batch may have partially committed in Rabia before the failure surfaced.
+        // Clearing pendingRemovals is not enough: the in-memory snapshot may now disagree with
+        // committed atoms. Re-project from the source of truth so the next drain resumes from
+        // ground truth, not a stale optimistic projection.
+        requestReprojection("consensus-apply-failure");
     }
 
     @Override public long consensusApplyFailedCount() {

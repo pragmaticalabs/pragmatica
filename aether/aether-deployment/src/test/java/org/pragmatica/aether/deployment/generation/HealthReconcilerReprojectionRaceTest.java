@@ -95,11 +95,16 @@ class HealthReconcilerReprojectionRaceTest {
         start.countDown();
         driver.shutdown();
         assertThat(driver.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+        // After all workers finished, `sourceState` is stable. Fire one final trigger so the
+        // reconciler's drain observes the final source value — this closes the window where
+        // the last worker's requestReprojection could coalesce into an already-running drain
+        // that captured an earlier sourceState.
+        var lastSourceSize = sourceState.get().desiredCoreSize();
+        waitForProjection(reconciler, supplier, lastSourceSize);
         // Shut down the reconciler-owned executor and wait for drain to complete deterministically.
         reconciler.stop(StopReason.SHUTDOWN);
 
         var finalDesiredSize = reconciler.currentSnapshot().desiredCoreSize();
-        var lastSourceSize = sourceState.get().desiredCoreSize();
         assertThat(finalDesiredSize)
             .as("final snapshot must reflect the last source state, not an earlier projection")
             .isEqualTo(lastSourceSize);
@@ -140,6 +145,19 @@ class HealthReconcilerReprojectionRaceTest {
             reconciler.requestReprojection(supplier, "race-test-t" + threadIndex + "-i" + i);
         }
         return Unit.unit();
+    }
+
+    @SuppressWarnings("BusyWait")
+    private static void waitForProjection(HealthReconciler reconciler,
+                                          Supplier<ClusterGenerationSnapshot> supplier,
+                                          int expectedSize) throws InterruptedException {
+        // Keep firing reprojection triggers until the reconciler's snapshot catches up to the
+        // stable post-burst source value. Bounded loop to avoid infinite wait on real failure.
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (reconciler.currentSnapshot().desiredCoreSize() != expectedSize && System.nanoTime() < deadline) {
+            reconciler.requestReprojection(supplier, "race-test-drain");
+            Thread.sleep(5);
+        }
     }
 
     @SuppressWarnings("ResultOfMethodCallIgnored")

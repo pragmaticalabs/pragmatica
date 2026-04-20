@@ -379,9 +379,11 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
         var value = notification.cause().value();
         if (value.dissolved()) {
             reconciler.onSignal(new HealthSignal.CommunityDissolved(communityId));
+            reconciler.requestReprojection(this::projectFromCommittedAtoms, "governor-announcement");
             return;
         }
         reconciler.onSignal(new HealthSignal.GovernorAnnounced(communityId, value.governorId(), value.communityTerm()));
+        reconciler.requestReprojection(this::projectFromCommittedAtoms, "governor-announcement");
     }
 
     @Contract@Override public void onGovernorAnnouncementRemove(ValueRemove<GovernorAnnouncementKey, GovernorAnnouncementValue> notification) {
