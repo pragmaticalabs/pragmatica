@@ -67,7 +67,11 @@ public class GenerateBlueprintMojo extends AbstractMojo {
     @Parameter(defaultValue = "${project.basedir}/src/main/resources/resources.toml")
     private File resourcesTomlFile;
 
-    @Parameter(defaultValue = "${project.basedir}/schema")
+    /// Location of migration scripts. Defaults to the Maven-standard
+    /// `src/main/resources/schema/` so the same files serve both the annotation processor
+    /// (loaded via the classpath) and the packaging step. This path can still be overridden
+    /// in a POM for legacy layouts.
+    @Parameter(defaultValue = "${project.basedir}/src/main/resources/schema")
     private File schemaDirectory;
 
     @Parameter(property = "jbct.skip", defaultValue = "false")

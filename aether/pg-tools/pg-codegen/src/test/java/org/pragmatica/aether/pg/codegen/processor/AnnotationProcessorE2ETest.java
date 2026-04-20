@@ -369,6 +369,206 @@ class AnnotationProcessorE2ETest {
         }
     }
 
+    @Nested
+    class ArrayColumnMapping {
+        @Test
+        void queryMethod_withStringArrayField_generatesGetObjectAccessor() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                @PgSql
+                public interface TagRepo {
+
+                    record Post(long id, String[] tags) {}
+
+                    @Query("SELECT id, tags FROM posts WHERE id = :id")
+                    Promise<Option<Post>> findPost(long id);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/TagRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.TagRepoFactory");
+            assertThat(generated).isNotNull();
+            // Must NOT use getString for an array column (the bug)
+            assertThat(generated).doesNotContain("row.getString(\"tags\")");
+            // Must use getObject with a class literal
+            assertThat(generated).contains("getObject(\"tags\"");
+            assertThat(generated).contains("String[].class");
+        }
+
+        @Test
+        void queryMethod_withIntegerArrayField_usesBoxedElementClass() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                @PgSql
+                public interface ScoreRepo {
+
+                    record Rank(long id, Integer[] scores) {}
+
+                    @Query("SELECT id, scores FROM ranks WHERE id = :id")
+                    Promise<Option<Rank>> findRank(long id);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/ScoreRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.ScoreRepoFactory");
+            assertThat(generated).isNotNull();
+            assertThat(generated).doesNotContain("row.getString(\"scores\")");
+            assertThat(generated).contains("getObject(\"scores\"");
+            assertThat(generated).contains("Integer[].class");
+        }
+    }
+
+    @Nested
+    class ParameterTypeImports {
+        @Test
+        void queryMethod_withNonJavaLangParamTypes_generatesImports() throws Exception {
+            var source = """
+                package test;
+
+                import java.math.BigDecimal;
+                import java.time.Instant;
+                import java.util.UUID;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                @PgSql
+                public interface RichParamRepo {
+
+                    record EventRow(UUID id, BigDecimal amount, Instant occurredAt) {}
+
+                    @Query("SELECT id, amount, occurred_at FROM events_uuid WHERE id = :id AND amount > :threshold AND occurred_at >= :since")
+                    Promise<Option<EventRow>> findEvent(UUID id, BigDecimal threshold, Instant since);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/RichParamRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.RichParamRepoFactory");
+            assertThat(generated).isNotNull();
+            // Imports must be present for non-java.lang types used in signatures
+            assertThat(generated).contains("import java.math.BigDecimal;");
+            assertThat(generated).contains("import java.time.Instant;");
+            assertThat(generated).contains("import java.util.UUID;");
+            // Generated method signature uses simple names
+            assertThat(generated).contains("UUID id");
+            assertThat(generated).contains("BigDecimal threshold");
+            assertThat(generated).contains("Instant since");
+        }
+
+        @Test
+        void queryMethod_withRecordParam_generatesImportsForFieldTypes() throws Exception {
+            var source = """
+                package test;
+
+                import java.math.BigDecimal;
+                import java.util.UUID;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Unit;
+
+                @PgSql
+                public interface RecordParamRepo {
+
+                    record NewLedgerEntry(UUID accountId, BigDecimal amount) {}
+
+                    @Query("INSERT INTO ledger VALUES(:entry)")
+                    Promise<Unit> insert(NewLedgerEntry entry);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/RecordParamRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.RecordParamRepoFactory");
+            assertThat(generated).isNotNull();
+            assertThat(generated).contains("import java.math.BigDecimal;");
+            assertThat(generated).contains("import java.util.UUID;");
+        }
+    }
+
+    @Nested
+    class MetaAnnotationDiscovery {
+        @Test
+        void customQualifier_triggersFactoryGeneration() throws Exception {
+            var customQualifier = """
+                package test;
+
+                import org.pragmatica.aether.resource.db.PgSqlConnector;
+                import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+
+                import java.lang.annotation.ElementType;
+                import java.lang.annotation.Retention;
+                import java.lang.annotation.RetentionPolicy;
+                import java.lang.annotation.Target;
+
+                @ResourceQualifier(type = PgSqlConnector.class, config = "database")
+                @Retention(RetentionPolicy.RUNTIME)
+                @Target({ElementType.PARAMETER, ElementType.TYPE})
+                public @interface AnalyticsPgSql {}
+                """;
+
+            var repo = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                @AnalyticsPgSql
+                public interface AnalyticsRepo {
+
+                    record UserRow(long id, String name, String email) {}
+
+                    @Query("SELECT id, name, email FROM users WHERE id = :id")
+                    Promise<Option<UserRow>> findById(long id);
+                }
+                """;
+
+            var result = TestCompilationHelper.compileWithProcessor(
+                java.util.List.of(
+                    new TestCompilationHelper.SourceEntry("test/AnalyticsPgSql.java", customQualifier),
+                    new TestCompilationHelper.SourceEntry("test/AnalyticsRepo.java", repo)
+                ),
+                tempDir
+            );
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            // Despite the interface having no direct @PgSql, the processor picks it up via the
+            // meta-annotation and emits the factory.
+            var generated = result.generatedSource("test.AnalyticsRepoFactory");
+            assertThat(generated).isNotNull();
+            assertThat(generated).contains("AnalyticsRepoFactory");
+            assertThat(generated).contains("findById");
+        }
+    }
+
     // --- Delegate to shared helper ---
 
     private TestCompilationHelper.CompilationResult compileWithProcessor(String sourceCode, String fileName) throws Exception {

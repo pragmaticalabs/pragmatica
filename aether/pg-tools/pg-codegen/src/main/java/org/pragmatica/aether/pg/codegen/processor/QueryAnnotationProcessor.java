@@ -57,10 +57,23 @@ import java.util.regex.Pattern;
 ///
 /// Triggered by the presence of `@Query` annotations on interface methods.
 @Contract
-@SupportedAnnotationTypes("org.pragmatica.aether.resource.db.PgSql")
+@SupportedAnnotationTypes("*")
 @SupportedOptions({"pg.lint.severity", "pg.lint.disabled"})
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class QueryAnnotationProcessor extends AbstractProcessor {
+    /// Fully-qualified name of the built-in `@PgSql` annotation.
+    private static final String PG_SQL_ANNOTATION = "org.pragmatica.aether.resource.db.PgSql";
+
+    /// Fully-qualified name of the `@ResourceQualifier` meta-annotation.
+    private static final String RESOURCE_QUALIFIER_ANNOTATION =
+        "org.pragmatica.aether.slice.annotation.ResourceQualifier";
+
+    /// Canonical name (source form) of `PgSqlConnector` — used to recognize qualifiers tied to
+    /// PostgreSQL data sources. Kept as a string so that the processor does not require
+    /// the resource-api classes to be on its own classpath at annotation-processor discovery
+    /// time.
+    private static final String PG_SQL_CONNECTOR_TYPE =
+        "org.pragmatica.aether.resource.db.PgSqlConnector";
     private SchemaLoader schemaLoader;
     private LintRunner.LintOptions lintOptions;
     private final Set<String> migrationsLinted = new java.util.HashSet<>();
@@ -76,11 +89,70 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     @Override public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
         if ( roundEnv.processingOver()) {
         return false;}
-        for ( var annotation : annotations) {
-        for ( var element : roundEnv.getElementsAnnotatedWith(annotation)) {
-        if ( element.getKind() == ElementKind.INTERFACE) {
-        processInterface((TypeElement) element);}}}
-        return true;
+        var processed = new java.util.HashSet<String>();
+        for ( var element : roundEnv.getRootElements()) {
+            if ( element.getKind() != ElementKind.INTERFACE) {
+                continue;
+            }
+            var interfaceElement = (TypeElement) element;
+            if ( !shouldProcess(interfaceElement)) {
+                continue;
+            }
+            var fqn = interfaceElement.getQualifiedName().toString();
+            if ( processed.add(fqn)) {
+                processInterface(interfaceElement);
+            }
+        }
+        return false;
+    }
+
+    /// Returns true if the given interface should be picked up by the processor.
+    ///
+    /// An interface is eligible when it carries:
+    ///   - `@PgSql` directly, OR
+    ///   - a user-defined annotation whose own type is meta-annotated with
+    ///     `@ResourceQualifier(type = PgSqlConnector.class, ...)` (e.g. `@AnalyticsPgSql`).
+    private boolean shouldProcess(TypeElement interfaceElement) {
+        for ( var annotationMirror : interfaceElement.getAnnotationMirrors()) {
+            var annotationTypeName = annotationMirror.getAnnotationType()
+                                                     .asElement()
+                                                     .toString();
+            if ( PG_SQL_ANNOTATION.equals(annotationTypeName)) {
+                return true;
+            }
+            if ( hasPgSqlResourceQualifier(annotationMirror)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Checks whether the given annotation carries a `@ResourceQualifier` meta-annotation whose
+    /// `type()` attribute points at `PgSqlConnector`.
+    private boolean hasPgSqlResourceQualifier(javax.lang.model.element.AnnotationMirror annotationMirror) {
+        var annotationType = annotationMirror.getAnnotationType()
+                                             .asElement();
+        for ( var meta : annotationType.getAnnotationMirrors()) {
+            var metaTypeName = meta.getAnnotationType()
+                                   .asElement()
+                                   .toString();
+            if ( !RESOURCE_QUALIFIER_ANNOTATION.equals(metaTypeName)) {
+                continue;
+            }
+            var elementValues = processingEnv.getElementUtils()
+                                             .getElementValuesWithDefaults(meta);
+            for ( var entry : elementValues.entrySet()) {
+                if ( !"type".equals(entry.getKey().getSimpleName().toString())) {
+                    continue;
+                }
+                var value = entry.getValue().getValue();
+                if ( value instanceof javax.lang.model.type.TypeMirror tm
+                     && PG_SQL_CONNECTOR_TYPE.equals(tm.toString())) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private void processInterface(TypeElement interfaceElement) {
@@ -402,6 +474,9 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     private record AccessorInfo(String method, String typeArg){}
 
     private static AccessorInfo accessorInfoForJavaType(String javaTypeName) {
+        if ( javaTypeName.endsWith("[]") && !javaTypeName.equals("byte[]")) {
+            return arrayAccessorInfo(javaTypeName);
+        }
         return switch (javaTypeName) {case "long", "java.lang.Long" -> new AccessorInfo("getLong", "");case "int", "java.lang.Integer" -> new AccessorInfo("getInt",
                                                                                                                                                            "");case "double", "java.lang.Double" -> new AccessorInfo("getDouble",
                                                                                                                                                                                                                      "");case "boolean", "java.lang.Boolean" -> new AccessorInfo("getBoolean",
@@ -414,6 +489,31 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               "java.time.LocalDate.class");case "java.util.UUID" -> new AccessorInfo("getObject",
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      "java.util.UUID.class");default -> new AccessorInfo("getString",
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          "");};
+    }
+
+    /// Resolves the row accessor for an array-typed record field.
+    ///
+    /// The generator emits `row.getObject(column, Element[].class)` using boxed element types
+    /// (Integer, Long, etc.), which matches the array decoding contract exposed by the
+    /// postgres-async driver through the `RowAccessor` facade.
+    private static AccessorInfo arrayAccessorInfo(String javaTypeName) {
+        var elementType = javaTypeName.substring(0, javaTypeName.length() - 2);
+        var boxed = switch (elementType) {
+            case "int", "java.lang.Integer", "Integer" -> "Integer";
+            case "long", "java.lang.Long", "Long" -> "Long";
+            case "short", "java.lang.Short", "Short" -> "Short";
+            case "double", "java.lang.Double", "Double" -> "Double";
+            case "float", "java.lang.Float", "Float" -> "Float";
+            case "boolean", "java.lang.Boolean", "Boolean" -> "Boolean";
+            case "java.lang.String", "String" -> "String";
+            case "java.math.BigDecimal" -> "java.math.BigDecimal";
+            case "java.util.UUID" -> "java.util.UUID";
+            case "java.time.Instant" -> "java.time.Instant";
+            case "java.time.LocalDate" -> "java.time.LocalDate";
+            case "java.time.LocalDateTime" -> "java.time.LocalDateTime";
+            default -> elementType;
+        };
+        return new AccessorInfo("getObject", boxed + "[].class");
     }
 
     private static List<String> extractParamNames(ExecutableElement execElement) {
@@ -868,8 +968,71 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     private Set<String> collectImports(TypeElement interfaceElement, List<FactoryGenerator.MethodInfo> methods) {
         var imports = new LinkedHashSet<String>();
         for ( var enclosed : interfaceElement.getEnclosedElements()) {
-        if ( enclosed.getKind() == ElementKind.RECORD) {}}
+            if ( enclosed.getKind() != ElementKind.METHOD) {
+                continue;
+            }
+            var method = (ExecutableElement) enclosed;
+            collectTypeImports(method.getReturnType(), imports);
+            for ( var param : method.getParameters()) {
+                collectTypeImports(param.asType(), imports);
+                if ( isRecordType(param)) {
+                    for ( var field : extractRecordComponentFields(param)) {
+                        addImportForQualifiedName(field.typeName(), imports);
+                    }
+                }
+            }
+        }
         return imports;
+    }
+
+    /// Walks a type mirror, adding import FQNs for any declared types that are not in java.lang
+    /// and not members of the interface itself. Also descends into type arguments so that
+    /// `Promise<Option<BigDecimal>>` produces an import for java.math.BigDecimal.
+    private void collectTypeImports(javax.lang.model.type.TypeMirror mirror, Set<String> imports) {
+        if ( ! (mirror instanceof DeclaredType dt)) {
+            return;
+        }
+        var element = (TypeElement) dt.asElement();
+        addImportForQualifiedName(element.getQualifiedName().toString(), imports);
+        for ( var arg : dt.getTypeArguments()) {
+            collectTypeImports(arg, imports);
+        }
+    }
+
+    private static void addImportForQualifiedName(String typeName, Set<String> imports) {
+        if ( typeName == null || typeName.isEmpty()) {
+            return;
+        }
+        // Strip generic type arguments: "java.util.List<java.util.UUID>" -> walked separately via DeclaredType path
+        var baseName = typeName;
+        var generic = baseName.indexOf('<');
+        if ( generic >= 0) {
+            baseName = baseName.substring(0, generic);
+        }
+        // Strip array suffix: "java.util.UUID[]" -> "java.util.UUID"
+        while ( baseName.endsWith("[]")) {
+            baseName = baseName.substring(0, baseName.length() - 2);
+        }
+        baseName = baseName.trim();
+        if ( baseName.isEmpty()) {
+            return;
+        }
+        // Skip primitives and types already imported by FactoryGenerator header
+        if ( !baseName.contains(".")) {
+            return;
+        }
+        if ( baseName.startsWith("java.lang.") && baseName.indexOf('.', "java.lang.".length()) < 0) {
+            return;
+        }
+        // Skip pragmatica core types already provided by FactoryGenerator header
+        if ( baseName.equals("org.pragmatica.lang.Option")
+             || baseName.equals("org.pragmatica.lang.Unit")
+             || baseName.equals("org.pragmatica.lang.Result")
+             || baseName.equals("org.pragmatica.lang.Promise")
+             || baseName.equals("java.util.List")) {
+            return;
+        }
+        imports.add(baseName);
     }
 
     // --- SQL generation without schema (fallback) ---

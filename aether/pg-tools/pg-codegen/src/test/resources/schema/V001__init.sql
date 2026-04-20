@@ -25,3 +25,24 @@ CREATE TABLE items (
     id BIGINT PRIMARY KEY,
     name TEXT NOT NULL
 );
+
+CREATE TABLE posts (
+    id BIGINT PRIMARY KEY,
+    tags TEXT[]
+);
+
+CREATE TABLE ranks (
+    id BIGINT PRIMARY KEY,
+    scores INTEGER[]
+);
+
+CREATE TABLE ledger (
+    account_id UUID NOT NULL,
+    amount NUMERIC NOT NULL
+);
+
+CREATE TABLE events_uuid (
+    id UUID PRIMARY KEY,
+    amount NUMERIC NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL
+);
