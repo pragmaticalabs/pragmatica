@@ -65,7 +65,7 @@ public interface NodeSnapshotCache extends GenerationSnapshotSource {
 
     private static MembershipView toMembershipView(ClusterGenerationSnapshot snapshot) {
         var coreMembers = snapshot.coreMembers();
-        return new SnapshotMembershipView(coreMembers, snapshot.desiredCoreSize());
+        return new SnapshotMembershipView(coreMembers, snapshot.desiredCoreSize(), snapshot.nodesWithoutSlices());
     }
 
     static NodeSnapshotCache nodeSnapshotCache(NodeId self) {
@@ -154,7 +154,9 @@ record NodeSnapshotCacheRecord(NodeId self,
 /// Narrow adapter that exposes a `ClusterGenerationSnapshot` as the consensus-layer
 /// `MembershipView` contract (package-private on purpose — construction is the cache's
 /// responsibility).
-record SnapshotMembershipView(Map<NodeId, CoreMember> coreMembers, int desiredCoreSize) implements MembershipView {
+record SnapshotMembershipView(Map<NodeId, CoreMember> coreMembers,
+                              int desiredCoreSize,
+                              Set<NodeId> nodesWithoutSlices) implements MembershipView {
     @Override public Set<NodeId> coreMemberIds() {
         return coreMembers.keySet();
     }

@@ -148,6 +148,7 @@ class HealthReconcilerHealthDrivenRemovalTest {
                                                     withMembers.reason(),
                                                     withMembers.desiredCoreSize(),
                                                     withMembers.coreMembers(),
+                                                    withMembers.nodesWithoutSlices(),
                                                     withMembers.communities(),
                                                     partitions,
                                                     withMembers.derivedMode(),

@@ -9,6 +9,7 @@ import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.serialization.Codec;
 
 import java.util.Map;
+import java.util.Set;
 
 
 /// Ephemeral, leader-projected view of the cluster at a specific generation epoch.
@@ -21,6 +22,7 @@ import java.util.Map;
                                                GenerationReason reason,
                                                int desiredCoreSize,
                                                Map<NodeId, CoreMember> coreMembers,
+                                               Set<NodeId> nodesWithoutSlices,
                                                Map<String, CommunitySummary> communities,
                                                Map<String, PartitionOwner> partitions,
                                                ClusterMode derivedMode,
@@ -28,6 +30,9 @@ import java.util.Map;
                                                String quiescenceDetail) {
     public ClusterGenerationSnapshot {
         coreMembers = Map.copyOf(coreMembers);
+        nodesWithoutSlices = nodesWithoutSlices == null
+                            ? Set.of()
+                            : Set.copyOf(nodesWithoutSlices);
         communities = Map.copyOf(communities);
         partitions = Map.copyOf(partitions);
     }
@@ -46,11 +51,36 @@ import java.util.Map;
                                                                       ClusterMode derivedMode,
                                                                       ClusterQuiescence quiescence,
                                                                       String quiescenceDetail) {
+        return clusterGenerationSnapshot(epoch,
+                                         committedAt,
+                                         reason,
+                                         desiredCoreSize,
+                                         coreMembers,
+                                         Set.of(),
+                                         communities,
+                                         partitions,
+                                         derivedMode,
+                                         quiescence,
+                                         quiescenceDetail);
+    }
+
+    public static ClusterGenerationSnapshot clusterGenerationSnapshot(Epoch epoch,
+                                                                      HlcTimestamp committedAt,
+                                                                      GenerationReason reason,
+                                                                      int desiredCoreSize,
+                                                                      Map<NodeId, CoreMember> coreMembers,
+                                                                      Set<NodeId> nodesWithoutSlices,
+                                                                      Map<String, CommunitySummary> communities,
+                                                                      Map<String, PartitionOwner> partitions,
+                                                                      ClusterMode derivedMode,
+                                                                      ClusterQuiescence quiescence,
+                                                                      String quiescenceDetail) {
         return new ClusterGenerationSnapshot(epoch,
                                              committedAt,
                                              reason,
                                              desiredCoreSize,
                                              coreMembers,
+                                             nodesWithoutSlices,
                                              communities,
                                              partitions,
                                              derivedMode,
@@ -64,6 +94,7 @@ import java.util.Map;
                                              GenerationReason.LEADER_ELECTED,
                                              0,
                                              Map.of(),
+                                             Set.of(),
                                              Map.of(),
                                              Map.of(),
                                              ClusterMode.CORE_ONLY,
@@ -77,6 +108,7 @@ import java.util.Map;
                                              newReason,
                                              desiredCoreSize,
                                              coreMembers,
+                                             nodesWithoutSlices,
                                              communities,
                                              partitions,
                                              derivedMode,
@@ -90,6 +122,7 @@ import java.util.Map;
                                              reason,
                                              desiredCoreSize,
                                              coreMembers,
+                                             nodesWithoutSlices,
                                              communities,
                                              partitions,
                                              derivedMode,
@@ -103,6 +136,7 @@ import java.util.Map;
                                              reason,
                                              desiredCoreSize,
                                              newCoreMembers,
+                                             nodesWithoutSlices,
                                              communities,
                                              partitions,
                                              derivedMode,
@@ -116,6 +150,21 @@ import java.util.Map;
                                              reason,
                                              newDesiredCoreSize,
                                              coreMembers,
+                                             nodesWithoutSlices,
+                                             communities,
+                                             partitions,
+                                             derivedMode,
+                                             quiescence,
+                                             quiescenceDetail);
+    }
+
+    public ClusterGenerationSnapshot withNodesWithoutSlices(Set<NodeId> newNodesWithoutSlices) {
+        return new ClusterGenerationSnapshot(epoch,
+                                             committedAt,
+                                             reason,
+                                             desiredCoreSize,
+                                             coreMembers,
+                                             newNodesWithoutSlices,
                                              communities,
                                              partitions,
                                              derivedMode,

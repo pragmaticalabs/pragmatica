@@ -379,7 +379,10 @@ import static org.pragmatica.lang.Unit.unit;
         if (!lifecycleManager.isCloudManaged()) {
             var next = new NodeReconcilerState.Reconciling(desired, actual, List.of(), List.of(), Instant.now());
             if (!stateRef.compareAndSet(current, next)) {
-                log.warn("CTM: state CAS lost (deficit, no-cloud) — observed={}, expected={}, next={}", stateRef.get(), current, next);
+                log.warn("CTM: state CAS lost (deficit, no-cloud) — observed={}, expected={}, next={}",
+                         stateRef.get(),
+                         current,
+                         next);
                 return;
             }
             log.debug("CTM: Cluster deficit of {} but no ComputeProvider, cannot auto-provision", deficit);
@@ -392,7 +395,10 @@ import static org.pragmatica.lang.Unit.unit;
                                                        List.of(),
                                                        Instant.now());
         if (!stateRef.compareAndSet(current, next)) {
-            log.warn("CTM: state CAS lost (deficit, provision) — observed={}, expected={}, next={}", stateRef.get(), current, next);
+            log.warn("CTM: state CAS lost (deficit, provision) — observed={}, expected={}, next={}",
+                     stateRef.get(),
+                     current,
+                     next);
             return;
         }
         log.info("CTM: Cluster at {}/{}, provisioning {} replacement(s)", actual, desired, batchSize);
@@ -418,7 +424,10 @@ import static org.pragmatica.lang.Unit.unit;
         }
         var next = new NodeReconcilerState.Reconciling(configured, actual, List.of(), nodesToTerminate, Instant.now());
         if (!stateRef.compareAndSet(current, next)) {
-            log.warn("CTM: state CAS lost (surplus, terminate) — observed={}, expected={}, next={}", stateRef.get(), current, next);
+            log.warn("CTM: state CAS lost (surplus, terminate) — observed={}, expected={}, next={}",
+                     stateRef.get(),
+                     current,
+                     next);
             return;
         }
         log.info("CTM: Cluster at {}/{}, terminating {} surplus node(s): {}",
@@ -436,7 +445,7 @@ import static org.pragmatica.lang.Unit.unit;
                                            .filter(id -> !id.equals(selfId))
                                            .filter(ctmOwned::contains)
                                            .toList();
-        var emptyNodes = deploymentMap.nodesWithoutSlices(activeNodes);
+        var emptyNodes = snapshotNodesWithoutSlices(activeNodes);
         var hostCounts = buildHostCounts(activeNodes);
         var sortedCandidates = activeNodes.stream().sorted(surplusNodeComparator(emptyNodes, hostCounts, ctmOwned))
                                                  .toList();
@@ -447,6 +456,13 @@ import static org.pragmatica.lang.Unit.unit;
     private Set<NodeId> ctmProvisionedNodeIds() {
         return snapshotSource.currentMembershipView().map(MembershipView::ctmProvisionedNodeIds)
                                                    .or(Set.of());
+    }
+
+    private Set<NodeId> snapshotNodesWithoutSlices(List<NodeId> activeNodes) {
+        var fromSnapshot = snapshotSource.currentMembershipView().map(MembershipView::nodesWithoutSlices)
+                                                               .or(Set.of());
+        return activeNodes.stream().filter(fromSnapshot::contains)
+                                 .collect(Collectors.toUnmodifiableSet());
     }
 
     private Map<String, Long> buildHostCounts(List<NodeId> activeNodes) {

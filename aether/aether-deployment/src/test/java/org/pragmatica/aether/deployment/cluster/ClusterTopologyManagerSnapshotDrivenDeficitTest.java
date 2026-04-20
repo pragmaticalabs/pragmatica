@@ -213,6 +213,39 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
     }
 
     @Test
+    void reconcile_prefersEmptyNodesForTermination_whenSnapshotReportsNodesWithoutSlices() {
+        // PEER_A and PEER_B both CTM-provisioned; only PEER_B has no slices per snapshot.
+        // The comparator prefers empty nodes, so PEER_B must be terminated ahead of PEER_A
+        // when surplus == 1.
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            6,
+                                            5,
+                                            Set.of(PEER_A, PEER_B),
+                                            Set.of(PEER_B)),
+                               1L);
+        ctm.activate();
+        ctm.onTopologyChange(org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        assertThat(lifecycleManager.terminateCount.get()).isEqualTo(1);
+        assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_B);
+    }
+
+    @Test
+    void reconcile_emptyNodeOutsideCtmProvisionedSet_isNotTerminated() {
+        // PEER_A reported as empty by snapshot but NOT CTM-provisioned — hard filter excludes it.
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            6,
+                                            5,
+                                            Set.of(),
+                                            Set.of(PEER_A)),
+                               1L);
+        ctm.activate();
+        ctm.onTopologyChange(org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        assertThat(lifecycleManager.terminateCount.get()).isZero();
+    }
+
+    @Test
     void reconcile_observesNewSnapshotTerm_onSubsequentTrigger() {
         snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
@@ -237,13 +270,22 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                             Set<NodeId> onDutyMemberIds,
                             int healthyOnDutyCount,
                             int desiredCoreSize,
-                            Set<NodeId> ctmProvisionedNodeIds) implements MembershipView {
+                            Set<NodeId> ctmProvisionedNodeIds,
+                            Set<NodeId> nodesWithoutSlices) implements MembershipView {
+        StubView(Set<NodeId> coreMemberIds,
+                 Set<NodeId> onDutyMemberIds,
+                 int healthyOnDutyCount,
+                 int desiredCoreSize,
+                 Set<NodeId> ctmProvisionedNodeIds) {
+            this(coreMemberIds, onDutyMemberIds, healthyOnDutyCount, desiredCoreSize, ctmProvisionedNodeIds, Set.of());
+        }
+
         static StubView stubView(Set<NodeId> coreMemberIds,
                                  Set<NodeId> onDutyMemberIds,
                                  int healthyOnDutyCount,
                                  int desiredCoreSize) {
             // Default: all core members are CTM-provisioned (preserves existing test semantics).
-            return new StubView(coreMemberIds, onDutyMemberIds, healthyOnDutyCount, desiredCoreSize, coreMemberIds);
+            return new StubView(coreMemberIds, onDutyMemberIds, healthyOnDutyCount, desiredCoreSize, coreMemberIds, Set.of());
         }
     }
 

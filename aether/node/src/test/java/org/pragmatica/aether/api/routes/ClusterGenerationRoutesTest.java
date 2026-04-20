@@ -23,6 +23,7 @@ import org.pragmatica.lang.Option;
 
 import java.lang.reflect.Proxy;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -61,6 +62,7 @@ class ClusterGenerationRoutesTest {
                                                          GenerationReason.PERIODIC_REFRESH,
                                                          5,
                                                          Map.of(NODE_1, member),
+                                                         Set.of(),
                                                          Map.of(),
                                                          Map.of(),
                                                          ClusterMode.CORE_ONLY,

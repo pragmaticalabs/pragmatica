@@ -62,4 +62,19 @@ public interface MembershipView {
     default Set<NodeId> ctmProvisionedNodeIds() {
         return Set.of();
     }
+
+    /// Core-member node IDs that currently have no `NodeArtifactKey` atoms — i.e. nodes
+    /// that carry no deployed slices. Used by CTM to prefer empty nodes as termination
+    /// candidates under scale-down.
+    ///
+    /// Projected once during snapshot re-projection from committed `NodeArtifactKey`
+    /// atoms (see `aether/docs/specs/cluster-generation-spec.md` §6). Reading this
+    /// through the snapshot guarantees consistency with `coreMemberIds` at the same
+    /// epoch — independent `DeploymentMap` subscribers can lag behind the snapshot.
+    ///
+    /// Default implementation returns the empty set — safe-by-default for views that
+    /// do not carry artifact-presence metadata.
+    default Set<NodeId> nodesWithoutSlices() {
+        return Set.of();
+    }
 }

@@ -15,7 +15,6 @@ import org.pragmatica.consensus.NodeId;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
@@ -34,7 +33,6 @@ public sealed interface DeploymentMap {
     Map<NodeId, SliceState> byArtifact(Artifact artifact);
     List<SliceDeploymentInfo> allDeployments();
     int deploymentCount();
-    Set<NodeId> nodesWithoutSlices(List<NodeId> activeNodes);
 
     record SliceDeploymentInfo(String artifact, SliceState aggregateState, List<SliceInstanceInfo> instances){}
 
@@ -91,14 +89,6 @@ final class IndexedDeploymentMap implements DeploymentMap {
                                  .map(key -> key.artifact().asString())
                                  .distinct()
                                  .count();
-    }
-
-    @Override public Set<NodeId> nodesWithoutSlices(List<NodeId> activeNodes) {
-        var nodesWithSlices = index.keySet().stream()
-                                          .map(SliceNodeKey::nodeId)
-                                          .collect(Collectors.toSet());
-        return activeNodes.stream().filter(nodeId -> !nodesWithSlices.contains(nodeId))
-                                 .collect(Collectors.toSet());
     }
 
     private static SliceDeploymentInfo toSliceDeploymentInfo(Map.Entry<String, List<Map.Entry<SliceNodeKey, SliceState>>> group) {

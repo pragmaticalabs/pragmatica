@@ -81,6 +81,7 @@ class ClusterTopologyRoutesCoreCountTest {
                                                          GenerationReason.PERIODIC_REFRESH,
                                                          3,
                                                          Map.of(NODE_1, member1, NODE_2, member2, NODE_3, member3),
+                                                         Set.of(),
                                                          Map.of(),
                                                          Map.of(),
                                                          ClusterMode.CORE_ONLY,

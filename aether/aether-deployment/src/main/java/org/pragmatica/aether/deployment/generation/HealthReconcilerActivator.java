@@ -14,6 +14,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SpokesmanKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -37,6 +38,7 @@ import org.pragmatica.lang.Result;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -321,6 +323,7 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
         var governors = collectGovernors(kv);
         var partitions = collectPartitions(kv);
         var spokesmen = collectSpokesmen(kv);
+        var nodesWithArtifacts = collectNodesWithArtifacts(kv);
         var term = rabiaTermSupplier.get();
         var desiredCoreSize = collectDesiredCoreSize(kv).or(lifecycles.size());
         var input = ClusterGenerationProjector.ProjectionInput.projectionInput(term,
@@ -334,7 +337,8 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
                                                                                spokesmen,
                                                                                Map.<NodeId, Epoch>of(),
                                                                                Map.<String, Epoch>of(),
-                                                                               Map.of());
+                                                                               Map.of(),
+                                                                               nodesWithArtifacts);
         return projector.project(input);
     }
 
@@ -369,6 +373,13 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
                           .filter(entry -> entry.getKey() instanceof SpokesmanKey && entry.getValue() instanceof SpokesmanValue)
                           .collect(Collectors.toUnmodifiableMap(entry -> ((SpokesmanKey) entry.getKey()).coreNodeId(),
                                                                 entry -> (SpokesmanValue) entry.getValue()));
+    }
+
+    private static Set<NodeId> collectNodesWithArtifacts(Map<AetherKey, AetherValue> kv) {
+        return kv.keySet().stream()
+                        .filter(key -> key instanceof NodeArtifactKey)
+                        .map(key -> ((NodeArtifactKey) key).nodeId())
+                        .collect(Collectors.toUnmodifiableSet());
     }
 
     @Contract@Override public void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> notification) {

@@ -23,6 +23,7 @@ import org.pragmatica.hlc.HlcTimestamp;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -492,6 +493,134 @@ class ClusterGenerationProjectorTest {
             var snapshot = PROJECTOR.project(input);
 
             assertThat(snapshot.desiredCoreSize()).isEqualTo(5);
+        }
+    }
+
+    @Nested
+    class NodesWithoutSlices {
+        @Test
+        void project_coreMemberWithoutArtifact_appearsInNodesWithoutSlices() {
+            var lifecycles = Map.of(NODE_A,
+                                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, "host-a", 9001),
+                                    NODE_B,
+                                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, "host-b", 9002));
+            var input = ProjectionInput.projectionInput(1L,
+                                                         0L,
+                                                         3,
+                                                         GenerationReason.LEADER_ELECTED,
+                                                         HlcTimestamp.ZERO,
+                                                         lifecycles,
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Set.of(NODE_A));
+
+            var snapshot = PROJECTOR.project(input);
+
+            assertThat(snapshot.nodesWithoutSlices()).containsExactly(NODE_B);
+        }
+
+        @Test
+        void project_allCoreMembersWithArtifacts_nodesWithoutSlicesIsEmpty() {
+            var lifecycles = Map.of(NODE_A,
+                                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, "host-a", 9001),
+                                    NODE_B,
+                                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, "host-b", 9002));
+            var input = ProjectionInput.projectionInput(1L,
+                                                         0L,
+                                                         3,
+                                                         GenerationReason.LEADER_ELECTED,
+                                                         HlcTimestamp.ZERO,
+                                                         lifecycles,
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Set.of(NODE_A, NODE_B));
+
+            var snapshot = PROJECTOR.project(input);
+
+            assertThat(snapshot.nodesWithoutSlices()).isEmpty();
+        }
+
+        @Test
+        void project_noCoreMembersHaveArtifacts_allAppearInNodesWithoutSlices() {
+            var lifecycles = Map.of(NODE_A,
+                                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, "host-a", 9001),
+                                    NODE_B,
+                                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, "host-b", 9002),
+                                    NODE_C,
+                                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, "host-c", 9003));
+            var input = ProjectionInput.projectionInput(1L,
+                                                         0L,
+                                                         3,
+                                                         GenerationReason.LEADER_ELECTED,
+                                                         HlcTimestamp.ZERO,
+                                                         lifecycles,
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Set.of());
+
+            var snapshot = PROJECTOR.project(input);
+
+            assertThat(snapshot.nodesWithoutSlices()).containsExactlyInAnyOrder(NODE_A, NODE_B, NODE_C);
+        }
+
+        @Test
+        void project_artifactHolderNotInCoreMembers_doesNotPolluteResult() {
+            // Scenario: NodeArtifactKey lingers for a node that has been evicted from coreMembers.
+            // Only coreMembers contribute to the derived set; NODE_B should not appear anywhere.
+            var lifecycles = Map.of(NODE_A,
+                                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, "host-a", 9001));
+            var input = ProjectionInput.projectionInput(1L,
+                                                         0L,
+                                                         3,
+                                                         GenerationReason.LEADER_ELECTED,
+                                                         HlcTimestamp.ZERO,
+                                                         lifecycles,
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Set.of(NODE_B));
+
+            var snapshot = PROJECTOR.project(input);
+
+            assertThat(snapshot.nodesWithoutSlices()).containsExactly(NODE_A);
+        }
+
+        @Test
+        void project_defaultNodesWithArtifacts_backwardCompatOverloadTreatedAsEmpty() {
+            var lifecycles = Map.of(NODE_A,
+                                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, "host-a", 9001));
+            // 12-arg overload (no nodesWithArtifacts) must behave as if every core member has no artifact.
+            var input = ProjectionInput.projectionInput(1L,
+                                                         0L,
+                                                         3,
+                                                         GenerationReason.LEADER_ELECTED,
+                                                         HlcTimestamp.ZERO,
+                                                         lifecycles,
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of(),
+                                                         Map.of());
+
+            var snapshot = PROJECTOR.project(input);
+
+            assertThat(snapshot.nodesWithoutSlices()).containsExactly(NODE_A);
         }
     }
 }

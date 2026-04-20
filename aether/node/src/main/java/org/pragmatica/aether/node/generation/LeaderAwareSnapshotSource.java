@@ -47,6 +47,8 @@ record LeaderAwareSnapshotSourceRecord(BooleanSupplier isLeader,
     }
 
     private static MembershipView toMembershipView(ClusterGenerationSnapshot snapshot) {
-        return new SnapshotMembershipView(snapshot.coreMembers(), snapshot.desiredCoreSize());
+        return new SnapshotMembershipView(snapshot.coreMembers(),
+                                          snapshot.desiredCoreSize(),
+                                          snapshot.nodesWithoutSlices());
     }
 }

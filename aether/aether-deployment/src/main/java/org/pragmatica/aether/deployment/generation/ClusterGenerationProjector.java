@@ -51,7 +51,8 @@ public interface ClusterGenerationProjector {
                            Map<NodeId, SpokesmanValue> spokesmen,
                            Map<NodeId, Epoch> lastSeenPerNode,
                            Map<String, Epoch> lastAckPerCommunity,
-                           Map<String, SliceTargetValue> sliceTargets) {
+                           Map<String, SliceTargetValue> sliceTargets,
+                           Set<NodeId> nodesWithArtifacts) {
         public ProjectionInput {
             lifecycles = Map.copyOf(lifecycles);
             governors = Map.copyOf(governors);
@@ -60,6 +61,9 @@ public interface ClusterGenerationProjector {
             lastSeenPerNode = Map.copyOf(lastSeenPerNode);
             lastAckPerCommunity = Map.copyOf(lastAckPerCommunity);
             sliceTargets = Map.copyOf(sliceTargets);
+            nodesWithArtifacts = nodesWithArtifacts == null
+                                ? Set.of()
+                                : Set.copyOf(nodesWithArtifacts);
         }
 
         public static ProjectionInput projectionInput(long rabiaTerm,
@@ -74,6 +78,34 @@ public interface ClusterGenerationProjector {
                                                       Map<NodeId, Epoch> lastSeenPerNode,
                                                       Map<String, Epoch> lastAckPerCommunity,
                                                       Map<String, SliceTargetValue> sliceTargets) {
+            return projectionInput(rabiaTerm,
+                                   localCounter,
+                                   desiredCoreSize,
+                                   reason,
+                                   now,
+                                   lifecycles,
+                                   governors,
+                                   partitions,
+                                   spokesmen,
+                                   lastSeenPerNode,
+                                   lastAckPerCommunity,
+                                   sliceTargets,
+                                   Set.of());
+        }
+
+        public static ProjectionInput projectionInput(long rabiaTerm,
+                                                      long localCounter,
+                                                      int desiredCoreSize,
+                                                      GenerationReason reason,
+                                                      HlcTimestamp now,
+                                                      Map<NodeId, NodeLifecycleValue> lifecycles,
+                                                      Map<String, GovernorAnnouncementValue> governors,
+                                                      Map<String, DhtPartitionOwnershipValue> partitions,
+                                                      Map<NodeId, SpokesmanValue> spokesmen,
+                                                      Map<NodeId, Epoch> lastSeenPerNode,
+                                                      Map<String, Epoch> lastAckPerCommunity,
+                                                      Map<String, SliceTargetValue> sliceTargets,
+                                                      Set<NodeId> nodesWithArtifacts) {
             return new ProjectionInput(rabiaTerm,
                                        localCounter,
                                        desiredCoreSize,
@@ -85,7 +117,8 @@ public interface ClusterGenerationProjector {
                                        spokesmen,
                                        lastSeenPerNode,
                                        lastAckPerCommunity,
-                                       sliceTargets);
+                                       sliceTargets,
+                                       nodesWithArtifacts);
         }
     }
 
@@ -101,6 +134,7 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
     @Override public ClusterGenerationSnapshot project(ProjectionInput input) {
         var epoch = Epoch.epoch(input.rabiaTerm(), input.localCounter());
         var coreMembers = projectCoreMembers(input);
+        var nodesWithoutSlices = deriveNodesWithoutSlices(coreMembers.keySet(), input.nodesWithArtifacts());
         var spokesmanIndex = buildSpokesmanIndex(input.spokesmen());
         var communities = projectCommunities(input, spokesmanIndex);
         var partitions = projectPartitions(input);
@@ -112,11 +146,17 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
                                          input.reason(),
                                          input.desiredCoreSize(),
                                          coreMembers,
+                                         nodesWithoutSlices,
                                          communities,
                                          partitions,
                                          mode,
                                          cluster.quiescence(),
                                          cluster.detail());
+    }
+
+    private static Set<NodeId> deriveNodesWithoutSlices(Set<NodeId> coreMemberIds, Set<NodeId> nodesWithArtifacts) {
+        return coreMemberIds.stream().filter(nodeId -> !nodesWithArtifacts.contains(nodeId))
+                                   .collect(Collectors.toUnmodifiableSet());
     }
 
     private static Map<NodeId, CoreMember> projectCoreMembers(ProjectionInput input) {
