@@ -51,4 +51,15 @@ public interface MembershipView {
 
     /// Operator-declared target core size at the snapshot's epoch.
     int desiredCoreSize();
+
+    /// Node IDs whose lifecycle atom was authored by the Cluster Topology Manager
+    /// (i.e. provisioned through a cloud `ComputeProvider`). Only these nodes are
+    /// eligible for CTM-driven auto-termination. Manually-seeded and unknown-source
+    /// nodes are excluded.
+    ///
+    /// Default implementation returns the empty set — safe-by-default for views that
+    /// do not carry per-member provisioning metadata.
+    default Set<NodeId> ctmProvisionedNodeIds() {
+        return Set.of();
+    }
 }

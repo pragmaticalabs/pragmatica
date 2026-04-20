@@ -1428,11 +1428,23 @@ public interface NodeDeploymentManager {
             private void writeLifecycleOnDuty(AetherKey.NodeLifecycleKey lifecycleKey, int attempt) {
                 var value = AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY,
                                                                               selfAddress().host(),
-                                                                              selfAddress().port());
+                                                                              selfAddress().port(),
+                                                                              detectProvisioningSource());
                 cluster().apply(List.of(new KVCommand.Put<>(lifecycleKey, value)))
-                       .onSuccess(_ -> log.info("Node {} registered lifecycle state: ON_DUTY",
-                                                self().id()))
+                       .onSuccess(_ -> log.info("Node {} registered lifecycle state: ON_DUTY (source={})",
+                                                self().id(),
+                                                value.provisioningSource()))
                        .onFailure(cause -> retryLifecycleOnDuty(lifecycleKey, attempt, cause));
+            }
+
+            private static AetherValue.ProvisioningSource detectProvisioningSource() {
+                var raw = System.getenv("AETHER_PROVISIONED_BY");
+                if (raw == null || raw.isBlank()) {return AetherValue.ProvisioningSource.MANUAL;}
+                return switch (raw.trim().toLowerCase()){
+                    case "ctm" -> AetherValue.ProvisioningSource.CTM;
+                    case "manual" -> AetherValue.ProvisioningSource.MANUAL;
+                    default -> AetherValue.ProvisioningSource.UNKNOWN;
+                };
             }
 
             private void retryLifecycleOnDuty(AetherKey.NodeLifecycleKey lifecycleKey, int attempt, Cause cause) {

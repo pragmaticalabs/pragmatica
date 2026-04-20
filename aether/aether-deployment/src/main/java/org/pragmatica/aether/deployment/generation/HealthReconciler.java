@@ -524,7 +524,8 @@ record HealthReconcilerRecord(NodeId self,
                                                              member.host(),
                                                              member.port(),
                                                              snapshotRef.get().epoch(),
-                                                             hlcClock.now());
+                                                             hlcClock.now(),
+                                                             member.provisioningSource());
         var commands = List.<KVCommand<AetherKey>>of(new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId),
                                                                                                draining));
         applyCommandsAndBump(commands, reason);
@@ -561,7 +562,8 @@ record HealthReconcilerRecord(NodeId self,
                                                               member.host(),
                                                               member.port(),
                                                               snapshotRef.get().epoch(),
-                                                              hlcClock.now());
+                                                              hlcClock.now(),
+                                                              member.provisioningSource());
         var commands = new ArrayList<KVCommand<AetherKey>>();
         commands.add(new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId), leftValue));
         commands.addAll(handlePartitionsOf(nodeId));

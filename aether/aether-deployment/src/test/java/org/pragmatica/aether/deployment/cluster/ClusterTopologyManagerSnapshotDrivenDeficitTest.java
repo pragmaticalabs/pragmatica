@@ -47,16 +47,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// the CTM has no local `configuredSize`/`desiredSize` caches — everything flows
 /// through the snapshot, and `setDesiredSize` is a thin `ClusterConfigValue` write.
 class ClusterTopologyManagerSnapshotDrivenDeficitTest {
-    // NodeIds prefixed with `aether-core-` mark CTM-provisioned nodes (see
-    // `ClusterTopologyManagerRecord.isProvisionedByCtm`). Termination candidates must be
-    // provisioned — the hard filter excludes fixtures that the compute provider cannot
-    // actually terminate. Test peers use the provisioned-style prefix so surplus selection
-    // admits them as candidates.
-    private static final NodeId SELF = nodeId("aether-core-self").unwrap();
-    private static final NodeId PEER_A = nodeId("aether-core-a").unwrap();
-    private static final NodeId PEER_B = nodeId("aether-core-b").unwrap();
-    private static final NodeId PEER_C = nodeId("aether-core-c").unwrap();
-    private static final NodeId PEER_D = nodeId("aether-core-d").unwrap();
+    // Termination candidates must be CTM-provisioned — the hard filter
+    // (`MembershipView::ctmProvisionedNodeIds`) excludes fixtures that the compute provider
+    // cannot actually terminate. The stub view's `ctmProvisionedNodeIds` determines
+    // eligibility; node-id prefixes no longer drive this decision.
+    private static final NodeId SELF = nodeId("node-self").unwrap();
+    private static final NodeId PEER_A = nodeId("node-a").unwrap();
+    private static final NodeId PEER_B = nodeId("node-b").unwrap();
+    private static final NodeId PEER_C = nodeId("node-c").unwrap();
+    private static final NodeId PEER_D = nodeId("node-d").unwrap();
 
     private static final NodeInfo INFO_SELF = NodeInfo.nodeInfo(SELF, NodeAddress.nodeAddress("localhost", 5000).unwrap());
     private static final NodeInfo INFO_A = NodeInfo.nodeInfo(PEER_A, NodeAddress.nodeAddress("localhost", 5001).unwrap());
@@ -98,7 +97,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
     @Test
     void reconcile_provisionsImmediately_whenSnapshotReportsDeficit() {
         // Snapshot reports only 4 healthy ON_DUTY out of desired 5
-        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             Set.of(SELF, PEER_A, PEER_B, PEER_C),
                                             4,
                                             5),
@@ -114,7 +113,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
     @Test
     void reconcile_doesNotProvision_whenSnapshotReportsConverged() {
         // Snapshot reports all 5 healthy ON_DUTY at the desired core size of 5
-        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             5,
                                             5),
@@ -127,7 +126,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
     @Test
     void reconcile_terminatesSurplus_whenSnapshotReportsOverCapacity() {
         // Snapshot reports 7 healthy ON_DUTY but desired core size is 5
-        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             7,
                                             5),
@@ -140,7 +139,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
 
     @Test
     void setDesiredSize_writesClusterConfigValueAtom_withIncrementedVersion() {
-        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             5,
                                             5),
@@ -157,7 +156,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
 
     @Test
     void setDesiredSize_belowQuorum_rejectedWithoutAtomWrite() {
-        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             5,
                                             5),
@@ -169,8 +168,53 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
     }
 
     @Test
-    void reconcile_observesNewSnapshotTerm_onSubsequentTrigger() {
+    void reconcile_terminatesOnlyCtmProvisionedSurplus_whenSurplusIsManual() {
+        // 7 healthy members but only SELF is CTM-provisioned; the rest are MANUAL.
+        // SELF is excluded (self cannot be terminated), so no eligible candidates remain.
         snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            7,
+                                            5,
+                                            Set.of(SELF)),
+                               1L);
+        ctm.activate();
+        ctm.onTopologyChange(org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        assertThat(lifecycleManager.terminateCount.get()).isZero();
+    }
+
+    @Test
+    void reconcile_terminatesCtmProvisionedSurplus_whenCandidatesAreCtm() {
+        // 7 healthy members; PEER_A and PEER_B are CTM-provisioned candidates.
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            7,
+                                            5,
+                                            Set.of(PEER_A, PEER_B)),
+                               1L);
+        ctm.activate();
+        ctm.onTopologyChange(org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        assertThat(lifecycleManager.terminateCount.get()).isGreaterThanOrEqualTo(1);
+        assertThat(lifecycleManager.terminatedNodeIds()).isSubsetOf(Set.of(PEER_A, PEER_B));
+    }
+
+    @Test
+    void reconcile_doesNotTerminate_whenAllCandidatesUnknownProvisioningSource() {
+        // Empty CTM-provisioned set models an UNKNOWN / legacy projection —
+        // selection must refuse to terminate anything (conservative).
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            7,
+                                            5,
+                                            Set.of()),
+                               1L);
+        ctm.activate();
+        ctm.onTopologyChange(org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        assertThat(lifecycleManager.terminateCount.get()).isZero();
+    }
+
+    @Test
+    void reconcile_observesNewSnapshotTerm_onSubsequentTrigger() {
+        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             5,
                                             5),
@@ -179,7 +223,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
         assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Converged.class);
 
         // Snapshot advances to a new term reporting deficit
-        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             Set.of(SELF, PEER_A, PEER_B),
                                             3,
                                             5),
@@ -192,7 +236,16 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
     private record StubView(Set<NodeId> coreMemberIds,
                             Set<NodeId> onDutyMemberIds,
                             int healthyOnDutyCount,
-                            int desiredCoreSize) implements MembershipView {}
+                            int desiredCoreSize,
+                            Set<NodeId> ctmProvisionedNodeIds) implements MembershipView {
+        static StubView stubView(Set<NodeId> coreMemberIds,
+                                 Set<NodeId> onDutyMemberIds,
+                                 int healthyOnDutyCount,
+                                 int desiredCoreSize) {
+            // Default: all core members are CTM-provisioned (preserves existing test semantics).
+            return new StubView(coreMemberIds, onDutyMemberIds, healthyOnDutyCount, desiredCoreSize, coreMemberIds);
+        }
+    }
 
     private static final class StubSnapshotSource implements GenerationSnapshotSource {
         private final AtomicReference<Option<MembershipView>> view = new AtomicReference<>(Option.none());
@@ -254,6 +307,11 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
     private static final class RecordingLifecycleManager implements NodeLifecycleManager {
         final AtomicInteger provisionCount = new AtomicInteger();
         final AtomicInteger terminateCount = new AtomicInteger();
+        private final java.util.concurrent.CopyOnWriteArraySet<NodeId> terminatedIds = new java.util.concurrent.CopyOnWriteArraySet<>();
+
+        Set<NodeId> terminatedNodeIds() {
+            return Set.copyOf(terminatedIds);
+        }
 
         @Override public Promise<ActionResult> executeAction(NodeAction action) {
             return Promise.success(new ActionResult.NodeStarted(InstanceInfo.instanceInfo(InstanceId.instanceId("stub").unwrap(),
@@ -272,6 +330,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
 
         @Override public Promise<Unit> terminateNode(NodeId nodeId) {
             terminateCount.incrementAndGet();
+            terminatedIds.add(nodeId);
             return Promise.success(Unit.unit());
         }
 

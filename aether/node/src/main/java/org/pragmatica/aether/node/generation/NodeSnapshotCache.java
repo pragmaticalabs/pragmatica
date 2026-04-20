@@ -9,6 +9,7 @@ import org.pragmatica.aether.slice.generation.CoreMember;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSource;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.SnapshotPayload;
 import org.pragmatica.consensus.NodeId;
@@ -170,5 +171,12 @@ record SnapshotMembershipView(Map<NodeId, CoreMember> coreMembers, int desiredCo
                                        .filter(member -> member.lifecycle() == NodeLifecycleState.ON_DUTY)
                                        .filter(member -> member.healthHint() == HealthHint.HEALTHY)
                                        .count();
+    }
+
+    @Override public Set<NodeId> ctmProvisionedNodeIds() {
+        return coreMembers.entrySet().stream()
+                                   .filter(entry -> entry.getValue().provisioningSource() == ProvisioningSource.CTM)
+                                   .map(Map.Entry::getKey)
+                                   .collect(Collectors.toUnmodifiableSet());
     }
 }

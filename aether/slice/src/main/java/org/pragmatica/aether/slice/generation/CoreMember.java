@@ -5,6 +5,7 @@
 package org.pragmatica.aether.slice.generation;
 
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSource;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.serialization.Codec;
 
@@ -18,7 +19,12 @@ import org.pragmatica.serialization.Codec;
                                 NodeLifecycleState lifecycle,
                                 HealthHint healthHint,
                                 Epoch joinedEpoch,
-                                Epoch lastSeenEpoch) {
+                                Epoch lastSeenEpoch,
+                                ProvisioningSource provisioningSource) {
+    public CoreMember {
+        if (provisioningSource == null) {provisioningSource = ProvisioningSource.UNKNOWN;}
+    }
+
     public static CoreMember coreMember(NodeId nodeId,
                                         String host,
                                         int port,
@@ -26,18 +32,57 @@ import org.pragmatica.serialization.Codec;
                                         HealthHint healthHint,
                                         Epoch joinedEpoch,
                                         Epoch lastSeenEpoch) {
-        return new CoreMember(nodeId, host, port, lifecycle, healthHint, joinedEpoch, lastSeenEpoch);
+        return new CoreMember(nodeId,
+                              host,
+                              port,
+                              lifecycle,
+                              healthHint,
+                              joinedEpoch,
+                              lastSeenEpoch,
+                              ProvisioningSource.UNKNOWN);
+    }
+
+    public static CoreMember coreMember(NodeId nodeId,
+                                        String host,
+                                        int port,
+                                        NodeLifecycleState lifecycle,
+                                        HealthHint healthHint,
+                                        Epoch joinedEpoch,
+                                        Epoch lastSeenEpoch,
+                                        ProvisioningSource provisioningSource) {
+        return new CoreMember(nodeId, host, port, lifecycle, healthHint, joinedEpoch, lastSeenEpoch, provisioningSource);
     }
 
     public CoreMember withLastSeenEpoch(Epoch newLastSeenEpoch) {
-        return new CoreMember(nodeId, host, port, lifecycle, healthHint, joinedEpoch, newLastSeenEpoch);
+        return new CoreMember(nodeId,
+                              host,
+                              port,
+                              lifecycle,
+                              healthHint,
+                              joinedEpoch,
+                              newLastSeenEpoch,
+                              provisioningSource);
     }
 
     public CoreMember withHealthHint(HealthHint newHealthHint) {
-        return new CoreMember(nodeId, host, port, lifecycle, newHealthHint, joinedEpoch, lastSeenEpoch);
+        return new CoreMember(nodeId,
+                              host,
+                              port,
+                              lifecycle,
+                              newHealthHint,
+                              joinedEpoch,
+                              lastSeenEpoch,
+                              provisioningSource);
     }
 
     public CoreMember withLifecycle(NodeLifecycleState newLifecycle) {
-        return new CoreMember(nodeId, host, port, newLifecycle, healthHint, joinedEpoch, lastSeenEpoch);
+        return new CoreMember(nodeId,
+                              host,
+                              port,
+                              newLifecycle,
+                              healthHint,
+                              joinedEpoch,
+                              lastSeenEpoch,
+                              provisioningSource);
     }
 }

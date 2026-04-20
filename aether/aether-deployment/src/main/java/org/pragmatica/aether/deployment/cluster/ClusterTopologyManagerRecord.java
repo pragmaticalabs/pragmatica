@@ -16,6 +16,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSource;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -421,16 +422,22 @@ import static org.pragmatica.lang.Unit.unit;
 
     private List<NodeId> selectNodesForTermination(int count) {
         var selfId = observer.self().id();
+        var ctmOwned = ctmProvisionedNodeIds();
         var activeNodes = observer.topology().stream()
                                            .filter(id -> !id.equals(selfId))
-                                           .filter(ClusterTopologyManagerRecord::isProvisionedByCtm)
+                                           .filter(ctmOwned::contains)
                                            .toList();
         var emptyNodes = deploymentMap.nodesWithoutSlices(activeNodes);
         var hostCounts = buildHostCounts(activeNodes);
-        var sortedCandidates = activeNodes.stream().sorted(surplusNodeComparator(emptyNodes, hostCounts))
+        var sortedCandidates = activeNodes.stream().sorted(surplusNodeComparator(emptyNodes, hostCounts, ctmOwned))
                                                  .toList();
         return sortedCandidates.stream().limit(Math.min(count, MAX_WAVE_SIZE))
                                       .toList();
+    }
+
+    private Set<NodeId> ctmProvisionedNodeIds() {
+        return snapshotSource.currentMembershipView().map(MembershipView::ctmProvisionedNodeIds)
+                                                   .or(Set.of());
     }
 
     private Map<String, Long> buildHostCounts(List<NodeId> activeNodes) {
@@ -456,18 +463,16 @@ import static org.pragmatica.lang.Unit.unit;
               : hostCounts.getOrDefault(hostname, 0L);
     }
 
-    private Comparator<NodeId> surplusNodeComparator(Set<NodeId> emptyNodes, Map<String, Long> hostCounts) {
-        return Comparator.<NodeId, Boolean>comparing(id -> !isProvisionedByCtm(id))
+    private Comparator<NodeId> surplusNodeComparator(Set<NodeId> emptyNodes,
+                                                     Map<String, Long> hostCounts,
+                                                     Set<NodeId> ctmOwned) {
+        return Comparator.<NodeId, Boolean>comparing(id -> !ctmOwned.contains(id))
                          .thenComparing(id -> !isSpotInstance(id))
                          .thenComparing(id -> hostCount(id, hostCounts),
                                         Comparator.reverseOrder())
                          .thenComparing(id -> !emptyNodes.contains(id))
                          .thenComparing(id -> nodeJoinTimes.getOrDefault(id, Instant.EPOCH),
                                         Comparator.reverseOrder());
-    }
-
-    private static boolean isProvisionedByCtm(NodeId nodeId) {
-        return nodeId.id().startsWith("aether-core-");
     }
 
     private void terminateNodes(List<NodeId> nodes) {
@@ -489,8 +494,12 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private void writeDecommissionedAtom(NodeId nodeId) {
+        var value = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
+                                                          "",
+                                                          0,
+                                                          ProvisioningSource.CTM);
         @SuppressWarnings("unchecked") var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId),
-                                                                                                                                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED));
+                                                                                                                                    value);
         commandApplier.apply(List.of(command))
                             .onFailure(cause -> log.warn("CTM: failed to write DECOMMISSIONED atom for {}: {}",
                                                          nodeId,
@@ -519,7 +528,12 @@ import static org.pragmatica.lang.Unit.unit;
                                      .flatMap(nodeId -> observer.get(nodeId).stream())
                                      .map(ClusterTopologyManagerRecord::formatPeerEntry)
                                      .collect(Collectors.joining(","));
-        return Map.of("aether.peers", peers, "aether.core-max", String.valueOf(snapshotDesiredCoreSize()));
+        return Map.of("aether.peers",
+                      peers,
+                      "aether.core-max",
+                      String.valueOf(snapshotDesiredCoreSize()),
+                      "aether.provisioned-by",
+                      "ctm");
     }
 
     private boolean isHealthyPeer(NodeId nodeId) {

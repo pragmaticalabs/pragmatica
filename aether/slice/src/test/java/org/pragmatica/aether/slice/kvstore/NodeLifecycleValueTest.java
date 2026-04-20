@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSource;
 import org.pragmatica.hlc.HlcTimestamp;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -68,23 +69,86 @@ class NodeLifecycleValueTest {
 
         @Test
         void construct_nullHost_normalizesToEmpty() {
-            var v = new NodeLifecycleValue(NodeLifecycleState.ON_DUTY, 0L, null, 0, Epoch.ZERO, HlcTimestamp.ZERO);
+            var v = new NodeLifecycleValue(NodeLifecycleState.ON_DUTY,
+                                           0L,
+                                           null,
+                                           0,
+                                           Epoch.ZERO,
+                                           HlcTimestamp.ZERO,
+                                           ProvisioningSource.UNKNOWN);
 
             assertThat(v.host()).isEmpty();
         }
 
         @Test
         void construct_nullEpoch_normalizesToZero() {
-            var v = new NodeLifecycleValue(NodeLifecycleState.ON_DUTY, 0L, "", 0, null, HlcTimestamp.ZERO);
+            var v = new NodeLifecycleValue(NodeLifecycleState.ON_DUTY,
+                                           0L,
+                                           "",
+                                           0,
+                                           null,
+                                           HlcTimestamp.ZERO,
+                                           ProvisioningSource.UNKNOWN);
 
             assertThat(v.observedCoreEpoch()).isEqualTo(Epoch.ZERO);
         }
 
         @Test
         void construct_nullHlcTimestamp_normalizesToZero() {
-            var v = new NodeLifecycleValue(NodeLifecycleState.ON_DUTY, 0L, "", 0, Epoch.ZERO, null);
+            var v = new NodeLifecycleValue(NodeLifecycleState.ON_DUTY,
+                                           0L,
+                                           "",
+                                           0,
+                                           Epoch.ZERO,
+                                           null,
+                                           ProvisioningSource.UNKNOWN);
 
             assertThat(v.transitionedAt()).isEqualTo(HlcTimestamp.ZERO);
+        }
+
+        @Test
+        void construct_nullProvisioningSource_normalizesToUnknown() {
+            var v = new NodeLifecycleValue(NodeLifecycleState.ON_DUTY,
+                                           0L,
+                                           "",
+                                           0,
+                                           Epoch.ZERO,
+                                           HlcTimestamp.ZERO,
+                                           null);
+
+            assertThat(v.provisioningSource()).isEqualTo(ProvisioningSource.UNKNOWN);
+        }
+
+        @Test
+        void nodeLifecycleValue_stateOnly_defaultsProvisioningSourceToUnknown() {
+            var v = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY);
+
+            assertThat(v.provisioningSource()).isEqualTo(ProvisioningSource.UNKNOWN);
+        }
+
+        @Test
+        void nodeLifecycleValue_withProvisioningSourceFactory_populatesSource() {
+            var v = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY,
+                                                          "10.0.0.1",
+                                                          7301,
+                                                          ProvisioningSource.CTM);
+
+            assertThat(v.provisioningSource()).isEqualTo(ProvisioningSource.CTM);
+            assertThat(v.host()).isEqualTo("10.0.0.1");
+            assertThat(v.port()).isEqualTo(7301);
+        }
+
+        @Test
+        void nodeLifecycleValue_withFullFactoryAndSource_populatesSource() {
+            var v = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.JOINING,
+                                                          1710072000000L,
+                                                          "10.0.0.2",
+                                                          7302,
+                                                          Epoch.ZERO,
+                                                          HlcTimestamp.ZERO,
+                                                          ProvisioningSource.MANUAL);
+
+            assertThat(v.provisioningSource()).isEqualTo(ProvisioningSource.MANUAL);
         }
     }
 
@@ -134,6 +198,42 @@ class NodeLifecycleValueTest {
             assertThat(next.host()).isEqualTo("h");
             assertThat(next.port()).isEqualTo(1);
             assertThat(next.observedCoreEpoch()).isEqualTo(Epoch.epoch(3L, 4L));
+        }
+
+        @Test
+        void withState_preservesProvisioningSource() {
+            var original = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY,
+                                                                 1000L,
+                                                                 "h",
+                                                                 1,
+                                                                 Epoch.ZERO,
+                                                                 HlcTimestamp.ZERO,
+                                                                 ProvisioningSource.CTM);
+
+            var next = original.withState(NodeLifecycleState.DRAINING, new HlcTimestamp(99L, "leader"));
+
+            assertThat(next.provisioningSource()).isEqualTo(ProvisioningSource.CTM);
+        }
+
+        @Test
+        void withProvisioningSource_replacesOnlySource() {
+            var original = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY,
+                                                                 1000L,
+                                                                 "h",
+                                                                 1,
+                                                                 Epoch.epoch(3L, 4L),
+                                                                 new HlcTimestamp(5L, "a"),
+                                                                 ProvisioningSource.UNKNOWN);
+
+            var next = original.withProvisioningSource(ProvisioningSource.MANUAL);
+
+            assertThat(next.provisioningSource()).isEqualTo(ProvisioningSource.MANUAL);
+            assertThat(next.state()).isEqualTo(original.state());
+            assertThat(next.updatedAt()).isEqualTo(original.updatedAt());
+            assertThat(next.host()).isEqualTo(original.host());
+            assertThat(next.port()).isEqualTo(original.port());
+            assertThat(next.observedCoreEpoch()).isEqualTo(original.observedCoreEpoch());
+            assertThat(next.transitionedAt()).isEqualTo(original.transitionedAt());
         }
 
         @Test

@@ -104,6 +104,7 @@ import static org.pragmatica.lang.Result.success;
         var nodeId = spec.tags().getOrDefault("aether.node-id", containerName);
         var peers = spec.tags().getOrDefault("aether.peers", "");
         var coreMax = spec.tags().getOrDefault("aether.core-max", "3");
+        var provisionedBy = spec.tags().getOrDefault("aether.provisioned-by", "");
         var apiKey = config.apiKey();
         var command = new ArrayList<>(List.of("docker",
                                               "run",
@@ -134,6 +135,10 @@ import static org.pragmatica.lang.Result.success;
                                               "CORE_MAX=" + coreMax,
                                               "-e",
                                               "AETHER_API_KEY=" + apiKey));
+        if (!provisionedBy.isEmpty()) {
+            command.add("-e");
+            command.add("AETHER_PROVISIONED_BY=" + provisionedBy);
+        }
         propagateEnvVar(command, "AETHER_CLUSTER_SECRET");
         propagateEnvVar(command, "AETHER_DOCKER_NETWORK");
         if (!config.dockerGid().isEmpty()) {

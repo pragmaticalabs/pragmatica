@@ -591,28 +591,67 @@ import static org.pragmatica.lang.Option.none;
         SHUTTING_DOWN
     }
 
+    @Codec enum ProvisioningSource {
+        CTM,
+        MANUAL,
+        UNKNOWN
+    }
+
     record NodeLifecycleValue(NodeLifecycleState state,
                               long updatedAt,
                               String host,
                               int port,
                               Epoch observedCoreEpoch,
-                              HlcTimestamp transitionedAt) implements AetherValue {
+                              HlcTimestamp transitionedAt,
+                              ProvisioningSource provisioningSource) implements AetherValue {
         public NodeLifecycleValue {
             if (host == null) {host = "";}
             if (observedCoreEpoch == null) {observedCoreEpoch = Epoch.ZERO;}
             if (transitionedAt == null) {transitionedAt = HlcTimestamp.ZERO;}
+            if (provisioningSource == null) {provisioningSource = ProvisioningSource.UNKNOWN;}
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state) {
-            return new NodeLifecycleValue(state, System.currentTimeMillis(), "", 0, Epoch.ZERO, HlcTimestamp.ZERO);
+            return new NodeLifecycleValue(state,
+                                          System.currentTimeMillis(),
+                                          "",
+                                          0,
+                                          Epoch.ZERO,
+                                          HlcTimestamp.ZERO,
+                                          ProvisioningSource.UNKNOWN);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, long updatedAt) {
-            return new NodeLifecycleValue(state, updatedAt, "", 0, Epoch.ZERO, HlcTimestamp.ZERO);
+            return new NodeLifecycleValue(state,
+                                          updatedAt,
+                                          "",
+                                          0,
+                                          Epoch.ZERO,
+                                          HlcTimestamp.ZERO,
+                                          ProvisioningSource.UNKNOWN);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, String host, int port) {
-            return new NodeLifecycleValue(state, System.currentTimeMillis(), host, port, Epoch.ZERO, HlcTimestamp.ZERO);
+            return new NodeLifecycleValue(state,
+                                          System.currentTimeMillis(),
+                                          host,
+                                          port,
+                                          Epoch.ZERO,
+                                          HlcTimestamp.ZERO,
+                                          ProvisioningSource.UNKNOWN);
+        }
+
+        public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state,
+                                                            String host,
+                                                            int port,
+                                                            ProvisioningSource provisioningSource) {
+            return new NodeLifecycleValue(state,
+                                          System.currentTimeMillis(),
+                                          host,
+                                          port,
+                                          Epoch.ZERO,
+                                          HlcTimestamp.ZERO,
+                                          provisioningSource);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state,
@@ -621,7 +660,29 @@ import static org.pragmatica.lang.Option.none;
                                                             int port,
                                                             Epoch observedCoreEpoch,
                                                             HlcTimestamp transitionedAt) {
-            return new NodeLifecycleValue(state, updatedAt, host, port, observedCoreEpoch, transitionedAt);
+            return new NodeLifecycleValue(state,
+                                          updatedAt,
+                                          host,
+                                          port,
+                                          observedCoreEpoch,
+                                          transitionedAt,
+                                          ProvisioningSource.UNKNOWN);
+        }
+
+        public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state,
+                                                            long updatedAt,
+                                                            String host,
+                                                            int port,
+                                                            Epoch observedCoreEpoch,
+                                                            HlcTimestamp transitionedAt,
+                                                            ProvisioningSource provisioningSource) {
+            return new NodeLifecycleValue(state,
+                                          updatedAt,
+                                          host,
+                                          port,
+                                          observedCoreEpoch,
+                                          transitionedAt,
+                                          provisioningSource);
         }
 
         public boolean hasAddress() {
@@ -637,7 +698,12 @@ import static org.pragmatica.lang.Option.none;
                                           host,
                                           port,
                                           observedCoreEpoch,
-                                          nextTransitionedAt);
+                                          nextTransitionedAt,
+                                          provisioningSource);
+        }
+
+        public NodeLifecycleValue withProvisioningSource(ProvisioningSource newSource) {
+            return new NodeLifecycleValue(state, updatedAt, host, port, observedCoreEpoch, transitionedAt, newSource);
         }
     }
 

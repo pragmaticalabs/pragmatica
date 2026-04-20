@@ -134,7 +134,8 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
                                      lifecycle.state(),
                                      healthHint,
                                      lifecycle.observedCoreEpoch(),
-                                     lastSeen);
+                                     lastSeen,
+                                     lifecycle.provisioningSource());
     }
 
     private static HealthHint deriveHealthHint(NodeLifecycleValue lifecycle) {
