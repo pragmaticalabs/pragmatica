@@ -15,8 +15,16 @@ import java.util.List;
 /// Runtime-only value (no `@Codec`). Wire-level encoding for ping/pong integration is
 /// introduced in Commit 3; for now the reconciler consumes these via direct in-process calls.
 ///
-/// See `aether/docs/specs/cluster-generation-spec.md` §8.1.
+/// Every variant carries an `observedAt` epoch so the leader-side reconciler can
+/// epoch-fence stale reports that crossed a leader-change boundary. Signals whose
+/// `observedAt == Epoch.ZERO` bypass the fence — operator actions and KV-atom
+/// notifications are authoritative and not tied to an observation window.
+///
+/// See `aether/docs/specs/cluster-generation-spec.md` §8.1
+/// and `aether/docs/specs/clustersync-refactor-spec.md` commit 5.
 public sealed interface HealthSignal {
+    Epoch observedAt();
+
     record PingTimeout(NodeId nodeId, int missedIntervals, Epoch observedAt) implements HealthSignal{}
 
     record SwimHint(NodeId nodeId, HealthHint state, Epoch observedAt) implements HealthSignal{}
@@ -25,27 +33,46 @@ public sealed interface HealthSignal {
 
     record DrainCompleted(NodeId nodeId, Epoch observedAt) implements HealthSignal{}
 
-    record GovernorAnnounced(String communityId, NodeId governor, long communityTerm) implements HealthSignal{}
-
-    record CommunityDissolved(String communityId) implements HealthSignal{}
-
-    record SpokesmanAssignmentFailed(NodeId coreNodeId, List<String> affectedCommunities, String reason) implements HealthSignal {
-        public SpokesmanAssignmentFailed {
-            affectedCommunities = List.copyOf(affectedCommunities);
+    record GovernorAnnounced(String communityId, NodeId governor, long communityTerm, Epoch observedAt) implements HealthSignal {
+        public GovernorAnnounced(String communityId, NodeId governor, long communityTerm) {
+            this(communityId, governor, communityTerm, Epoch.ZERO);
         }
     }
 
-    record OperatorAction(OperatorIntent intent) implements HealthSignal{}
+    record CommunityDissolved(String communityId, Epoch observedAt) implements HealthSignal {
+        public CommunityDissolved(String communityId) {
+            this(communityId, Epoch.ZERO);
+        }
+    }
 
-    /// Remote SWIM hint emitted by the leader-side `ClusterSyncPongSignalFan` on
-    /// receipt of a `PeerHealthObservation` piggybacked on a follower's pong.
-    /// `observer` is the node that reported the hint; `peer` is the node the
-    /// hint is about. Carries the observer's epoch at the time of the observation
-    /// so the leader's reconciler can epoch-fence stale reports (commit 5).
-    record RemoteSwimHint(NodeId observer, NodeId peer, HealthHint hint, Epoch observedAtEpoch) implements HealthSignal{}
+    record SpokesmanAssignmentFailed(NodeId coreNodeId,
+                                     List<String> affectedCommunities,
+                                     String reason,
+                                     Epoch observedAt) implements HealthSignal {
+        public SpokesmanAssignmentFailed {
+            affectedCommunities = List.copyOf(affectedCommunities);
+        }
 
-    /// Remote QUIC connectivity observation emitted by the leader-side
-    /// `ClusterSyncPongSignalFan`. Same semantics as `RemoteSwimHint` but for
-    /// transport-level connectivity state.
-    record RemoteConnectivity(NodeId observer, NodeId peer, ConnectivityReport state, Epoch observedAtEpoch) implements HealthSignal{}
+        public SpokesmanAssignmentFailed(NodeId coreNodeId, List<String> affectedCommunities, String reason) {
+            this(coreNodeId, affectedCommunities, reason, Epoch.ZERO);
+        }
+    }
+
+    record OperatorAction(OperatorIntent intent, Epoch observedAt) implements HealthSignal {
+        public OperatorAction(OperatorIntent intent) {
+            this(intent, Epoch.ZERO);
+        }
+    }
+
+    record RemoteSwimHint(NodeId observer, NodeId peer, HealthHint hint, Epoch observedAtEpoch) implements HealthSignal {
+        @Override public Epoch observedAt() {
+            return observedAtEpoch;
+        }
+    }
+
+    record RemoteConnectivity(NodeId observer, NodeId peer, ConnectivityReport state, Epoch observedAtEpoch) implements HealthSignal {
+        @Override public Epoch observedAt() {
+            return observedAtEpoch;
+        }
+    }
 }

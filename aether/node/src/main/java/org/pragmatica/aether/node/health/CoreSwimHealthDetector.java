@@ -239,14 +239,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         emitLeaderHint(leftNodeId, HealthHint.FAULTY);
     }
 
-    /// Followers buffer observations upstream via `ClusterSyncPong`; leaders
-    /// fire the hint directly into their local `HealthReconciler`.
     private void reportHint(NodeId nodeId, HealthHint hint) {
-        if (isLeaderSupplier.getAsBoolean()) {
-            emitLeaderHint(nodeId, hint);
-        } else {
-            bufferHealthObservation(nodeId, hint);
-        }
+        if (isLeaderSupplier.getAsBoolean()) {emitLeaderHint(nodeId, hint);} else {bufferHealthObservation(nodeId, hint);}
     }
 
     private void emitLeaderHint(NodeId nodeId, HealthHint hint) {
@@ -262,7 +256,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     }
 
     private static HealthHintWire toWire(HealthHint hint) {
-        return switch (hint) {
+        return switch (hint){
             case HEALTHY -> HealthHintWire.HEALTHY;
             case SUSPECTED -> HealthHintWire.SUSPECTED;
             case FAULTY -> HealthHintWire.FAULTY;

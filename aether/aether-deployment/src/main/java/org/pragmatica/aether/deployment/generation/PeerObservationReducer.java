@@ -39,8 +39,7 @@ public interface PeerObservationReducer {
 }
 
 record PeerObservationReducerRecord(Map<NodeId, Map<NodeId, HintEntry>> observations) implements PeerObservationReducer {
-
-    @Contract @Override public void recordHint(NodeId observer, NodeId peer, HealthHint hint, Epoch observedAt) {
+    @Contract@Override public void recordHint(NodeId observer, NodeId peer, HealthHint hint, Epoch observedAt) {
         var perPeer = observations.computeIfAbsent(peer, _ -> new ConcurrentHashMap<>());
         perPeer.merge(observer, new HintEntry(hint, observedAt), PeerObservationReducerRecord::mostRecent);
     }
@@ -55,7 +54,7 @@ record PeerObservationReducerRecord(Map<NodeId, Map<NodeId, HintEntry>> observat
         return HealthHint.HEALTHY;
     }
 
-    @Contract @Override public void prune(Epoch before) {
+    @Contract@Override public void prune(Epoch before) {
         observations.values().forEach(perPeer -> pruneOlderThan(perPeer, before));
         observations.entrySet().removeIf(e -> e.getValue().isEmpty());
     }
@@ -71,12 +70,14 @@ record PeerObservationReducerRecord(Map<NodeId, Map<NodeId, HintEntry>> observat
     }
 
     private static long countByHint(Map<NodeId, HintEntry> perPeer, HealthHint target) {
-        return perPeer.values().stream().filter(entry -> entry.hint() == target).count();
+        return perPeer.values().stream()
+                             .filter(entry -> entry.hint() == target)
+                             .count();
     }
 
     private static void pruneOlderThan(Map<NodeId, HintEntry> perPeer, Epoch before) {
         perPeer.entrySet().removeIf(e -> before.isStrictlyAfter(e.getValue().observedAt()));
     }
 
-    record HintEntry(HealthHint hint, Epoch observedAt) {}
+    record HintEntry(HealthHint hint, Epoch observedAt){}
 }

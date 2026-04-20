@@ -70,7 +70,7 @@ class HealthReconcilerTest {
                                                         rabiaTerm::get,
                                                         isLeader,
                                                         AutoHealConfig.DEFAULT);
-        reconciler.start();
+        reconciler.start(Epoch.epoch(1L, 0L));
     }
 
     private ClusterGenerationSnapshot seedSnapshotWithThreeCoreNodes() {
@@ -393,7 +393,7 @@ class HealthReconcilerTest {
         @Test
         void onSignal_afterStop_isNoOp() {
             seedSnapshotWithThreeCoreNodes();
-            reconciler.stop();
+            reconciler.stop(StopReason.SHUTDOWN);
 
             reconciler.onSignal(new HealthSignal.OperatorAction(new OperatorIntent.RemoveMember(NODE_A)));
 

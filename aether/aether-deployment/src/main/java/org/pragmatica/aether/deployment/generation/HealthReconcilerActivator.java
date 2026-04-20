@@ -144,18 +144,20 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
     private static final Logger log = LoggerFactory.getLogger(HealthReconcilerActivatorRecord.class);
 
     @Contract@Override public void onLeaderChange(LeaderChange change) {
-        isLeaderGate.set(change.localNodeIsLeader());
         if (change.localNodeIsLeader()) {
             log.info("HealthReconciler becoming leader — projecting from committed atoms, then starting reconciler");
+            reconciler.stop(StopReason.LEADER_LOST);
+            isLeaderGate.set(true);
             bootstrapComplete.set(false);
             bootstrapAttempts.set(0);
             var seeded = projectFromCommittedAtoms();
             reconciler.seedSnapshot(seeded);
-            reconciler.start();
+            reconciler.start(Epoch.epoch(rabiaTermSupplier.get(), 0L));
             attemptBootstrap(seeded);
         } else {
             log.info("HealthReconciler stepping down — stopping reconciler");
-            reconciler.stop();
+            isLeaderGate.set(false);
+            reconciler.stop(StopReason.LEADER_LOST);
             reconciler.seedSnapshot(ClusterGenerationSnapshot.empty(reconciler.currentEpoch().rabiaTerm()));
             bootstrapComplete.set(false);
             bootstrapAttempts.set(0);

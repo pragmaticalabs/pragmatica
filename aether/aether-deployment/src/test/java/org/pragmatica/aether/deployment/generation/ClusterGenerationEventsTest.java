@@ -51,7 +51,7 @@ class ClusterGenerationEventsTest {
                                                        new AtomicBoolean(true),
                                                        AutoHealConfig.DEFAULT,
                                                        sink);
-        reconciler.start();
+        reconciler.start(Epoch.epoch(7L, 0L));
     }
 
     @Test
@@ -90,7 +90,7 @@ class ClusterGenerationEventsTest {
                                                                   () -> 1L,
                                                                   new AtomicBoolean(true),
                                                                   AutoHealConfig.DEFAULT);
-        legacyReconciler.start();
+        legacyReconciler.start(Epoch.epoch(1L, 0L));
         legacyReconciler.onSignal(new HealthSignal.OperatorAction(new SetDesiredSize(3)));
         assertThat(legacyReconciler.currentEpoch().localCounter()).isPositive();
     }

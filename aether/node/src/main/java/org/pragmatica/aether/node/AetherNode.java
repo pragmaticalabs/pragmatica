@@ -64,6 +64,7 @@ import org.pragmatica.aether.metrics.ComprehensiveSnapshotCollector;
 import org.pragmatica.aether.deployment.generation.ClusterGenerationProjector;
 import org.pragmatica.aether.deployment.generation.HealthReconciler;
 import org.pragmatica.aether.deployment.generation.HealthReconcilerActivator;
+import org.pragmatica.aether.deployment.generation.StopReason;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.ClusterSyncPongSignalFan;
 import org.pragmatica.aether.metrics.ClusterSyncScheduler;
@@ -455,6 +456,7 @@ public interface AetherNode extends ManageableNode {
                           Option<DiscoveryProvider> discoveryProvider,
                           Option<CertificateRenewalScheduler> certRenewalScheduler,
                           HealthSignalSink healthSignalSink,
+                          HealthReconciler healthReconciler,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
@@ -496,6 +498,7 @@ public interface AetherNode extends ManageableNode {
                 streamPartitionManager.close();
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::stop);
                 swimHealthDetector.stop();
+                healthReconciler.stop(StopReason.SHUTDOWN);
                 discoveryProvider.onPresent(this::deregisterFromDiscovery);
                 return managementServer.map(ManagementServer::stop).or(Promise.unitPromise())
                                            .flatMap(_ -> appHttpServer.stop())
@@ -774,7 +777,8 @@ public interface AetherNode extends ManageableNode {
         metricsCollector.recordCustom("mgmt.port", config.managementPort());
         var leaderTerm = new AtomicLong(0L);
         var isLeaderGate = new AtomicBoolean(false);
-        metricsCollector.setPongSignalFan(ClusterSyncPongSignalFan.clusterSyncPongSignalFan(stableHealthSink, isLeaderGate::get));
+        metricsCollector.setPongSignalFan(ClusterSyncPongSignalFan.clusterSyncPongSignalFan(stableHealthSink,
+                                                                                            isLeaderGate::get));
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
         Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.get(), 0L);
         var hlcClockEarly = HlcClock.hlcClock(config.self().id()).unwrap();
@@ -1218,6 +1222,7 @@ public interface AetherNode extends ManageableNode {
                                   discoveryProvider,
                                   certRenewalScheduler,
                                   stableHealthSink,
+                                  healthReconciler,
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
         return RabiaNode.buildAndWireRouter(delegateRouter, allEntries)
@@ -1308,6 +1313,7 @@ public interface AetherNode extends ManageableNode {
                                                                               discoveryProvider,
                                                                               certRenewalScheduler,
                                                                               stableHealthSink,
+                                                                              healthReconciler,
                                                                               startTimeMs);
                                                     }
                                                     return node;
@@ -1358,27 +1364,24 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    /// Wire the follower-side path so that REMOVE view-changes buffer a
-    /// `PeerConnectivityObservation` for the next `ClusterSyncPong` instead of
-    /// mutating local health state directly. See `clustersync-refactor-spec.md`
-    /// commit 2.
     private static void attachQuicFollowerWiring(ClusterNetwork network,
                                                  java.util.function.BooleanSupplier isLeaderSupplier,
                                                  org.pragmatica.cluster.metrics.PeerObservationBuffer buffer,
                                                  Supplier<Epoch> epochSupplier) {
-        if (!(network instanceof QuicClusterNetwork quicNetwork)) {return;}
-        org.pragmatica.consensus.net.quic.PeerConnectivityReporter reporter =
-            (peerId, term, counter) -> buffer.pushConnectivity(
-                new org.pragmatica.cluster.metrics.PeerConnectivityObservation(
-                    peerId,
-                    org.pragmatica.cluster.metrics.ConnectivityState.DISCONNECTED,
-                    term,
-                    counter));
-        org.pragmatica.consensus.net.quic.QuicClusterNetwork.ObservedEpochSupplier epochAdapter =
-            new org.pragmatica.consensus.net.quic.QuicClusterNetwork.ObservedEpochSupplier() {
-                @Override public long term() {return epochSupplier.get().rabiaTerm();}
-                @Override public long counter() {return epochSupplier.get().localCounter();}
-            };
+        if (! (network instanceof QuicClusterNetwork quicNetwork)) {return;}
+        org.pragmatica.consensus.net.quic.PeerConnectivityReporter reporter = (peerId, term, counter) -> buffer.pushConnectivity(new org.pragmatica.cluster.metrics.PeerConnectivityObservation(peerId,
+                                                                                                                                                                                                org.pragmatica.cluster.metrics.ConnectivityState.DISCONNECTED,
+                                                                                                                                                                                                term,
+                                                                                                                                                                                                counter));
+        org.pragmatica.consensus.net.quic.QuicClusterNetwork.ObservedEpochSupplier epochAdapter = new org.pragmatica.consensus.net.quic.QuicClusterNetwork.ObservedEpochSupplier() {
+            @Override public long term() {
+                return epochSupplier.get().rabiaTerm();
+            }
+
+            @Override public long counter() {
+                return epochSupplier.get().localCounter();
+            }
+        };
         quicNetwork.setFollowerObservationWiring(isLeaderSupplier, reporter, epochAdapter);
     }
 
@@ -1908,9 +1911,12 @@ public interface AetherNode extends ManageableNode {
                                               metricsCollector::onTopologyChange));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
                                               metricsCollector::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(ClusterSyncMessage.ClusterSyncPing.class, metricsCollector::onClusterSyncPing));
-        entries.add(MessageRouter.Entry.route(ClusterSyncMessage.ClusterSyncPing.class, nodeSnapshotCache::onClusterSyncPing));
-        entries.add(MessageRouter.Entry.route(ClusterSyncMessage.ClusterSyncPong.class, metricsCollector::onClusterSyncPong));
+        entries.add(MessageRouter.Entry.route(ClusterSyncMessage.ClusterSyncPing.class,
+                                              metricsCollector::onClusterSyncPing));
+        entries.add(MessageRouter.Entry.route(ClusterSyncMessage.ClusterSyncPing.class,
+                                              nodeSnapshotCache::onClusterSyncPing));
+        entries.add(MessageRouter.Entry.route(ClusterSyncMessage.ClusterSyncPong.class,
+                                              metricsCollector::onClusterSyncPong));
         entries.add(MessageRouter.Entry.route(DeploymentMetricsMessage.DeploymentMetricsPing.class,
                                               deploymentMetricsCollector::onDeploymentMetricsPing));
         entries.add(MessageRouter.Entry.route(DeploymentMetricsMessage.DeploymentMetricsPong.class,

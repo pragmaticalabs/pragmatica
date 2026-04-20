@@ -104,7 +104,9 @@ record NodeSnapshotCacheRecord(NodeId self,
         logTransition(ping, incomingEpoch, updated);
     }
 
-    private NodeSnapshotCache.State applyPing(NodeSnapshotCache.State current, ClusterSyncPing ping, Epoch incomingEpoch) {
+    private NodeSnapshotCache.State applyPing(NodeSnapshotCache.State current,
+                                              ClusterSyncPing ping,
+                                              Epoch incomingEpoch) {
         if (ping.rabiaTerm() <current.rabiaTerm()) {return current;}
         if (ping.rabiaTerm() > current.rabiaTerm()) {return acceptNewTerm(ping, incomingEpoch, current);}
         if (!incomingEpoch.isStrictlyAfter(current.epoch())) {return current;}

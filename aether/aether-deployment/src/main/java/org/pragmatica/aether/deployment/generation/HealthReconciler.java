@@ -74,8 +74,11 @@ public interface HealthReconciler extends HealthSignalSink {
 
     int DEFAULT_REMOVE_INTERVAL_THRESHOLD = 10;
 
-    @Contract void start();
-    @Contract void stop();
+    int LATE_SIGNAL_WINDOW = 2;
+
+    @Contract void start(Epoch leaderEpoch);
+    @Contract void stop(StopReason reason);
+    @Contract boolean isActive();
     @Contract void onSignal(HealthSignal signal);
     ClusterGenerationSnapshot currentSnapshot();
     Epoch currentEpoch();
@@ -126,6 +129,7 @@ public interface HealthReconciler extends HealthSignalSink {
                                           new ConcurrentHashMap<>(),
                                           ConcurrentHashMap.newKeySet(),
                                           new AtomicBoolean(false),
+                                          new AtomicReference<>(Epoch.ZERO),
                                           new AtomicLong(),
                                           PeerObservationReducer.peerObservationReducer());
     }
@@ -146,21 +150,30 @@ record HealthReconcilerRecord(NodeId self,
                               Map<NodeId, HealthHint> swimHints,
                               Set<NodeId> pendingRemovals,
                               AtomicBoolean started,
+                              AtomicReference<Epoch> startEpoch,
                               AtomicLong consensusApplyFailed,
                               PeerObservationReducer peerObservationReducer) implements HealthReconciler {
     private static final Logger log = LoggerFactory.getLogger(HealthReconcilerRecord.class);
 
     private static final String CORE_COMMUNITY_ID = "core";
 
-    @Contract@Override public void start() {
+    @Contract@Override public void start(Epoch leaderEpoch) {
+        startEpoch.set(leaderEpoch);
         started.set(true);
+        log.debug("HealthReconciler started at epoch {}", leaderEpoch);
     }
 
-    @Contract@Override public void stop() {
+    @Contract@Override public void stop(StopReason reason) {
         started.set(false);
+        startEpoch.set(Epoch.ZERO);
         consecutivePingMisses.clear();
         swimHints.clear();
         pendingRemovals.clear();
+        log.debug("HealthReconciler stopped (reason={})", reason);
+    }
+
+    @Contract@Override public boolean isActive() {
+        return started.get();
     }
 
     @Override public ClusterGenerationSnapshot currentSnapshot() {
@@ -189,6 +202,7 @@ record HealthReconcilerRecord(NodeId self,
 
     @Contract@Override public void onSignal(HealthSignal signal) {
         if (!isLeader.get() || !started.get()) {return;}
+        if (isFencedOut(signal)) {return;}
         reconcileLeaderTermIfChanged();
         switch (signal){
             case HealthSignal.PingTimeout ping -> handlePingTimeout(ping);
@@ -204,21 +218,43 @@ record HealthReconcilerRecord(NodeId self,
         }
     }
 
+    private boolean isFencedOut(HealthSignal signal) {
+        var observedAt = signal.observedAt();
+        if (observedAt.equals(Epoch.ZERO)) {return false;}
+        var startTerm = startEpoch.get().rabiaTerm();
+        if (observedAt.rabiaTerm() <startTerm) {
+            log.trace("Dropping pre-leader-change signal {} observedAt={} startEpoch={}",
+                      signal.getClass().getSimpleName(),
+                      observedAt,
+                      startEpoch.get());
+            return true;
+        }
+        var current = snapshotRef.get().epoch();
+        if (observedAt.rabiaTerm() == current.rabiaTerm() && observedAt.localCounter() <current.localCounter() - HealthReconciler.LATE_SIGNAL_WINDOW) {
+            log.trace("Dropping stale-counter signal {} observedAt={} currentEpoch={}",
+                      signal.getClass().getSimpleName(),
+                      observedAt,
+                      current);
+            return true;
+        }
+        return false;
+    }
+
     @Contract private void handleRemoteSwimHint(HealthSignal.RemoteSwimHint remote) {
         var current = snapshotRef.get();
         if (!current.coreMembers().containsKey(remote.peer())) {return;}
         peerObservationReducer.recordHint(remote.observer(), remote.peer(), remote.hint(), remote.observedAtEpoch());
         var totalObservers = current.coreMembers().size();
         var resolved = peerObservationReducer.resolvedHint(remote.peer(), totalObservers);
-        var currentHint = Option.option(current.coreMembers().get(remote.peer()))
-                                .map(CoreMember::healthHint)
-                                .or(HealthHint.HEALTHY);
+        var currentHint = Option.option(current.coreMembers().get(remote.peer())).map(CoreMember::healthHint)
+                                       .or(HealthHint.HEALTHY);
         if (resolved == currentHint) {return;}
         handleSwimHint(new HealthSignal.SwimHint(remote.peer(), resolved, remote.observedAtEpoch()));
     }
 
     @Contract private void handleRemoteConnectivity(HealthSignal.RemoteConnectivity remote) {
-        if (!snapshotRef.get().coreMembers().containsKey(remote.peer())) {return;}
+        if (!snapshotRef.get().coreMembers()
+                            .containsKey(remote.peer())) {return;}
         switch (remote.state()){
             case DISCONNECTED, STALE -> handleQuicDisconnect(new HealthSignal.QuicDisconnect(remote.peer(),
                                                                                              remote.observedAtEpoch()));
