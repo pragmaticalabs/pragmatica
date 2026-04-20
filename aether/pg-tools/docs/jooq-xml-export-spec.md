@@ -1,6 +1,6 @@
 # Specification: jOOQ XML Schema Export for pg-tools
 
-**Status:** Draft — ready for implementation
+**Status:** Implemented (rc1)
 **Author:** Design session 2026-04-08
 **Module:** `aether/pg-tools`
 **Tracking issue:** (to be created)
@@ -470,6 +470,8 @@ A previous draft proposed a round-trip harness: emit XML → feed to jOOQ `XMLDa
 ---
 
 ## 13. Example slice — `examples/jooq-xml-showcase`
+
+**Status:** Implemented in rc1. See `examples/jooq-xml-showcase/` in the repository.
 
 Purpose: demonstrate jOOQ integration end-to-end with a non-trivial schema exercising the important patterns.
 

@@ -1,0 +1,42 @@
+package org.pragmatica.aether.example.comprehensive;
+
+import org.pragmatica.aether.example.comprehensive.BasePersistence.CustomerOrder;
+import org.pragmatica.aether.example.comprehensive.BasePersistence.CustomerRevenue;
+import org.pragmatica.aether.example.comprehensive.CrudPersistence.CustomerRow;
+import org.pragmatica.aether.slice.annotation.Slice;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+
+import java.util.List;
+
+
+/// Orchestrates operations across three persistence adapters bound to two
+/// datasources. The slice processor follows the dependency chain and
+/// provisions both PgSqlConnectors transitively.
+@Slice public interface OrderSlice {
+    Promise<List<CustomerOrder>> customerOrders(String status);
+    Promise<List<CustomerRevenue>> revenue(Boolean active);
+    Promise<Option<CustomerRow>> customer(Long customerId);
+    Promise<Long> snapshotCount();
+
+    static OrderSlice orderSlice(BasePersistence base, CrudPersistence crud, AnalyticsPersistence analytics) {
+        record orderSlice(BasePersistence base, CrudPersistence crud, AnalyticsPersistence analytics) implements OrderSlice {
+            @Override public Promise<List<CustomerOrder>> customerOrders(String status) {
+                return base.findCustomerOrdersByStatus(status);
+            }
+
+            @Override public Promise<List<CustomerRevenue>> revenue(Boolean active) {
+                return base.customerRevenueReport(active);
+            }
+
+            @Override public Promise<Option<CustomerRow>> customer(Long customerId) {
+                return crud.findById(customerId);
+            }
+
+            @Override public Promise<Long> snapshotCount() {
+                return analytics.countSnapshots();
+            }
+        }
+        return new orderSlice(base, crud, analytics);
+    }
+}
