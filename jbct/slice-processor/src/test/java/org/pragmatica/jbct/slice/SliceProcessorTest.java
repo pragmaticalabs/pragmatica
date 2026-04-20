@@ -117,7 +117,10 @@ class SliceProcessorTest {
 
             public record MethodName(String value) {
                 public static Wrapper methodName(String value) { return new Wrapper(new MethodName(value)); }
-                public record Wrapper(MethodName name) { public MethodName unwrap() { return name; } }
+                public record Wrapper(MethodName name) {
+                    public MethodName unwrap() { return name; }
+                    public MethodName expect(String reason) { return name; }
+                }
             }
             """);
 
@@ -2794,7 +2797,7 @@ class SliceProcessorTest {
         var factoryContent = compilation.generatedSourceFile("test.ProxyServiceFactory")
                                         .get().getCharContent(false).toString();
         assertThat(factoryContent).contains("ctx.config().requireString(\"app.proxy\", \"host\")");
-        assertThat(factoryContent).contains("Result.success(ctx.config().getString(\"app.proxy\", \"fallback_url\").map(s -> ProxyUrl.proxyUrl(s).unwrap()))");
+        assertThat(factoryContent).contains("Result.success(ctx.config().getString(\"app.proxy\", \"fallback_url\").map(s -> ProxyUrl.proxyUrl(s).expect(\"optional ProxyUrl value validated at config load time\")))");
         assertThat(factoryContent).contains("ProxyConfig::proxyConfig");
     }
 

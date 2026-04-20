@@ -693,7 +693,7 @@ public class FactoryClassGenerator {
                     }
                     // Check multi-param key resolution — use simple record name (inner record of factory class)
                     if (method.multiParamKeyParam().isPresent()) {
-                        var keyParam = method.multiParamKeyParam().unwrap();
+                        var keyParam = method.multiParamKeyParam().expect("checked with isPresent above");
                         var requestRecordName = capitalize(method.name()) + "Request";
                         return KeyExtractorInfo.single(keyParam.type().toString(), keyParam.name(), requestRecordName)
                                                .fold(_ -> Option.none(), Option::some);
@@ -1066,7 +1066,7 @@ public class FactoryClassGenerator {
         var escapedMethodName = escapeJavaString(qualifiedName);
         var responseType = importTracker.use(method.responseType().toString());
         out.println("                    new SliceMethod<>(");
-        out.println("                        MethodName.methodName(\"" + escapedMethodName + "\").unwrap(),");
+        out.println("                        MethodName.methodName(\"" + escapedMethodName + "\").expect(\"method name literal: " + escapedMethodName + "\"),");
         if (method.hasNoParams()) {
             out.println("                        _unit -> " + delegateExpr + "." + method.name() + "(),");
             out.println("                        new TypeToken<" + responseType + ">() {},");
@@ -1306,7 +1306,7 @@ public class FactoryClassGenerator {
         REQUIRED_STRING_LIST,
         /// Value object with JBCT factory: requireString(section, key).flatMap(Type::factory)
         REQUIRED_VALUE_OBJECT,
-        /// Optional value object: Result.success(getString(section, key).map(s -> Type.factory(s).unwrap()))
+        /// Optional value object: Result.success(getString(section, key).map(s -> Type.factory(s).expect(...)))
         OPTIONAL_VALUE_OBJECT,
     }
 
@@ -1465,7 +1465,8 @@ public class FactoryClassGenerator {
                 case OPTIONAL_PRIMITIVE -> "Result.success(" + configCall + ")";
                 case REQUIRED_VALUE_OBJECT -> configCall + ".flatMap(" + valueObjectType + "::" + valueObjectFactory + ")";
                 case OPTIONAL_VALUE_OBJECT -> "Result.success(" + configCall
-                    + ".map(s -> " + valueObjectType + "." + valueObjectFactory + "(s).unwrap()))";
+                    + ".map(s -> " + valueObjectType + "." + valueObjectFactory
+                    + "(s).expect(\"optional " + valueObjectType + " value validated at config load time\")))";
             };
         }
     }

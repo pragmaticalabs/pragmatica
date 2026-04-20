@@ -94,9 +94,9 @@ public final class FactoryGenerator {
             var columnName = NamingConvention.toSnakeCase(fieldName);
             var column = table.column(columnName);
             if (column.isPresent()) {
-                var typeInfo = TypeMapper.map(column.unwrap().type());
+                var typeInfo = TypeMapper.map(column.expect("checked with isPresent above").type());
                 var accessor = typeInfo.isPresent()
-                              ? typeInfo.unwrap().rowAccessorMethod()
+                              ? typeInfo.expect("checked with isPresent above").rowAccessorMethod()
                               : "getString";
                 var typeArg = typeInfo.flatMap(ti -> ti.rowAccessorTypeArg()).fold(() -> "", t -> t);
                 columns.add(new MapperColumn(columnName, accessor, fieldName, typeArg));

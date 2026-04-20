@@ -201,6 +201,68 @@ class AnnotationProcessorE2ETest {
         }
 
         @Test
+        void insertRecordExpansion_doesNotEmitUnusedParamWarnings() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+
+                @PgSql
+                public interface NoWarnRepo {
+
+                    record CreateOrderRequest(long userId, java.math.BigDecimal total, String status) {}
+                    record OrderRow(long id, long userId, java.math.BigDecimal total, String status) {}
+
+                    @Query("INSERT INTO orders VALUES(:request) RETURNING *")
+                    Promise<OrderRow> createOrder(CreateOrderRequest request);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/NoWarnRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+            // After record expansion :request is gone; virtual fields (userId/total/status) must NOT
+            // be reported as unused method parameters.
+            var diag = result.diagnostics();
+            assertThat(diag).doesNotContain("parameter 'userId' is not used");
+            assertThat(diag).doesNotContain("parameter 'total' is not used");
+            assertThat(diag).doesNotContain("parameter 'status' is not used");
+            // And the original `request` parameter is used via the :request token pre-expansion.
+            assertThat(diag).doesNotContain("parameter 'request' is not used");
+        }
+
+        @Test
+        void queryReferencingUnknownNamedParam_stillWarns() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import org.pragmatica.lang.Unit;
+
+                @PgSql
+                public interface MismatchRepo {
+
+                    @Query("INSERT INTO users (name) VALUES (:bogus)")
+                    Promise<Unit> insertUser(String name);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/MismatchRepo.java");
+
+            // Compilation succeeds (warning, not error), but a diagnostic must flag :bogus and
+            // flag the unused `name` method parameter.
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+            var diag = result.diagnostics();
+            assertThat(diag).contains(":bogus");
+            assertThat(diag).contains("has no matching method parameter");
+            assertThat(diag).contains("parameter 'name' is not used");
+        }
+
+        @Test
         void updateRecordExpansion_expandsSetPattern() throws Exception {
             var source = """
                 package test;

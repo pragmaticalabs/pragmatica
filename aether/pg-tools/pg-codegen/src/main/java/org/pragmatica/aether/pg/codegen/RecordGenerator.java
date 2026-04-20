@@ -30,7 +30,7 @@ public final class RecordGenerator {
                           ? TypeMapper.mapNullable(col.type(), config.nullableStyle())
                           : TypeMapper.map(col.type());
             if (typeInfo.isEmpty()) {return new CodegenError.UnsupportedType(col.type().name()).result();}
-            var info = typeInfo.unwrap();
+            var info = typeInfo.expect("checked with isEmpty above");
             var fieldName = NamingConvention.toFieldName(col.name());
             var fieldType = col.nullable() && config.nullableStyle() == CodegenConfig.NullableStyle.OPTION
                            ? "Option<" + info.boxedTypeName() + ">"
@@ -151,7 +151,7 @@ public final class RecordGenerator {
         var accessor = field.typeInfo().rowAccessorMethod();
         var typeArg = field.typeInfo().rowAccessorTypeArg();
         var call = typeArg.isPresent()
-                  ? "row." + accessor + "(\"" + field.columnName() + "\", " + typeArg.unwrap() + ")"
+                  ? "row." + accessor + "(\"" + field.columnName() + "\", " + typeArg.expect("checked with isPresent above") + ")"
                   : "row." + accessor + "(\"" + field.columnName() + "\")";
         if (field.nullable()) {if (field.fieldType().startsWith("Option<")) {return call + ".map(Option::present).or(Option.empty())";}}
         return call;

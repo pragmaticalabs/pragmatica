@@ -140,8 +140,12 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     Option<Schema> schemaOpt) {
         var sql = queryAnnotation.value();
         var originalParams = extractMethodParams(execElement);
+        // Validate parameter usage BEFORE record expansion so that the pre-expansion SQL's :record
+        // references match the Java method param names; after expansion `:request` is replaced with
+        // $N positional placeholders and virtual field names would otherwise be flagged as unused.
+        var originalParamNames = originalParams.stream().map(FactoryGenerator.MethodParam::name).toList();
+        validateQueryParams(execElement, methodName, sql, originalParamNames);
         var expansion = expandRecordParams(execElement, sql, originalParams);
-        validateQueryParams(execElement, methodName, expansion.sql(), expansion.allParamNames());
         schemaOpt.onPresent(schema -> validateQueryParamTypes(execElement,
                                                               expansion.sql(),
                                                               expansion.allParamNames(),
@@ -202,13 +206,13 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                 params,
                                                 inputFieldNames,
                                                 recordExpansion);}
-        var schema = schemaOpt.unwrap();
+        var schema = schemaOpt.expect("checked with isEmpty above");
         var tableOpt = schema.table(tableName);
         if ( tableOpt.isEmpty()) {
             error(ProcessorError.tableNotFound(tableName), execElement);
             return null;
         }
-        var table = tableOpt.unwrap();
+        var table = tableOpt.expect("checked with isEmpty above");
         validateCrudColumns(execElement, parsed, table);
         validateInsertCoverage(execElement, parsed, table, inputFieldNames);
         validateCrudParamTypes(execElement, parsed, table);
@@ -218,7 +222,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             error(ProcessorError.noPrimaryKey(tableName), execElement);
             return null;
         }
-        validateRewrittenSql(execElement, methodName, sqlOpt.unwrap(), schemaOpt);
+        var crudSql = sqlOpt.expect("checked with isEmpty above");
+        validateRewrittenSql(execElement, methodName, crudSql, schemaOpt);
         var mapperColumns = resolved.needsMapper()
                             ? FactoryGenerator.resolveMapperColumns(table,
                                                                     extractReturnFieldNames(execElement, resolved))
@@ -226,7 +231,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         if ( recordExpansion.hasExpansion()) {
         return new FactoryGenerator.MethodInfo(methodName,
                                                FactoryGenerator.toSqlConstantName(methodName),
-                                               sqlOpt.unwrap(),
+                                               crudSql,
                                                resolved.kind(),
                                                resolved.innerTypeName(),
                                                resolved.innerTypeName(),
@@ -236,7 +241,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                resolved.needsMapper());}
         return FactoryGenerator.MethodInfo.withSharedParams(methodName,
                                                FactoryGenerator.toSqlConstantName(methodName),
-                                               sqlOpt.unwrap(),
+                                               crudSql,
                                                resolved.kind(),
                                                resolved.innerTypeName(),
                                                resolved.innerTypeName(),
@@ -307,9 +312,10 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         return resolveTableFromAnnotation(execElement, schemaOpt);}
         // Try inferring from the return type
         if ( resolved.needsMapper() && schemaOpt.isPresent()) {
-            var inferred = MethodAnalyzer.resolveTableFromTypeName(resolved.simpleTypeName(), schemaOpt.unwrap());
+            var inferred = MethodAnalyzer.resolveTableFromTypeName(resolved.simpleTypeName(),
+                                                                   schemaOpt.expect("checked with isPresent above"));
             if ( inferred.isPresent()) {
-            return inferred.unwrap();}
+            return inferred.expect("checked with isPresent above");}
         }
         // Fallback: try deriving from inner type name with snake_case conversion
         if ( resolved.needsMapper()) {
@@ -330,9 +336,10 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                 var typeElement = (TypeElement) dt.asElement();
                 var typeName = typeElement.getSimpleName().toString();
                 if ( schemaOpt.isPresent()) {
-                    var resolved = MethodAnalyzer.resolveTableFromTypeName(typeName, schemaOpt.unwrap());
+                    var resolved = MethodAnalyzer.resolveTableFromTypeName(typeName,
+                                                                           schemaOpt.expect("checked with isPresent above"));
                     if ( resolved.isPresent()) {
-                    return resolved.unwrap();}
+                    return resolved.expect("checked with isPresent above");}
                 }
                 return deriveTableNameFromTypeName(typeName);
             }
@@ -606,7 +613,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         var tableOpt = schema.table(tableName);
         if ( tableOpt.isEmpty()) {
         return;}
-        var table = tableOpt.unwrap();
+        var table = tableOpt.expect("checked with isEmpty above");
         var columnRefs = extractColumnParamPairs(sql, paramNames);
         for ( var pair : columnRefs) {
             var colOpt = table.column(pair.columnName());
@@ -620,7 +627,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                       javaType,
                                       pair.columnName(),
                                       table.name(),
-                                      colOpt.unwrap().type());
+                                      colOpt.expect("checked with isEmpty above").type());
         }
     }
 
@@ -699,7 +706,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                       param.typeName(),
                                       condition.columnName(),
                                       table.name(),
-                                      colOpt.unwrap().type());
+                                      colOpt.expect("checked with isEmpty above").type());
             paramIdx += condition.operator().paramCount();
         }
     }
@@ -715,7 +722,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         var mappedOpt = TypeMapper.map(pgType);
         if ( mappedOpt.isEmpty()) {
         return;}
-        var mapped = mappedOpt.unwrap();
+        var mapped = mappedOpt.expect("checked with isEmpty above");
         if ( isTypeCompatible(javaType, mapped, pgType)) {
         return;}
         error(ProcessorError.typeMismatch(paramName, javaType, columnName, tableName, pgType.name()),
@@ -1027,8 +1034,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             error(ProcessorError.sqlParseFailed(methodName, detail), execElement);
             return false;
         }
-        var cst = parsed.unwrap();
-        var result = QueryValidator.queryValidator(schemaOpt.unwrap()).validate(cst);
+        var cst = parsed.expect("checked with isFailure above");
+        var result = QueryValidator.queryValidator(schemaOpt.expect("checked with isEmpty above")).validate(cst);
         if (result.hasErrors()) {
             for (var err : result.errors()) {
                 ValidationErrorBridge.emit(processingEnv.getMessager(), execElement, err);
