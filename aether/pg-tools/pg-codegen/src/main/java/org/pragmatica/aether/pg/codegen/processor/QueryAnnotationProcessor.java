@@ -9,16 +9,21 @@ import org.pragmatica.aether.pg.codegen.NamingConvention;
 import org.pragmatica.aether.pg.codegen.TypeMapper;
 import org.pragmatica.aether.pg.codegen.annotation.Query;
 import org.pragmatica.aether.pg.codegen.annotation.Table;
+import org.pragmatica.aether.pg.parser.PostgresParser;
+import org.pragmatica.aether.pg.parser.PostgresParser.CstNode;
 import org.pragmatica.aether.pg.schema.model.BuiltinTypes;
 import org.pragmatica.aether.pg.schema.model.PgType;
 import org.pragmatica.aether.pg.schema.model.Schema;
+import org.pragmatica.aether.pg.schema.validator.QueryValidator;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.annotation.processing.RoundEnvironment;
 import javax.annotation.processing.SupportedAnnotationTypes;
+import javax.annotation.processing.SupportedOptions;
 import javax.annotation.processing.SupportedSourceVersion;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.Element;
@@ -32,9 +37,11 @@ import javax.tools.Diagnostic;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -51,13 +58,19 @@ import java.util.regex.Pattern;
 /// Triggered by the presence of `@Query` annotations on interface methods.
 @Contract
 @SupportedAnnotationTypes("org.pragmatica.aether.resource.db.PgSql")
+@SupportedOptions({"pg.lint.severity", "pg.lint.disabled"})
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class QueryAnnotationProcessor extends AbstractProcessor {
     private SchemaLoader schemaLoader;
+    private LintRunner.LintOptions lintOptions;
+    private final Set<String> migrationsLinted = new java.util.HashSet<>();
+    private final PostgresParser sqlParser = PostgresParser.create();
+    private final Map<String, Result<CstNode>> sqlParseCache = new HashMap<>();
 
     @Override public synchronized void init(ProcessingEnvironment processingEnv) {
         super.init(processingEnv);
         this.schemaLoader = new SchemaLoader(processingEnv);
+        this.lintOptions = LintRunner.OptionsReader.from(processingEnv.getOptions());
     }
 
     @Override public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
@@ -77,6 +90,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         var schemaOpt = schemaLoader.loadSchema(configPath);
         if ( schemaOpt.isEmpty()) {
         note("No schema available for validation; generating factory without validation", interfaceElement);}
+        runMigrationLintOnce(configPath);
         note("Generating " + interfaceName + "Factory", interfaceElement);
         var methods = analyzeMethods(interfaceElement, schemaOpt);
         var additionalImports = collectImports(interfaceElement, methods);
@@ -135,6 +149,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                               schema));
         schemaOpt.onPresent(schema -> validateReturnTypeMapping(execElement, resolved, expansion.sql()));
         var rewritten = QueryRewriter.rewriteNamedParams(expansion.sql(), expansion.allParamNames());
+        validateRewrittenSql(execElement, methodName, rewritten.sql(), schemaOpt);
         var mapperColumns = resolveMapperColumns(execElement, resolved);
         var bodyParams = reorderedParams(expansion.bodyParams(), rewritten.parameterOrder());
         if ( expansion.hasExpansion()) {
@@ -203,6 +218,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             error(ProcessorError.noPrimaryKey(tableName), execElement);
             return null;
         }
+        validateRewrittenSql(execElement, methodName, sqlOpt.unwrap(), schemaOpt);
         var mapperColumns = resolved.needsMapper()
                             ? FactoryGenerator.resolveMapperColumns(table,
                                                                     extractReturnFieldNames(execElement, resolved))
@@ -986,6 +1002,41 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             }
         }
         return "database";
+    }
+
+    private void runMigrationLintOnce(String configPath) {
+        if (migrationsLinted.contains(configPath)) {return;}
+        migrationsLinted.add(configPath);
+        if (lintOptions.isOff()) {return;}
+        var scripts = schemaLoader.loadMigrations(configPath);
+        if (scripts.isEmpty()) {return;}
+        LintRunner.runOnMigrations(processingEnv.getMessager(), scripts, lintOptions);
+    }
+
+    /// Parses and validates the rewritten SQL against the given schema. Emits ERROR
+    /// diagnostics for each validation failure. Returns true when validation passed
+    /// (or was skipped because no schema was available); false on parse or validation failure.
+    private boolean validateRewrittenSql(ExecutableElement execElement,
+                                          String methodName,
+                                          String rewrittenSql,
+                                          Option<Schema> schemaOpt) {
+        if (schemaOpt.isEmpty()) {return true;}
+        var parsed = sqlParseCache.computeIfAbsent(rewrittenSql, sqlParser::parseCst);
+        if (parsed.isFailure()) {
+            var detail = parsed.fold(cause -> cause.message(), _ -> "");
+            error(ProcessorError.sqlParseFailed(methodName, detail), execElement);
+            return false;
+        }
+        var cst = parsed.unwrap();
+        var result = QueryValidator.queryValidator(schemaOpt.unwrap()).validate(cst);
+        if (result.hasErrors()) {
+            for (var err : result.errors()) {
+                ValidationErrorBridge.emit(processingEnv.getMessager(), execElement, err);
+            }
+            return false;
+        }
+        LintRunner.runOnQuery(processingEnv.getMessager(), execElement, cst, lintOptions);
+        return true;
     }
 
     private void note(String message, Element element) {

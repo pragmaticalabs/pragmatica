@@ -13,3 +13,15 @@ CREATE TABLE orders (
     total NUMERIC NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE events (
+    id BIGINT PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE items (
+    id BIGINT PRIMARY KEY,
+    name TEXT NOT NULL
+);

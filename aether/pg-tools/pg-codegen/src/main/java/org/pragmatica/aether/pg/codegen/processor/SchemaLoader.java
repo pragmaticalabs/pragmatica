@@ -66,6 +66,13 @@ public final class SchemaLoader {
         return cache.containsKey(configPath);
     }
 
+    /// Loads raw migration scripts for the given config path (no schema model building).
+    /// Returns an empty list if no migrations are discovered.
+    public List<String> loadMigrations(String configPath) {
+        var schemaPath = configToSchemaPath(configPath);
+        return loadMigrationScripts(schemaPath);
+    }
+
     private List<String> loadMigrationScripts(String schemaPath) {
         var scripts = new ArrayList<String>();
         var fileNames = discoverMigrationFiles(schemaPath);
