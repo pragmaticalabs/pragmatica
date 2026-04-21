@@ -1020,7 +1020,6 @@ public final class Java25Parser {
     private Map<String, String> captures;
     private int tokenBoundaryDepth;
     private boolean skippingWhitespace;
-    private final List<Trivia> pendingTrivia = new ArrayList<>();
     private boolean packratEnabled = true;
     private Option<SourceLocation> furthestFailure;
     private Option<String> furthestExpected;
@@ -1033,6 +1032,8 @@ public final class Java25Parser {
         this.packratEnabled = enabled;
     }
     private List<Diagnostic> diagnostics;
+    private final Map<String, CstParseResult> literalFailureCache = new HashMap<>();
+    private final Map<String, CstParseResult> charClassFailureCache = new HashMap<>();
 
     private void init(String input) {
         this.input = input;
@@ -1045,7 +1046,6 @@ public final class Java25Parser {
         this.furthestFailure = Option.none();
         this.furthestExpected = Option.none();
         this.diagnostics = new ArrayList<>();
-        this.pendingTrivia.clear();
     }
 
     private SourceLocation location() {
@@ -1091,19 +1091,22 @@ public final class Java25Parser {
         this.pos = loc.offset();
         this.line = loc.line();
         this.column = loc.column();
-        // Remove any pending trivia that was consumed AFTER the restore point.
-        // Trivia consumed before this point is still valid and should be kept.
-        pendingTrivia.removeIf(t -> t.span().start().offset() >= loc.offset());
     }
 
     private void trackFailure(String expected) {
-        var loc = location();
-        if (furthestFailure.isEmpty() || loc.offset() > furthestFailure.unwrap().offset()) {
-            furthestFailure = Option.some(loc);
-            furthestExpected = Option.some(expected);
-        } else if (loc.offset() == furthestFailure.unwrap().offset() && !furthestExpected.or("").contains(expected)) {
-            furthestExpected = Option.some(furthestExpected.or("").isEmpty() ? expected : furthestExpected.or("") + " or " + expected);
+        if (!furthestFailure.isEmpty()) {
+            int furthestOffset = furthestFailure.unwrap().offset();
+            if (pos < furthestOffset) return;
+            if (pos == furthestOffset) {
+                String existing = furthestExpected.or("");
+                if (existing.contains(expected)) return;
+                furthestExpected = Option.some(
+                    existing.isEmpty() ? expected : existing + " or " + expected);
+                return;
+            }
         }
+        furthestFailure = Option.some(location());
+        furthestExpected = Option.some(expected);
     }
 
     private SourceSpan skipToRecoveryPoint() {
@@ -1136,7 +1139,7 @@ public final class Java25Parser {
             var expected = furthestExpected.filter(s -> !s.isEmpty()).or(result.expected.or("valid input"));
             return Result.failure(new ParseError(errorLoc, "expected " + expected));
         }
-        var trailingTrivia = drainTriviaAndSkipWhitespace(); // Capture trailing trivia
+        var trailingTrivia = skipWhitespace(); // Capture trailing trivia
         if (!isAtEnd()) {
             var errorLoc = furthestFailure.or(location());
             return Result.failure(new ParseError(errorLoc, "unexpected input"));
@@ -1192,7 +1195,7 @@ public final class Java25Parser {
             return ParseResultWithDiagnostics.withErrors(Option.none(), diagnostics, input);
         }
 
-        var trailingTrivia = drainTriviaAndSkipWhitespace();
+        var trailingTrivia = skipWhitespace();
         if (!isAtEnd()) {
             // Unexpected trailing input - use furthest failure position for error
             var errorLoc = furthestFailure.or(location());
@@ -1228,7 +1231,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_COMPILATION_UNIT;
         
@@ -1296,7 +1299,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ORDINARY_UNIT;
         
@@ -1304,7 +1307,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart1 = location();
             var savedChildrenOpt1 = new ArrayList<>(children);
             children.clear();
@@ -1339,14 +1342,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart3 = location();
             var savedChildrenZom3 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc3 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem3 = parse_ImportDecl();
                 if (zomElem3.isSuccess() && zomElem3.node.isPresent()) {
                     children.add(zomElem3.node.unwrap());
@@ -1384,14 +1387,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_2 = CstParseResult.success(null, "", location());
             var zomStart5 = location();
             var savedChildrenZom5 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc5 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem5 = parse_TypeDecl();
                 if (zomElem5.isSuccess() && zomElem5.node.isPresent()) {
                     children.add(zomElem5.node.unwrap());
@@ -1461,7 +1464,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_PACKAGE_DECL;
         
@@ -1469,14 +1472,14 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_0 = CstParseResult.success(null, "", location());
             var zomStart1 = location();
             var savedChildrenZom1 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc1 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem1 = parse_Annotation();
                 if (zomElem1.isSuccess() && zomElem1.node.isPresent()) {
                     children.add(zomElem1.node.unwrap());
@@ -1514,7 +1517,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = matchLiteralCst("package", false);
             if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
                 children.add(elem0_1.node.unwrap());
@@ -1528,7 +1531,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = CstParseResult.success(null, "", location());
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -1540,7 +1543,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_3 = parse_QualifiedName();
             if (elem0_3.isSuccess() && elem0_3.node.isPresent()) {
                 children.add(elem0_3.node.unwrap());
@@ -1554,7 +1557,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_4 = matchLiteralCst(";", false);
             if (elem0_4.isSuccess() && elem0_4.node.isPresent()) {
                 children.add(elem0_4.node.unwrap());
@@ -1600,7 +1603,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_IMPORT_DECL;
         
@@ -1608,7 +1611,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("import", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -1622,7 +1625,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = CstParseResult.success(null, "", location());
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -1634,7 +1637,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_2 = null;
             var choiceStart4 = location();
             var savedChildren4 = new ArrayList<>(children);
@@ -1644,7 +1647,7 @@ public final class Java25Parser {
             var seqStart5 = location();
             boolean cut5 = false;
             if (alt4_0.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem5_0 = matchLiteralCst("module", false);
                 if (elem5_0.isSuccess() && elem5_0.node.isPresent()) {
                     children.add(elem5_0.node.unwrap());
@@ -1658,7 +1661,7 @@ public final class Java25Parser {
                 }
             }
             if (alt4_0.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem5_1 = parse_QualifiedName();
                 if (elem5_1.isSuccess() && elem5_1.node.isPresent()) {
                     children.add(elem5_1.node.unwrap());
@@ -1672,7 +1675,7 @@ public final class Java25Parser {
                 }
             }
             if (alt4_0.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem5_2 = matchLiteralCst(";", false);
                 if (elem5_2.isSuccess() && elem5_2.node.isPresent()) {
                     children.add(elem5_2.node.unwrap());
@@ -1700,7 +1703,7 @@ public final class Java25Parser {
             var seqStart9 = location();
             boolean cut9 = false;
             if (alt4_1.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var optStart10 = location();
                 var savedChildrenOpt10 = new ArrayList<>(children);
                 children.clear();
@@ -1735,7 +1738,7 @@ public final class Java25Parser {
                 }
             }
             if (alt4_1.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem9_1 = parse_QualifiedName();
                 if (elem9_1.isSuccess() && elem9_1.node.isPresent()) {
                     children.add(elem9_1.node.unwrap());
@@ -1749,7 +1752,7 @@ public final class Java25Parser {
                 }
             }
             if (alt4_1.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var optStart13 = location();
                 var savedChildrenOpt13 = new ArrayList<>(children);
                 children.clear();
@@ -1757,7 +1760,7 @@ public final class Java25Parser {
                 var seqStart15 = location();
                 boolean cut15 = false;
                 if (optElem13.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem15_0 = matchLiteralCst(".", false);
                     if (elem15_0.isSuccess() && elem15_0.node.isPresent()) {
                         children.add(elem15_0.node.unwrap());
@@ -1771,7 +1774,7 @@ public final class Java25Parser {
                     }
                 }
                 if (optElem13.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem15_1 = matchLiteralCst("*", false);
                     if (elem15_1.isSuccess() && elem15_1.node.isPresent()) {
                         children.add(elem15_1.node.unwrap());
@@ -1814,7 +1817,7 @@ public final class Java25Parser {
                 }
             }
             if (alt4_1.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem9_3 = matchLiteralCst(";", false);
                 if (elem9_3.isSuccess() && elem9_3.node.isPresent()) {
                     children.add(elem9_3.node.unwrap());
@@ -1884,7 +1887,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_MODULE_DECL;
         
@@ -1892,14 +1895,14 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_0 = CstParseResult.success(null, "", location());
             var zomStart1 = location();
             var savedChildrenZom1 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc1 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem1 = parse_Annotation();
                 if (zomElem1.isSuccess() && zomElem1.node.isPresent()) {
                     children.add(zomElem1.node.unwrap());
@@ -1937,7 +1940,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart3 = location();
             var savedChildrenOpt3 = new ArrayList<>(children);
             children.clear();
@@ -1972,7 +1975,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = matchLiteralCst("module", false);
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -1986,7 +1989,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_3 = CstParseResult.success(null, "", location());
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -1998,7 +2001,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_4 = parse_QualifiedName();
             if (elem0_4.isSuccess() && elem0_4.node.isPresent()) {
                 children.add(elem0_4.node.unwrap());
@@ -2012,7 +2015,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_5 = matchLiteralCst("{", false);
             if (elem0_5.isSuccess() && elem0_5.node.isPresent()) {
                 children.add(elem0_5.node.unwrap());
@@ -2026,14 +2029,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_6 = CstParseResult.success(null, "", location());
             var zomStart9 = location();
             var savedChildrenZom9 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc9 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem9 = parse_ModuleDirective();
                 if (zomElem9.isSuccess() && zomElem9.node.isPresent()) {
                     children.add(zomElem9.node.unwrap());
@@ -2071,7 +2074,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_7 = matchLiteralCst("}", false);
             if (elem0_7.isSuccess() && elem0_7.node.isPresent()) {
                 children.add(elem0_7.node.unwrap());
@@ -2117,7 +2120,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_MODULE_DIRECTIVE;
         
@@ -2224,7 +2227,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_REQUIRES_DIRECTIVE;
         
@@ -2232,7 +2235,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("requires", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -2246,7 +2249,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = CstParseResult.success(null, "", location());
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -2258,42 +2261,55 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_2 = CstParseResult.success(null, "", location());
             var zomStart3 = location();
             var savedChildrenZom3 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc3 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem3 = null;
                 var choiceStart5 = location();
                 var savedChildren5 = new ArrayList<>(children);
-                children.clear();
-                children.addAll(savedChildren5);
-                var alt5_0 = matchLiteralCst("transitive", false);
-                if (alt5_0.isSuccess() && alt5_0.node.isPresent()) {
-                    children.add(alt5_0.node.unwrap());
-                }
-                if (alt5_0.isSuccess()) {
-                    zomElem3 = alt5_0;
-                } else if (alt5_0.isCutFailure()) {
-                    zomElem3 = alt5_0.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart5);
-                children.clear();
-                children.addAll(savedChildren5);
-                var alt5_1 = matchLiteralCst("static", false);
-                if (alt5_1.isSuccess() && alt5_1.node.isPresent()) {
-                    children.add(alt5_1.node.unwrap());
-                }
-                if (alt5_1.isSuccess()) {
-                    zomElem3 = alt5_1;
-                } else if (alt5_1.isCutFailure()) {
-                    zomElem3 = alt5_1.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart5);
-                }
+                if (pos < input.length()) {
+                    char dispatchChar5 = input.charAt(pos);
+                    switch (dispatchChar5) {
+                        case 't':
+                        {
+                            children.clear();
+                            children.addAll(savedChildren5);
+                            var alt5_0 = matchLiteralCst("transitive", false);
+                            if (alt5_0.isSuccess() && alt5_0.node.isPresent()) {
+                                children.add(alt5_0.node.unwrap());
+                            }
+                            if (alt5_0.isSuccess()) {
+                                zomElem3 = alt5_0;
+                            } else if (alt5_0.isCutFailure()) {
+                                zomElem3 = alt5_0.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart5);
+                            }
+                            break;
+                        }
+                        case 's':
+                        {
+                            children.clear();
+                            children.addAll(savedChildren5);
+                            var alt5_1 = matchLiteralCst("static", false);
+                            if (alt5_1.isSuccess() && alt5_1.node.isPresent()) {
+                                children.add(alt5_1.node.unwrap());
+                            }
+                            if (alt5_1.isSuccess()) {
+                                zomElem3 = alt5_1;
+                            } else if (alt5_1.isCutFailure()) {
+                                zomElem3 = alt5_1.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart5);
+                            }
+                            break;
+                        }
+                    }
                 }
                 if (zomElem3 == null) {
                     children.clear();
@@ -2333,7 +2349,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_3 = parse_QualifiedName();
             if (elem0_3.isSuccess() && elem0_3.node.isPresent()) {
                 children.add(elem0_3.node.unwrap());
@@ -2347,7 +2363,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_4 = matchLiteralCst(";", false);
             if (elem0_4.isSuccess() && elem0_4.node.isPresent()) {
                 children.add(elem0_4.node.unwrap());
@@ -2393,7 +2409,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_EXPORTS_DIRECTIVE;
         
@@ -2401,7 +2417,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("exports", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -2415,7 +2431,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = CstParseResult.success(null, "", location());
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -2427,7 +2443,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_QualifiedName();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -2441,7 +2457,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart4 = location();
             var savedChildrenOpt4 = new ArrayList<>(children);
             children.clear();
@@ -2449,7 +2465,7 @@ public final class Java25Parser {
             var seqStart6 = location();
             boolean cut6 = false;
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem6_0 = matchLiteralCst("to", false);
                 if (elem6_0.isSuccess() && elem6_0.node.isPresent()) {
                     children.add(elem6_0.node.unwrap());
@@ -2463,7 +2479,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem6_1 = parse_QualifiedName();
                 if (elem6_1.isSuccess() && elem6_1.node.isPresent()) {
                     children.add(elem6_1.node.unwrap());
@@ -2477,19 +2493,19 @@ public final class Java25Parser {
                 }
             }
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult elem6_2 = CstParseResult.success(null, "", location());
                 var zomStart9 = location();
                 var savedChildrenZom9 = new ArrayList<>(children);
                 children.clear();
                 while (true) {
                     var beforeLoc9 = location();
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     CstParseResult zomElem9 = CstParseResult.success(null, "", location());
                     var seqStart11 = location();
                     boolean cut11 = false;
                     if (zomElem9.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         var elem11_0 = matchLiteralCst(",", false);
                         if (elem11_0.isSuccess() && elem11_0.node.isPresent()) {
                             children.add(elem11_0.node.unwrap());
@@ -2503,7 +2519,7 @@ public final class Java25Parser {
                         }
                     }
                     if (zomElem9.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         var elem11_1 = parse_QualifiedName();
                         if (elem11_1.isSuccess() && elem11_1.node.isPresent()) {
                             children.add(elem11_1.node.unwrap());
@@ -2581,7 +2597,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_4 = matchLiteralCst(";", false);
             if (elem0_4.isSuccess() && elem0_4.node.isPresent()) {
                 children.add(elem0_4.node.unwrap());
@@ -2627,7 +2643,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_OPENS_DIRECTIVE;
         
@@ -2635,7 +2651,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("opens", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -2649,7 +2665,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = CstParseResult.success(null, "", location());
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -2661,7 +2677,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_QualifiedName();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -2675,7 +2691,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart4 = location();
             var savedChildrenOpt4 = new ArrayList<>(children);
             children.clear();
@@ -2683,7 +2699,7 @@ public final class Java25Parser {
             var seqStart6 = location();
             boolean cut6 = false;
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem6_0 = matchLiteralCst("to", false);
                 if (elem6_0.isSuccess() && elem6_0.node.isPresent()) {
                     children.add(elem6_0.node.unwrap());
@@ -2697,7 +2713,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem6_1 = parse_QualifiedName();
                 if (elem6_1.isSuccess() && elem6_1.node.isPresent()) {
                     children.add(elem6_1.node.unwrap());
@@ -2711,19 +2727,19 @@ public final class Java25Parser {
                 }
             }
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult elem6_2 = CstParseResult.success(null, "", location());
                 var zomStart9 = location();
                 var savedChildrenZom9 = new ArrayList<>(children);
                 children.clear();
                 while (true) {
                     var beforeLoc9 = location();
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     CstParseResult zomElem9 = CstParseResult.success(null, "", location());
                     var seqStart11 = location();
                     boolean cut11 = false;
                     if (zomElem9.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         var elem11_0 = matchLiteralCst(",", false);
                         if (elem11_0.isSuccess() && elem11_0.node.isPresent()) {
                             children.add(elem11_0.node.unwrap());
@@ -2737,7 +2753,7 @@ public final class Java25Parser {
                         }
                     }
                     if (zomElem9.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         var elem11_1 = parse_QualifiedName();
                         if (elem11_1.isSuccess() && elem11_1.node.isPresent()) {
                             children.add(elem11_1.node.unwrap());
@@ -2815,7 +2831,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_4 = matchLiteralCst(";", false);
             if (elem0_4.isSuccess() && elem0_4.node.isPresent()) {
                 children.add(elem0_4.node.unwrap());
@@ -2861,7 +2877,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_USES_DIRECTIVE;
         
@@ -2869,7 +2885,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("uses", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -2883,7 +2899,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = CstParseResult.success(null, "", location());
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -2895,7 +2911,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_QualifiedName();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -2909,7 +2925,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_3 = matchLiteralCst(";", false);
             if (elem0_3.isSuccess() && elem0_3.node.isPresent()) {
                 children.add(elem0_3.node.unwrap());
@@ -2955,7 +2971,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_PROVIDES_DIRECTIVE;
         
@@ -2963,7 +2979,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("provides", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -2977,7 +2993,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = CstParseResult.success(null, "", location());
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -2989,7 +3005,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_QualifiedName();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -3003,7 +3019,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_3 = matchLiteralCst("with", false);
             if (elem0_3.isSuccess() && elem0_3.node.isPresent()) {
                 children.add(elem0_3.node.unwrap());
@@ -3017,7 +3033,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_4 = parse_QualifiedName();
             if (elem0_4.isSuccess() && elem0_4.node.isPresent()) {
                 children.add(elem0_4.node.unwrap());
@@ -3031,19 +3047,19 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_5 = CstParseResult.success(null, "", location());
             var zomStart6 = location();
             var savedChildrenZom6 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc6 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem6 = CstParseResult.success(null, "", location());
                 var seqStart8 = location();
                 boolean cut8 = false;
                 if (zomElem6.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem8_0 = matchLiteralCst(",", false);
                     if (elem8_0.isSuccess() && elem8_0.node.isPresent()) {
                         children.add(elem8_0.node.unwrap());
@@ -3057,7 +3073,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem6.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem8_1 = parse_QualifiedName();
                     if (elem8_1.isSuccess() && elem8_1.node.isPresent()) {
                         children.add(elem8_1.node.unwrap());
@@ -3106,7 +3122,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_6 = matchLiteralCst(";", false);
             if (elem0_6.isSuccess() && elem0_6.node.isPresent()) {
                 children.add(elem0_6.node.unwrap());
@@ -3152,7 +3168,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_TYPE_DECL;
         
@@ -3160,14 +3176,14 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_0 = CstParseResult.success(null, "", location());
             var zomStart1 = location();
             var savedChildrenZom1 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc1 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem1 = parse_Annotation();
                 if (zomElem1.isSuccess() && zomElem1.node.isPresent()) {
                     children.add(zomElem1.node.unwrap());
@@ -3205,14 +3221,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart3 = location();
             var savedChildrenZom3 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc3 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem3 = parse_Modifier();
                 if (zomElem3.isSuccess() && zomElem3.node.isPresent()) {
                     children.add(zomElem3.node.unwrap());
@@ -3250,7 +3266,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_TypeKind();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -3296,7 +3312,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_TYPE_KIND;
         
@@ -3403,7 +3419,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_CLASS_DECL;
         
@@ -3411,7 +3427,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_ClassKW();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -3425,7 +3441,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = CstParseResult.success(null, "", location());
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -3437,7 +3453,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_Identifier();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -3451,7 +3467,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart4 = location();
             var savedChildrenOpt4 = new ArrayList<>(children);
             children.clear();
@@ -3486,7 +3502,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart6 = location();
             var savedChildrenOpt6 = new ArrayList<>(children);
             children.clear();
@@ -3494,7 +3510,7 @@ public final class Java25Parser {
             var seqStart8 = location();
             boolean cut8 = false;
             if (optElem6.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem8_0 = matchLiteralCst("extends", false);
                 if (elem8_0.isSuccess() && elem8_0.node.isPresent()) {
                     children.add(elem8_0.node.unwrap());
@@ -3508,7 +3524,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem6.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem8_1 = parse_Type();
                 if (elem8_1.isSuccess() && elem8_1.node.isPresent()) {
                     children.add(elem8_1.node.unwrap());
@@ -3551,7 +3567,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart11 = location();
             var savedChildrenOpt11 = new ArrayList<>(children);
             children.clear();
@@ -3586,7 +3602,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart13 = location();
             var savedChildrenOpt13 = new ArrayList<>(children);
             children.clear();
@@ -3621,7 +3637,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_7 = parse_ClassBody();
             if (elem0_7.isSuccess() && elem0_7.node.isPresent()) {
                 children.add(elem0_7.node.unwrap());
@@ -3667,7 +3683,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_INTERFACE_DECL;
         
@@ -3675,7 +3691,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_InterfaceKW();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -3689,7 +3705,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = CstParseResult.success(null, "", location());
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -3701,7 +3717,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_Identifier();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -3715,7 +3731,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart4 = location();
             var savedChildrenOpt4 = new ArrayList<>(children);
             children.clear();
@@ -3750,7 +3766,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart6 = location();
             var savedChildrenOpt6 = new ArrayList<>(children);
             children.clear();
@@ -3758,7 +3774,7 @@ public final class Java25Parser {
             var seqStart8 = location();
             boolean cut8 = false;
             if (optElem6.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem8_0 = matchLiteralCst("extends", false);
                 if (elem8_0.isSuccess() && elem8_0.node.isPresent()) {
                     children.add(elem8_0.node.unwrap());
@@ -3772,7 +3788,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem6.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem8_1 = parse_TypeList();
                 if (elem8_1.isSuccess() && elem8_1.node.isPresent()) {
                     children.add(elem8_1.node.unwrap());
@@ -3815,7 +3831,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart11 = location();
             var savedChildrenOpt11 = new ArrayList<>(children);
             children.clear();
@@ -3850,7 +3866,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_6 = parse_ClassBody();
             if (elem0_6.isSuccess() && elem0_6.node.isPresent()) {
                 children.add(elem0_6.node.unwrap());
@@ -3896,7 +3912,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ANNOTATION_DECL;
         
@@ -3904,7 +3920,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("@", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -3918,7 +3934,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = parse_InterfaceKW();
             if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
                 children.add(elem0_1.node.unwrap());
@@ -3932,7 +3948,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = CstParseResult.success(null, "", location());
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -3944,7 +3960,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_3 = parse_Identifier();
             if (elem0_3.isSuccess() && elem0_3.node.isPresent()) {
                 children.add(elem0_3.node.unwrap());
@@ -3958,7 +3974,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_4 = parse_AnnotationBody();
             if (elem0_4.isSuccess() && elem0_4.node.isPresent()) {
                 children.add(elem0_4.node.unwrap());
@@ -4004,7 +4020,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_CLASS_K_W;
         
@@ -4015,7 +4031,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("class", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -4084,7 +4100,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_INTERFACE_K_W;
         
@@ -4095,7 +4111,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("interface", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -4164,7 +4180,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ANNOTATION_BODY;
         
@@ -4172,7 +4188,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("{", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -4186,14 +4202,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem2 = parse_AnnotationMember();
                 if (zomElem2.isSuccess() && zomElem2.node.isPresent()) {
                     children.add(zomElem2.node.unwrap());
@@ -4231,7 +4247,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = matchLiteralCst("}", false);
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -4277,7 +4293,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ANNOTATION_MEMBER;
         
@@ -4290,14 +4306,14 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem1_0 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem2 = parse_Annotation();
                 if (zomElem2.isSuccess() && zomElem2.node.isPresent()) {
                     children.add(zomElem2.node.unwrap());
@@ -4335,14 +4351,14 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem1_1 = CstParseResult.success(null, "", location());
             var zomStart4 = location();
             var savedChildrenZom4 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc4 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem4 = parse_Modifier();
                 if (zomElem4.isSuccess() && zomElem4.node.isPresent()) {
                     children.add(zomElem4.node.unwrap());
@@ -4380,7 +4396,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem1_2 = null;
             var choiceStart7 = location();
             var savedChildren7 = new ArrayList<>(children);
@@ -4494,7 +4510,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ANNOTATION_ELEM_DECL;
         
@@ -4502,7 +4518,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Type();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -4516,7 +4532,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = parse_Identifier();
             if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
                 children.add(elem0_1.node.unwrap());
@@ -4530,7 +4546,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = matchLiteralCst("(", false);
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -4544,7 +4560,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_3 = matchLiteralCst(")", false);
             if (elem0_3.isSuccess() && elem0_3.node.isPresent()) {
                 children.add(elem0_3.node.unwrap());
@@ -4558,7 +4574,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart5 = location();
             var savedChildrenOpt5 = new ArrayList<>(children);
             children.clear();
@@ -4566,7 +4582,7 @@ public final class Java25Parser {
             var seqStart7 = location();
             boolean cut7 = false;
             if (optElem5.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem7_0 = matchLiteralCst("default", false);
                 if (elem7_0.isSuccess() && elem7_0.node.isPresent()) {
                     children.add(elem7_0.node.unwrap());
@@ -4580,7 +4596,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem5.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem7_1 = parse_AnnotationElem();
                 if (elem7_1.isSuccess() && elem7_1.node.isPresent()) {
                     children.add(elem7_1.node.unwrap());
@@ -4623,7 +4639,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_5 = matchLiteralCst(";", false);
             if (elem0_5.isSuccess() && elem0_5.node.isPresent()) {
                 children.add(elem0_5.node.unwrap());
@@ -4669,7 +4685,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ENUM_DECL;
         
@@ -4677,7 +4693,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_EnumKW();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -4691,7 +4707,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = CstParseResult.success(null, "", location());
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -4703,7 +4719,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_Identifier();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -4717,7 +4733,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart4 = location();
             var savedChildrenOpt4 = new ArrayList<>(children);
             children.clear();
@@ -4752,7 +4768,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_4 = parse_EnumBody();
             if (elem0_4.isSuccess() && elem0_4.node.isPresent()) {
                 children.add(elem0_4.node.unwrap());
@@ -4798,7 +4814,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_RECORD_DECL;
         
@@ -4806,7 +4822,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_RecordKW();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -4826,7 +4842,7 @@ public final class Java25Parser {
             var seqStart4 = location();
             boolean cut4 = false;
             if (andElem2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem4_0 = parse_Identifier();
                 if (elem4_0.isCutFailure()) {
                     restoreLocation(seqStart4);
@@ -4837,7 +4853,7 @@ public final class Java25Parser {
                 }
             }
             if (andElem2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var optStart6 = location();
                 var optElem6 = parse_TypeParams();
                 CstParseResult elem4_1;
@@ -4859,7 +4875,7 @@ public final class Java25Parser {
                 }
             }
             if (andElem2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem4_2 = matchLiteralCst("(", false);
                 if (elem4_2.isCutFailure()) {
                     restoreLocation(seqStart4);
@@ -4885,7 +4901,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_Identifier();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -4899,7 +4915,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_3 = CstParseResult.success(null, "", location());
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -4911,7 +4927,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart11 = location();
             var savedChildrenOpt11 = new ArrayList<>(children);
             children.clear();
@@ -4946,7 +4962,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_5 = matchLiteralCst("(", false);
             if (elem0_5.isSuccess() && elem0_5.node.isPresent()) {
                 children.add(elem0_5.node.unwrap());
@@ -4960,7 +4976,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart14 = location();
             var savedChildrenOpt14 = new ArrayList<>(children);
             children.clear();
@@ -4995,7 +5011,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_7 = matchLiteralCst(")", false);
             if (elem0_7.isSuccess() && elem0_7.node.isPresent()) {
                 children.add(elem0_7.node.unwrap());
@@ -5009,7 +5025,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart17 = location();
             var savedChildrenOpt17 = new ArrayList<>(children);
             children.clear();
@@ -5044,7 +5060,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_9 = parse_RecordBody();
             if (elem0_9.isSuccess() && elem0_9.node.isPresent()) {
                 children.add(elem0_9.node.unwrap());
@@ -5090,7 +5106,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ENUM_K_W;
         
@@ -5101,7 +5117,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("enum", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -5170,7 +5186,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_RECORD_K_W;
         
@@ -5181,7 +5197,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("record", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -5250,7 +5266,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_IMPLEMENTS_CLAUSE;
         
@@ -5258,7 +5274,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("implements", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -5272,7 +5288,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = CstParseResult.success(null, "", location());
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -5284,7 +5300,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_TypeList();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -5330,7 +5346,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_PERMITS_CLAUSE;
         
@@ -5338,7 +5354,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("permits", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -5352,7 +5368,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = CstParseResult.success(null, "", location());
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -5364,7 +5380,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_TypeList();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -5410,7 +5426,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_TYPE_LIST;
         
@@ -5418,7 +5434,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Type();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -5432,19 +5448,19 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_0 = matchLiteralCst(",", false);
                     if (elem4_0.isSuccess() && elem4_0.node.isPresent()) {
                         children.add(elem4_0.node.unwrap());
@@ -5458,7 +5474,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_1 = parse_Type();
                     if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                         children.add(elem4_1.node.unwrap());
@@ -5539,7 +5555,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_TYPE_PARAMS;
         
@@ -5547,7 +5563,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("<", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -5561,7 +5577,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = parse_TypeParam();
             if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
                 children.add(elem0_1.node.unwrap());
@@ -5575,19 +5591,19 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_2 = CstParseResult.success(null, "", location());
             var zomStart3 = location();
             var savedChildrenZom3 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc3 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem3 = CstParseResult.success(null, "", location());
                 var seqStart5 = location();
                 boolean cut5 = false;
                 if (zomElem3.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem5_0 = matchLiteralCst(",", false);
                     if (elem5_0.isSuccess() && elem5_0.node.isPresent()) {
                         children.add(elem5_0.node.unwrap());
@@ -5601,7 +5617,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem3.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem5_1 = parse_TypeParam();
                     if (elem5_1.isSuccess() && elem5_1.node.isPresent()) {
                         children.add(elem5_1.node.unwrap());
@@ -5650,7 +5666,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_3 = matchLiteralCst(">", false);
             if (elem0_3.isSuccess() && elem0_3.node.isPresent()) {
                 children.add(elem0_3.node.unwrap());
@@ -5696,7 +5712,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_TYPE_PARAM;
         
@@ -5704,7 +5720,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Identifier();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -5718,7 +5734,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart2 = location();
             var savedChildrenOpt2 = new ArrayList<>(children);
             children.clear();
@@ -5726,7 +5742,7 @@ public final class Java25Parser {
             var seqStart4 = location();
             boolean cut4 = false;
             if (optElem2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem4_0 = matchLiteralCst("extends", false);
                 if (elem4_0.isSuccess() && elem4_0.node.isPresent()) {
                     children.add(elem4_0.node.unwrap());
@@ -5740,7 +5756,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem4_1 = parse_Type();
                 if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                     children.add(elem4_1.node.unwrap());
@@ -5754,19 +5770,19 @@ public final class Java25Parser {
                 }
             }
             if (optElem2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult elem4_2 = CstParseResult.success(null, "", location());
                 var zomStart7 = location();
                 var savedChildrenZom7 = new ArrayList<>(children);
                 children.clear();
                 while (true) {
                     var beforeLoc7 = location();
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     CstParseResult zomElem7 = CstParseResult.success(null, "", location());
                     var seqStart9 = location();
                     boolean cut9 = false;
                     if (zomElem7.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         var elem9_0 = matchLiteralCst("&", false);
                         if (elem9_0.isSuccess() && elem9_0.node.isPresent()) {
                             children.add(elem9_0.node.unwrap());
@@ -5780,7 +5796,7 @@ public final class Java25Parser {
                         }
                     }
                     if (zomElem7.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         var elem9_1 = parse_Type();
                         if (elem9_1.isSuccess() && elem9_1.node.isPresent()) {
                             children.add(elem9_1.node.unwrap());
@@ -5890,7 +5906,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_CLASS_BODY;
         
@@ -5898,7 +5914,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("{", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -5912,14 +5928,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem2 = parse_ClassMember();
                 if (zomElem2.isSuccess() && zomElem2.node.isPresent()) {
                     children.add(zomElem2.node.unwrap());
@@ -5957,7 +5973,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = matchLiteralCst("}", false);
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -6003,7 +6019,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_CLASS_MEMBER;
         
@@ -6016,14 +6032,14 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem1_0 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem2 = parse_Annotation();
                 if (zomElem2.isSuccess() && zomElem2.node.isPresent()) {
                     children.add(zomElem2.node.unwrap());
@@ -6061,14 +6077,14 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem1_1 = CstParseResult.success(null, "", location());
             var zomStart4 = location();
             var savedChildrenZom4 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc4 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem4 = parse_Modifier();
                 if (zomElem4.isSuccess() && zomElem4.node.isPresent()) {
                     children.add(zomElem4.node.unwrap());
@@ -6106,7 +6122,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_2 = parse_Member();
             if (elem1_2.isSuccess() && elem1_2.node.isPresent()) {
                 children.add(elem1_2.node.unwrap());
@@ -6190,7 +6206,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_MEMBER;
         
@@ -6284,7 +6300,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_INITIALIZER_BLOCK;
         
@@ -6292,7 +6308,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart1 = location();
             var savedChildrenOpt1 = new ArrayList<>(children);
             children.clear();
@@ -6327,7 +6343,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = parse_Block();
             if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
                 children.add(elem0_1.node.unwrap());
@@ -6373,7 +6389,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ENUM_BODY;
         
@@ -6381,7 +6397,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("{", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -6395,7 +6411,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart2 = location();
             var savedChildrenOpt2 = new ArrayList<>(children);
             children.clear();
@@ -6430,7 +6446,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart4 = location();
             var savedChildrenOpt4 = new ArrayList<>(children);
             children.clear();
@@ -6438,7 +6454,7 @@ public final class Java25Parser {
             var seqStart6 = location();
             boolean cut6 = false;
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem6_0 = matchLiteralCst(";", false);
                 if (elem6_0.isSuccess() && elem6_0.node.isPresent()) {
                     children.add(elem6_0.node.unwrap());
@@ -6452,14 +6468,14 @@ public final class Java25Parser {
                 }
             }
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult elem6_1 = CstParseResult.success(null, "", location());
                 var zomStart8 = location();
                 var savedChildrenZom8 = new ArrayList<>(children);
                 children.clear();
                 while (true) {
                     var beforeLoc8 = location();
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var zomElem8 = parse_ClassMember();
                     if (zomElem8.isSuccess() && zomElem8.node.isPresent()) {
                         children.add(zomElem8.node.unwrap());
@@ -6526,7 +6542,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_3 = matchLiteralCst("}", false);
             if (elem0_3.isSuccess() && elem0_3.node.isPresent()) {
                 children.add(elem0_3.node.unwrap());
@@ -6572,7 +6588,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ENUM_CONSTS;
         
@@ -6580,7 +6596,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_EnumConst();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -6594,19 +6610,19 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_0 = matchLiteralCst(",", false);
                     if (elem4_0.isSuccess() && elem4_0.node.isPresent()) {
                         children.add(elem4_0.node.unwrap());
@@ -6620,7 +6636,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_1 = parse_EnumConst();
                     if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                         children.add(elem4_1.node.unwrap());
@@ -6669,7 +6685,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart7 = location();
             var savedChildrenOpt7 = new ArrayList<>(children);
             children.clear();
@@ -6736,7 +6752,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ENUM_CONST;
         
@@ -6744,14 +6760,14 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_0 = CstParseResult.success(null, "", location());
             var zomStart1 = location();
             var savedChildrenZom1 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc1 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem1 = parse_Annotation();
                 if (zomElem1.isSuccess() && zomElem1.node.isPresent()) {
                     children.add(zomElem1.node.unwrap());
@@ -6789,7 +6805,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = parse_Identifier();
             if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
                 children.add(elem0_1.node.unwrap());
@@ -6803,7 +6819,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart4 = location();
             var savedChildrenOpt4 = new ArrayList<>(children);
             children.clear();
@@ -6811,7 +6827,7 @@ public final class Java25Parser {
             var seqStart6 = location();
             boolean cut6 = false;
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem6_0 = matchLiteralCst("(", false);
                 if (elem6_0.isSuccess() && elem6_0.node.isPresent()) {
                     children.add(elem6_0.node.unwrap());
@@ -6825,7 +6841,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var optStart8 = location();
                 var savedChildrenOpt8 = new ArrayList<>(children);
                 children.clear();
@@ -6860,7 +6876,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem6_2 = matchLiteralCst(")", false);
                 if (elem6_2.isSuccess() && elem6_2.node.isPresent()) {
                     children.add(elem6_2.node.unwrap());
@@ -6903,7 +6919,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart11 = location();
             var savedChildrenOpt11 = new ArrayList<>(children);
             children.clear();
@@ -6970,7 +6986,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_RECORD_COMPONENTS;
         
@@ -6978,7 +6994,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_RecordComp();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -6992,19 +7008,19 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_0 = matchLiteralCst(",", false);
                     if (elem4_0.isSuccess() && elem4_0.node.isPresent()) {
                         children.add(elem4_0.node.unwrap());
@@ -7018,7 +7034,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_1 = parse_RecordComp();
                     if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                         children.add(elem4_1.node.unwrap());
@@ -7099,7 +7115,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_RECORD_COMP;
         
@@ -7107,14 +7123,14 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_0 = CstParseResult.success(null, "", location());
             var zomStart1 = location();
             var savedChildrenZom1 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc1 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem1 = parse_Annotation();
                 if (zomElem1.isSuccess() && zomElem1.node.isPresent()) {
                     children.add(zomElem1.node.unwrap());
@@ -7152,7 +7168,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = parse_Type();
             if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
                 children.add(elem0_1.node.unwrap());
@@ -7166,7 +7182,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_Identifier();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -7212,7 +7228,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_RECORD_BODY;
         
@@ -7220,7 +7236,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("{", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -7234,14 +7250,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem2 = parse_RecordMember();
                 if (zomElem2.isSuccess() && zomElem2.node.isPresent()) {
                     children.add(zomElem2.node.unwrap());
@@ -7279,7 +7295,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = matchLiteralCst("}", false);
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -7325,7 +7341,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_RECORD_MEMBER;
         
@@ -7393,7 +7409,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_COMPACT_CONSTRUCTOR;
         
@@ -7401,14 +7417,14 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_0 = CstParseResult.success(null, "", location());
             var zomStart1 = location();
             var savedChildrenZom1 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc1 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem1 = parse_Annotation();
                 if (zomElem1.isSuccess() && zomElem1.node.isPresent()) {
                     children.add(zomElem1.node.unwrap());
@@ -7446,14 +7462,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart3 = location();
             var savedChildrenZom3 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc3 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem3 = parse_Modifier();
                 if (zomElem3.isSuccess() && zomElem3.node.isPresent()) {
                     children.add(zomElem3.node.unwrap());
@@ -7491,7 +7507,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_Identifier();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -7505,7 +7521,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_3 = parse_Block();
             if (elem0_3.isSuccess() && elem0_3.node.isPresent()) {
                 children.add(elem0_3.node.unwrap());
@@ -7551,7 +7567,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_FIELD_DECL;
         
@@ -7559,7 +7575,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Type();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -7573,7 +7589,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = parse_VarDecls();
             if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
                 children.add(elem0_1.node.unwrap());
@@ -7587,7 +7603,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = matchLiteralCst(";", false);
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -7633,7 +7649,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_VAR_DECLS;
         
@@ -7641,7 +7657,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_VarDecl();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -7655,19 +7671,19 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_0 = matchLiteralCst(",", false);
                     if (elem4_0.isSuccess() && elem4_0.node.isPresent()) {
                         children.add(elem4_0.node.unwrap());
@@ -7681,7 +7697,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_1 = parse_VarDecl();
                     if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                         children.add(elem4_1.node.unwrap());
@@ -7762,7 +7778,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_VAR_DECL;
         
@@ -7770,7 +7786,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Identifier();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -7784,7 +7800,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart2 = location();
             var savedChildrenOpt2 = new ArrayList<>(children);
             children.clear();
@@ -7819,7 +7835,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart4 = location();
             var savedChildrenOpt4 = new ArrayList<>(children);
             children.clear();
@@ -7827,7 +7843,7 @@ public final class Java25Parser {
             var seqStart6 = location();
             boolean cut6 = false;
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem6_0 = matchLiteralCst("=", false);
                 if (elem6_0.isSuccess() && elem6_0.node.isPresent()) {
                     children.add(elem6_0.node.unwrap());
@@ -7841,7 +7857,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem6_1 = parse_VarInit();
                 if (elem6_1.isSuccess() && elem6_1.node.isPresent()) {
                     children.add(elem6_1.node.unwrap());
@@ -7916,7 +7932,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_VAR_INIT;
         
@@ -7929,7 +7945,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("{", false);
             if (elem1_0.isSuccess() && elem1_0.node.isPresent()) {
                 children.add(elem1_0.node.unwrap());
@@ -7943,7 +7959,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart3 = location();
             var savedChildrenOpt3 = new ArrayList<>(children);
             children.clear();
@@ -7951,7 +7967,7 @@ public final class Java25Parser {
             var seqStart5 = location();
             boolean cut5 = false;
             if (optElem3.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem5_0 = parse_VarInit();
                 if (elem5_0.isSuccess() && elem5_0.node.isPresent()) {
                     children.add(elem5_0.node.unwrap());
@@ -7965,19 +7981,19 @@ public final class Java25Parser {
                 }
             }
             if (optElem3.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult elem5_1 = CstParseResult.success(null, "", location());
                 var zomStart7 = location();
                 var savedChildrenZom7 = new ArrayList<>(children);
                 children.clear();
                 while (true) {
                     var beforeLoc7 = location();
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     CstParseResult zomElem7 = CstParseResult.success(null, "", location());
                     var seqStart9 = location();
                     boolean cut9 = false;
                     if (zomElem7.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         var elem9_0 = matchLiteralCst(",", false);
                         if (elem9_0.isSuccess() && elem9_0.node.isPresent()) {
                             children.add(elem9_0.node.unwrap());
@@ -7991,7 +8007,7 @@ public final class Java25Parser {
                         }
                     }
                     if (zomElem7.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         var elem9_1 = parse_VarInit();
                         if (elem9_1.isSuccess() && elem9_1.node.isPresent()) {
                             children.add(elem9_1.node.unwrap());
@@ -8040,7 +8056,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem3.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var optStart12 = location();
                 var savedChildrenOpt12 = new ArrayList<>(children);
                 children.clear();
@@ -8104,7 +8120,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_2 = matchLiteralCst("}", false);
             if (elem1_2.isSuccess() && elem1_2.node.isPresent()) {
                 children.add(elem1_2.node.unwrap());
@@ -8175,7 +8191,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_METHOD_DECL;
         
@@ -8183,7 +8199,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart1 = location();
             var savedChildrenOpt1 = new ArrayList<>(children);
             children.clear();
@@ -8218,7 +8234,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = parse_Type();
             if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
                 children.add(elem0_1.node.unwrap());
@@ -8232,7 +8248,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_Identifier();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -8246,7 +8262,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_3 = matchLiteralCst("(", false);
             if (elem0_3.isSuccess() && elem0_3.node.isPresent()) {
                 children.add(elem0_3.node.unwrap());
@@ -8260,7 +8276,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_4 = CstParseResult.success(null, "", location());
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -8272,7 +8288,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart7 = location();
             var savedChildrenOpt7 = new ArrayList<>(children);
             children.clear();
@@ -8307,7 +8323,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_6 = matchLiteralCst(")", false);
             if (elem0_6.isSuccess() && elem0_6.node.isPresent()) {
                 children.add(elem0_6.node.unwrap());
@@ -8321,7 +8337,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart10 = location();
             var savedChildrenOpt10 = new ArrayList<>(children);
             children.clear();
@@ -8356,7 +8372,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart12 = location();
             var savedChildrenOpt12 = new ArrayList<>(children);
             children.clear();
@@ -8391,7 +8407,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_9 = null;
             var choiceStart15 = location();
             var savedChildren15 = new ArrayList<>(children);
@@ -8467,7 +8483,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_PARAMS;
         
@@ -8475,7 +8491,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Param();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -8489,19 +8505,19 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_0 = matchLiteralCst(",", false);
                     if (elem4_0.isSuccess() && elem4_0.node.isPresent()) {
                         children.add(elem4_0.node.unwrap());
@@ -8515,7 +8531,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_1 = parse_Param();
                     if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                         children.add(elem4_1.node.unwrap());
@@ -8596,7 +8612,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_PARAM;
         
@@ -8604,14 +8620,14 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_0 = CstParseResult.success(null, "", location());
             var zomStart1 = location();
             var savedChildrenZom1 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc1 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem1 = parse_Annotation();
                 if (zomElem1.isSuccess() && zomElem1.node.isPresent()) {
                     children.add(zomElem1.node.unwrap());
@@ -8649,14 +8665,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart3 = location();
             var savedChildrenZom3 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc3 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem3 = parse_Modifier();
                 if (zomElem3.isSuccess() && zomElem3.node.isPresent()) {
                     children.add(zomElem3.node.unwrap());
@@ -8694,7 +8710,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_Type();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -8708,7 +8724,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart6 = location();
             var savedChildrenOpt6 = new ArrayList<>(children);
             children.clear();
@@ -8743,7 +8759,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_4 = parse_Identifier();
             if (elem0_4.isSuccess() && elem0_4.node.isPresent()) {
                 children.add(elem0_4.node.unwrap());
@@ -8757,7 +8773,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart9 = location();
             var savedChildrenOpt9 = new ArrayList<>(children);
             children.clear();
@@ -8824,7 +8840,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_THROWS;
         
@@ -8832,7 +8848,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("throws", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -8846,7 +8862,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = CstParseResult.success(null, "", location());
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -8858,7 +8874,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_TypeList();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -8904,7 +8920,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_CONSTRUCTOR_DECL;
         
@@ -8912,7 +8928,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart1 = location();
             var savedChildrenOpt1 = new ArrayList<>(children);
             children.clear();
@@ -8947,7 +8963,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = parse_Identifier();
             if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
                 children.add(elem0_1.node.unwrap());
@@ -8961,7 +8977,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = matchLiteralCst("(", false);
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -8975,7 +8991,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_3 = CstParseResult.success(null, "", location());
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -8987,7 +9003,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart6 = location();
             var savedChildrenOpt6 = new ArrayList<>(children);
             children.clear();
@@ -9022,7 +9038,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_5 = matchLiteralCst(")", false);
             if (elem0_5.isSuccess() && elem0_5.node.isPresent()) {
                 children.add(elem0_5.node.unwrap());
@@ -9036,7 +9052,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart9 = location();
             var savedChildrenOpt9 = new ArrayList<>(children);
             children.clear();
@@ -9071,7 +9087,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_7 = parse_Block();
             if (elem0_7.isSuccess() && elem0_7.node.isPresent()) {
                 children.add(elem0_7.node.unwrap());
@@ -9117,7 +9133,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_BLOCK;
         
@@ -9125,7 +9141,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("{", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -9139,14 +9155,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem2 = parse_BlockStmt();
                 if (zomElem2.isSuccess() && zomElem2.node.isPresent()) {
                     children.add(zomElem2.node.unwrap());
@@ -9184,7 +9200,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = matchLiteralCst("}", false);
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -9230,7 +9246,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_BLOCK_STMT;
         
@@ -9311,7 +9327,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_LOCAL_TYPE_DECL;
         
@@ -9319,14 +9335,14 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_0 = CstParseResult.success(null, "", location());
             var zomStart1 = location();
             var savedChildrenZom1 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc1 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem1 = parse_Annotation();
                 if (zomElem1.isSuccess() && zomElem1.node.isPresent()) {
                     children.add(zomElem1.node.unwrap());
@@ -9364,14 +9380,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart3 = location();
             var savedChildrenZom3 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc3 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem3 = parse_Modifier();
                 if (zomElem3.isSuccess() && zomElem3.node.isPresent()) {
                     children.add(zomElem3.node.unwrap());
@@ -9409,7 +9425,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_TypeKind();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -9455,7 +9471,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_LOCAL_VAR;
         
@@ -9463,14 +9479,14 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_0 = CstParseResult.success(null, "", location());
             var zomStart1 = location();
             var savedChildrenZom1 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc1 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem1 = parse_Modifier();
                 if (zomElem1.isSuccess() && zomElem1.node.isPresent()) {
                     children.add(zomElem1.node.unwrap());
@@ -9508,7 +9524,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = parse_LocalVarType();
             if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
                 children.add(elem0_1.node.unwrap());
@@ -9522,7 +9538,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_VarDecls();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -9536,7 +9552,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_3 = matchLiteralCst(";", false);
             if (elem0_3.isSuccess() && elem0_3.node.isPresent()) {
                 children.add(elem0_3.node.unwrap());
@@ -9582,7 +9598,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_LOCAL_VAR_TYPE;
         
@@ -9598,7 +9614,7 @@ public final class Java25Parser {
         var seqStart2 = location();
         boolean cut2 = false;
         if (tbElem1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem2_0 = matchLiteralCst("var", false);
             if (elem2_0.isCutFailure()) {
                 restoreLocation(seqStart2);
@@ -9692,7 +9708,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_STMT;
         
@@ -9717,7 +9733,7 @@ public final class Java25Parser {
         var seqStart2 = location();
         boolean cut2 = false;
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem2_0 = parse_IfKW();
             if (elem2_0.isSuccess() && elem2_0.node.isPresent()) {
                 children.add(elem2_0.node.unwrap());
@@ -9731,7 +9747,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem2_1 = CstParseResult.success(null, "", location());
             if (elem2_1.isCutFailure()) {
                 restoreLocation(seqStart2);
@@ -9743,7 +9759,7 @@ public final class Java25Parser {
         }
         cut2 = true;
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem2_2 = matchLiteralCst("(", false);
             if (elem2_2.isSuccess() && elem2_2.node.isPresent()) {
                 children.add(elem2_2.node.unwrap());
@@ -9757,7 +9773,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem2_3 = parse_Expr();
             if (elem2_3.isSuccess() && elem2_3.node.isPresent()) {
                 children.add(elem2_3.node.unwrap());
@@ -9771,7 +9787,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem2_4 = matchLiteralCst(")", false);
             if (elem2_4.isSuccess() && elem2_4.node.isPresent()) {
                 children.add(elem2_4.node.unwrap());
@@ -9785,7 +9801,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem2_5 = parse_Stmt();
             if (elem2_5.isSuccess() && elem2_5.node.isPresent()) {
                 children.add(elem2_5.node.unwrap());
@@ -9799,7 +9815,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart9 = location();
             var savedChildrenOpt9 = new ArrayList<>(children);
             children.clear();
@@ -9807,7 +9823,7 @@ public final class Java25Parser {
             var seqStart11 = location();
             boolean cut11 = false;
             if (optElem9.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem11_0 = matchLiteralCst("else", false);
                 if (elem11_0.isSuccess() && elem11_0.node.isPresent()) {
                     children.add(elem11_0.node.unwrap());
@@ -9821,7 +9837,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem9.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem11_1 = parse_Stmt();
                 if (elem11_1.isSuccess() && elem11_1.node.isPresent()) {
                     children.add(elem11_1.node.unwrap());
@@ -9878,7 +9894,7 @@ public final class Java25Parser {
         var seqStart14 = location();
         boolean cut14 = false;
         if (alt0_2.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem14_0 = parse_WhileKW();
             if (elem14_0.isSuccess() && elem14_0.node.isPresent()) {
                 children.add(elem14_0.node.unwrap());
@@ -9892,7 +9908,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_2.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem14_1 = CstParseResult.success(null, "", location());
             if (elem14_1.isCutFailure()) {
                 restoreLocation(seqStart14);
@@ -9904,7 +9920,7 @@ public final class Java25Parser {
         }
         cut14 = true;
         if (alt0_2.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem14_2 = matchLiteralCst("(", false);
             if (elem14_2.isSuccess() && elem14_2.node.isPresent()) {
                 children.add(elem14_2.node.unwrap());
@@ -9918,7 +9934,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_2.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem14_3 = parse_Expr();
             if (elem14_3.isSuccess() && elem14_3.node.isPresent()) {
                 children.add(elem14_3.node.unwrap());
@@ -9932,7 +9948,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_2.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem14_4 = matchLiteralCst(")", false);
             if (elem14_4.isSuccess() && elem14_4.node.isPresent()) {
                 children.add(elem14_4.node.unwrap());
@@ -9946,7 +9962,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_2.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem14_5 = parse_Stmt();
             if (elem14_5.isSuccess() && elem14_5.node.isPresent()) {
                 children.add(elem14_5.node.unwrap());
@@ -9974,7 +9990,7 @@ public final class Java25Parser {
         var seqStart21 = location();
         boolean cut21 = false;
         if (alt0_3.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem21_0 = parse_ForKW();
             if (elem21_0.isSuccess() && elem21_0.node.isPresent()) {
                 children.add(elem21_0.node.unwrap());
@@ -9988,7 +10004,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_3.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem21_1 = CstParseResult.success(null, "", location());
             if (elem21_1.isCutFailure()) {
                 restoreLocation(seqStart21);
@@ -10000,7 +10016,7 @@ public final class Java25Parser {
         }
         cut21 = true;
         if (alt0_3.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem21_2 = matchLiteralCst("(", false);
             if (elem21_2.isSuccess() && elem21_2.node.isPresent()) {
                 children.add(elem21_2.node.unwrap());
@@ -10014,7 +10030,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_3.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem21_3 = parse_ForCtrl();
             if (elem21_3.isSuccess() && elem21_3.node.isPresent()) {
                 children.add(elem21_3.node.unwrap());
@@ -10028,7 +10044,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_3.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem21_4 = matchLiteralCst(")", false);
             if (elem21_4.isSuccess() && elem21_4.node.isPresent()) {
                 children.add(elem21_4.node.unwrap());
@@ -10042,7 +10058,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_3.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem21_5 = parse_Stmt();
             if (elem21_5.isSuccess() && elem21_5.node.isPresent()) {
                 children.add(elem21_5.node.unwrap());
@@ -10070,7 +10086,7 @@ public final class Java25Parser {
         var seqStart28 = location();
         boolean cut28 = false;
         if (alt0_4.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem28_0 = parse_DoKW();
             if (elem28_0.isSuccess() && elem28_0.node.isPresent()) {
                 children.add(elem28_0.node.unwrap());
@@ -10084,7 +10100,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_4.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem28_1 = CstParseResult.success(null, "", location());
             if (elem28_1.isCutFailure()) {
                 restoreLocation(seqStart28);
@@ -10096,7 +10112,7 @@ public final class Java25Parser {
         }
         cut28 = true;
         if (alt0_4.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem28_2 = parse_Stmt();
             if (elem28_2.isSuccess() && elem28_2.node.isPresent()) {
                 children.add(elem28_2.node.unwrap());
@@ -10110,7 +10126,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_4.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem28_3 = matchLiteralCst("while", false);
             if (elem28_3.isSuccess() && elem28_3.node.isPresent()) {
                 children.add(elem28_3.node.unwrap());
@@ -10124,7 +10140,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_4.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem28_4 = matchLiteralCst("(", false);
             if (elem28_4.isSuccess() && elem28_4.node.isPresent()) {
                 children.add(elem28_4.node.unwrap());
@@ -10138,7 +10154,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_4.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem28_5 = parse_Expr();
             if (elem28_5.isSuccess() && elem28_5.node.isPresent()) {
                 children.add(elem28_5.node.unwrap());
@@ -10152,7 +10168,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_4.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem28_6 = matchLiteralCst(")", false);
             if (elem28_6.isSuccess() && elem28_6.node.isPresent()) {
                 children.add(elem28_6.node.unwrap());
@@ -10166,7 +10182,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_4.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem28_7 = matchLiteralCst(";", false);
             if (elem28_7.isSuccess() && elem28_7.node.isPresent()) {
                 children.add(elem28_7.node.unwrap());
@@ -10194,7 +10210,7 @@ public final class Java25Parser {
         var seqStart37 = location();
         boolean cut37 = false;
         if (alt0_5.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem37_0 = parse_TryKW();
             if (elem37_0.isSuccess() && elem37_0.node.isPresent()) {
                 children.add(elem37_0.node.unwrap());
@@ -10208,7 +10224,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_5.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem37_1 = CstParseResult.success(null, "", location());
             if (elem37_1.isCutFailure()) {
                 restoreLocation(seqStart37);
@@ -10220,7 +10236,7 @@ public final class Java25Parser {
         }
         cut37 = true;
         if (alt0_5.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart40 = location();
             var savedChildrenOpt40 = new ArrayList<>(children);
             children.clear();
@@ -10255,7 +10271,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_5.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem37_3 = parse_Block();
             if (elem37_3.isSuccess() && elem37_3.node.isPresent()) {
                 children.add(elem37_3.node.unwrap());
@@ -10269,14 +10285,14 @@ public final class Java25Parser {
             }
         }
         if (alt0_5.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem37_4 = CstParseResult.success(null, "", location());
             var zomStart43 = location();
             var savedChildrenZom43 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc43 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem43 = parse_Catch();
                 if (zomElem43.isSuccess() && zomElem43.node.isPresent()) {
                     children.add(zomElem43.node.unwrap());
@@ -10314,7 +10330,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_5.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart45 = location();
             var savedChildrenOpt45 = new ArrayList<>(children);
             children.clear();
@@ -10363,7 +10379,7 @@ public final class Java25Parser {
         var seqStart47 = location();
         boolean cut47 = false;
         if (alt0_6.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem47_0 = parse_SwitchKW();
             if (elem47_0.isSuccess() && elem47_0.node.isPresent()) {
                 children.add(elem47_0.node.unwrap());
@@ -10377,7 +10393,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_6.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem47_1 = CstParseResult.success(null, "", location());
             if (elem47_1.isCutFailure()) {
                 restoreLocation(seqStart47);
@@ -10389,7 +10405,7 @@ public final class Java25Parser {
         }
         cut47 = true;
         if (alt0_6.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem47_2 = matchLiteralCst("(", false);
             if (elem47_2.isSuccess() && elem47_2.node.isPresent()) {
                 children.add(elem47_2.node.unwrap());
@@ -10403,7 +10419,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_6.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem47_3 = parse_Expr();
             if (elem47_3.isSuccess() && elem47_3.node.isPresent()) {
                 children.add(elem47_3.node.unwrap());
@@ -10417,7 +10433,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_6.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem47_4 = matchLiteralCst(")", false);
             if (elem47_4.isSuccess() && elem47_4.node.isPresent()) {
                 children.add(elem47_4.node.unwrap());
@@ -10431,7 +10447,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_6.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem47_5 = parse_SwitchBlock();
             if (elem47_5.isSuccess() && elem47_5.node.isPresent()) {
                 children.add(elem47_5.node.unwrap());
@@ -10459,7 +10475,7 @@ public final class Java25Parser {
         var seqStart54 = location();
         boolean cut54 = false;
         if (alt0_7.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem54_0 = parse_ReturnKW();
             if (elem54_0.isSuccess() && elem54_0.node.isPresent()) {
                 children.add(elem54_0.node.unwrap());
@@ -10473,7 +10489,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_7.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart56 = location();
             var savedChildrenOpt56 = new ArrayList<>(children);
             children.clear();
@@ -10508,7 +10524,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_7.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem54_2 = matchLiteralCst(";", false);
             if (elem54_2.isSuccess() && elem54_2.node.isPresent()) {
                 children.add(elem54_2.node.unwrap());
@@ -10536,7 +10552,7 @@ public final class Java25Parser {
         var seqStart59 = location();
         boolean cut59 = false;
         if (alt0_8.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem59_0 = parse_ThrowKW();
             if (elem59_0.isSuccess() && elem59_0.node.isPresent()) {
                 children.add(elem59_0.node.unwrap());
@@ -10550,7 +10566,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_8.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem59_1 = parse_Expr();
             if (elem59_1.isSuccess() && elem59_1.node.isPresent()) {
                 children.add(elem59_1.node.unwrap());
@@ -10564,7 +10580,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_8.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem59_2 = matchLiteralCst(";", false);
             if (elem59_2.isSuccess() && elem59_2.node.isPresent()) {
                 children.add(elem59_2.node.unwrap());
@@ -10592,7 +10608,7 @@ public final class Java25Parser {
         var seqStart63 = location();
         boolean cut63 = false;
         if (alt0_9.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem63_0 = parse_BreakKW();
             if (elem63_0.isSuccess() && elem63_0.node.isPresent()) {
                 children.add(elem63_0.node.unwrap());
@@ -10606,7 +10622,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_9.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart65 = location();
             var savedChildrenOpt65 = new ArrayList<>(children);
             children.clear();
@@ -10641,7 +10657,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_9.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem63_2 = matchLiteralCst(";", false);
             if (elem63_2.isSuccess() && elem63_2.node.isPresent()) {
                 children.add(elem63_2.node.unwrap());
@@ -10669,7 +10685,7 @@ public final class Java25Parser {
         var seqStart68 = location();
         boolean cut68 = false;
         if (alt0_10.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem68_0 = parse_ContinueKW();
             if (elem68_0.isSuccess() && elem68_0.node.isPresent()) {
                 children.add(elem68_0.node.unwrap());
@@ -10683,7 +10699,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_10.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart70 = location();
             var savedChildrenOpt70 = new ArrayList<>(children);
             children.clear();
@@ -10718,7 +10734,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_10.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem68_2 = matchLiteralCst(";", false);
             if (elem68_2.isSuccess() && elem68_2.node.isPresent()) {
                 children.add(elem68_2.node.unwrap());
@@ -10746,7 +10762,7 @@ public final class Java25Parser {
         var seqStart73 = location();
         boolean cut73 = false;
         if (alt0_11.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem73_0 = parse_AssertKW();
             if (elem73_0.isSuccess() && elem73_0.node.isPresent()) {
                 children.add(elem73_0.node.unwrap());
@@ -10760,7 +10776,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_11.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem73_1 = parse_Expr();
             if (elem73_1.isSuccess() && elem73_1.node.isPresent()) {
                 children.add(elem73_1.node.unwrap());
@@ -10774,7 +10790,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_11.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart76 = location();
             var savedChildrenOpt76 = new ArrayList<>(children);
             children.clear();
@@ -10782,7 +10798,7 @@ public final class Java25Parser {
             var seqStart78 = location();
             boolean cut78 = false;
             if (optElem76.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem78_0 = matchLiteralCst(":", false);
                 if (elem78_0.isSuccess() && elem78_0.node.isPresent()) {
                     children.add(elem78_0.node.unwrap());
@@ -10796,7 +10812,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem76.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem78_1 = parse_Expr();
                 if (elem78_1.isSuccess() && elem78_1.node.isPresent()) {
                     children.add(elem78_1.node.unwrap());
@@ -10839,7 +10855,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_11.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem73_3 = matchLiteralCst(";", false);
             if (elem73_3.isSuccess() && elem73_3.node.isPresent()) {
                 children.add(elem73_3.node.unwrap());
@@ -10867,7 +10883,7 @@ public final class Java25Parser {
         var seqStart82 = location();
         boolean cut82 = false;
         if (alt0_12.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem82_0 = parse_SynchronizedKW();
             if (elem82_0.isSuccess() && elem82_0.node.isPresent()) {
                 children.add(elem82_0.node.unwrap());
@@ -10881,7 +10897,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_12.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem82_1 = CstParseResult.success(null, "", location());
             if (elem82_1.isCutFailure()) {
                 restoreLocation(seqStart82);
@@ -10893,7 +10909,7 @@ public final class Java25Parser {
         }
         cut82 = true;
         if (alt0_12.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem82_2 = matchLiteralCst("(", false);
             if (elem82_2.isSuccess() && elem82_2.node.isPresent()) {
                 children.add(elem82_2.node.unwrap());
@@ -10907,7 +10923,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_12.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem82_3 = parse_Expr();
             if (elem82_3.isSuccess() && elem82_3.node.isPresent()) {
                 children.add(elem82_3.node.unwrap());
@@ -10921,7 +10937,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_12.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem82_4 = matchLiteralCst(")", false);
             if (elem82_4.isSuccess() && elem82_4.node.isPresent()) {
                 children.add(elem82_4.node.unwrap());
@@ -10935,7 +10951,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_12.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem82_5 = parse_Block();
             if (elem82_5.isSuccess() && elem82_5.node.isPresent()) {
                 children.add(elem82_5.node.unwrap());
@@ -10963,7 +10979,7 @@ public final class Java25Parser {
         var seqStart89 = location();
         boolean cut89 = false;
         if (alt0_13.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem89_0 = parse_YieldKW();
             if (elem89_0.isSuccess() && elem89_0.node.isPresent()) {
                 children.add(elem89_0.node.unwrap());
@@ -10977,7 +10993,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_13.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem89_1 = parse_Expr();
             if (elem89_1.isSuccess() && elem89_1.node.isPresent()) {
                 children.add(elem89_1.node.unwrap());
@@ -10991,7 +11007,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_13.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem89_2 = matchLiteralCst(";", false);
             if (elem89_2.isSuccess() && elem89_2.node.isPresent()) {
                 children.add(elem89_2.node.unwrap());
@@ -11019,7 +11035,7 @@ public final class Java25Parser {
         var seqStart93 = location();
         boolean cut93 = false;
         if (alt0_14.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem93_0 = parse_Identifier();
             if (elem93_0.isSuccess() && elem93_0.node.isPresent()) {
                 children.add(elem93_0.node.unwrap());
@@ -11033,7 +11049,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_14.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem93_1 = matchLiteralCst(":", false);
             if (elem93_1.isSuccess() && elem93_1.node.isPresent()) {
                 children.add(elem93_1.node.unwrap());
@@ -11047,7 +11063,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_14.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem93_2 = parse_Stmt();
             if (elem93_2.isSuccess() && elem93_2.node.isPresent()) {
                 children.add(elem93_2.node.unwrap());
@@ -11075,7 +11091,7 @@ public final class Java25Parser {
         var seqStart97 = location();
         boolean cut97 = false;
         if (alt0_15.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem97_0 = parse_Expr();
             if (elem97_0.isSuccess() && elem97_0.node.isPresent()) {
                 children.add(elem97_0.node.unwrap());
@@ -11089,7 +11105,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_15.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem97_1 = matchLiteralCst(";", false);
             if (elem97_1.isSuccess() && elem97_1.node.isPresent()) {
                 children.add(elem97_1.node.unwrap());
@@ -11175,7 +11191,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_IF_K_W;
         
@@ -11186,7 +11202,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("if", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -11255,7 +11271,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_WHILE_K_W;
         
@@ -11266,7 +11282,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("while", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -11335,7 +11351,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_FOR_K_W;
         
@@ -11346,7 +11362,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("for", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -11415,7 +11431,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_DO_K_W;
         
@@ -11426,7 +11442,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("do", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -11495,7 +11511,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_TRY_K_W;
         
@@ -11506,7 +11522,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("try", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -11575,7 +11591,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_SWITCH_K_W;
         
@@ -11586,7 +11602,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("switch", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -11655,7 +11671,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_SYNCHRONIZED_K_W;
         
@@ -11666,7 +11682,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("synchronized", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -11735,7 +11751,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_RETURN_K_W;
         
@@ -11746,7 +11762,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("return", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -11815,7 +11831,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_THROW_K_W;
         
@@ -11826,7 +11842,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("throw", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -11895,7 +11911,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_BREAK_K_W;
         
@@ -11906,7 +11922,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("break", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -11975,7 +11991,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_CONTINUE_K_W;
         
@@ -11986,7 +12002,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("continue", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -12055,7 +12071,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ASSERT_K_W;
         
@@ -12066,7 +12082,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("assert", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -12135,7 +12151,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_YIELD_K_W;
         
@@ -12146,7 +12162,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("yield", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -12215,7 +12231,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_CATCH_K_W;
         
@@ -12226,7 +12242,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("catch", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -12295,7 +12311,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_FINALLY_K_W;
         
@@ -12306,7 +12322,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("finally", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -12375,7 +12391,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_WHEN_K_W;
         
@@ -12386,7 +12402,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("when", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -12455,7 +12471,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_FOR_CTRL;
         
@@ -12468,7 +12484,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart2 = location();
             var savedChildrenOpt2 = new ArrayList<>(children);
             children.clear();
@@ -12503,7 +12519,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_1 = matchLiteralCst(";", false);
             if (elem1_1.isSuccess() && elem1_1.node.isPresent()) {
                 children.add(elem1_1.node.unwrap());
@@ -12517,7 +12533,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart5 = location();
             var savedChildrenOpt5 = new ArrayList<>(children);
             children.clear();
@@ -12552,7 +12568,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_3 = matchLiteralCst(";", false);
             if (elem1_3.isSuccess() && elem1_3.node.isPresent()) {
                 children.add(elem1_3.node.unwrap());
@@ -12566,7 +12582,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart8 = location();
             var savedChildrenOpt8 = new ArrayList<>(children);
             children.clear();
@@ -12615,7 +12631,7 @@ public final class Java25Parser {
         var seqStart10 = location();
         boolean cut10 = false;
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem10_0 = parse_LocalVarType();
             if (elem10_0.isSuccess() && elem10_0.node.isPresent()) {
                 children.add(elem10_0.node.unwrap());
@@ -12629,7 +12645,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem10_1 = parse_Identifier();
             if (elem10_1.isSuccess() && elem10_1.node.isPresent()) {
                 children.add(elem10_1.node.unwrap());
@@ -12643,7 +12659,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem10_2 = matchLiteralCst(":", false);
             if (elem10_2.isSuccess() && elem10_2.node.isPresent()) {
                 children.add(elem10_2.node.unwrap());
@@ -12657,7 +12673,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem10_3 = parse_Expr();
             if (elem10_3.isSuccess() && elem10_3.node.isPresent()) {
                 children.add(elem10_3.node.unwrap());
@@ -12716,7 +12732,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_FOR_INIT;
         
@@ -12784,7 +12800,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_LOCAL_VAR_NO_SEMI;
         
@@ -12792,14 +12808,14 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_0 = CstParseResult.success(null, "", location());
             var zomStart1 = location();
             var savedChildrenZom1 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc1 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem1 = parse_Modifier();
                 if (zomElem1.isSuccess() && zomElem1.node.isPresent()) {
                     children.add(zomElem1.node.unwrap());
@@ -12837,7 +12853,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = parse_LocalVarType();
             if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
                 children.add(elem0_1.node.unwrap());
@@ -12851,7 +12867,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_VarDecls();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -12897,7 +12913,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_RESOURCE_SPEC;
         
@@ -12905,7 +12921,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("(", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -12919,7 +12935,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = parse_Resource();
             if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
                 children.add(elem0_1.node.unwrap());
@@ -12933,19 +12949,19 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_2 = CstParseResult.success(null, "", location());
             var zomStart3 = location();
             var savedChildrenZom3 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc3 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem3 = CstParseResult.success(null, "", location());
                 var seqStart5 = location();
                 boolean cut5 = false;
                 if (zomElem3.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem5_0 = matchLiteralCst(";", false);
                     if (elem5_0.isSuccess() && elem5_0.node.isPresent()) {
                         children.add(elem5_0.node.unwrap());
@@ -12959,7 +12975,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem3.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem5_1 = parse_Resource();
                     if (elem5_1.isSuccess() && elem5_1.node.isPresent()) {
                         children.add(elem5_1.node.unwrap());
@@ -13008,7 +13024,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart8 = location();
             var savedChildrenOpt8 = new ArrayList<>(children);
             children.clear();
@@ -13043,7 +13059,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_4 = matchLiteralCst(")", false);
             if (elem0_4.isSuccess() && elem0_4.node.isPresent()) {
                 children.add(elem0_4.node.unwrap());
@@ -13089,7 +13105,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_RESOURCE;
         
@@ -13102,14 +13118,14 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem1_0 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem2 = parse_Modifier();
                 if (zomElem2.isSuccess() && zomElem2.node.isPresent()) {
                     children.add(zomElem2.node.unwrap());
@@ -13147,7 +13163,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_1 = parse_LocalVarType();
             if (elem1_1.isSuccess() && elem1_1.node.isPresent()) {
                 children.add(elem1_1.node.unwrap());
@@ -13161,7 +13177,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_2 = parse_Identifier();
             if (elem1_2.isSuccess() && elem1_2.node.isPresent()) {
                 children.add(elem1_2.node.unwrap());
@@ -13175,7 +13191,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_3 = matchLiteralCst("=", false);
             if (elem1_3.isSuccess() && elem1_3.node.isPresent()) {
                 children.add(elem1_3.node.unwrap());
@@ -13189,7 +13205,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_4 = parse_Expr();
             if (elem1_4.isSuccess() && elem1_4.node.isPresent()) {
                 children.add(elem1_4.node.unwrap());
@@ -13260,7 +13276,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_CATCH;
         
@@ -13268,7 +13284,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_CatchKW();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -13282,7 +13298,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = CstParseResult.success(null, "", location());
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -13294,7 +13310,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = matchLiteralCst("(", false);
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -13308,14 +13324,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_3 = CstParseResult.success(null, "", location());
             var zomStart4 = location();
             var savedChildrenZom4 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc4 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem4 = parse_Modifier();
                 if (zomElem4.isSuccess() && zomElem4.node.isPresent()) {
                     children.add(zomElem4.node.unwrap());
@@ -13353,7 +13369,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_4 = parse_Type();
             if (elem0_4.isSuccess() && elem0_4.node.isPresent()) {
                 children.add(elem0_4.node.unwrap());
@@ -13367,19 +13383,19 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_5 = CstParseResult.success(null, "", location());
             var zomStart7 = location();
             var savedChildrenZom7 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc7 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem7 = CstParseResult.success(null, "", location());
                 var seqStart9 = location();
                 boolean cut9 = false;
                 if (zomElem7.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem9_0 = matchLiteralCst("|", false);
                     if (elem9_0.isSuccess() && elem9_0.node.isPresent()) {
                         children.add(elem9_0.node.unwrap());
@@ -13393,7 +13409,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem7.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem9_1 = parse_Type();
                     if (elem9_1.isSuccess() && elem9_1.node.isPresent()) {
                         children.add(elem9_1.node.unwrap());
@@ -13442,7 +13458,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_6 = parse_Identifier();
             if (elem0_6.isSuccess() && elem0_6.node.isPresent()) {
                 children.add(elem0_6.node.unwrap());
@@ -13456,7 +13472,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_7 = matchLiteralCst(")", false);
             if (elem0_7.isSuccess() && elem0_7.node.isPresent()) {
                 children.add(elem0_7.node.unwrap());
@@ -13470,7 +13486,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_8 = parse_Block();
             if (elem0_8.isSuccess() && elem0_8.node.isPresent()) {
                 children.add(elem0_8.node.unwrap());
@@ -13516,7 +13532,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_FINALLY;
         
@@ -13524,7 +13540,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_FinallyKW();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -13538,7 +13554,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = CstParseResult.success(null, "", location());
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -13550,7 +13566,7 @@ public final class Java25Parser {
         }
         cut0 = true;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_Block();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -13596,7 +13612,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_SWITCH_BLOCK;
         
@@ -13604,7 +13620,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("{", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -13618,14 +13634,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem2 = parse_SwitchRule();
                 if (zomElem2.isSuccess() && zomElem2.node.isPresent()) {
                     children.add(zomElem2.node.unwrap());
@@ -13663,7 +13679,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = matchLiteralCst("}", false);
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -13709,7 +13725,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_SWITCH_RULE;
         
@@ -13722,7 +13738,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = parse_SwitchLabel();
             if (elem1_0.isSuccess() && elem1_0.node.isPresent()) {
                 children.add(elem1_0.node.unwrap());
@@ -13736,7 +13752,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_1 = matchLiteralCst("->", false);
             if (elem1_1.isSuccess() && elem1_1.node.isPresent()) {
                 children.add(elem1_1.node.unwrap());
@@ -13750,7 +13766,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem1_2 = null;
             var choiceStart5 = location();
             var savedChildren5 = new ArrayList<>(children);
@@ -13760,7 +13776,7 @@ public final class Java25Parser {
             var seqStart6 = location();
             boolean cut6 = false;
             if (alt5_0.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem6_0 = parse_Expr();
                 if (elem6_0.isSuccess() && elem6_0.node.isPresent()) {
                     children.add(elem6_0.node.unwrap());
@@ -13774,7 +13790,7 @@ public final class Java25Parser {
                 }
             }
             if (alt5_0.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem6_1 = matchLiteralCst(";", false);
                 if (elem6_1.isSuccess() && elem6_1.node.isPresent()) {
                     children.add(elem6_1.node.unwrap());
@@ -13814,7 +13830,7 @@ public final class Java25Parser {
             var seqStart10 = location();
             boolean cut10 = false;
             if (alt5_2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem10_0 = parse_ThrowKW();
                 if (elem10_0.isSuccess() && elem10_0.node.isPresent()) {
                     children.add(elem10_0.node.unwrap());
@@ -13828,7 +13844,7 @@ public final class Java25Parser {
                 }
             }
             if (alt5_2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem10_1 = parse_Expr();
                 if (elem10_1.isSuccess() && elem10_1.node.isPresent()) {
                     children.add(elem10_1.node.unwrap());
@@ -13842,7 +13858,7 @@ public final class Java25Parser {
                 }
             }
             if (alt5_2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem10_2 = matchLiteralCst(";", false);
                 if (elem10_2.isSuccess() && elem10_2.node.isPresent()) {
                     children.add(elem10_2.node.unwrap());
@@ -13895,7 +13911,7 @@ public final class Java25Parser {
         var seqStart14 = location();
         boolean cut14 = false;
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem14_0 = parse_SwitchLabel();
             if (elem14_0.isSuccess() && elem14_0.node.isPresent()) {
                 children.add(elem14_0.node.unwrap());
@@ -13909,7 +13925,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem14_1 = matchLiteralCst(":", false);
             if (elem14_1.isSuccess() && elem14_1.node.isPresent()) {
                 children.add(elem14_1.node.unwrap());
@@ -13923,14 +13939,14 @@ public final class Java25Parser {
             }
         }
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem14_2 = CstParseResult.success(null, "", location());
             var zomStart17 = location();
             var savedChildrenZom17 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc17 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem17 = parse_BlockStmt();
                 if (zomElem17.isSuccess() && zomElem17.node.isPresent()) {
                     children.add(zomElem17.node.unwrap());
@@ -14013,317 +14029,330 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_SWITCH_LABEL;
         
         CstParseResult result = null;
         var choiceStart0 = location();
         var savedChildren0 = new ArrayList<>(children);
-        children.clear();
-        children.addAll(savedChildren0);
-        CstParseResult alt0_0 = CstParseResult.success(null, "", location());
-        var seqStart1 = location();
-        boolean cut1 = false;
-        if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem1_0 = matchLiteralCst("case", false);
-            if (elem1_0.isSuccess() && elem1_0.node.isPresent()) {
-                children.add(elem1_0.node.unwrap());
-            }
-            if (elem1_0.isCutFailure()) {
-                restoreLocation(seqStart1);
-                alt0_0 = elem1_0;
-            } else if (elem1_0.isFailure()) {
-                restoreLocation(seqStart1);
-                alt0_0 = cut1 ? elem1_0.asCutFailure() : elem1_0;
-            }
-        }
-        if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem1_1 = CstParseResult.success(null, "", location());
-            if (elem1_1.isCutFailure()) {
-                restoreLocation(seqStart1);
-                alt0_0 = elem1_1;
-            } else if (elem1_1.isFailure()) {
-                restoreLocation(seqStart1);
-                alt0_0 = cut1 ? elem1_1.asCutFailure() : elem1_1;
-            }
-        }
-        cut1 = true;
-        if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            CstParseResult elem1_2 = null;
-            var choiceStart5 = location();
-            var savedChildren5 = new ArrayList<>(children);
-            children.clear();
-            children.addAll(savedChildren5);
-            CstParseResult alt5_0 = CstParseResult.success(null, "", location());
-            var seqStart6 = location();
-            boolean cut6 = false;
-            if (alt5_0.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                var elem6_0 = matchLiteralCst("null", false);
-                if (elem6_0.isSuccess() && elem6_0.node.isPresent()) {
-                    children.add(elem6_0.node.unwrap());
-                }
-                if (elem6_0.isCutFailure()) {
-                    restoreLocation(seqStart6);
-                    alt5_0 = elem6_0;
-                } else if (elem6_0.isFailure()) {
-                    restoreLocation(seqStart6);
-                    alt5_0 = cut6 ? elem6_0.asCutFailure() : elem6_0;
-                }
-            }
-            if (alt5_0.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                var optStart8 = location();
-                var savedChildrenOpt8 = new ArrayList<>(children);
-                children.clear();
-                CstParseResult optElem8 = CstParseResult.success(null, "", location());
-                var seqStart10 = location();
-                boolean cut10 = false;
-                if (optElem8.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                    var elem10_0 = matchLiteralCst(",", false);
-                    if (elem10_0.isSuccess() && elem10_0.node.isPresent()) {
-                        children.add(elem10_0.node.unwrap());
-                    }
-                    if (elem10_0.isCutFailure()) {
-                        restoreLocation(seqStart10);
-                        optElem8 = elem10_0;
-                    } else if (elem10_0.isFailure()) {
-                        restoreLocation(seqStart10);
-                        optElem8 = cut10 ? elem10_0.asCutFailure() : elem10_0;
-                    }
-                }
-                if (optElem8.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                    var elem10_1 = matchLiteralCst("default", false);
-                    if (elem10_1.isSuccess() && elem10_1.node.isPresent()) {
-                        children.add(elem10_1.node.unwrap());
-                    }
-                    if (elem10_1.isCutFailure()) {
-                        restoreLocation(seqStart10);
-                        optElem8 = elem10_1;
-                    } else if (elem10_1.isFailure()) {
-                        restoreLocation(seqStart10);
-                        optElem8 = cut10 ? elem10_1.asCutFailure() : elem10_1;
-                    }
-                }
-                if (optElem8.isSuccess()) {
-                    optElem8 = CstParseResult.success(null, substring(seqStart10.offset(), pos), location());
-                }
-                CstParseResult elem6_1;
-                if (optElem8.isCutFailure()) {
-                    restoreLocation(optStart8);
+        if (pos < input.length()) {
+            char dispatchChar0 = input.charAt(pos);
+            switch (dispatchChar0) {
+                case 'c':
+                {
                     children.clear();
-                    children.addAll(savedChildrenOpt8);
-                    elem6_1 = optElem8;
-                } else if (optElem8.isSuccess()) {
-                    var optChildren8 = new ArrayList<>(children);
-                    children.clear();
-                    children.addAll(savedChildrenOpt8);
-                    children.addAll(optChildren8);
-                    elem6_1 = optElem8;
-                } else {
-                    restoreLocation(optStart8);
-                    children.clear();
-                    children.addAll(savedChildrenOpt8);
-                    elem6_1 = CstParseResult.success(null, "", location());
-                }
-                if (elem6_1.isCutFailure()) {
-                    restoreLocation(seqStart6);
-                    alt5_0 = elem6_1;
-                } else if (elem6_1.isFailure()) {
-                    restoreLocation(seqStart6);
-                    alt5_0 = cut6 ? elem6_1.asCutFailure() : elem6_1;
-                }
-            }
-            if (alt5_0.isSuccess()) {
-                alt5_0 = CstParseResult.success(null, substring(seqStart6.offset(), pos), location());
-            }
-            if (alt5_0.isSuccess()) {
-                elem1_2 = alt5_0;
-            } else if (alt5_0.isCutFailure()) {
-                elem1_2 = alt5_0.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart5);
-            children.clear();
-            children.addAll(savedChildren5);
-            CstParseResult alt5_1 = CstParseResult.success(null, "", location());
-            var seqStart13 = location();
-            boolean cut13 = false;
-            if (alt5_1.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                var elem13_0 = parse_CaseItem();
-                if (elem13_0.isSuccess() && elem13_0.node.isPresent()) {
-                    children.add(elem13_0.node.unwrap());
-                }
-                if (elem13_0.isCutFailure()) {
-                    restoreLocation(seqStart13);
-                    alt5_1 = elem13_0;
-                } else if (elem13_0.isFailure()) {
-                    restoreLocation(seqStart13);
-                    alt5_1 = cut13 ? elem13_0.asCutFailure() : elem13_0;
-                }
-            }
-            if (alt5_1.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                CstParseResult elem13_1 = CstParseResult.success(null, "", location());
-                var zomStart15 = location();
-                var savedChildrenZom15 = new ArrayList<>(children);
-                children.clear();
-                while (true) {
-                    var beforeLoc15 = location();
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                    CstParseResult zomElem15 = CstParseResult.success(null, "", location());
-                    var seqStart17 = location();
-                    boolean cut17 = false;
-                    if (zomElem15.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                        var elem17_0 = matchLiteralCst(",", false);
-                        if (elem17_0.isSuccess() && elem17_0.node.isPresent()) {
-                            children.add(elem17_0.node.unwrap());
+                    children.addAll(savedChildren0);
+                    CstParseResult alt0_0 = CstParseResult.success(null, "", location());
+                    var seqStart1 = location();
+                    boolean cut1 = false;
+                    if (alt0_0.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem1_0 = matchLiteralCst("case", false);
+                        if (elem1_0.isSuccess() && elem1_0.node.isPresent()) {
+                            children.add(elem1_0.node.unwrap());
                         }
-                        if (elem17_0.isCutFailure()) {
-                            restoreLocation(seqStart17);
-                            zomElem15 = elem17_0;
-                        } else if (elem17_0.isFailure()) {
-                            restoreLocation(seqStart17);
-                            zomElem15 = cut17 ? elem17_0.asCutFailure() : elem17_0;
+                        if (elem1_0.isCutFailure()) {
+                            restoreLocation(seqStart1);
+                            alt0_0 = elem1_0;
+                        } else if (elem1_0.isFailure()) {
+                            restoreLocation(seqStart1);
+                            alt0_0 = cut1 ? elem1_0.asCutFailure() : elem1_0;
                         }
                     }
-                    if (zomElem15.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                        var elem17_1 = parse_CaseItem();
-                        if (elem17_1.isSuccess() && elem17_1.node.isPresent()) {
-                            children.add(elem17_1.node.unwrap());
-                        }
-                        if (elem17_1.isCutFailure()) {
-                            restoreLocation(seqStart17);
-                            zomElem15 = elem17_1;
-                        } else if (elem17_1.isFailure()) {
-                            restoreLocation(seqStart17);
-                            zomElem15 = cut17 ? elem17_1.asCutFailure() : elem17_1;
+                    if (alt0_0.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem1_1 = CstParseResult.success(null, "", location());
+                        if (elem1_1.isCutFailure()) {
+                            restoreLocation(seqStart1);
+                            alt0_0 = elem1_1;
+                        } else if (elem1_1.isFailure()) {
+                            restoreLocation(seqStart1);
+                            alt0_0 = cut1 ? elem1_1.asCutFailure() : elem1_1;
                         }
                     }
-                    if (zomElem15.isSuccess()) {
-                        zomElem15 = CstParseResult.success(null, substring(seqStart17.offset(), pos), location());
+                    cut1 = true;
+                    if (alt0_0.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        CstParseResult elem1_2 = null;
+                        var choiceStart5 = location();
+                        var savedChildren5 = new ArrayList<>(children);
+                        children.clear();
+                        children.addAll(savedChildren5);
+                        CstParseResult alt5_0 = CstParseResult.success(null, "", location());
+                        var seqStart6 = location();
+                        boolean cut6 = false;
+                        if (alt5_0.isSuccess()) {
+                            if (tokenBoundaryDepth == 0) skipWhitespace();
+                            var elem6_0 = matchLiteralCst("null", false);
+                            if (elem6_0.isSuccess() && elem6_0.node.isPresent()) {
+                                children.add(elem6_0.node.unwrap());
+                            }
+                            if (elem6_0.isCutFailure()) {
+                                restoreLocation(seqStart6);
+                                alt5_0 = elem6_0;
+                            } else if (elem6_0.isFailure()) {
+                                restoreLocation(seqStart6);
+                                alt5_0 = cut6 ? elem6_0.asCutFailure() : elem6_0;
+                            }
+                        }
+                        if (alt5_0.isSuccess()) {
+                            if (tokenBoundaryDepth == 0) skipWhitespace();
+                            var optStart8 = location();
+                            var savedChildrenOpt8 = new ArrayList<>(children);
+                            children.clear();
+                            CstParseResult optElem8 = CstParseResult.success(null, "", location());
+                            var seqStart10 = location();
+                            boolean cut10 = false;
+                            if (optElem8.isSuccess()) {
+                                if (tokenBoundaryDepth == 0) skipWhitespace();
+                                var elem10_0 = matchLiteralCst(",", false);
+                                if (elem10_0.isSuccess() && elem10_0.node.isPresent()) {
+                                    children.add(elem10_0.node.unwrap());
+                                }
+                                if (elem10_0.isCutFailure()) {
+                                    restoreLocation(seqStart10);
+                                    optElem8 = elem10_0;
+                                } else if (elem10_0.isFailure()) {
+                                    restoreLocation(seqStart10);
+                                    optElem8 = cut10 ? elem10_0.asCutFailure() : elem10_0;
+                                }
+                            }
+                            if (optElem8.isSuccess()) {
+                                if (tokenBoundaryDepth == 0) skipWhitespace();
+                                var elem10_1 = matchLiteralCst("default", false);
+                                if (elem10_1.isSuccess() && elem10_1.node.isPresent()) {
+                                    children.add(elem10_1.node.unwrap());
+                                }
+                                if (elem10_1.isCutFailure()) {
+                                    restoreLocation(seqStart10);
+                                    optElem8 = elem10_1;
+                                } else if (elem10_1.isFailure()) {
+                                    restoreLocation(seqStart10);
+                                    optElem8 = cut10 ? elem10_1.asCutFailure() : elem10_1;
+                                }
+                            }
+                            if (optElem8.isSuccess()) {
+                                optElem8 = CstParseResult.success(null, substring(seqStart10.offset(), pos), location());
+                            }
+                            CstParseResult elem6_1;
+                            if (optElem8.isCutFailure()) {
+                                restoreLocation(optStart8);
+                                children.clear();
+                                children.addAll(savedChildrenOpt8);
+                                elem6_1 = optElem8;
+                            } else if (optElem8.isSuccess()) {
+                                var optChildren8 = new ArrayList<>(children);
+                                children.clear();
+                                children.addAll(savedChildrenOpt8);
+                                children.addAll(optChildren8);
+                                elem6_1 = optElem8;
+                            } else {
+                                restoreLocation(optStart8);
+                                children.clear();
+                                children.addAll(savedChildrenOpt8);
+                                elem6_1 = CstParseResult.success(null, "", location());
+                            }
+                            if (elem6_1.isCutFailure()) {
+                                restoreLocation(seqStart6);
+                                alt5_0 = elem6_1;
+                            } else if (elem6_1.isFailure()) {
+                                restoreLocation(seqStart6);
+                                alt5_0 = cut6 ? elem6_1.asCutFailure() : elem6_1;
+                            }
+                        }
+                        if (alt5_0.isSuccess()) {
+                            alt5_0 = CstParseResult.success(null, substring(seqStart6.offset(), pos), location());
+                        }
+                        if (alt5_0.isSuccess()) {
+                            elem1_2 = alt5_0;
+                        } else if (alt5_0.isCutFailure()) {
+                            elem1_2 = alt5_0.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart5);
+                        children.clear();
+                        children.addAll(savedChildren5);
+                        CstParseResult alt5_1 = CstParseResult.success(null, "", location());
+                        var seqStart13 = location();
+                        boolean cut13 = false;
+                        if (alt5_1.isSuccess()) {
+                            if (tokenBoundaryDepth == 0) skipWhitespace();
+                            var elem13_0 = parse_CaseItem();
+                            if (elem13_0.isSuccess() && elem13_0.node.isPresent()) {
+                                children.add(elem13_0.node.unwrap());
+                            }
+                            if (elem13_0.isCutFailure()) {
+                                restoreLocation(seqStart13);
+                                alt5_1 = elem13_0;
+                            } else if (elem13_0.isFailure()) {
+                                restoreLocation(seqStart13);
+                                alt5_1 = cut13 ? elem13_0.asCutFailure() : elem13_0;
+                            }
+                        }
+                        if (alt5_1.isSuccess()) {
+                            if (tokenBoundaryDepth == 0) skipWhitespace();
+                            CstParseResult elem13_1 = CstParseResult.success(null, "", location());
+                            var zomStart15 = location();
+                            var savedChildrenZom15 = new ArrayList<>(children);
+                            children.clear();
+                            while (true) {
+                                var beforeLoc15 = location();
+                                if (tokenBoundaryDepth == 0) skipWhitespace();
+                                CstParseResult zomElem15 = CstParseResult.success(null, "", location());
+                                var seqStart17 = location();
+                                boolean cut17 = false;
+                                if (zomElem15.isSuccess()) {
+                                    if (tokenBoundaryDepth == 0) skipWhitespace();
+                                    var elem17_0 = matchLiteralCst(",", false);
+                                    if (elem17_0.isSuccess() && elem17_0.node.isPresent()) {
+                                        children.add(elem17_0.node.unwrap());
+                                    }
+                                    if (elem17_0.isCutFailure()) {
+                                        restoreLocation(seqStart17);
+                                        zomElem15 = elem17_0;
+                                    } else if (elem17_0.isFailure()) {
+                                        restoreLocation(seqStart17);
+                                        zomElem15 = cut17 ? elem17_0.asCutFailure() : elem17_0;
+                                    }
+                                }
+                                if (zomElem15.isSuccess()) {
+                                    if (tokenBoundaryDepth == 0) skipWhitespace();
+                                    var elem17_1 = parse_CaseItem();
+                                    if (elem17_1.isSuccess() && elem17_1.node.isPresent()) {
+                                        children.add(elem17_1.node.unwrap());
+                                    }
+                                    if (elem17_1.isCutFailure()) {
+                                        restoreLocation(seqStart17);
+                                        zomElem15 = elem17_1;
+                                    } else if (elem17_1.isFailure()) {
+                                        restoreLocation(seqStart17);
+                                        zomElem15 = cut17 ? elem17_1.asCutFailure() : elem17_1;
+                                    }
+                                }
+                                if (zomElem15.isSuccess()) {
+                                    zomElem15 = CstParseResult.success(null, substring(seqStart17.offset(), pos), location());
+                                }
+                                if (zomElem15.isCutFailure()) {
+                                    elem13_1 = zomElem15;
+                                    break;
+                                }
+                                if (zomElem15.isFailure() || location().offset() == beforeLoc15.offset()) {
+                                    restoreLocation(beforeLoc15);
+                                    break;
+                                }
+                            }
+                            if (!elem13_1.isCutFailure()) {
+                                var zomChildren15 = new ArrayList<>(children);
+                                children.clear();
+                                children.addAll(savedChildrenZom15);
+                                if (zomChildren15.size() == 1) {
+                                    children.add(zomChildren15.getFirst());
+                                } else if (!zomChildren15.isEmpty()) {
+                                    var zomSpan15 = SourceSpan.of(zomStart15, location());
+                                    children.add(new CstNode.NonTerminal(zomSpan15, __ruleName, zomChildren15, List.of(), List.of()));
+                                }
+                                elem13_1 = CstParseResult.success(null, substring(zomStart15.offset(), pos), location());
+                            } else {
+                                children.clear();
+                                children.addAll(savedChildrenZom15);
+                            }
+                            if (elem13_1.isCutFailure()) {
+                                restoreLocation(seqStart13);
+                                alt5_1 = elem13_1;
+                            } else if (elem13_1.isFailure()) {
+                                restoreLocation(seqStart13);
+                                alt5_1 = cut13 ? elem13_1.asCutFailure() : elem13_1;
+                            }
+                        }
+                        if (alt5_1.isSuccess()) {
+                            if (tokenBoundaryDepth == 0) skipWhitespace();
+                            var optStart20 = location();
+                            var savedChildrenOpt20 = new ArrayList<>(children);
+                            children.clear();
+                            var optElem20 = parse_Guard();
+                            if (optElem20.isSuccess() && optElem20.node.isPresent()) {
+                                children.add(optElem20.node.unwrap());
+                            }
+                            CstParseResult elem13_2;
+                            if (optElem20.isCutFailure()) {
+                                restoreLocation(optStart20);
+                                children.clear();
+                                children.addAll(savedChildrenOpt20);
+                                elem13_2 = optElem20;
+                            } else if (optElem20.isSuccess()) {
+                                var optChildren20 = new ArrayList<>(children);
+                                children.clear();
+                                children.addAll(savedChildrenOpt20);
+                                children.addAll(optChildren20);
+                                elem13_2 = optElem20;
+                            } else {
+                                restoreLocation(optStart20);
+                                children.clear();
+                                children.addAll(savedChildrenOpt20);
+                                elem13_2 = CstParseResult.success(null, "", location());
+                            }
+                            if (elem13_2.isCutFailure()) {
+                                restoreLocation(seqStart13);
+                                alt5_1 = elem13_2;
+                            } else if (elem13_2.isFailure()) {
+                                restoreLocation(seqStart13);
+                                alt5_1 = cut13 ? elem13_2.asCutFailure() : elem13_2;
+                            }
+                        }
+                        if (alt5_1.isSuccess()) {
+                            alt5_1 = CstParseResult.success(null, substring(seqStart13.offset(), pos), location());
+                        }
+                        if (alt5_1.isSuccess()) {
+                            elem1_2 = alt5_1;
+                        } else if (alt5_1.isCutFailure()) {
+                            elem1_2 = alt5_1.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart5);
+                        }
+                        }
+                        if (elem1_2 == null) {
+                            children.clear();
+                            children.addAll(savedChildren5);
+                            elem1_2 = CstParseResult.failure("one of alternatives");
+                        }
+                        if (elem1_2.isCutFailure()) {
+                            restoreLocation(seqStart1);
+                            alt0_0 = elem1_2;
+                        } else if (elem1_2.isFailure()) {
+                            restoreLocation(seqStart1);
+                            alt0_0 = cut1 ? elem1_2.asCutFailure() : elem1_2;
+                        }
                     }
-                    if (zomElem15.isCutFailure()) {
-                        elem13_1 = zomElem15;
-                        break;
+                    if (alt0_0.isSuccess()) {
+                        alt0_0 = CstParseResult.success(null, substring(seqStart1.offset(), pos), location());
                     }
-                    if (zomElem15.isFailure() || location().offset() == beforeLoc15.offset()) {
-                        restoreLocation(beforeLoc15);
-                        break;
+                    if (alt0_0.isSuccess()) {
+                        result = alt0_0;
+                    } else if (alt0_0.isCutFailure()) {
+                        result = alt0_0.asRegularFailure();
+                    } else {
+                        restoreLocation(choiceStart0);
                     }
+                    break;
                 }
-                if (!elem13_1.isCutFailure()) {
-                    var zomChildren15 = new ArrayList<>(children);
+                case 'd':
+                {
                     children.clear();
-                    children.addAll(savedChildrenZom15);
-                    if (zomChildren15.size() == 1) {
-                        children.add(zomChildren15.getFirst());
-                    } else if (!zomChildren15.isEmpty()) {
-                        var zomSpan15 = SourceSpan.of(zomStart15, location());
-                        children.add(new CstNode.NonTerminal(zomSpan15, __ruleName, zomChildren15, List.of(), List.of()));
+                    children.addAll(savedChildren0);
+                    var alt0_1 = matchLiteralCst("default", false);
+                    if (alt0_1.isSuccess() && alt0_1.node.isPresent()) {
+                        children.add(alt0_1.node.unwrap());
                     }
-                    elem13_1 = CstParseResult.success(null, substring(zomStart15.offset(), pos), location());
-                } else {
-                    children.clear();
-                    children.addAll(savedChildrenZom15);
-                }
-                if (elem13_1.isCutFailure()) {
-                    restoreLocation(seqStart13);
-                    alt5_1 = elem13_1;
-                } else if (elem13_1.isFailure()) {
-                    restoreLocation(seqStart13);
-                    alt5_1 = cut13 ? elem13_1.asCutFailure() : elem13_1;
+                    if (alt0_1.isSuccess()) {
+                        result = alt0_1;
+                    } else if (alt0_1.isCutFailure()) {
+                        result = alt0_1.asRegularFailure();
+                    } else {
+                        restoreLocation(choiceStart0);
+                    }
+                    break;
                 }
             }
-            if (alt5_1.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                var optStart20 = location();
-                var savedChildrenOpt20 = new ArrayList<>(children);
-                children.clear();
-                var optElem20 = parse_Guard();
-                if (optElem20.isSuccess() && optElem20.node.isPresent()) {
-                    children.add(optElem20.node.unwrap());
-                }
-                CstParseResult elem13_2;
-                if (optElem20.isCutFailure()) {
-                    restoreLocation(optStart20);
-                    children.clear();
-                    children.addAll(savedChildrenOpt20);
-                    elem13_2 = optElem20;
-                } else if (optElem20.isSuccess()) {
-                    var optChildren20 = new ArrayList<>(children);
-                    children.clear();
-                    children.addAll(savedChildrenOpt20);
-                    children.addAll(optChildren20);
-                    elem13_2 = optElem20;
-                } else {
-                    restoreLocation(optStart20);
-                    children.clear();
-                    children.addAll(savedChildrenOpt20);
-                    elem13_2 = CstParseResult.success(null, "", location());
-                }
-                if (elem13_2.isCutFailure()) {
-                    restoreLocation(seqStart13);
-                    alt5_1 = elem13_2;
-                } else if (elem13_2.isFailure()) {
-                    restoreLocation(seqStart13);
-                    alt5_1 = cut13 ? elem13_2.asCutFailure() : elem13_2;
-                }
-            }
-            if (alt5_1.isSuccess()) {
-                alt5_1 = CstParseResult.success(null, substring(seqStart13.offset(), pos), location());
-            }
-            if (alt5_1.isSuccess()) {
-                elem1_2 = alt5_1;
-            } else if (alt5_1.isCutFailure()) {
-                elem1_2 = alt5_1.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart5);
-            }
-            }
-            if (elem1_2 == null) {
-                children.clear();
-                children.addAll(savedChildren5);
-                elem1_2 = CstParseResult.failure("one of alternatives");
-            }
-            if (elem1_2.isCutFailure()) {
-                restoreLocation(seqStart1);
-                alt0_0 = elem1_2;
-            } else if (elem1_2.isFailure()) {
-                restoreLocation(seqStart1);
-                alt0_0 = cut1 ? elem1_2.asCutFailure() : elem1_2;
-            }
-        }
-        if (alt0_0.isSuccess()) {
-            alt0_0 = CstParseResult.success(null, substring(seqStart1.offset(), pos), location());
-        }
-        if (alt0_0.isSuccess()) {
-            result = alt0_0;
-        } else if (alt0_0.isCutFailure()) {
-            result = alt0_0.asRegularFailure();
-        } else {
-            restoreLocation(choiceStart0);
-        children.clear();
-        children.addAll(savedChildren0);
-        var alt0_1 = matchLiteralCst("default", false);
-        if (alt0_1.isSuccess() && alt0_1.node.isPresent()) {
-            children.add(alt0_1.node.unwrap());
-        }
-        if (alt0_1.isSuccess()) {
-            result = alt0_1;
-        } else if (alt0_1.isCutFailure()) {
-            result = alt0_1.asRegularFailure();
-        } else {
-            restoreLocation(choiceStart0);
-        }
         }
         if (result == null) {
             children.clear();
@@ -14360,7 +14389,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_CASE_ITEM;
         
@@ -14385,7 +14414,7 @@ public final class Java25Parser {
         var seqStart2 = location();
         boolean cut2 = false;
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem2_0 = parse_QualifiedName();
             if (elem2_0.isSuccess() && elem2_0.node.isPresent()) {
                 children.add(elem2_0.node.unwrap());
@@ -14403,37 +14432,58 @@ public final class Java25Parser {
             var savedChildrenAnd4 = new ArrayList<>(children);
             CstParseResult andElem4 = null;
             var choiceStart6 = location();
-            var alt6_0 = matchLiteralCst("->", false);
-            if (alt6_0.isSuccess()) {
-                andElem4 = alt6_0;
-            } else if (alt6_0.isCutFailure()) {
-                andElem4 = alt6_0.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart6);
-            var alt6_1 = matchLiteralCst(",", false);
-            if (alt6_1.isSuccess()) {
-                andElem4 = alt6_1;
-            } else if (alt6_1.isCutFailure()) {
-                andElem4 = alt6_1.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart6);
-            var alt6_2 = matchLiteralCst(":", false);
-            if (alt6_2.isSuccess()) {
-                andElem4 = alt6_2;
-            } else if (alt6_2.isCutFailure()) {
-                andElem4 = alt6_2.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart6);
-            var alt6_3 = matchLiteralCst("when", false);
-            if (alt6_3.isSuccess()) {
-                andElem4 = alt6_3;
-            } else if (alt6_3.isCutFailure()) {
-                andElem4 = alt6_3.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart6);
-            }
-            }
-            }
+            if (pos < input.length()) {
+                char dispatchChar6 = input.charAt(pos);
+                switch (dispatchChar6) {
+                    case '-':
+                    {
+                        var alt6_0 = matchLiteralCst("->", false);
+                        if (alt6_0.isSuccess()) {
+                            andElem4 = alt6_0;
+                        } else if (alt6_0.isCutFailure()) {
+                            andElem4 = alt6_0.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart6);
+                        }
+                        break;
+                    }
+                    case ',':
+                    {
+                        var alt6_1 = matchLiteralCst(",", false);
+                        if (alt6_1.isSuccess()) {
+                            andElem4 = alt6_1;
+                        } else if (alt6_1.isCutFailure()) {
+                            andElem4 = alt6_1.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart6);
+                        }
+                        break;
+                    }
+                    case ':':
+                    {
+                        var alt6_2 = matchLiteralCst(":", false);
+                        if (alt6_2.isSuccess()) {
+                            andElem4 = alt6_2;
+                        } else if (alt6_2.isCutFailure()) {
+                            andElem4 = alt6_2.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart6);
+                        }
+                        break;
+                    }
+                    case 'w':
+                    {
+                        var alt6_3 = matchLiteralCst("when", false);
+                        if (alt6_3.isSuccess()) {
+                            andElem4 = alt6_3;
+                        } else if (alt6_3.isCutFailure()) {
+                            andElem4 = alt6_3.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart6);
+                        }
+                        break;
+                    }
+                }
             }
             if (andElem4 == null) {
                 andElem4 = CstParseResult.failure("one of alternatives");
@@ -14509,7 +14559,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_PATTERN;
         
@@ -14577,7 +14627,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_TYPE_PATTERN;
         
@@ -14596,7 +14646,7 @@ public final class Java25Parser {
             var seqStart4 = location();
             boolean cut4 = false;
             if (andElem2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem4_0 = parse_LocalVarType();
                 if (elem4_0.isCutFailure()) {
                     restoreLocation(seqStart4);
@@ -14607,7 +14657,7 @@ public final class Java25Parser {
                 }
             }
             if (andElem2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem4_1 = parse_Identifier();
                 if (elem4_1.isCutFailure()) {
                     restoreLocation(seqStart4);
@@ -14633,7 +14683,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_1 = parse_LocalVarType();
             if (elem1_1.isSuccess() && elem1_1.node.isPresent()) {
                 children.add(elem1_1.node.unwrap());
@@ -14647,7 +14697,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_2 = parse_Identifier();
             if (elem1_2.isSuccess() && elem1_2.node.isPresent()) {
                 children.add(elem1_2.node.unwrap());
@@ -14718,7 +14768,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_RECORD_PATTERN;
         
@@ -14726,7 +14776,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_RefType();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -14740,7 +14790,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = matchLiteralCst("(", false);
             if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
                 children.add(elem0_1.node.unwrap());
@@ -14754,7 +14804,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart3 = location();
             var savedChildrenOpt3 = new ArrayList<>(children);
             children.clear();
@@ -14789,7 +14839,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_3 = matchLiteralCst(")", false);
             if (elem0_3.isSuccess() && elem0_3.node.isPresent()) {
                 children.add(elem0_3.node.unwrap());
@@ -14835,7 +14885,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_PATTERN_LIST;
         
@@ -14843,7 +14893,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Pattern();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -14857,19 +14907,19 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_0 = matchLiteralCst(",", false);
                     if (elem4_0.isSuccess() && elem4_0.node.isPresent()) {
                         children.add(elem4_0.node.unwrap());
@@ -14883,7 +14933,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_1 = parse_Pattern();
                     if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                         children.add(elem4_1.node.unwrap());
@@ -14964,7 +15014,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_GUARD;
         
@@ -14972,7 +15022,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_WhenKW();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -14986,7 +15036,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = parse_Expr();
             if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
                 children.add(elem0_1.node.unwrap());
@@ -15032,7 +15082,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_EXPR;
         
@@ -15070,7 +15120,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ASSIGNMENT;
         
@@ -15078,7 +15128,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Ternary();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -15092,7 +15142,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart2 = location();
             var savedChildrenOpt2 = new ArrayList<>(children);
             children.clear();
@@ -15100,165 +15150,214 @@ public final class Java25Parser {
             var seqStart4 = location();
             boolean cut4 = false;
             if (optElem2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult elem4_0 = null;
                 var choiceStart6 = location();
                 var savedChildren6 = new ArrayList<>(children);
-                children.clear();
-                children.addAll(savedChildren6);
-                var alt6_0 = matchLiteralCst("=", false);
-                if (alt6_0.isSuccess() && alt6_0.node.isPresent()) {
-                    children.add(alt6_0.node.unwrap());
-                }
-                if (alt6_0.isSuccess()) {
-                    elem4_0 = alt6_0;
-                } else if (alt6_0.isCutFailure()) {
-                    elem4_0 = alt6_0.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart6);
-                children.clear();
-                children.addAll(savedChildren6);
-                var alt6_1 = matchLiteralCst(">>>=", false);
-                if (alt6_1.isSuccess() && alt6_1.node.isPresent()) {
-                    children.add(alt6_1.node.unwrap());
-                }
-                if (alt6_1.isSuccess()) {
-                    elem4_0 = alt6_1;
-                } else if (alt6_1.isCutFailure()) {
-                    elem4_0 = alt6_1.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart6);
-                children.clear();
-                children.addAll(savedChildren6);
-                var alt6_2 = matchLiteralCst(">>=", false);
-                if (alt6_2.isSuccess() && alt6_2.node.isPresent()) {
-                    children.add(alt6_2.node.unwrap());
-                }
-                if (alt6_2.isSuccess()) {
-                    elem4_0 = alt6_2;
-                } else if (alt6_2.isCutFailure()) {
-                    elem4_0 = alt6_2.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart6);
-                children.clear();
-                children.addAll(savedChildren6);
-                var alt6_3 = matchLiteralCst("<<=", false);
-                if (alt6_3.isSuccess() && alt6_3.node.isPresent()) {
-                    children.add(alt6_3.node.unwrap());
-                }
-                if (alt6_3.isSuccess()) {
-                    elem4_0 = alt6_3;
-                } else if (alt6_3.isCutFailure()) {
-                    elem4_0 = alt6_3.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart6);
-                children.clear();
-                children.addAll(savedChildren6);
-                var alt6_4 = matchLiteralCst("+=", false);
-                if (alt6_4.isSuccess() && alt6_4.node.isPresent()) {
-                    children.add(alt6_4.node.unwrap());
-                }
-                if (alt6_4.isSuccess()) {
-                    elem4_0 = alt6_4;
-                } else if (alt6_4.isCutFailure()) {
-                    elem4_0 = alt6_4.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart6);
-                children.clear();
-                children.addAll(savedChildren6);
-                var alt6_5 = matchLiteralCst("-=", false);
-                if (alt6_5.isSuccess() && alt6_5.node.isPresent()) {
-                    children.add(alt6_5.node.unwrap());
-                }
-                if (alt6_5.isSuccess()) {
-                    elem4_0 = alt6_5;
-                } else if (alt6_5.isCutFailure()) {
-                    elem4_0 = alt6_5.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart6);
-                children.clear();
-                children.addAll(savedChildren6);
-                var alt6_6 = matchLiteralCst("*=", false);
-                if (alt6_6.isSuccess() && alt6_6.node.isPresent()) {
-                    children.add(alt6_6.node.unwrap());
-                }
-                if (alt6_6.isSuccess()) {
-                    elem4_0 = alt6_6;
-                } else if (alt6_6.isCutFailure()) {
-                    elem4_0 = alt6_6.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart6);
-                children.clear();
-                children.addAll(savedChildren6);
-                var alt6_7 = matchLiteralCst("/=", false);
-                if (alt6_7.isSuccess() && alt6_7.node.isPresent()) {
-                    children.add(alt6_7.node.unwrap());
-                }
-                if (alt6_7.isSuccess()) {
-                    elem4_0 = alt6_7;
-                } else if (alt6_7.isCutFailure()) {
-                    elem4_0 = alt6_7.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart6);
-                children.clear();
-                children.addAll(savedChildren6);
-                var alt6_8 = matchLiteralCst("%=", false);
-                if (alt6_8.isSuccess() && alt6_8.node.isPresent()) {
-                    children.add(alt6_8.node.unwrap());
-                }
-                if (alt6_8.isSuccess()) {
-                    elem4_0 = alt6_8;
-                } else if (alt6_8.isCutFailure()) {
-                    elem4_0 = alt6_8.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart6);
-                children.clear();
-                children.addAll(savedChildren6);
-                var alt6_9 = matchLiteralCst("&=", false);
-                if (alt6_9.isSuccess() && alt6_9.node.isPresent()) {
-                    children.add(alt6_9.node.unwrap());
-                }
-                if (alt6_9.isSuccess()) {
-                    elem4_0 = alt6_9;
-                } else if (alt6_9.isCutFailure()) {
-                    elem4_0 = alt6_9.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart6);
-                children.clear();
-                children.addAll(savedChildren6);
-                var alt6_10 = matchLiteralCst("|=", false);
-                if (alt6_10.isSuccess() && alt6_10.node.isPresent()) {
-                    children.add(alt6_10.node.unwrap());
-                }
-                if (alt6_10.isSuccess()) {
-                    elem4_0 = alt6_10;
-                } else if (alt6_10.isCutFailure()) {
-                    elem4_0 = alt6_10.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart6);
-                children.clear();
-                children.addAll(savedChildren6);
-                var alt6_11 = matchLiteralCst("^=", false);
-                if (alt6_11.isSuccess() && alt6_11.node.isPresent()) {
-                    children.add(alt6_11.node.unwrap());
-                }
-                if (alt6_11.isSuccess()) {
-                    elem4_0 = alt6_11;
-                } else if (alt6_11.isCutFailure()) {
-                    elem4_0 = alt6_11.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart6);
-                }
-                }
-                }
-                }
-                }
-                }
-                }
-                }
-                }
-                }
-                }
+                if (pos < input.length()) {
+                    char dispatchChar6 = input.charAt(pos);
+                    switch (dispatchChar6) {
+                        case '=':
+                        {
+                            children.clear();
+                            children.addAll(savedChildren6);
+                            var alt6_0 = matchLiteralCst("=", false);
+                            if (alt6_0.isSuccess() && alt6_0.node.isPresent()) {
+                                children.add(alt6_0.node.unwrap());
+                            }
+                            if (alt6_0.isSuccess()) {
+                                elem4_0 = alt6_0;
+                            } else if (alt6_0.isCutFailure()) {
+                                elem4_0 = alt6_0.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart6);
+                            }
+                            break;
+                        }
+                        case '>':
+                        {
+                            children.clear();
+                            children.addAll(savedChildren6);
+                            var alt6_1 = matchLiteralCst(">>>=", false);
+                            if (alt6_1.isSuccess() && alt6_1.node.isPresent()) {
+                                children.add(alt6_1.node.unwrap());
+                            }
+                            if (alt6_1.isSuccess()) {
+                                elem4_0 = alt6_1;
+                            } else if (alt6_1.isCutFailure()) {
+                                elem4_0 = alt6_1.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart6);
+                            children.clear();
+                            children.addAll(savedChildren6);
+                            var alt6_2 = matchLiteralCst(">>=", false);
+                            if (alt6_2.isSuccess() && alt6_2.node.isPresent()) {
+                                children.add(alt6_2.node.unwrap());
+                            }
+                            if (alt6_2.isSuccess()) {
+                                elem4_0 = alt6_2;
+                            } else if (alt6_2.isCutFailure()) {
+                                elem4_0 = alt6_2.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart6);
+                            }
+                            }
+                            break;
+                        }
+                        case '<':
+                        {
+                            children.clear();
+                            children.addAll(savedChildren6);
+                            var alt6_3 = matchLiteralCst("<<=", false);
+                            if (alt6_3.isSuccess() && alt6_3.node.isPresent()) {
+                                children.add(alt6_3.node.unwrap());
+                            }
+                            if (alt6_3.isSuccess()) {
+                                elem4_0 = alt6_3;
+                            } else if (alt6_3.isCutFailure()) {
+                                elem4_0 = alt6_3.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart6);
+                            }
+                            break;
+                        }
+                        case '+':
+                        {
+                            children.clear();
+                            children.addAll(savedChildren6);
+                            var alt6_4 = matchLiteralCst("+=", false);
+                            if (alt6_4.isSuccess() && alt6_4.node.isPresent()) {
+                                children.add(alt6_4.node.unwrap());
+                            }
+                            if (alt6_4.isSuccess()) {
+                                elem4_0 = alt6_4;
+                            } else if (alt6_4.isCutFailure()) {
+                                elem4_0 = alt6_4.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart6);
+                            }
+                            break;
+                        }
+                        case '-':
+                        {
+                            children.clear();
+                            children.addAll(savedChildren6);
+                            var alt6_5 = matchLiteralCst("-=", false);
+                            if (alt6_5.isSuccess() && alt6_5.node.isPresent()) {
+                                children.add(alt6_5.node.unwrap());
+                            }
+                            if (alt6_5.isSuccess()) {
+                                elem4_0 = alt6_5;
+                            } else if (alt6_5.isCutFailure()) {
+                                elem4_0 = alt6_5.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart6);
+                            }
+                            break;
+                        }
+                        case '*':
+                        {
+                            children.clear();
+                            children.addAll(savedChildren6);
+                            var alt6_6 = matchLiteralCst("*=", false);
+                            if (alt6_6.isSuccess() && alt6_6.node.isPresent()) {
+                                children.add(alt6_6.node.unwrap());
+                            }
+                            if (alt6_6.isSuccess()) {
+                                elem4_0 = alt6_6;
+                            } else if (alt6_6.isCutFailure()) {
+                                elem4_0 = alt6_6.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart6);
+                            }
+                            break;
+                        }
+                        case '/':
+                        {
+                            children.clear();
+                            children.addAll(savedChildren6);
+                            var alt6_7 = matchLiteralCst("/=", false);
+                            if (alt6_7.isSuccess() && alt6_7.node.isPresent()) {
+                                children.add(alt6_7.node.unwrap());
+                            }
+                            if (alt6_7.isSuccess()) {
+                                elem4_0 = alt6_7;
+                            } else if (alt6_7.isCutFailure()) {
+                                elem4_0 = alt6_7.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart6);
+                            }
+                            break;
+                        }
+                        case '%':
+                        {
+                            children.clear();
+                            children.addAll(savedChildren6);
+                            var alt6_8 = matchLiteralCst("%=", false);
+                            if (alt6_8.isSuccess() && alt6_8.node.isPresent()) {
+                                children.add(alt6_8.node.unwrap());
+                            }
+                            if (alt6_8.isSuccess()) {
+                                elem4_0 = alt6_8;
+                            } else if (alt6_8.isCutFailure()) {
+                                elem4_0 = alt6_8.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart6);
+                            }
+                            break;
+                        }
+                        case '&':
+                        {
+                            children.clear();
+                            children.addAll(savedChildren6);
+                            var alt6_9 = matchLiteralCst("&=", false);
+                            if (alt6_9.isSuccess() && alt6_9.node.isPresent()) {
+                                children.add(alt6_9.node.unwrap());
+                            }
+                            if (alt6_9.isSuccess()) {
+                                elem4_0 = alt6_9;
+                            } else if (alt6_9.isCutFailure()) {
+                                elem4_0 = alt6_9.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart6);
+                            }
+                            break;
+                        }
+                        case '|':
+                        {
+                            children.clear();
+                            children.addAll(savedChildren6);
+                            var alt6_10 = matchLiteralCst("|=", false);
+                            if (alt6_10.isSuccess() && alt6_10.node.isPresent()) {
+                                children.add(alt6_10.node.unwrap());
+                            }
+                            if (alt6_10.isSuccess()) {
+                                elem4_0 = alt6_10;
+                            } else if (alt6_10.isCutFailure()) {
+                                elem4_0 = alt6_10.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart6);
+                            }
+                            break;
+                        }
+                        case '^':
+                        {
+                            children.clear();
+                            children.addAll(savedChildren6);
+                            var alt6_11 = matchLiteralCst("^=", false);
+                            if (alt6_11.isSuccess() && alt6_11.node.isPresent()) {
+                                children.add(alt6_11.node.unwrap());
+                            }
+                            if (alt6_11.isSuccess()) {
+                                elem4_0 = alt6_11;
+                            } else if (alt6_11.isCutFailure()) {
+                                elem4_0 = alt6_11.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart6);
+                            }
+                            break;
+                        }
+                    }
                 }
                 if (elem4_0 == null) {
                     children.clear();
@@ -15274,7 +15373,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem4_1 = parse_Assignment();
                 if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                     children.add(elem4_1.node.unwrap());
@@ -15349,7 +15448,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_TERNARY;
         
@@ -15357,7 +15456,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_LogOr();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -15371,7 +15470,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart2 = location();
             var savedChildrenOpt2 = new ArrayList<>(children);
             children.clear();
@@ -15379,7 +15478,7 @@ public final class Java25Parser {
             var seqStart4 = location();
             boolean cut4 = false;
             if (optElem2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem4_0 = matchLiteralCst("?", false);
                 if (elem4_0.isSuccess() && elem4_0.node.isPresent()) {
                     children.add(elem4_0.node.unwrap());
@@ -15393,7 +15492,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem4_1 = parse_Expr();
                 if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                     children.add(elem4_1.node.unwrap());
@@ -15407,7 +15506,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem4_2 = matchLiteralCst(":", false);
                 if (elem4_2.isSuccess() && elem4_2.node.isPresent()) {
                     children.add(elem4_2.node.unwrap());
@@ -15421,7 +15520,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem4_3 = parse_Ternary();
                 if (elem4_3.isSuccess() && elem4_3.node.isPresent()) {
                     children.add(elem4_3.node.unwrap());
@@ -15496,7 +15595,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_LOG_OR;
         
@@ -15504,7 +15603,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_LogAnd();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -15518,19 +15617,19 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_0 = matchLiteralCst("||", false);
                     if (elem4_0.isSuccess() && elem4_0.node.isPresent()) {
                         children.add(elem4_0.node.unwrap());
@@ -15544,7 +15643,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_1 = parse_LogAnd();
                     if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                         children.add(elem4_1.node.unwrap());
@@ -15625,7 +15724,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_LOG_AND;
         
@@ -15633,7 +15732,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_BitOr();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -15647,19 +15746,19 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_0 = matchLiteralCst("&&", false);
                     if (elem4_0.isSuccess() && elem4_0.node.isPresent()) {
                         children.add(elem4_0.node.unwrap());
@@ -15673,7 +15772,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_1 = parse_BitOr();
                     if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                         children.add(elem4_1.node.unwrap());
@@ -15754,7 +15853,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_BIT_OR;
         
@@ -15762,7 +15861,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_BitXor();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -15776,14 +15875,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
@@ -15820,7 +15919,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_2 = matchLiteralCst("|", false);
                     if (elem4_2.isSuccess() && elem4_2.node.isPresent()) {
                         children.add(elem4_2.node.unwrap());
@@ -15834,7 +15933,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_3 = parse_BitXor();
                     if (elem4_3.isSuccess() && elem4_3.node.isPresent()) {
                         children.add(elem4_3.node.unwrap());
@@ -15915,7 +16014,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_BIT_XOR;
         
@@ -15923,7 +16022,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_BitAnd();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -15937,14 +16036,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
@@ -15965,7 +16064,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_1 = matchLiteralCst("^", false);
                     if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                         children.add(elem4_1.node.unwrap());
@@ -15979,7 +16078,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_2 = parse_BitAnd();
                     if (elem4_2.isSuccess() && elem4_2.node.isPresent()) {
                         children.add(elem4_2.node.unwrap());
@@ -16060,7 +16159,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_BIT_AND;
         
@@ -16068,7 +16167,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Equality();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -16082,14 +16181,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
@@ -16126,7 +16225,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_2 = matchLiteralCst("&", false);
                     if (elem4_2.isSuccess() && elem4_2.node.isPresent()) {
                         children.add(elem4_2.node.unwrap());
@@ -16140,7 +16239,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_3 = parse_Equality();
                     if (elem4_3.isSuccess() && elem4_3.node.isPresent()) {
                         children.add(elem4_3.node.unwrap());
@@ -16221,7 +16320,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_EQUALITY;
         
@@ -16229,7 +16328,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Relational();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -16243,47 +16342,60 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     CstParseResult elem4_0 = null;
                     var choiceStart6 = location();
                     var savedChildren6 = new ArrayList<>(children);
-                    children.clear();
-                    children.addAll(savedChildren6);
-                    var alt6_0 = matchLiteralCst("==", false);
-                    if (alt6_0.isSuccess() && alt6_0.node.isPresent()) {
-                        children.add(alt6_0.node.unwrap());
-                    }
-                    if (alt6_0.isSuccess()) {
-                        elem4_0 = alt6_0;
-                    } else if (alt6_0.isCutFailure()) {
-                        elem4_0 = alt6_0.asRegularFailure();
-                    } else {
-                        restoreLocation(choiceStart6);
-                    children.clear();
-                    children.addAll(savedChildren6);
-                    var alt6_1 = matchLiteralCst("!=", false);
-                    if (alt6_1.isSuccess() && alt6_1.node.isPresent()) {
-                        children.add(alt6_1.node.unwrap());
-                    }
-                    if (alt6_1.isSuccess()) {
-                        elem4_0 = alt6_1;
-                    } else if (alt6_1.isCutFailure()) {
-                        elem4_0 = alt6_1.asRegularFailure();
-                    } else {
-                        restoreLocation(choiceStart6);
-                    }
+                    if (pos < input.length()) {
+                        char dispatchChar6 = input.charAt(pos);
+                        switch (dispatchChar6) {
+                            case '=':
+                            {
+                                children.clear();
+                                children.addAll(savedChildren6);
+                                var alt6_0 = matchLiteralCst("==", false);
+                                if (alt6_0.isSuccess() && alt6_0.node.isPresent()) {
+                                    children.add(alt6_0.node.unwrap());
+                                }
+                                if (alt6_0.isSuccess()) {
+                                    elem4_0 = alt6_0;
+                                } else if (alt6_0.isCutFailure()) {
+                                    elem4_0 = alt6_0.asRegularFailure();
+                                } else {
+                                    restoreLocation(choiceStart6);
+                                }
+                                break;
+                            }
+                            case '!':
+                            {
+                                children.clear();
+                                children.addAll(savedChildren6);
+                                var alt6_1 = matchLiteralCst("!=", false);
+                                if (alt6_1.isSuccess() && alt6_1.node.isPresent()) {
+                                    children.add(alt6_1.node.unwrap());
+                                }
+                                if (alt6_1.isSuccess()) {
+                                    elem4_0 = alt6_1;
+                                } else if (alt6_1.isCutFailure()) {
+                                    elem4_0 = alt6_1.asRegularFailure();
+                                } else {
+                                    restoreLocation(choiceStart6);
+                                }
+                                break;
+                            }
+                        }
                     }
                     if (elem4_0 == null) {
                         children.clear();
@@ -16299,7 +16411,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_1 = parse_Relational();
                     if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                         children.add(elem4_1.node.unwrap());
@@ -16380,7 +16492,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_RELATIONAL;
         
@@ -16388,7 +16500,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Shift();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -16402,7 +16514,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart2 = location();
             var savedChildrenOpt2 = new ArrayList<>(children);
             children.clear();
@@ -16415,61 +16527,74 @@ public final class Java25Parser {
             var seqStart5 = location();
             boolean cut5 = false;
             if (alt4_0.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult elem5_0 = null;
                 var choiceStart7 = location();
                 var savedChildren7 = new ArrayList<>(children);
-                children.clear();
-                children.addAll(savedChildren7);
-                var alt7_0 = matchLiteralCst("<=", false);
-                if (alt7_0.isSuccess() && alt7_0.node.isPresent()) {
-                    children.add(alt7_0.node.unwrap());
-                }
-                if (alt7_0.isSuccess()) {
-                    elem5_0 = alt7_0;
-                } else if (alt7_0.isCutFailure()) {
-                    elem5_0 = alt7_0.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart7);
-                children.clear();
-                children.addAll(savedChildren7);
-                var alt7_1 = matchLiteralCst(">=", false);
-                if (alt7_1.isSuccess() && alt7_1.node.isPresent()) {
-                    children.add(alt7_1.node.unwrap());
-                }
-                if (alt7_1.isSuccess()) {
-                    elem5_0 = alt7_1;
-                } else if (alt7_1.isCutFailure()) {
-                    elem5_0 = alt7_1.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart7);
-                children.clear();
-                children.addAll(savedChildren7);
-                var alt7_2 = matchLiteralCst("<", false);
-                if (alt7_2.isSuccess() && alt7_2.node.isPresent()) {
-                    children.add(alt7_2.node.unwrap());
-                }
-                if (alt7_2.isSuccess()) {
-                    elem5_0 = alt7_2;
-                } else if (alt7_2.isCutFailure()) {
-                    elem5_0 = alt7_2.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart7);
-                children.clear();
-                children.addAll(savedChildren7);
-                var alt7_3 = matchLiteralCst(">", false);
-                if (alt7_3.isSuccess() && alt7_3.node.isPresent()) {
-                    children.add(alt7_3.node.unwrap());
-                }
-                if (alt7_3.isSuccess()) {
-                    elem5_0 = alt7_3;
-                } else if (alt7_3.isCutFailure()) {
-                    elem5_0 = alt7_3.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart7);
-                }
-                }
-                }
+                if (pos < input.length()) {
+                    char dispatchChar7 = input.charAt(pos);
+                    switch (dispatchChar7) {
+                        case '<':
+                        {
+                            children.clear();
+                            children.addAll(savedChildren7);
+                            var alt7_0 = matchLiteralCst("<=", false);
+                            if (alt7_0.isSuccess() && alt7_0.node.isPresent()) {
+                                children.add(alt7_0.node.unwrap());
+                            }
+                            if (alt7_0.isSuccess()) {
+                                elem5_0 = alt7_0;
+                            } else if (alt7_0.isCutFailure()) {
+                                elem5_0 = alt7_0.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart7);
+                            children.clear();
+                            children.addAll(savedChildren7);
+                            var alt7_2 = matchLiteralCst("<", false);
+                            if (alt7_2.isSuccess() && alt7_2.node.isPresent()) {
+                                children.add(alt7_2.node.unwrap());
+                            }
+                            if (alt7_2.isSuccess()) {
+                                elem5_0 = alt7_2;
+                            } else if (alt7_2.isCutFailure()) {
+                                elem5_0 = alt7_2.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart7);
+                            }
+                            }
+                            break;
+                        }
+                        case '>':
+                        {
+                            children.clear();
+                            children.addAll(savedChildren7);
+                            var alt7_1 = matchLiteralCst(">=", false);
+                            if (alt7_1.isSuccess() && alt7_1.node.isPresent()) {
+                                children.add(alt7_1.node.unwrap());
+                            }
+                            if (alt7_1.isSuccess()) {
+                                elem5_0 = alt7_1;
+                            } else if (alt7_1.isCutFailure()) {
+                                elem5_0 = alt7_1.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart7);
+                            children.clear();
+                            children.addAll(savedChildren7);
+                            var alt7_3 = matchLiteralCst(">", false);
+                            if (alt7_3.isSuccess() && alt7_3.node.isPresent()) {
+                                children.add(alt7_3.node.unwrap());
+                            }
+                            if (alt7_3.isSuccess()) {
+                                elem5_0 = alt7_3;
+                            } else if (alt7_3.isCutFailure()) {
+                                elem5_0 = alt7_3.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart7);
+                            }
+                            }
+                            break;
+                        }
+                    }
                 }
                 if (elem5_0 == null) {
                     children.clear();
@@ -16485,7 +16610,7 @@ public final class Java25Parser {
                 }
             }
             if (alt4_0.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem5_1 = parse_Shift();
                 if (elem5_1.isSuccess() && elem5_1.node.isPresent()) {
                     children.add(elem5_1.node.unwrap());
@@ -16513,7 +16638,7 @@ public final class Java25Parser {
             var seqStart13 = location();
             boolean cut13 = false;
             if (alt4_1.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem13_0 = matchLiteralCst("instanceof", false);
                 if (elem13_0.isSuccess() && elem13_0.node.isPresent()) {
                     children.add(elem13_0.node.unwrap());
@@ -16527,7 +16652,7 @@ public final class Java25Parser {
                 }
             }
             if (alt4_1.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult elem13_1 = null;
                 var choiceStart16 = location();
                 var savedChildren16 = new ArrayList<>(children);
@@ -16645,7 +16770,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_SHIFT;
         
@@ -16653,7 +16778,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Additive();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -16667,172 +16792,185 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     CstParseResult elem4_0 = null;
                     var choiceStart6 = location();
                     var savedChildren6 = new ArrayList<>(children);
-                    children.clear();
-                    children.addAll(savedChildren6);
-                    CstParseResult alt6_0 = CstParseResult.success(null, "", location());
-                    var seqStart7 = location();
-                    boolean cut7 = false;
-                    if (alt6_0.isSuccess()) {
-                        var notStart8 = location();
-                        var savedChildrenNot8 = new ArrayList<>(children);
-                        var notElem8 = matchLiteralCst("<<=", false);
-                        restoreLocation(notStart8);
-                        children.clear();
-                        children.addAll(savedChildrenNot8);
-                        var elem7_0 = notElem8.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
-                        if (elem7_0.isCutFailure()) {
-                            restoreLocation(seqStart7);
-                            alt6_0 = elem7_0;
-                        } else if (elem7_0.isFailure()) {
-                            restoreLocation(seqStart7);
-                            alt6_0 = cut7 ? elem7_0.asCutFailure() : elem7_0;
+                    if (pos < input.length()) {
+                        char dispatchChar6 = input.charAt(pos);
+                        switch (dispatchChar6) {
+                            case '<':
+                            {
+                                children.clear();
+                                children.addAll(savedChildren6);
+                                CstParseResult alt6_0 = CstParseResult.success(null, "", location());
+                                var seqStart7 = location();
+                                boolean cut7 = false;
+                                if (alt6_0.isSuccess()) {
+                                    var notStart8 = location();
+                                    var savedChildrenNot8 = new ArrayList<>(children);
+                                    var notElem8 = matchLiteralCst("<<=", false);
+                                    restoreLocation(notStart8);
+                                    children.clear();
+                                    children.addAll(savedChildrenNot8);
+                                    var elem7_0 = notElem8.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
+                                    if (elem7_0.isCutFailure()) {
+                                        restoreLocation(seqStart7);
+                                        alt6_0 = elem7_0;
+                                    } else if (elem7_0.isFailure()) {
+                                        restoreLocation(seqStart7);
+                                        alt6_0 = cut7 ? elem7_0.asCutFailure() : elem7_0;
+                                    }
+                                }
+                                if (alt6_0.isSuccess()) {
+                                    if (tokenBoundaryDepth == 0) skipWhitespace();
+                                    var elem7_1 = matchLiteralCst("<<", false);
+                                    if (elem7_1.isSuccess() && elem7_1.node.isPresent()) {
+                                        children.add(elem7_1.node.unwrap());
+                                    }
+                                    if (elem7_1.isCutFailure()) {
+                                        restoreLocation(seqStart7);
+                                        alt6_0 = elem7_1;
+                                    } else if (elem7_1.isFailure()) {
+                                        restoreLocation(seqStart7);
+                                        alt6_0 = cut7 ? elem7_1.asCutFailure() : elem7_1;
+                                    }
+                                }
+                                if (alt6_0.isSuccess()) {
+                                    alt6_0 = CstParseResult.success(null, substring(seqStart7.offset(), pos), location());
+                                }
+                                if (alt6_0.isSuccess()) {
+                                    elem4_0 = alt6_0;
+                                } else if (alt6_0.isCutFailure()) {
+                                    elem4_0 = alt6_0.asRegularFailure();
+                                } else {
+                                    restoreLocation(choiceStart6);
+                                }
+                                break;
+                            }
+                            case '>':
+                            {
+                                children.clear();
+                                children.addAll(savedChildren6);
+                                CstParseResult alt6_1 = CstParseResult.success(null, "", location());
+                                var seqStart11 = location();
+                                boolean cut11 = false;
+                                if (alt6_1.isSuccess()) {
+                                    var notStart12 = location();
+                                    var savedChildrenNot12 = new ArrayList<>(children);
+                                    var notElem12 = matchLiteralCst(">>>=", false);
+                                    restoreLocation(notStart12);
+                                    children.clear();
+                                    children.addAll(savedChildrenNot12);
+                                    var elem11_0 = notElem12.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
+                                    if (elem11_0.isCutFailure()) {
+                                        restoreLocation(seqStart11);
+                                        alt6_1 = elem11_0;
+                                    } else if (elem11_0.isFailure()) {
+                                        restoreLocation(seqStart11);
+                                        alt6_1 = cut11 ? elem11_0.asCutFailure() : elem11_0;
+                                    }
+                                }
+                                if (alt6_1.isSuccess()) {
+                                    if (tokenBoundaryDepth == 0) skipWhitespace();
+                                    var elem11_1 = matchLiteralCst(">>>", false);
+                                    if (elem11_1.isSuccess() && elem11_1.node.isPresent()) {
+                                        children.add(elem11_1.node.unwrap());
+                                    }
+                                    if (elem11_1.isCutFailure()) {
+                                        restoreLocation(seqStart11);
+                                        alt6_1 = elem11_1;
+                                    } else if (elem11_1.isFailure()) {
+                                        restoreLocation(seqStart11);
+                                        alt6_1 = cut11 ? elem11_1.asCutFailure() : elem11_1;
+                                    }
+                                }
+                                if (alt6_1.isSuccess()) {
+                                    alt6_1 = CstParseResult.success(null, substring(seqStart11.offset(), pos), location());
+                                }
+                                if (alt6_1.isSuccess()) {
+                                    elem4_0 = alt6_1;
+                                } else if (alt6_1.isCutFailure()) {
+                                    elem4_0 = alt6_1.asRegularFailure();
+                                } else {
+                                    restoreLocation(choiceStart6);
+                                children.clear();
+                                children.addAll(savedChildren6);
+                                CstParseResult alt6_2 = CstParseResult.success(null, "", location());
+                                var seqStart15 = location();
+                                boolean cut15 = false;
+                                if (alt6_2.isSuccess()) {
+                                    var notStart16 = location();
+                                    var savedChildrenNot16 = new ArrayList<>(children);
+                                    var notElem16 = matchLiteralCst(">>=", false);
+                                    restoreLocation(notStart16);
+                                    children.clear();
+                                    children.addAll(savedChildrenNot16);
+                                    var elem15_0 = notElem16.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
+                                    if (elem15_0.isCutFailure()) {
+                                        restoreLocation(seqStart15);
+                                        alt6_2 = elem15_0;
+                                    } else if (elem15_0.isFailure()) {
+                                        restoreLocation(seqStart15);
+                                        alt6_2 = cut15 ? elem15_0.asCutFailure() : elem15_0;
+                                    }
+                                }
+                                if (alt6_2.isSuccess()) {
+                                    var notStart18 = location();
+                                    var savedChildrenNot18 = new ArrayList<>(children);
+                                    var notElem18 = matchLiteralCst(">>>=", false);
+                                    restoreLocation(notStart18);
+                                    children.clear();
+                                    children.addAll(savedChildrenNot18);
+                                    var elem15_1 = notElem18.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
+                                    if (elem15_1.isCutFailure()) {
+                                        restoreLocation(seqStart15);
+                                        alt6_2 = elem15_1;
+                                    } else if (elem15_1.isFailure()) {
+                                        restoreLocation(seqStart15);
+                                        alt6_2 = cut15 ? elem15_1.asCutFailure() : elem15_1;
+                                    }
+                                }
+                                if (alt6_2.isSuccess()) {
+                                    if (tokenBoundaryDepth == 0) skipWhitespace();
+                                    var elem15_2 = matchLiteralCst(">>", false);
+                                    if (elem15_2.isSuccess() && elem15_2.node.isPresent()) {
+                                        children.add(elem15_2.node.unwrap());
+                                    }
+                                    if (elem15_2.isCutFailure()) {
+                                        restoreLocation(seqStart15);
+                                        alt6_2 = elem15_2;
+                                    } else if (elem15_2.isFailure()) {
+                                        restoreLocation(seqStart15);
+                                        alt6_2 = cut15 ? elem15_2.asCutFailure() : elem15_2;
+                                    }
+                                }
+                                if (alt6_2.isSuccess()) {
+                                    alt6_2 = CstParseResult.success(null, substring(seqStart15.offset(), pos), location());
+                                }
+                                if (alt6_2.isSuccess()) {
+                                    elem4_0 = alt6_2;
+                                } else if (alt6_2.isCutFailure()) {
+                                    elem4_0 = alt6_2.asRegularFailure();
+                                } else {
+                                    restoreLocation(choiceStart6);
+                                }
+                                }
+                                break;
+                            }
                         }
-                    }
-                    if (alt6_0.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                        var elem7_1 = matchLiteralCst("<<", false);
-                        if (elem7_1.isSuccess() && elem7_1.node.isPresent()) {
-                            children.add(elem7_1.node.unwrap());
-                        }
-                        if (elem7_1.isCutFailure()) {
-                            restoreLocation(seqStart7);
-                            alt6_0 = elem7_1;
-                        } else if (elem7_1.isFailure()) {
-                            restoreLocation(seqStart7);
-                            alt6_0 = cut7 ? elem7_1.asCutFailure() : elem7_1;
-                        }
-                    }
-                    if (alt6_0.isSuccess()) {
-                        alt6_0 = CstParseResult.success(null, substring(seqStart7.offset(), pos), location());
-                    }
-                    if (alt6_0.isSuccess()) {
-                        elem4_0 = alt6_0;
-                    } else if (alt6_0.isCutFailure()) {
-                        elem4_0 = alt6_0.asRegularFailure();
-                    } else {
-                        restoreLocation(choiceStart6);
-                    children.clear();
-                    children.addAll(savedChildren6);
-                    CstParseResult alt6_1 = CstParseResult.success(null, "", location());
-                    var seqStart11 = location();
-                    boolean cut11 = false;
-                    if (alt6_1.isSuccess()) {
-                        var notStart12 = location();
-                        var savedChildrenNot12 = new ArrayList<>(children);
-                        var notElem12 = matchLiteralCst(">>>=", false);
-                        restoreLocation(notStart12);
-                        children.clear();
-                        children.addAll(savedChildrenNot12);
-                        var elem11_0 = notElem12.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
-                        if (elem11_0.isCutFailure()) {
-                            restoreLocation(seqStart11);
-                            alt6_1 = elem11_0;
-                        } else if (elem11_0.isFailure()) {
-                            restoreLocation(seqStart11);
-                            alt6_1 = cut11 ? elem11_0.asCutFailure() : elem11_0;
-                        }
-                    }
-                    if (alt6_1.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                        var elem11_1 = matchLiteralCst(">>>", false);
-                        if (elem11_1.isSuccess() && elem11_1.node.isPresent()) {
-                            children.add(elem11_1.node.unwrap());
-                        }
-                        if (elem11_1.isCutFailure()) {
-                            restoreLocation(seqStart11);
-                            alt6_1 = elem11_1;
-                        } else if (elem11_1.isFailure()) {
-                            restoreLocation(seqStart11);
-                            alt6_1 = cut11 ? elem11_1.asCutFailure() : elem11_1;
-                        }
-                    }
-                    if (alt6_1.isSuccess()) {
-                        alt6_1 = CstParseResult.success(null, substring(seqStart11.offset(), pos), location());
-                    }
-                    if (alt6_1.isSuccess()) {
-                        elem4_0 = alt6_1;
-                    } else if (alt6_1.isCutFailure()) {
-                        elem4_0 = alt6_1.asRegularFailure();
-                    } else {
-                        restoreLocation(choiceStart6);
-                    children.clear();
-                    children.addAll(savedChildren6);
-                    CstParseResult alt6_2 = CstParseResult.success(null, "", location());
-                    var seqStart15 = location();
-                    boolean cut15 = false;
-                    if (alt6_2.isSuccess()) {
-                        var notStart16 = location();
-                        var savedChildrenNot16 = new ArrayList<>(children);
-                        var notElem16 = matchLiteralCst(">>=", false);
-                        restoreLocation(notStart16);
-                        children.clear();
-                        children.addAll(savedChildrenNot16);
-                        var elem15_0 = notElem16.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
-                        if (elem15_0.isCutFailure()) {
-                            restoreLocation(seqStart15);
-                            alt6_2 = elem15_0;
-                        } else if (elem15_0.isFailure()) {
-                            restoreLocation(seqStart15);
-                            alt6_2 = cut15 ? elem15_0.asCutFailure() : elem15_0;
-                        }
-                    }
-                    if (alt6_2.isSuccess()) {
-                        var notStart18 = location();
-                        var savedChildrenNot18 = new ArrayList<>(children);
-                        var notElem18 = matchLiteralCst(">>>=", false);
-                        restoreLocation(notStart18);
-                        children.clear();
-                        children.addAll(savedChildrenNot18);
-                        var elem15_1 = notElem18.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
-                        if (elem15_1.isCutFailure()) {
-                            restoreLocation(seqStart15);
-                            alt6_2 = elem15_1;
-                        } else if (elem15_1.isFailure()) {
-                            restoreLocation(seqStart15);
-                            alt6_2 = cut15 ? elem15_1.asCutFailure() : elem15_1;
-                        }
-                    }
-                    if (alt6_2.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                        var elem15_2 = matchLiteralCst(">>", false);
-                        if (elem15_2.isSuccess() && elem15_2.node.isPresent()) {
-                            children.add(elem15_2.node.unwrap());
-                        }
-                        if (elem15_2.isCutFailure()) {
-                            restoreLocation(seqStart15);
-                            alt6_2 = elem15_2;
-                        } else if (elem15_2.isFailure()) {
-                            restoreLocation(seqStart15);
-                            alt6_2 = cut15 ? elem15_2.asCutFailure() : elem15_2;
-                        }
-                    }
-                    if (alt6_2.isSuccess()) {
-                        alt6_2 = CstParseResult.success(null, substring(seqStart15.offset(), pos), location());
-                    }
-                    if (alt6_2.isSuccess()) {
-                        elem4_0 = alt6_2;
-                    } else if (alt6_2.isCutFailure()) {
-                        elem4_0 = alt6_2.asRegularFailure();
-                    } else {
-                        restoreLocation(choiceStart6);
-                    }
-                    }
                     }
                     if (elem4_0 == null) {
                         children.clear();
@@ -16848,7 +16986,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_1 = parse_Additive();
                     if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                         children.add(elem4_1.node.unwrap());
@@ -16929,7 +17067,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ADDITIVE;
         
@@ -16937,7 +17075,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Multiplicative();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -16951,127 +17089,140 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     CstParseResult elem4_0 = null;
                     var choiceStart6 = location();
                     var savedChildren6 = new ArrayList<>(children);
-                    children.clear();
-                    children.addAll(savedChildren6);
-                    CstParseResult alt6_0 = CstParseResult.success(null, "", location());
-                    var seqStart7 = location();
-                    boolean cut7 = false;
-                    if (alt6_0.isSuccess()) {
-                        var notStart8 = location();
-                        var savedChildrenNot8 = new ArrayList<>(children);
-                        var notElem8 = matchLiteralCst("+=", false);
-                        restoreLocation(notStart8);
-                        children.clear();
-                        children.addAll(savedChildrenNot8);
-                        var elem7_0 = notElem8.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
-                        if (elem7_0.isCutFailure()) {
-                            restoreLocation(seqStart7);
-                            alt6_0 = elem7_0;
-                        } else if (elem7_0.isFailure()) {
-                            restoreLocation(seqStart7);
-                            alt6_0 = cut7 ? elem7_0.asCutFailure() : elem7_0;
+                    if (pos < input.length()) {
+                        char dispatchChar6 = input.charAt(pos);
+                        switch (dispatchChar6) {
+                            case '+':
+                            {
+                                children.clear();
+                                children.addAll(savedChildren6);
+                                CstParseResult alt6_0 = CstParseResult.success(null, "", location());
+                                var seqStart7 = location();
+                                boolean cut7 = false;
+                                if (alt6_0.isSuccess()) {
+                                    var notStart8 = location();
+                                    var savedChildrenNot8 = new ArrayList<>(children);
+                                    var notElem8 = matchLiteralCst("+=", false);
+                                    restoreLocation(notStart8);
+                                    children.clear();
+                                    children.addAll(savedChildrenNot8);
+                                    var elem7_0 = notElem8.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
+                                    if (elem7_0.isCutFailure()) {
+                                        restoreLocation(seqStart7);
+                                        alt6_0 = elem7_0;
+                                    } else if (elem7_0.isFailure()) {
+                                        restoreLocation(seqStart7);
+                                        alt6_0 = cut7 ? elem7_0.asCutFailure() : elem7_0;
+                                    }
+                                }
+                                if (alt6_0.isSuccess()) {
+                                    if (tokenBoundaryDepth == 0) skipWhitespace();
+                                    var elem7_1 = matchLiteralCst("+", false);
+                                    if (elem7_1.isSuccess() && elem7_1.node.isPresent()) {
+                                        children.add(elem7_1.node.unwrap());
+                                    }
+                                    if (elem7_1.isCutFailure()) {
+                                        restoreLocation(seqStart7);
+                                        alt6_0 = elem7_1;
+                                    } else if (elem7_1.isFailure()) {
+                                        restoreLocation(seqStart7);
+                                        alt6_0 = cut7 ? elem7_1.asCutFailure() : elem7_1;
+                                    }
+                                }
+                                if (alt6_0.isSuccess()) {
+                                    alt6_0 = CstParseResult.success(null, substring(seqStart7.offset(), pos), location());
+                                }
+                                if (alt6_0.isSuccess()) {
+                                    elem4_0 = alt6_0;
+                                } else if (alt6_0.isCutFailure()) {
+                                    elem4_0 = alt6_0.asRegularFailure();
+                                } else {
+                                    restoreLocation(choiceStart6);
+                                }
+                                break;
+                            }
+                            case '-':
+                            {
+                                children.clear();
+                                children.addAll(savedChildren6);
+                                CstParseResult alt6_1 = CstParseResult.success(null, "", location());
+                                var seqStart11 = location();
+                                boolean cut11 = false;
+                                if (alt6_1.isSuccess()) {
+                                    var notStart12 = location();
+                                    var savedChildrenNot12 = new ArrayList<>(children);
+                                    var notElem12 = matchLiteralCst("-=", false);
+                                    restoreLocation(notStart12);
+                                    children.clear();
+                                    children.addAll(savedChildrenNot12);
+                                    var elem11_0 = notElem12.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
+                                    if (elem11_0.isCutFailure()) {
+                                        restoreLocation(seqStart11);
+                                        alt6_1 = elem11_0;
+                                    } else if (elem11_0.isFailure()) {
+                                        restoreLocation(seqStart11);
+                                        alt6_1 = cut11 ? elem11_0.asCutFailure() : elem11_0;
+                                    }
+                                }
+                                if (alt6_1.isSuccess()) {
+                                    var notStart14 = location();
+                                    var savedChildrenNot14 = new ArrayList<>(children);
+                                    var notElem14 = matchLiteralCst("->", false);
+                                    restoreLocation(notStart14);
+                                    children.clear();
+                                    children.addAll(savedChildrenNot14);
+                                    var elem11_1 = notElem14.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
+                                    if (elem11_1.isCutFailure()) {
+                                        restoreLocation(seqStart11);
+                                        alt6_1 = elem11_1;
+                                    } else if (elem11_1.isFailure()) {
+                                        restoreLocation(seqStart11);
+                                        alt6_1 = cut11 ? elem11_1.asCutFailure() : elem11_1;
+                                    }
+                                }
+                                if (alt6_1.isSuccess()) {
+                                    if (tokenBoundaryDepth == 0) skipWhitespace();
+                                    var elem11_2 = matchLiteralCst("-", false);
+                                    if (elem11_2.isSuccess() && elem11_2.node.isPresent()) {
+                                        children.add(elem11_2.node.unwrap());
+                                    }
+                                    if (elem11_2.isCutFailure()) {
+                                        restoreLocation(seqStart11);
+                                        alt6_1 = elem11_2;
+                                    } else if (elem11_2.isFailure()) {
+                                        restoreLocation(seqStart11);
+                                        alt6_1 = cut11 ? elem11_2.asCutFailure() : elem11_2;
+                                    }
+                                }
+                                if (alt6_1.isSuccess()) {
+                                    alt6_1 = CstParseResult.success(null, substring(seqStart11.offset(), pos), location());
+                                }
+                                if (alt6_1.isSuccess()) {
+                                    elem4_0 = alt6_1;
+                                } else if (alt6_1.isCutFailure()) {
+                                    elem4_0 = alt6_1.asRegularFailure();
+                                } else {
+                                    restoreLocation(choiceStart6);
+                                }
+                                break;
+                            }
                         }
-                    }
-                    if (alt6_0.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                        var elem7_1 = matchLiteralCst("+", false);
-                        if (elem7_1.isSuccess() && elem7_1.node.isPresent()) {
-                            children.add(elem7_1.node.unwrap());
-                        }
-                        if (elem7_1.isCutFailure()) {
-                            restoreLocation(seqStart7);
-                            alt6_0 = elem7_1;
-                        } else if (elem7_1.isFailure()) {
-                            restoreLocation(seqStart7);
-                            alt6_0 = cut7 ? elem7_1.asCutFailure() : elem7_1;
-                        }
-                    }
-                    if (alt6_0.isSuccess()) {
-                        alt6_0 = CstParseResult.success(null, substring(seqStart7.offset(), pos), location());
-                    }
-                    if (alt6_0.isSuccess()) {
-                        elem4_0 = alt6_0;
-                    } else if (alt6_0.isCutFailure()) {
-                        elem4_0 = alt6_0.asRegularFailure();
-                    } else {
-                        restoreLocation(choiceStart6);
-                    children.clear();
-                    children.addAll(savedChildren6);
-                    CstParseResult alt6_1 = CstParseResult.success(null, "", location());
-                    var seqStart11 = location();
-                    boolean cut11 = false;
-                    if (alt6_1.isSuccess()) {
-                        var notStart12 = location();
-                        var savedChildrenNot12 = new ArrayList<>(children);
-                        var notElem12 = matchLiteralCst("-=", false);
-                        restoreLocation(notStart12);
-                        children.clear();
-                        children.addAll(savedChildrenNot12);
-                        var elem11_0 = notElem12.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
-                        if (elem11_0.isCutFailure()) {
-                            restoreLocation(seqStart11);
-                            alt6_1 = elem11_0;
-                        } else if (elem11_0.isFailure()) {
-                            restoreLocation(seqStart11);
-                            alt6_1 = cut11 ? elem11_0.asCutFailure() : elem11_0;
-                        }
-                    }
-                    if (alt6_1.isSuccess()) {
-                        var notStart14 = location();
-                        var savedChildrenNot14 = new ArrayList<>(children);
-                        var notElem14 = matchLiteralCst("->", false);
-                        restoreLocation(notStart14);
-                        children.clear();
-                        children.addAll(savedChildrenNot14);
-                        var elem11_1 = notElem14.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
-                        if (elem11_1.isCutFailure()) {
-                            restoreLocation(seqStart11);
-                            alt6_1 = elem11_1;
-                        } else if (elem11_1.isFailure()) {
-                            restoreLocation(seqStart11);
-                            alt6_1 = cut11 ? elem11_1.asCutFailure() : elem11_1;
-                        }
-                    }
-                    if (alt6_1.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                        var elem11_2 = matchLiteralCst("-", false);
-                        if (elem11_2.isSuccess() && elem11_2.node.isPresent()) {
-                            children.add(elem11_2.node.unwrap());
-                        }
-                        if (elem11_2.isCutFailure()) {
-                            restoreLocation(seqStart11);
-                            alt6_1 = elem11_2;
-                        } else if (elem11_2.isFailure()) {
-                            restoreLocation(seqStart11);
-                            alt6_1 = cut11 ? elem11_2.asCutFailure() : elem11_2;
-                        }
-                    }
-                    if (alt6_1.isSuccess()) {
-                        alt6_1 = CstParseResult.success(null, substring(seqStart11.offset(), pos), location());
-                    }
-                    if (alt6_1.isSuccess()) {
-                        elem4_0 = alt6_1;
-                    } else if (alt6_1.isCutFailure()) {
-                        elem4_0 = alt6_1.asRegularFailure();
-                    } else {
-                        restoreLocation(choiceStart6);
-                    }
                     }
                     if (elem4_0 == null) {
                         children.clear();
@@ -17087,7 +17238,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_1 = parse_Multiplicative();
                     if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                         children.add(elem4_1.node.unwrap());
@@ -17168,7 +17319,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_MULTIPLICATIVE;
         
@@ -17176,7 +17327,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Unary();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -17190,156 +17341,173 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     CstParseResult elem4_0 = null;
                     var choiceStart6 = location();
                     var savedChildren6 = new ArrayList<>(children);
-                    children.clear();
-                    children.addAll(savedChildren6);
-                    CstParseResult alt6_0 = CstParseResult.success(null, "", location());
-                    var seqStart7 = location();
-                    boolean cut7 = false;
-                    if (alt6_0.isSuccess()) {
-                        var notStart8 = location();
-                        var savedChildrenNot8 = new ArrayList<>(children);
-                        var notElem8 = matchLiteralCst("*=", false);
-                        restoreLocation(notStart8);
-                        children.clear();
-                        children.addAll(savedChildrenNot8);
-                        var elem7_0 = notElem8.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
-                        if (elem7_0.isCutFailure()) {
-                            restoreLocation(seqStart7);
-                            alt6_0 = elem7_0;
-                        } else if (elem7_0.isFailure()) {
-                            restoreLocation(seqStart7);
-                            alt6_0 = cut7 ? elem7_0.asCutFailure() : elem7_0;
+                    if (pos < input.length()) {
+                        char dispatchChar6 = input.charAt(pos);
+                        switch (dispatchChar6) {
+                            case '*':
+                            {
+                                children.clear();
+                                children.addAll(savedChildren6);
+                                CstParseResult alt6_0 = CstParseResult.success(null, "", location());
+                                var seqStart7 = location();
+                                boolean cut7 = false;
+                                if (alt6_0.isSuccess()) {
+                                    var notStart8 = location();
+                                    var savedChildrenNot8 = new ArrayList<>(children);
+                                    var notElem8 = matchLiteralCst("*=", false);
+                                    restoreLocation(notStart8);
+                                    children.clear();
+                                    children.addAll(savedChildrenNot8);
+                                    var elem7_0 = notElem8.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
+                                    if (elem7_0.isCutFailure()) {
+                                        restoreLocation(seqStart7);
+                                        alt6_0 = elem7_0;
+                                    } else if (elem7_0.isFailure()) {
+                                        restoreLocation(seqStart7);
+                                        alt6_0 = cut7 ? elem7_0.asCutFailure() : elem7_0;
+                                    }
+                                }
+                                if (alt6_0.isSuccess()) {
+                                    if (tokenBoundaryDepth == 0) skipWhitespace();
+                                    var elem7_1 = matchLiteralCst("*", false);
+                                    if (elem7_1.isSuccess() && elem7_1.node.isPresent()) {
+                                        children.add(elem7_1.node.unwrap());
+                                    }
+                                    if (elem7_1.isCutFailure()) {
+                                        restoreLocation(seqStart7);
+                                        alt6_0 = elem7_1;
+                                    } else if (elem7_1.isFailure()) {
+                                        restoreLocation(seqStart7);
+                                        alt6_0 = cut7 ? elem7_1.asCutFailure() : elem7_1;
+                                    }
+                                }
+                                if (alt6_0.isSuccess()) {
+                                    alt6_0 = CstParseResult.success(null, substring(seqStart7.offset(), pos), location());
+                                }
+                                if (alt6_0.isSuccess()) {
+                                    elem4_0 = alt6_0;
+                                } else if (alt6_0.isCutFailure()) {
+                                    elem4_0 = alt6_0.asRegularFailure();
+                                } else {
+                                    restoreLocation(choiceStart6);
+                                }
+                                break;
+                            }
+                            case '/':
+                            {
+                                children.clear();
+                                children.addAll(savedChildren6);
+                                CstParseResult alt6_1 = CstParseResult.success(null, "", location());
+                                var seqStart11 = location();
+                                boolean cut11 = false;
+                                if (alt6_1.isSuccess()) {
+                                    var notStart12 = location();
+                                    var savedChildrenNot12 = new ArrayList<>(children);
+                                    var notElem12 = matchLiteralCst("/=", false);
+                                    restoreLocation(notStart12);
+                                    children.clear();
+                                    children.addAll(savedChildrenNot12);
+                                    var elem11_0 = notElem12.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
+                                    if (elem11_0.isCutFailure()) {
+                                        restoreLocation(seqStart11);
+                                        alt6_1 = elem11_0;
+                                    } else if (elem11_0.isFailure()) {
+                                        restoreLocation(seqStart11);
+                                        alt6_1 = cut11 ? elem11_0.asCutFailure() : elem11_0;
+                                    }
+                                }
+                                if (alt6_1.isSuccess()) {
+                                    if (tokenBoundaryDepth == 0) skipWhitespace();
+                                    var elem11_1 = matchLiteralCst("/", false);
+                                    if (elem11_1.isSuccess() && elem11_1.node.isPresent()) {
+                                        children.add(elem11_1.node.unwrap());
+                                    }
+                                    if (elem11_1.isCutFailure()) {
+                                        restoreLocation(seqStart11);
+                                        alt6_1 = elem11_1;
+                                    } else if (elem11_1.isFailure()) {
+                                        restoreLocation(seqStart11);
+                                        alt6_1 = cut11 ? elem11_1.asCutFailure() : elem11_1;
+                                    }
+                                }
+                                if (alt6_1.isSuccess()) {
+                                    alt6_1 = CstParseResult.success(null, substring(seqStart11.offset(), pos), location());
+                                }
+                                if (alt6_1.isSuccess()) {
+                                    elem4_0 = alt6_1;
+                                } else if (alt6_1.isCutFailure()) {
+                                    elem4_0 = alt6_1.asRegularFailure();
+                                } else {
+                                    restoreLocation(choiceStart6);
+                                }
+                                break;
+                            }
+                            case '%':
+                            {
+                                children.clear();
+                                children.addAll(savedChildren6);
+                                CstParseResult alt6_2 = CstParseResult.success(null, "", location());
+                                var seqStart15 = location();
+                                boolean cut15 = false;
+                                if (alt6_2.isSuccess()) {
+                                    var notStart16 = location();
+                                    var savedChildrenNot16 = new ArrayList<>(children);
+                                    var notElem16 = matchLiteralCst("%=", false);
+                                    restoreLocation(notStart16);
+                                    children.clear();
+                                    children.addAll(savedChildrenNot16);
+                                    var elem15_0 = notElem16.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
+                                    if (elem15_0.isCutFailure()) {
+                                        restoreLocation(seqStart15);
+                                        alt6_2 = elem15_0;
+                                    } else if (elem15_0.isFailure()) {
+                                        restoreLocation(seqStart15);
+                                        alt6_2 = cut15 ? elem15_0.asCutFailure() : elem15_0;
+                                    }
+                                }
+                                if (alt6_2.isSuccess()) {
+                                    if (tokenBoundaryDepth == 0) skipWhitespace();
+                                    var elem15_1 = matchLiteralCst("%", false);
+                                    if (elem15_1.isSuccess() && elem15_1.node.isPresent()) {
+                                        children.add(elem15_1.node.unwrap());
+                                    }
+                                    if (elem15_1.isCutFailure()) {
+                                        restoreLocation(seqStart15);
+                                        alt6_2 = elem15_1;
+                                    } else if (elem15_1.isFailure()) {
+                                        restoreLocation(seqStart15);
+                                        alt6_2 = cut15 ? elem15_1.asCutFailure() : elem15_1;
+                                    }
+                                }
+                                if (alt6_2.isSuccess()) {
+                                    alt6_2 = CstParseResult.success(null, substring(seqStart15.offset(), pos), location());
+                                }
+                                if (alt6_2.isSuccess()) {
+                                    elem4_0 = alt6_2;
+                                } else if (alt6_2.isCutFailure()) {
+                                    elem4_0 = alt6_2.asRegularFailure();
+                                } else {
+                                    restoreLocation(choiceStart6);
+                                }
+                                break;
+                            }
                         }
-                    }
-                    if (alt6_0.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                        var elem7_1 = matchLiteralCst("*", false);
-                        if (elem7_1.isSuccess() && elem7_1.node.isPresent()) {
-                            children.add(elem7_1.node.unwrap());
-                        }
-                        if (elem7_1.isCutFailure()) {
-                            restoreLocation(seqStart7);
-                            alt6_0 = elem7_1;
-                        } else if (elem7_1.isFailure()) {
-                            restoreLocation(seqStart7);
-                            alt6_0 = cut7 ? elem7_1.asCutFailure() : elem7_1;
-                        }
-                    }
-                    if (alt6_0.isSuccess()) {
-                        alt6_0 = CstParseResult.success(null, substring(seqStart7.offset(), pos), location());
-                    }
-                    if (alt6_0.isSuccess()) {
-                        elem4_0 = alt6_0;
-                    } else if (alt6_0.isCutFailure()) {
-                        elem4_0 = alt6_0.asRegularFailure();
-                    } else {
-                        restoreLocation(choiceStart6);
-                    children.clear();
-                    children.addAll(savedChildren6);
-                    CstParseResult alt6_1 = CstParseResult.success(null, "", location());
-                    var seqStart11 = location();
-                    boolean cut11 = false;
-                    if (alt6_1.isSuccess()) {
-                        var notStart12 = location();
-                        var savedChildrenNot12 = new ArrayList<>(children);
-                        var notElem12 = matchLiteralCst("/=", false);
-                        restoreLocation(notStart12);
-                        children.clear();
-                        children.addAll(savedChildrenNot12);
-                        var elem11_0 = notElem12.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
-                        if (elem11_0.isCutFailure()) {
-                            restoreLocation(seqStart11);
-                            alt6_1 = elem11_0;
-                        } else if (elem11_0.isFailure()) {
-                            restoreLocation(seqStart11);
-                            alt6_1 = cut11 ? elem11_0.asCutFailure() : elem11_0;
-                        }
-                    }
-                    if (alt6_1.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                        var elem11_1 = matchLiteralCst("/", false);
-                        if (elem11_1.isSuccess() && elem11_1.node.isPresent()) {
-                            children.add(elem11_1.node.unwrap());
-                        }
-                        if (elem11_1.isCutFailure()) {
-                            restoreLocation(seqStart11);
-                            alt6_1 = elem11_1;
-                        } else if (elem11_1.isFailure()) {
-                            restoreLocation(seqStart11);
-                            alt6_1 = cut11 ? elem11_1.asCutFailure() : elem11_1;
-                        }
-                    }
-                    if (alt6_1.isSuccess()) {
-                        alt6_1 = CstParseResult.success(null, substring(seqStart11.offset(), pos), location());
-                    }
-                    if (alt6_1.isSuccess()) {
-                        elem4_0 = alt6_1;
-                    } else if (alt6_1.isCutFailure()) {
-                        elem4_0 = alt6_1.asRegularFailure();
-                    } else {
-                        restoreLocation(choiceStart6);
-                    children.clear();
-                    children.addAll(savedChildren6);
-                    CstParseResult alt6_2 = CstParseResult.success(null, "", location());
-                    var seqStart15 = location();
-                    boolean cut15 = false;
-                    if (alt6_2.isSuccess()) {
-                        var notStart16 = location();
-                        var savedChildrenNot16 = new ArrayList<>(children);
-                        var notElem16 = matchLiteralCst("%=", false);
-                        restoreLocation(notStart16);
-                        children.clear();
-                        children.addAll(savedChildrenNot16);
-                        var elem15_0 = notElem16.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
-                        if (elem15_0.isCutFailure()) {
-                            restoreLocation(seqStart15);
-                            alt6_2 = elem15_0;
-                        } else if (elem15_0.isFailure()) {
-                            restoreLocation(seqStart15);
-                            alt6_2 = cut15 ? elem15_0.asCutFailure() : elem15_0;
-                        }
-                    }
-                    if (alt6_2.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                        var elem15_1 = matchLiteralCst("%", false);
-                        if (elem15_1.isSuccess() && elem15_1.node.isPresent()) {
-                            children.add(elem15_1.node.unwrap());
-                        }
-                        if (elem15_1.isCutFailure()) {
-                            restoreLocation(seqStart15);
-                            alt6_2 = elem15_1;
-                        } else if (elem15_1.isFailure()) {
-                            restoreLocation(seqStart15);
-                            alt6_2 = cut15 ? elem15_1.asCutFailure() : elem15_1;
-                        }
-                    }
-                    if (alt6_2.isSuccess()) {
-                        alt6_2 = CstParseResult.success(null, substring(seqStart15.offset(), pos), location());
-                    }
-                    if (alt6_2.isSuccess()) {
-                        elem4_0 = alt6_2;
-                    } else if (alt6_2.isCutFailure()) {
-                        elem4_0 = alt6_2.asRegularFailure();
-                    } else {
-                        restoreLocation(choiceStart6);
-                    }
-                    }
                     }
                     if (elem4_0 == null) {
                         children.clear();
@@ -17355,7 +17523,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_1 = parse_Unary();
                     if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                         children.add(elem4_1.node.unwrap());
@@ -17436,7 +17604,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_UNARY;
         
@@ -17449,87 +17617,108 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem1_0 = null;
             var choiceStart3 = location();
             var savedChildren3 = new ArrayList<>(children);
-            children.clear();
-            children.addAll(savedChildren3);
-            var alt3_0 = matchLiteralCst("++", false);
-            if (alt3_0.isSuccess() && alt3_0.node.isPresent()) {
-                children.add(alt3_0.node.unwrap());
-            }
-            if (alt3_0.isSuccess()) {
-                elem1_0 = alt3_0;
-            } else if (alt3_0.isCutFailure()) {
-                elem1_0 = alt3_0.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            children.clear();
-            children.addAll(savedChildren3);
-            var alt3_1 = matchLiteralCst("--", false);
-            if (alt3_1.isSuccess() && alt3_1.node.isPresent()) {
-                children.add(alt3_1.node.unwrap());
-            }
-            if (alt3_1.isSuccess()) {
-                elem1_0 = alt3_1;
-            } else if (alt3_1.isCutFailure()) {
-                elem1_0 = alt3_1.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            children.clear();
-            children.addAll(savedChildren3);
-            var alt3_2 = matchLiteralCst("+", false);
-            if (alt3_2.isSuccess() && alt3_2.node.isPresent()) {
-                children.add(alt3_2.node.unwrap());
-            }
-            if (alt3_2.isSuccess()) {
-                elem1_0 = alt3_2;
-            } else if (alt3_2.isCutFailure()) {
-                elem1_0 = alt3_2.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            children.clear();
-            children.addAll(savedChildren3);
-            var alt3_3 = matchLiteralCst("-", false);
-            if (alt3_3.isSuccess() && alt3_3.node.isPresent()) {
-                children.add(alt3_3.node.unwrap());
-            }
-            if (alt3_3.isSuccess()) {
-                elem1_0 = alt3_3;
-            } else if (alt3_3.isCutFailure()) {
-                elem1_0 = alt3_3.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            children.clear();
-            children.addAll(savedChildren3);
-            var alt3_4 = matchLiteralCst("!", false);
-            if (alt3_4.isSuccess() && alt3_4.node.isPresent()) {
-                children.add(alt3_4.node.unwrap());
-            }
-            if (alt3_4.isSuccess()) {
-                elem1_0 = alt3_4;
-            } else if (alt3_4.isCutFailure()) {
-                elem1_0 = alt3_4.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            children.clear();
-            children.addAll(savedChildren3);
-            var alt3_5 = matchLiteralCst("~", false);
-            if (alt3_5.isSuccess() && alt3_5.node.isPresent()) {
-                children.add(alt3_5.node.unwrap());
-            }
-            if (alt3_5.isSuccess()) {
-                elem1_0 = alt3_5;
-            } else if (alt3_5.isCutFailure()) {
-                elem1_0 = alt3_5.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            }
-            }
-            }
-            }
-            }
+            if (pos < input.length()) {
+                char dispatchChar3 = input.charAt(pos);
+                switch (dispatchChar3) {
+                    case '+':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren3);
+                        var alt3_0 = matchLiteralCst("++", false);
+                        if (alt3_0.isSuccess() && alt3_0.node.isPresent()) {
+                            children.add(alt3_0.node.unwrap());
+                        }
+                        if (alt3_0.isSuccess()) {
+                            elem1_0 = alt3_0;
+                        } else if (alt3_0.isCutFailure()) {
+                            elem1_0 = alt3_0.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        children.clear();
+                        children.addAll(savedChildren3);
+                        var alt3_2 = matchLiteralCst("+", false);
+                        if (alt3_2.isSuccess() && alt3_2.node.isPresent()) {
+                            children.add(alt3_2.node.unwrap());
+                        }
+                        if (alt3_2.isSuccess()) {
+                            elem1_0 = alt3_2;
+                        } else if (alt3_2.isCutFailure()) {
+                            elem1_0 = alt3_2.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        }
+                        break;
+                    }
+                    case '-':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren3);
+                        var alt3_1 = matchLiteralCst("--", false);
+                        if (alt3_1.isSuccess() && alt3_1.node.isPresent()) {
+                            children.add(alt3_1.node.unwrap());
+                        }
+                        if (alt3_1.isSuccess()) {
+                            elem1_0 = alt3_1;
+                        } else if (alt3_1.isCutFailure()) {
+                            elem1_0 = alt3_1.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        children.clear();
+                        children.addAll(savedChildren3);
+                        var alt3_3 = matchLiteralCst("-", false);
+                        if (alt3_3.isSuccess() && alt3_3.node.isPresent()) {
+                            children.add(alt3_3.node.unwrap());
+                        }
+                        if (alt3_3.isSuccess()) {
+                            elem1_0 = alt3_3;
+                        } else if (alt3_3.isCutFailure()) {
+                            elem1_0 = alt3_3.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        }
+                        break;
+                    }
+                    case '!':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren3);
+                        var alt3_4 = matchLiteralCst("!", false);
+                        if (alt3_4.isSuccess() && alt3_4.node.isPresent()) {
+                            children.add(alt3_4.node.unwrap());
+                        }
+                        if (alt3_4.isSuccess()) {
+                            elem1_0 = alt3_4;
+                        } else if (alt3_4.isCutFailure()) {
+                            elem1_0 = alt3_4.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        break;
+                    }
+                    case '~':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren3);
+                        var alt3_5 = matchLiteralCst("~", false);
+                        if (alt3_5.isSuccess() && alt3_5.node.isPresent()) {
+                            children.add(alt3_5.node.unwrap());
+                        }
+                        if (alt3_5.isSuccess()) {
+                            elem1_0 = alt3_5;
+                        } else if (alt3_5.isCutFailure()) {
+                            elem1_0 = alt3_5.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        break;
+                    }
+                }
             }
             if (elem1_0 == null) {
                 children.clear();
@@ -17545,7 +17734,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_1 = parse_Unary();
             if (elem1_1.isSuccess() && elem1_1.node.isPresent()) {
                 children.add(elem1_1.node.unwrap());
@@ -17573,7 +17762,7 @@ public final class Java25Parser {
         var seqStart11 = location();
         boolean cut11 = false;
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem11_0 = matchLiteralCst("(", false);
             if (elem11_0.isSuccess() && elem11_0.node.isPresent()) {
                 children.add(elem11_0.node.unwrap());
@@ -17587,7 +17776,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem11_1 = parse_Type();
             if (elem11_1.isSuccess() && elem11_1.node.isPresent()) {
                 children.add(elem11_1.node.unwrap());
@@ -17601,19 +17790,19 @@ public final class Java25Parser {
             }
         }
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem11_2 = CstParseResult.success(null, "", location());
             var zomStart14 = location();
             var savedChildrenZom14 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc14 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem14 = CstParseResult.success(null, "", location());
                 var seqStart16 = location();
                 boolean cut16 = false;
                 if (zomElem14.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem16_0 = matchLiteralCst("&", false);
                     if (elem16_0.isSuccess() && elem16_0.node.isPresent()) {
                         children.add(elem16_0.node.unwrap());
@@ -17627,7 +17816,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem14.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem16_1 = parse_Type();
                     if (elem16_1.isSuccess() && elem16_1.node.isPresent()) {
                         children.add(elem16_1.node.unwrap());
@@ -17676,7 +17865,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem11_3 = matchLiteralCst(")", false);
             if (elem11_3.isSuccess() && elem11_3.node.isPresent()) {
                 children.add(elem11_3.node.unwrap());
@@ -17690,7 +17879,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem11_4 = parse_Unary();
             if (elem11_4.isSuccess() && elem11_4.node.isPresent()) {
                 children.add(elem11_4.node.unwrap());
@@ -17762,7 +17951,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_POSTFIX;
         
@@ -17770,7 +17959,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Primary();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -17784,14 +17973,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem2 = parse_PostOp();
                 if (zomElem2.isSuccess() && zomElem2.node.isPresent()) {
                     children.add(zomElem2.node.unwrap());
@@ -17861,545 +18050,574 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_POST_OP;
         
         CstParseResult result = null;
         var choiceStart0 = location();
         var savedChildren0 = new ArrayList<>(children);
-        children.clear();
-        children.addAll(savedChildren0);
-        CstParseResult alt0_0 = CstParseResult.success(null, "", location());
-        var seqStart1 = location();
-        boolean cut1 = false;
-        if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem1_0 = matchLiteralCst(".", false);
-            if (elem1_0.isSuccess() && elem1_0.node.isPresent()) {
-                children.add(elem1_0.node.unwrap());
-            }
-            if (elem1_0.isCutFailure()) {
-                restoreLocation(seqStart1);
-                alt0_0 = elem1_0;
-            } else if (elem1_0.isFailure()) {
-                restoreLocation(seqStart1);
-                alt0_0 = cut1 ? elem1_0.asCutFailure() : elem1_0;
-            }
-        }
-        if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var optStart3 = location();
-            var savedChildrenOpt3 = new ArrayList<>(children);
-            children.clear();
-            var optElem3 = parse_TypeArgs();
-            if (optElem3.isSuccess() && optElem3.node.isPresent()) {
-                children.add(optElem3.node.unwrap());
-            }
-            CstParseResult elem1_1;
-            if (optElem3.isCutFailure()) {
-                restoreLocation(optStart3);
-                children.clear();
-                children.addAll(savedChildrenOpt3);
-                elem1_1 = optElem3;
-            } else if (optElem3.isSuccess()) {
-                var optChildren3 = new ArrayList<>(children);
-                children.clear();
-                children.addAll(savedChildrenOpt3);
-                children.addAll(optChildren3);
-                elem1_1 = optElem3;
-            } else {
-                restoreLocation(optStart3);
-                children.clear();
-                children.addAll(savedChildrenOpt3);
-                elem1_1 = CstParseResult.success(null, "", location());
-            }
-            if (elem1_1.isCutFailure()) {
-                restoreLocation(seqStart1);
-                alt0_0 = elem1_1;
-            } else if (elem1_1.isFailure()) {
-                restoreLocation(seqStart1);
-                alt0_0 = cut1 ? elem1_1.asCutFailure() : elem1_1;
-            }
-        }
-        if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem1_2 = parse_Identifier();
-            if (elem1_2.isSuccess() && elem1_2.node.isPresent()) {
-                children.add(elem1_2.node.unwrap());
-            }
-            if (elem1_2.isCutFailure()) {
-                restoreLocation(seqStart1);
-                alt0_0 = elem1_2;
-            } else if (elem1_2.isFailure()) {
-                restoreLocation(seqStart1);
-                alt0_0 = cut1 ? elem1_2.asCutFailure() : elem1_2;
-            }
-        }
-        if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var optStart6 = location();
-            var savedChildrenOpt6 = new ArrayList<>(children);
-            children.clear();
-            CstParseResult optElem6 = CstParseResult.success(null, "", location());
-            var seqStart8 = location();
-            boolean cut8 = false;
-            if (optElem6.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                var elem8_0 = matchLiteralCst("(", false);
-                if (elem8_0.isSuccess() && elem8_0.node.isPresent()) {
-                    children.add(elem8_0.node.unwrap());
-                }
-                if (elem8_0.isCutFailure()) {
-                    restoreLocation(seqStart8);
-                    optElem6 = elem8_0;
-                } else if (elem8_0.isFailure()) {
-                    restoreLocation(seqStart8);
-                    optElem6 = cut8 ? elem8_0.asCutFailure() : elem8_0;
-                }
-            }
-            if (optElem6.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                var optStart10 = location();
-                var savedChildrenOpt10 = new ArrayList<>(children);
-                children.clear();
-                var optElem10 = parse_Args();
-                if (optElem10.isSuccess() && optElem10.node.isPresent()) {
-                    children.add(optElem10.node.unwrap());
-                }
-                CstParseResult elem8_1;
-                if (optElem10.isCutFailure()) {
-                    restoreLocation(optStart10);
+        if (pos < input.length()) {
+            char dispatchChar0 = input.charAt(pos);
+            switch (dispatchChar0) {
+                case '.':
+                {
                     children.clear();
-                    children.addAll(savedChildrenOpt10);
-                    elem8_1 = optElem10;
-                } else if (optElem10.isSuccess()) {
-                    var optChildren10 = new ArrayList<>(children);
+                    children.addAll(savedChildren0);
+                    CstParseResult alt0_0 = CstParseResult.success(null, "", location());
+                    var seqStart1 = location();
+                    boolean cut1 = false;
+                    if (alt0_0.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem1_0 = matchLiteralCst(".", false);
+                        if (elem1_0.isSuccess() && elem1_0.node.isPresent()) {
+                            children.add(elem1_0.node.unwrap());
+                        }
+                        if (elem1_0.isCutFailure()) {
+                            restoreLocation(seqStart1);
+                            alt0_0 = elem1_0;
+                        } else if (elem1_0.isFailure()) {
+                            restoreLocation(seqStart1);
+                            alt0_0 = cut1 ? elem1_0.asCutFailure() : elem1_0;
+                        }
+                    }
+                    if (alt0_0.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var optStart3 = location();
+                        var savedChildrenOpt3 = new ArrayList<>(children);
+                        children.clear();
+                        var optElem3 = parse_TypeArgs();
+                        if (optElem3.isSuccess() && optElem3.node.isPresent()) {
+                            children.add(optElem3.node.unwrap());
+                        }
+                        CstParseResult elem1_1;
+                        if (optElem3.isCutFailure()) {
+                            restoreLocation(optStart3);
+                            children.clear();
+                            children.addAll(savedChildrenOpt3);
+                            elem1_1 = optElem3;
+                        } else if (optElem3.isSuccess()) {
+                            var optChildren3 = new ArrayList<>(children);
+                            children.clear();
+                            children.addAll(savedChildrenOpt3);
+                            children.addAll(optChildren3);
+                            elem1_1 = optElem3;
+                        } else {
+                            restoreLocation(optStart3);
+                            children.clear();
+                            children.addAll(savedChildrenOpt3);
+                            elem1_1 = CstParseResult.success(null, "", location());
+                        }
+                        if (elem1_1.isCutFailure()) {
+                            restoreLocation(seqStart1);
+                            alt0_0 = elem1_1;
+                        } else if (elem1_1.isFailure()) {
+                            restoreLocation(seqStart1);
+                            alt0_0 = cut1 ? elem1_1.asCutFailure() : elem1_1;
+                        }
+                    }
+                    if (alt0_0.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem1_2 = parse_Identifier();
+                        if (elem1_2.isSuccess() && elem1_2.node.isPresent()) {
+                            children.add(elem1_2.node.unwrap());
+                        }
+                        if (elem1_2.isCutFailure()) {
+                            restoreLocation(seqStart1);
+                            alt0_0 = elem1_2;
+                        } else if (elem1_2.isFailure()) {
+                            restoreLocation(seqStart1);
+                            alt0_0 = cut1 ? elem1_2.asCutFailure() : elem1_2;
+                        }
+                    }
+                    if (alt0_0.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var optStart6 = location();
+                        var savedChildrenOpt6 = new ArrayList<>(children);
+                        children.clear();
+                        CstParseResult optElem6 = CstParseResult.success(null, "", location());
+                        var seqStart8 = location();
+                        boolean cut8 = false;
+                        if (optElem6.isSuccess()) {
+                            if (tokenBoundaryDepth == 0) skipWhitespace();
+                            var elem8_0 = matchLiteralCst("(", false);
+                            if (elem8_0.isSuccess() && elem8_0.node.isPresent()) {
+                                children.add(elem8_0.node.unwrap());
+                            }
+                            if (elem8_0.isCutFailure()) {
+                                restoreLocation(seqStart8);
+                                optElem6 = elem8_0;
+                            } else if (elem8_0.isFailure()) {
+                                restoreLocation(seqStart8);
+                                optElem6 = cut8 ? elem8_0.asCutFailure() : elem8_0;
+                            }
+                        }
+                        if (optElem6.isSuccess()) {
+                            if (tokenBoundaryDepth == 0) skipWhitespace();
+                            var optStart10 = location();
+                            var savedChildrenOpt10 = new ArrayList<>(children);
+                            children.clear();
+                            var optElem10 = parse_Args();
+                            if (optElem10.isSuccess() && optElem10.node.isPresent()) {
+                                children.add(optElem10.node.unwrap());
+                            }
+                            CstParseResult elem8_1;
+                            if (optElem10.isCutFailure()) {
+                                restoreLocation(optStart10);
+                                children.clear();
+                                children.addAll(savedChildrenOpt10);
+                                elem8_1 = optElem10;
+                            } else if (optElem10.isSuccess()) {
+                                var optChildren10 = new ArrayList<>(children);
+                                children.clear();
+                                children.addAll(savedChildrenOpt10);
+                                children.addAll(optChildren10);
+                                elem8_1 = optElem10;
+                            } else {
+                                restoreLocation(optStart10);
+                                children.clear();
+                                children.addAll(savedChildrenOpt10);
+                                elem8_1 = CstParseResult.success(null, "", location());
+                            }
+                            if (elem8_1.isCutFailure()) {
+                                restoreLocation(seqStart8);
+                                optElem6 = elem8_1;
+                            } else if (elem8_1.isFailure()) {
+                                restoreLocation(seqStart8);
+                                optElem6 = cut8 ? elem8_1.asCutFailure() : elem8_1;
+                            }
+                        }
+                        if (optElem6.isSuccess()) {
+                            if (tokenBoundaryDepth == 0) skipWhitespace();
+                            var elem8_2 = matchLiteralCst(")", false);
+                            if (elem8_2.isSuccess() && elem8_2.node.isPresent()) {
+                                children.add(elem8_2.node.unwrap());
+                            }
+                            if (elem8_2.isCutFailure()) {
+                                restoreLocation(seqStart8);
+                                optElem6 = elem8_2;
+                            } else if (elem8_2.isFailure()) {
+                                restoreLocation(seqStart8);
+                                optElem6 = cut8 ? elem8_2.asCutFailure() : elem8_2;
+                            }
+                        }
+                        if (optElem6.isSuccess()) {
+                            optElem6 = CstParseResult.success(null, substring(seqStart8.offset(), pos), location());
+                        }
+                        CstParseResult elem1_3;
+                        if (optElem6.isCutFailure()) {
+                            restoreLocation(optStart6);
+                            children.clear();
+                            children.addAll(savedChildrenOpt6);
+                            elem1_3 = optElem6;
+                        } else if (optElem6.isSuccess()) {
+                            var optChildren6 = new ArrayList<>(children);
+                            children.clear();
+                            children.addAll(savedChildrenOpt6);
+                            children.addAll(optChildren6);
+                            elem1_3 = optElem6;
+                        } else {
+                            restoreLocation(optStart6);
+                            children.clear();
+                            children.addAll(savedChildrenOpt6);
+                            elem1_3 = CstParseResult.success(null, "", location());
+                        }
+                        if (elem1_3.isCutFailure()) {
+                            restoreLocation(seqStart1);
+                            alt0_0 = elem1_3;
+                        } else if (elem1_3.isFailure()) {
+                            restoreLocation(seqStart1);
+                            alt0_0 = cut1 ? elem1_3.asCutFailure() : elem1_3;
+                        }
+                    }
+                    if (alt0_0.isSuccess()) {
+                        alt0_0 = CstParseResult.success(null, substring(seqStart1.offset(), pos), location());
+                    }
+                    if (alt0_0.isSuccess()) {
+                        result = alt0_0;
+                    } else if (alt0_0.isCutFailure()) {
+                        result = alt0_0.asRegularFailure();
+                    } else {
+                        restoreLocation(choiceStart0);
                     children.clear();
-                    children.addAll(savedChildrenOpt10);
-                    children.addAll(optChildren10);
-                    elem8_1 = optElem10;
-                } else {
-                    restoreLocation(optStart10);
+                    children.addAll(savedChildren0);
+                    CstParseResult alt0_1 = CstParseResult.success(null, "", location());
+                    var seqStart13 = location();
+                    boolean cut13 = false;
+                    if (alt0_1.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem13_0 = matchLiteralCst(".", false);
+                        if (elem13_0.isSuccess() && elem13_0.node.isPresent()) {
+                            children.add(elem13_0.node.unwrap());
+                        }
+                        if (elem13_0.isCutFailure()) {
+                            restoreLocation(seqStart13);
+                            alt0_1 = elem13_0;
+                        } else if (elem13_0.isFailure()) {
+                            restoreLocation(seqStart13);
+                            alt0_1 = cut13 ? elem13_0.asCutFailure() : elem13_0;
+                        }
+                    }
+                    if (alt0_1.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem13_1 = matchLiteralCst("class", false);
+                        if (elem13_1.isSuccess() && elem13_1.node.isPresent()) {
+                            children.add(elem13_1.node.unwrap());
+                        }
+                        if (elem13_1.isCutFailure()) {
+                            restoreLocation(seqStart13);
+                            alt0_1 = elem13_1;
+                        } else if (elem13_1.isFailure()) {
+                            restoreLocation(seqStart13);
+                            alt0_1 = cut13 ? elem13_1.asCutFailure() : elem13_1;
+                        }
+                    }
+                    if (alt0_1.isSuccess()) {
+                        alt0_1 = CstParseResult.success(null, substring(seqStart13.offset(), pos), location());
+                    }
+                    if (alt0_1.isSuccess()) {
+                        result = alt0_1;
+                    } else if (alt0_1.isCutFailure()) {
+                        result = alt0_1.asRegularFailure();
+                    } else {
+                        restoreLocation(choiceStart0);
                     children.clear();
-                    children.addAll(savedChildrenOpt10);
-                    elem8_1 = CstParseResult.success(null, "", location());
+                    children.addAll(savedChildren0);
+                    CstParseResult alt0_2 = CstParseResult.success(null, "", location());
+                    var seqStart16 = location();
+                    boolean cut16 = false;
+                    if (alt0_2.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem16_0 = matchLiteralCst(".", false);
+                        if (elem16_0.isSuccess() && elem16_0.node.isPresent()) {
+                            children.add(elem16_0.node.unwrap());
+                        }
+                        if (elem16_0.isCutFailure()) {
+                            restoreLocation(seqStart16);
+                            alt0_2 = elem16_0;
+                        } else if (elem16_0.isFailure()) {
+                            restoreLocation(seqStart16);
+                            alt0_2 = cut16 ? elem16_0.asCutFailure() : elem16_0;
+                        }
+                    }
+                    if (alt0_2.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem16_1 = matchLiteralCst("this", false);
+                        if (elem16_1.isSuccess() && elem16_1.node.isPresent()) {
+                            children.add(elem16_1.node.unwrap());
+                        }
+                        if (elem16_1.isCutFailure()) {
+                            restoreLocation(seqStart16);
+                            alt0_2 = elem16_1;
+                        } else if (elem16_1.isFailure()) {
+                            restoreLocation(seqStart16);
+                            alt0_2 = cut16 ? elem16_1.asCutFailure() : elem16_1;
+                        }
+                    }
+                    if (alt0_2.isSuccess()) {
+                        alt0_2 = CstParseResult.success(null, substring(seqStart16.offset(), pos), location());
+                    }
+                    if (alt0_2.isSuccess()) {
+                        result = alt0_2;
+                    } else if (alt0_2.isCutFailure()) {
+                        result = alt0_2.asRegularFailure();
+                    } else {
+                        restoreLocation(choiceStart0);
+                    }
+                    }
+                    }
+                    break;
                 }
-                if (elem8_1.isCutFailure()) {
-                    restoreLocation(seqStart8);
-                    optElem6 = elem8_1;
-                } else if (elem8_1.isFailure()) {
-                    restoreLocation(seqStart8);
-                    optElem6 = cut8 ? elem8_1.asCutFailure() : elem8_1;
+                case '[':
+                {
+                    children.clear();
+                    children.addAll(savedChildren0);
+                    CstParseResult alt0_3 = CstParseResult.success(null, "", location());
+                    var seqStart19 = location();
+                    boolean cut19 = false;
+                    if (alt0_3.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem19_0 = matchLiteralCst("[", false);
+                        if (elem19_0.isSuccess() && elem19_0.node.isPresent()) {
+                            children.add(elem19_0.node.unwrap());
+                        }
+                        if (elem19_0.isCutFailure()) {
+                            restoreLocation(seqStart19);
+                            alt0_3 = elem19_0;
+                        } else if (elem19_0.isFailure()) {
+                            restoreLocation(seqStart19);
+                            alt0_3 = cut19 ? elem19_0.asCutFailure() : elem19_0;
+                        }
+                    }
+                    if (alt0_3.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem19_1 = parse_Expr();
+                        if (elem19_1.isSuccess() && elem19_1.node.isPresent()) {
+                            children.add(elem19_1.node.unwrap());
+                        }
+                        if (elem19_1.isCutFailure()) {
+                            restoreLocation(seqStart19);
+                            alt0_3 = elem19_1;
+                        } else if (elem19_1.isFailure()) {
+                            restoreLocation(seqStart19);
+                            alt0_3 = cut19 ? elem19_1.asCutFailure() : elem19_1;
+                        }
+                    }
+                    if (alt0_3.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem19_2 = matchLiteralCst("]", false);
+                        if (elem19_2.isSuccess() && elem19_2.node.isPresent()) {
+                            children.add(elem19_2.node.unwrap());
+                        }
+                        if (elem19_2.isCutFailure()) {
+                            restoreLocation(seqStart19);
+                            alt0_3 = elem19_2;
+                        } else if (elem19_2.isFailure()) {
+                            restoreLocation(seqStart19);
+                            alt0_3 = cut19 ? elem19_2.asCutFailure() : elem19_2;
+                        }
+                    }
+                    if (alt0_3.isSuccess()) {
+                        alt0_3 = CstParseResult.success(null, substring(seqStart19.offset(), pos), location());
+                    }
+                    if (alt0_3.isSuccess()) {
+                        result = alt0_3;
+                    } else if (alt0_3.isCutFailure()) {
+                        result = alt0_3.asRegularFailure();
+                    } else {
+                        restoreLocation(choiceStart0);
+                    }
+                    break;
+                }
+                case '(':
+                {
+                    children.clear();
+                    children.addAll(savedChildren0);
+                    CstParseResult alt0_4 = CstParseResult.success(null, "", location());
+                    var seqStart23 = location();
+                    boolean cut23 = false;
+                    if (alt0_4.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem23_0 = matchLiteralCst("(", false);
+                        if (elem23_0.isSuccess() && elem23_0.node.isPresent()) {
+                            children.add(elem23_0.node.unwrap());
+                        }
+                        if (elem23_0.isCutFailure()) {
+                            restoreLocation(seqStart23);
+                            alt0_4 = elem23_0;
+                        } else if (elem23_0.isFailure()) {
+                            restoreLocation(seqStart23);
+                            alt0_4 = cut23 ? elem23_0.asCutFailure() : elem23_0;
+                        }
+                    }
+                    if (alt0_4.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var optStart25 = location();
+                        var savedChildrenOpt25 = new ArrayList<>(children);
+                        children.clear();
+                        var optElem25 = parse_Args();
+                        if (optElem25.isSuccess() && optElem25.node.isPresent()) {
+                            children.add(optElem25.node.unwrap());
+                        }
+                        CstParseResult elem23_1;
+                        if (optElem25.isCutFailure()) {
+                            restoreLocation(optStart25);
+                            children.clear();
+                            children.addAll(savedChildrenOpt25);
+                            elem23_1 = optElem25;
+                        } else if (optElem25.isSuccess()) {
+                            var optChildren25 = new ArrayList<>(children);
+                            children.clear();
+                            children.addAll(savedChildrenOpt25);
+                            children.addAll(optChildren25);
+                            elem23_1 = optElem25;
+                        } else {
+                            restoreLocation(optStart25);
+                            children.clear();
+                            children.addAll(savedChildrenOpt25);
+                            elem23_1 = CstParseResult.success(null, "", location());
+                        }
+                        if (elem23_1.isCutFailure()) {
+                            restoreLocation(seqStart23);
+                            alt0_4 = elem23_1;
+                        } else if (elem23_1.isFailure()) {
+                            restoreLocation(seqStart23);
+                            alt0_4 = cut23 ? elem23_1.asCutFailure() : elem23_1;
+                        }
+                    }
+                    if (alt0_4.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem23_2 = matchLiteralCst(")", false);
+                        if (elem23_2.isSuccess() && elem23_2.node.isPresent()) {
+                            children.add(elem23_2.node.unwrap());
+                        }
+                        if (elem23_2.isCutFailure()) {
+                            restoreLocation(seqStart23);
+                            alt0_4 = elem23_2;
+                        } else if (elem23_2.isFailure()) {
+                            restoreLocation(seqStart23);
+                            alt0_4 = cut23 ? elem23_2.asCutFailure() : elem23_2;
+                        }
+                    }
+                    if (alt0_4.isSuccess()) {
+                        alt0_4 = CstParseResult.success(null, substring(seqStart23.offset(), pos), location());
+                    }
+                    if (alt0_4.isSuccess()) {
+                        result = alt0_4;
+                    } else if (alt0_4.isCutFailure()) {
+                        result = alt0_4.asRegularFailure();
+                    } else {
+                        restoreLocation(choiceStart0);
+                    }
+                    break;
+                }
+                case '+':
+                {
+                    children.clear();
+                    children.addAll(savedChildren0);
+                    var alt0_5 = matchLiteralCst("++", false);
+                    if (alt0_5.isSuccess() && alt0_5.node.isPresent()) {
+                        children.add(alt0_5.node.unwrap());
+                    }
+                    if (alt0_5.isSuccess()) {
+                        result = alt0_5;
+                    } else if (alt0_5.isCutFailure()) {
+                        result = alt0_5.asRegularFailure();
+                    } else {
+                        restoreLocation(choiceStart0);
+                    }
+                    break;
+                }
+                case '-':
+                {
+                    children.clear();
+                    children.addAll(savedChildren0);
+                    var alt0_6 = matchLiteralCst("--", false);
+                    if (alt0_6.isSuccess() && alt0_6.node.isPresent()) {
+                        children.add(alt0_6.node.unwrap());
+                    }
+                    if (alt0_6.isSuccess()) {
+                        result = alt0_6;
+                    } else if (alt0_6.isCutFailure()) {
+                        result = alt0_6.asRegularFailure();
+                    } else {
+                        restoreLocation(choiceStart0);
+                    }
+                    break;
+                }
+                case ':':
+                {
+                    children.clear();
+                    children.addAll(savedChildren0);
+                    CstParseResult alt0_7 = CstParseResult.success(null, "", location());
+                    var seqStart30 = location();
+                    boolean cut30 = false;
+                    if (alt0_7.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem30_0 = matchLiteralCst("::", false);
+                        if (elem30_0.isSuccess() && elem30_0.node.isPresent()) {
+                            children.add(elem30_0.node.unwrap());
+                        }
+                        if (elem30_0.isCutFailure()) {
+                            restoreLocation(seqStart30);
+                            alt0_7 = elem30_0;
+                        } else if (elem30_0.isFailure()) {
+                            restoreLocation(seqStart30);
+                            alt0_7 = cut30 ? elem30_0.asCutFailure() : elem30_0;
+                        }
+                    }
+                    if (alt0_7.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var optStart32 = location();
+                        var savedChildrenOpt32 = new ArrayList<>(children);
+                        children.clear();
+                        var optElem32 = parse_TypeArgs();
+                        if (optElem32.isSuccess() && optElem32.node.isPresent()) {
+                            children.add(optElem32.node.unwrap());
+                        }
+                        CstParseResult elem30_1;
+                        if (optElem32.isCutFailure()) {
+                            restoreLocation(optStart32);
+                            children.clear();
+                            children.addAll(savedChildrenOpt32);
+                            elem30_1 = optElem32;
+                        } else if (optElem32.isSuccess()) {
+                            var optChildren32 = new ArrayList<>(children);
+                            children.clear();
+                            children.addAll(savedChildrenOpt32);
+                            children.addAll(optChildren32);
+                            elem30_1 = optElem32;
+                        } else {
+                            restoreLocation(optStart32);
+                            children.clear();
+                            children.addAll(savedChildrenOpt32);
+                            elem30_1 = CstParseResult.success(null, "", location());
+                        }
+                        if (elem30_1.isCutFailure()) {
+                            restoreLocation(seqStart30);
+                            alt0_7 = elem30_1;
+                        } else if (elem30_1.isFailure()) {
+                            restoreLocation(seqStart30);
+                            alt0_7 = cut30 ? elem30_1.asCutFailure() : elem30_1;
+                        }
+                    }
+                    if (alt0_7.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        CstParseResult elem30_2 = null;
+                        var choiceStart35 = location();
+                        var savedChildren35 = new ArrayList<>(children);
+                        children.clear();
+                        children.addAll(savedChildren35);
+                        var alt35_0 = parse_Identifier();
+                        if (alt35_0.isSuccess() && alt35_0.node.isPresent()) {
+                            children.add(alt35_0.node.unwrap());
+                        }
+                        if (alt35_0.isSuccess()) {
+                            elem30_2 = alt35_0;
+                        } else if (alt35_0.isCutFailure()) {
+                            elem30_2 = alt35_0.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart35);
+                        children.clear();
+                        children.addAll(savedChildren35);
+                        var alt35_1 = matchLiteralCst("new", false);
+                        if (alt35_1.isSuccess() && alt35_1.node.isPresent()) {
+                            children.add(alt35_1.node.unwrap());
+                        }
+                        if (alt35_1.isSuccess()) {
+                            elem30_2 = alt35_1;
+                        } else if (alt35_1.isCutFailure()) {
+                            elem30_2 = alt35_1.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart35);
+                        }
+                        }
+                        if (elem30_2 == null) {
+                            children.clear();
+                            children.addAll(savedChildren35);
+                            elem30_2 = CstParseResult.failure("one of alternatives");
+                        }
+                        if (elem30_2.isCutFailure()) {
+                            restoreLocation(seqStart30);
+                            alt0_7 = elem30_2;
+                        } else if (elem30_2.isFailure()) {
+                            restoreLocation(seqStart30);
+                            alt0_7 = cut30 ? elem30_2.asCutFailure() : elem30_2;
+                        }
+                    }
+                    if (alt0_7.isSuccess()) {
+                        alt0_7 = CstParseResult.success(null, substring(seqStart30.offset(), pos), location());
+                    }
+                    if (alt0_7.isSuccess()) {
+                        result = alt0_7;
+                    } else if (alt0_7.isCutFailure()) {
+                        result = alt0_7.asRegularFailure();
+                    } else {
+                        restoreLocation(choiceStart0);
+                    }
+                    break;
                 }
             }
-            if (optElem6.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                var elem8_2 = matchLiteralCst(")", false);
-                if (elem8_2.isSuccess() && elem8_2.node.isPresent()) {
-                    children.add(elem8_2.node.unwrap());
-                }
-                if (elem8_2.isCutFailure()) {
-                    restoreLocation(seqStart8);
-                    optElem6 = elem8_2;
-                } else if (elem8_2.isFailure()) {
-                    restoreLocation(seqStart8);
-                    optElem6 = cut8 ? elem8_2.asCutFailure() : elem8_2;
-                }
-            }
-            if (optElem6.isSuccess()) {
-                optElem6 = CstParseResult.success(null, substring(seqStart8.offset(), pos), location());
-            }
-            CstParseResult elem1_3;
-            if (optElem6.isCutFailure()) {
-                restoreLocation(optStart6);
-                children.clear();
-                children.addAll(savedChildrenOpt6);
-                elem1_3 = optElem6;
-            } else if (optElem6.isSuccess()) {
-                var optChildren6 = new ArrayList<>(children);
-                children.clear();
-                children.addAll(savedChildrenOpt6);
-                children.addAll(optChildren6);
-                elem1_3 = optElem6;
-            } else {
-                restoreLocation(optStart6);
-                children.clear();
-                children.addAll(savedChildrenOpt6);
-                elem1_3 = CstParseResult.success(null, "", location());
-            }
-            if (elem1_3.isCutFailure()) {
-                restoreLocation(seqStart1);
-                alt0_0 = elem1_3;
-            } else if (elem1_3.isFailure()) {
-                restoreLocation(seqStart1);
-                alt0_0 = cut1 ? elem1_3.asCutFailure() : elem1_3;
-            }
-        }
-        if (alt0_0.isSuccess()) {
-            alt0_0 = CstParseResult.success(null, substring(seqStart1.offset(), pos), location());
-        }
-        if (alt0_0.isSuccess()) {
-            result = alt0_0;
-        } else if (alt0_0.isCutFailure()) {
-            result = alt0_0.asRegularFailure();
-        } else {
-            restoreLocation(choiceStart0);
-        children.clear();
-        children.addAll(savedChildren0);
-        CstParseResult alt0_1 = CstParseResult.success(null, "", location());
-        var seqStart13 = location();
-        boolean cut13 = false;
-        if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem13_0 = matchLiteralCst(".", false);
-            if (elem13_0.isSuccess() && elem13_0.node.isPresent()) {
-                children.add(elem13_0.node.unwrap());
-            }
-            if (elem13_0.isCutFailure()) {
-                restoreLocation(seqStart13);
-                alt0_1 = elem13_0;
-            } else if (elem13_0.isFailure()) {
-                restoreLocation(seqStart13);
-                alt0_1 = cut13 ? elem13_0.asCutFailure() : elem13_0;
-            }
-        }
-        if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem13_1 = matchLiteralCst("class", false);
-            if (elem13_1.isSuccess() && elem13_1.node.isPresent()) {
-                children.add(elem13_1.node.unwrap());
-            }
-            if (elem13_1.isCutFailure()) {
-                restoreLocation(seqStart13);
-                alt0_1 = elem13_1;
-            } else if (elem13_1.isFailure()) {
-                restoreLocation(seqStart13);
-                alt0_1 = cut13 ? elem13_1.asCutFailure() : elem13_1;
-            }
-        }
-        if (alt0_1.isSuccess()) {
-            alt0_1 = CstParseResult.success(null, substring(seqStart13.offset(), pos), location());
-        }
-        if (alt0_1.isSuccess()) {
-            result = alt0_1;
-        } else if (alt0_1.isCutFailure()) {
-            result = alt0_1.asRegularFailure();
-        } else {
-            restoreLocation(choiceStart0);
-        children.clear();
-        children.addAll(savedChildren0);
-        CstParseResult alt0_2 = CstParseResult.success(null, "", location());
-        var seqStart16 = location();
-        boolean cut16 = false;
-        if (alt0_2.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem16_0 = matchLiteralCst(".", false);
-            if (elem16_0.isSuccess() && elem16_0.node.isPresent()) {
-                children.add(elem16_0.node.unwrap());
-            }
-            if (elem16_0.isCutFailure()) {
-                restoreLocation(seqStart16);
-                alt0_2 = elem16_0;
-            } else if (elem16_0.isFailure()) {
-                restoreLocation(seqStart16);
-                alt0_2 = cut16 ? elem16_0.asCutFailure() : elem16_0;
-            }
-        }
-        if (alt0_2.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem16_1 = matchLiteralCst("this", false);
-            if (elem16_1.isSuccess() && elem16_1.node.isPresent()) {
-                children.add(elem16_1.node.unwrap());
-            }
-            if (elem16_1.isCutFailure()) {
-                restoreLocation(seqStart16);
-                alt0_2 = elem16_1;
-            } else if (elem16_1.isFailure()) {
-                restoreLocation(seqStart16);
-                alt0_2 = cut16 ? elem16_1.asCutFailure() : elem16_1;
-            }
-        }
-        if (alt0_2.isSuccess()) {
-            alt0_2 = CstParseResult.success(null, substring(seqStart16.offset(), pos), location());
-        }
-        if (alt0_2.isSuccess()) {
-            result = alt0_2;
-        } else if (alt0_2.isCutFailure()) {
-            result = alt0_2.asRegularFailure();
-        } else {
-            restoreLocation(choiceStart0);
-        children.clear();
-        children.addAll(savedChildren0);
-        CstParseResult alt0_3 = CstParseResult.success(null, "", location());
-        var seqStart19 = location();
-        boolean cut19 = false;
-        if (alt0_3.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem19_0 = matchLiteralCst("[", false);
-            if (elem19_0.isSuccess() && elem19_0.node.isPresent()) {
-                children.add(elem19_0.node.unwrap());
-            }
-            if (elem19_0.isCutFailure()) {
-                restoreLocation(seqStart19);
-                alt0_3 = elem19_0;
-            } else if (elem19_0.isFailure()) {
-                restoreLocation(seqStart19);
-                alt0_3 = cut19 ? elem19_0.asCutFailure() : elem19_0;
-            }
-        }
-        if (alt0_3.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem19_1 = parse_Expr();
-            if (elem19_1.isSuccess() && elem19_1.node.isPresent()) {
-                children.add(elem19_1.node.unwrap());
-            }
-            if (elem19_1.isCutFailure()) {
-                restoreLocation(seqStart19);
-                alt0_3 = elem19_1;
-            } else if (elem19_1.isFailure()) {
-                restoreLocation(seqStart19);
-                alt0_3 = cut19 ? elem19_1.asCutFailure() : elem19_1;
-            }
-        }
-        if (alt0_3.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem19_2 = matchLiteralCst("]", false);
-            if (elem19_2.isSuccess() && elem19_2.node.isPresent()) {
-                children.add(elem19_2.node.unwrap());
-            }
-            if (elem19_2.isCutFailure()) {
-                restoreLocation(seqStart19);
-                alt0_3 = elem19_2;
-            } else if (elem19_2.isFailure()) {
-                restoreLocation(seqStart19);
-                alt0_3 = cut19 ? elem19_2.asCutFailure() : elem19_2;
-            }
-        }
-        if (alt0_3.isSuccess()) {
-            alt0_3 = CstParseResult.success(null, substring(seqStart19.offset(), pos), location());
-        }
-        if (alt0_3.isSuccess()) {
-            result = alt0_3;
-        } else if (alt0_3.isCutFailure()) {
-            result = alt0_3.asRegularFailure();
-        } else {
-            restoreLocation(choiceStart0);
-        children.clear();
-        children.addAll(savedChildren0);
-        CstParseResult alt0_4 = CstParseResult.success(null, "", location());
-        var seqStart23 = location();
-        boolean cut23 = false;
-        if (alt0_4.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem23_0 = matchLiteralCst("(", false);
-            if (elem23_0.isSuccess() && elem23_0.node.isPresent()) {
-                children.add(elem23_0.node.unwrap());
-            }
-            if (elem23_0.isCutFailure()) {
-                restoreLocation(seqStart23);
-                alt0_4 = elem23_0;
-            } else if (elem23_0.isFailure()) {
-                restoreLocation(seqStart23);
-                alt0_4 = cut23 ? elem23_0.asCutFailure() : elem23_0;
-            }
-        }
-        if (alt0_4.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var optStart25 = location();
-            var savedChildrenOpt25 = new ArrayList<>(children);
-            children.clear();
-            var optElem25 = parse_Args();
-            if (optElem25.isSuccess() && optElem25.node.isPresent()) {
-                children.add(optElem25.node.unwrap());
-            }
-            CstParseResult elem23_1;
-            if (optElem25.isCutFailure()) {
-                restoreLocation(optStart25);
-                children.clear();
-                children.addAll(savedChildrenOpt25);
-                elem23_1 = optElem25;
-            } else if (optElem25.isSuccess()) {
-                var optChildren25 = new ArrayList<>(children);
-                children.clear();
-                children.addAll(savedChildrenOpt25);
-                children.addAll(optChildren25);
-                elem23_1 = optElem25;
-            } else {
-                restoreLocation(optStart25);
-                children.clear();
-                children.addAll(savedChildrenOpt25);
-                elem23_1 = CstParseResult.success(null, "", location());
-            }
-            if (elem23_1.isCutFailure()) {
-                restoreLocation(seqStart23);
-                alt0_4 = elem23_1;
-            } else if (elem23_1.isFailure()) {
-                restoreLocation(seqStart23);
-                alt0_4 = cut23 ? elem23_1.asCutFailure() : elem23_1;
-            }
-        }
-        if (alt0_4.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem23_2 = matchLiteralCst(")", false);
-            if (elem23_2.isSuccess() && elem23_2.node.isPresent()) {
-                children.add(elem23_2.node.unwrap());
-            }
-            if (elem23_2.isCutFailure()) {
-                restoreLocation(seqStart23);
-                alt0_4 = elem23_2;
-            } else if (elem23_2.isFailure()) {
-                restoreLocation(seqStart23);
-                alt0_4 = cut23 ? elem23_2.asCutFailure() : elem23_2;
-            }
-        }
-        if (alt0_4.isSuccess()) {
-            alt0_4 = CstParseResult.success(null, substring(seqStart23.offset(), pos), location());
-        }
-        if (alt0_4.isSuccess()) {
-            result = alt0_4;
-        } else if (alt0_4.isCutFailure()) {
-            result = alt0_4.asRegularFailure();
-        } else {
-            restoreLocation(choiceStart0);
-        children.clear();
-        children.addAll(savedChildren0);
-        var alt0_5 = matchLiteralCst("++", false);
-        if (alt0_5.isSuccess() && alt0_5.node.isPresent()) {
-            children.add(alt0_5.node.unwrap());
-        }
-        if (alt0_5.isSuccess()) {
-            result = alt0_5;
-        } else if (alt0_5.isCutFailure()) {
-            result = alt0_5.asRegularFailure();
-        } else {
-            restoreLocation(choiceStart0);
-        children.clear();
-        children.addAll(savedChildren0);
-        var alt0_6 = matchLiteralCst("--", false);
-        if (alt0_6.isSuccess() && alt0_6.node.isPresent()) {
-            children.add(alt0_6.node.unwrap());
-        }
-        if (alt0_6.isSuccess()) {
-            result = alt0_6;
-        } else if (alt0_6.isCutFailure()) {
-            result = alt0_6.asRegularFailure();
-        } else {
-            restoreLocation(choiceStart0);
-        children.clear();
-        children.addAll(savedChildren0);
-        CstParseResult alt0_7 = CstParseResult.success(null, "", location());
-        var seqStart30 = location();
-        boolean cut30 = false;
-        if (alt0_7.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem30_0 = matchLiteralCst("::", false);
-            if (elem30_0.isSuccess() && elem30_0.node.isPresent()) {
-                children.add(elem30_0.node.unwrap());
-            }
-            if (elem30_0.isCutFailure()) {
-                restoreLocation(seqStart30);
-                alt0_7 = elem30_0;
-            } else if (elem30_0.isFailure()) {
-                restoreLocation(seqStart30);
-                alt0_7 = cut30 ? elem30_0.asCutFailure() : elem30_0;
-            }
-        }
-        if (alt0_7.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var optStart32 = location();
-            var savedChildrenOpt32 = new ArrayList<>(children);
-            children.clear();
-            var optElem32 = parse_TypeArgs();
-            if (optElem32.isSuccess() && optElem32.node.isPresent()) {
-                children.add(optElem32.node.unwrap());
-            }
-            CstParseResult elem30_1;
-            if (optElem32.isCutFailure()) {
-                restoreLocation(optStart32);
-                children.clear();
-                children.addAll(savedChildrenOpt32);
-                elem30_1 = optElem32;
-            } else if (optElem32.isSuccess()) {
-                var optChildren32 = new ArrayList<>(children);
-                children.clear();
-                children.addAll(savedChildrenOpt32);
-                children.addAll(optChildren32);
-                elem30_1 = optElem32;
-            } else {
-                restoreLocation(optStart32);
-                children.clear();
-                children.addAll(savedChildrenOpt32);
-                elem30_1 = CstParseResult.success(null, "", location());
-            }
-            if (elem30_1.isCutFailure()) {
-                restoreLocation(seqStart30);
-                alt0_7 = elem30_1;
-            } else if (elem30_1.isFailure()) {
-                restoreLocation(seqStart30);
-                alt0_7 = cut30 ? elem30_1.asCutFailure() : elem30_1;
-            }
-        }
-        if (alt0_7.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            CstParseResult elem30_2 = null;
-            var choiceStart35 = location();
-            var savedChildren35 = new ArrayList<>(children);
-            children.clear();
-            children.addAll(savedChildren35);
-            var alt35_0 = parse_Identifier();
-            if (alt35_0.isSuccess() && alt35_0.node.isPresent()) {
-                children.add(alt35_0.node.unwrap());
-            }
-            if (alt35_0.isSuccess()) {
-                elem30_2 = alt35_0;
-            } else if (alt35_0.isCutFailure()) {
-                elem30_2 = alt35_0.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart35);
-            children.clear();
-            children.addAll(savedChildren35);
-            var alt35_1 = matchLiteralCst("new", false);
-            if (alt35_1.isSuccess() && alt35_1.node.isPresent()) {
-                children.add(alt35_1.node.unwrap());
-            }
-            if (alt35_1.isSuccess()) {
-                elem30_2 = alt35_1;
-            } else if (alt35_1.isCutFailure()) {
-                elem30_2 = alt35_1.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart35);
-            }
-            }
-            if (elem30_2 == null) {
-                children.clear();
-                children.addAll(savedChildren35);
-                elem30_2 = CstParseResult.failure("one of alternatives");
-            }
-            if (elem30_2.isCutFailure()) {
-                restoreLocation(seqStart30);
-                alt0_7 = elem30_2;
-            } else if (elem30_2.isFailure()) {
-                restoreLocation(seqStart30);
-                alt0_7 = cut30 ? elem30_2.asCutFailure() : elem30_2;
-            }
-        }
-        if (alt0_7.isSuccess()) {
-            alt0_7 = CstParseResult.success(null, substring(seqStart30.offset(), pos), location());
-        }
-        if (alt0_7.isSuccess()) {
-            result = alt0_7;
-        } else if (alt0_7.isCutFailure()) {
-            result = alt0_7.asRegularFailure();
-        } else {
-            restoreLocation(choiceStart0);
-        }
-        }
-        }
-        }
-        }
-        }
-        }
         }
         if (result == null) {
             children.clear();
@@ -18436,7 +18654,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_PRIMARY;
         
@@ -18464,7 +18682,7 @@ public final class Java25Parser {
         var seqStart3 = location();
         boolean cut3 = false;
         if (tbElem2.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem3_0 = matchLiteralCst("this", false);
             if (elem3_0.isCutFailure()) {
                 restoreLocation(seqStart3);
@@ -18518,7 +18736,7 @@ public final class Java25Parser {
         var seqStart8 = location();
         boolean cut8 = false;
         if (tbElem7.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem8_0 = matchLiteralCst("super", false);
             if (elem8_0.isCutFailure()) {
                 restoreLocation(seqStart8);
@@ -18569,7 +18787,7 @@ public final class Java25Parser {
         var seqStart12 = location();
         boolean cut12 = false;
         if (alt0_3.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var tbStart13 = location();
             tokenBoundaryDepth++;
             var savedChildrenTb13 = new ArrayList<>(children);
@@ -18577,7 +18795,7 @@ public final class Java25Parser {
             var seqStart14 = location();
             boolean cut14 = false;
             if (tbElem13.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem14_0 = matchLiteralCst("new", false);
                 if (elem14_0.isCutFailure()) {
                     restoreLocation(seqStart14);
@@ -18625,7 +18843,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_3.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart18 = location();
             var savedChildrenOpt18 = new ArrayList<>(children);
             children.clear();
@@ -18660,7 +18878,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_3.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem12_2 = parse_ArrayType();
             if (elem12_2.isSuccess() && elem12_2.node.isPresent()) {
                 children.add(elem12_2.node.unwrap());
@@ -18674,7 +18892,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_3.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem12_3 = null;
             var choiceStart22 = location();
             var savedChildren22 = new ArrayList<>(children);
@@ -18684,7 +18902,7 @@ public final class Java25Parser {
             var seqStart23 = location();
             boolean cut23 = false;
             if (alt22_0.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem23_0 = parse_DimExprs();
                 if (elem23_0.isSuccess() && elem23_0.node.isPresent()) {
                     children.add(elem23_0.node.unwrap());
@@ -18698,7 +18916,7 @@ public final class Java25Parser {
                 }
             }
             if (alt22_0.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var optStart25 = location();
                 var savedChildrenOpt25 = new ArrayList<>(children);
                 children.clear();
@@ -18747,7 +18965,7 @@ public final class Java25Parser {
             var seqStart27 = location();
             boolean cut27 = false;
             if (alt22_1.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem27_0 = parse_Dims();
                 if (elem27_0.isSuccess() && elem27_0.node.isPresent()) {
                     children.add(elem27_0.node.unwrap());
@@ -18761,7 +18979,7 @@ public final class Java25Parser {
                 }
             }
             if (alt22_1.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem27_1 = parse_VarInit();
                 if (elem27_1.isSuccess() && elem27_1.node.isPresent()) {
                     children.add(elem27_1.node.unwrap());
@@ -18789,7 +19007,7 @@ public final class Java25Parser {
             var seqStart30 = location();
             boolean cut30 = false;
             if (alt22_2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem30_0 = matchLiteralCst("(", false);
                 if (elem30_0.isSuccess() && elem30_0.node.isPresent()) {
                     children.add(elem30_0.node.unwrap());
@@ -18803,7 +19021,7 @@ public final class Java25Parser {
                 }
             }
             if (alt22_2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var optStart32 = location();
                 var savedChildrenOpt32 = new ArrayList<>(children);
                 children.clear();
@@ -18838,7 +19056,7 @@ public final class Java25Parser {
                 }
             }
             if (alt22_2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem30_2 = matchLiteralCst(")", false);
                 if (elem30_2.isSuccess() && elem30_2.node.isPresent()) {
                     children.add(elem30_2.node.unwrap());
@@ -18852,7 +19070,7 @@ public final class Java25Parser {
                 }
             }
             if (alt22_2.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var optStart35 = location();
                 var savedChildrenOpt35 = new ArrayList<>(children);
                 children.clear();
@@ -18926,7 +19144,7 @@ public final class Java25Parser {
         var seqStart37 = location();
         boolean cut37 = false;
         if (alt0_4.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem37_0 = parse_SwitchKW();
             if (elem37_0.isSuccess() && elem37_0.node.isPresent()) {
                 children.add(elem37_0.node.unwrap());
@@ -18940,7 +19158,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_4.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem37_1 = matchLiteralCst("(", false);
             if (elem37_1.isSuccess() && elem37_1.node.isPresent()) {
                 children.add(elem37_1.node.unwrap());
@@ -18954,7 +19172,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_4.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem37_2 = parse_Expr();
             if (elem37_2.isSuccess() && elem37_2.node.isPresent()) {
                 children.add(elem37_2.node.unwrap());
@@ -18968,7 +19186,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_4.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem37_3 = matchLiteralCst(")", false);
             if (elem37_3.isSuccess() && elem37_3.node.isPresent()) {
                 children.add(elem37_3.node.unwrap());
@@ -18982,7 +19200,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_4.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem37_4 = parse_SwitchBlock();
             if (elem37_4.isSuccess() && elem37_4.node.isPresent()) {
                 children.add(elem37_4.node.unwrap());
@@ -19022,7 +19240,7 @@ public final class Java25Parser {
         var seqStart44 = location();
         boolean cut44 = false;
         if (alt0_6.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem44_0 = matchLiteralCst("(", false);
             if (elem44_0.isSuccess() && elem44_0.node.isPresent()) {
                 children.add(elem44_0.node.unwrap());
@@ -19036,7 +19254,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_6.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem44_1 = parse_Expr();
             if (elem44_1.isSuccess() && elem44_1.node.isPresent()) {
                 children.add(elem44_1.node.unwrap());
@@ -19050,7 +19268,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_6.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem44_2 = matchLiteralCst(")", false);
             if (elem44_2.isSuccess() && elem44_2.node.isPresent()) {
                 children.add(elem44_2.node.unwrap());
@@ -19140,7 +19358,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_TYPE_EXPR;
         
@@ -19148,7 +19366,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Type();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -19162,186 +19380,199 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = null;
             var choiceStart3 = location();
             var savedChildren3 = new ArrayList<>(children);
-            children.clear();
-            children.addAll(savedChildren3);
-            CstParseResult alt3_0 = CstParseResult.success(null, "", location());
-            var seqStart4 = location();
-            boolean cut4 = false;
-            if (alt3_0.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                var elem4_0 = matchLiteralCst(".", false);
-                if (elem4_0.isSuccess() && elem4_0.node.isPresent()) {
-                    children.add(elem4_0.node.unwrap());
+            if (pos < input.length()) {
+                char dispatchChar3 = input.charAt(pos);
+                switch (dispatchChar3) {
+                    case '.':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren3);
+                        CstParseResult alt3_0 = CstParseResult.success(null, "", location());
+                        var seqStart4 = location();
+                        boolean cut4 = false;
+                        if (alt3_0.isSuccess()) {
+                            if (tokenBoundaryDepth == 0) skipWhitespace();
+                            var elem4_0 = matchLiteralCst(".", false);
+                            if (elem4_0.isSuccess() && elem4_0.node.isPresent()) {
+                                children.add(elem4_0.node.unwrap());
+                            }
+                            if (elem4_0.isCutFailure()) {
+                                restoreLocation(seqStart4);
+                                alt3_0 = elem4_0;
+                            } else if (elem4_0.isFailure()) {
+                                restoreLocation(seqStart4);
+                                alt3_0 = cut4 ? elem4_0.asCutFailure() : elem4_0;
+                            }
+                        }
+                        if (alt3_0.isSuccess()) {
+                            if (tokenBoundaryDepth == 0) skipWhitespace();
+                            var tbStart6 = location();
+                            tokenBoundaryDepth++;
+                            var savedChildrenTb6 = new ArrayList<>(children);
+                            var tbElem6 = matchLiteralCst("class", false);
+                            tokenBoundaryDepth--;
+                            children.clear();
+                            children.addAll(savedChildrenTb6);
+                            CstParseResult elem4_1;
+                            if (tbElem6.isSuccess()) {
+                                var tbText6 = substring(tbStart6.offset(), pos);
+                                var tbSpan6 = SourceSpan.of(tbStart6, location());
+                                var tbNode6 = new CstNode.Token(tbSpan6, __ruleName, tbText6, List.of(), List.of());
+                                children.add(tbNode6);
+                                elem4_1 = CstParseResult.success(tbNode6, tbText6, location());
+                            } else {
+                                elem4_1 = tbElem6;
+                            }
+                            if (elem4_1.isCutFailure()) {
+                                restoreLocation(seqStart4);
+                                alt3_0 = elem4_1;
+                            } else if (elem4_1.isFailure()) {
+                                restoreLocation(seqStart4);
+                                alt3_0 = cut4 ? elem4_1.asCutFailure() : elem4_1;
+                            }
+                        }
+                        if (alt3_0.isSuccess()) {
+                            alt3_0 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
+                        }
+                        if (alt3_0.isSuccess()) {
+                            elem0_1 = alt3_0;
+                        } else if (alt3_0.isCutFailure()) {
+                            elem0_1 = alt3_0.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        break;
+                    }
+                    case ':':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren3);
+                        CstParseResult alt3_1 = CstParseResult.success(null, "", location());
+                        var seqStart8 = location();
+                        boolean cut8 = false;
+                        if (alt3_1.isSuccess()) {
+                            if (tokenBoundaryDepth == 0) skipWhitespace();
+                            var elem8_0 = matchLiteralCst("::", false);
+                            if (elem8_0.isSuccess() && elem8_0.node.isPresent()) {
+                                children.add(elem8_0.node.unwrap());
+                            }
+                            if (elem8_0.isCutFailure()) {
+                                restoreLocation(seqStart8);
+                                alt3_1 = elem8_0;
+                            } else if (elem8_0.isFailure()) {
+                                restoreLocation(seqStart8);
+                                alt3_1 = cut8 ? elem8_0.asCutFailure() : elem8_0;
+                            }
+                        }
+                        if (alt3_1.isSuccess()) {
+                            if (tokenBoundaryDepth == 0) skipWhitespace();
+                            var optStart10 = location();
+                            var savedChildrenOpt10 = new ArrayList<>(children);
+                            children.clear();
+                            var optElem10 = parse_TypeArgs();
+                            if (optElem10.isSuccess() && optElem10.node.isPresent()) {
+                                children.add(optElem10.node.unwrap());
+                            }
+                            CstParseResult elem8_1;
+                            if (optElem10.isCutFailure()) {
+                                restoreLocation(optStart10);
+                                children.clear();
+                                children.addAll(savedChildrenOpt10);
+                                elem8_1 = optElem10;
+                            } else if (optElem10.isSuccess()) {
+                                var optChildren10 = new ArrayList<>(children);
+                                children.clear();
+                                children.addAll(savedChildrenOpt10);
+                                children.addAll(optChildren10);
+                                elem8_1 = optElem10;
+                            } else {
+                                restoreLocation(optStart10);
+                                children.clear();
+                                children.addAll(savedChildrenOpt10);
+                                elem8_1 = CstParseResult.success(null, "", location());
+                            }
+                            if (elem8_1.isCutFailure()) {
+                                restoreLocation(seqStart8);
+                                alt3_1 = elem8_1;
+                            } else if (elem8_1.isFailure()) {
+                                restoreLocation(seqStart8);
+                                alt3_1 = cut8 ? elem8_1.asCutFailure() : elem8_1;
+                            }
+                        }
+                        if (alt3_1.isSuccess()) {
+                            if (tokenBoundaryDepth == 0) skipWhitespace();
+                            CstParseResult elem8_2 = null;
+                            var choiceStart13 = location();
+                            var savedChildren13 = new ArrayList<>(children);
+                            children.clear();
+                            children.addAll(savedChildren13);
+                            var tbStart14 = location();
+                            tokenBoundaryDepth++;
+                            var savedChildrenTb14 = new ArrayList<>(children);
+                            var tbElem14 = matchLiteralCst("new", false);
+                            tokenBoundaryDepth--;
+                            children.clear();
+                            children.addAll(savedChildrenTb14);
+                            CstParseResult alt13_0;
+                            if (tbElem14.isSuccess()) {
+                                var tbText14 = substring(tbStart14.offset(), pos);
+                                var tbSpan14 = SourceSpan.of(tbStart14, location());
+                                var tbNode14 = new CstNode.Token(tbSpan14, __ruleName, tbText14, List.of(), List.of());
+                                children.add(tbNode14);
+                                alt13_0 = CstParseResult.success(tbNode14, tbText14, location());
+                            } else {
+                                alt13_0 = tbElem14;
+                            }
+                            if (alt13_0.isSuccess()) {
+                                elem8_2 = alt13_0;
+                            } else if (alt13_0.isCutFailure()) {
+                                elem8_2 = alt13_0.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart13);
+                            children.clear();
+                            children.addAll(savedChildren13);
+                            var alt13_1 = parse_Identifier();
+                            if (alt13_1.isSuccess() && alt13_1.node.isPresent()) {
+                                children.add(alt13_1.node.unwrap());
+                            }
+                            if (alt13_1.isSuccess()) {
+                                elem8_2 = alt13_1;
+                            } else if (alt13_1.isCutFailure()) {
+                                elem8_2 = alt13_1.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart13);
+                            }
+                            }
+                            if (elem8_2 == null) {
+                                children.clear();
+                                children.addAll(savedChildren13);
+                                elem8_2 = CstParseResult.failure("one of alternatives");
+                            }
+                            if (elem8_2.isCutFailure()) {
+                                restoreLocation(seqStart8);
+                                alt3_1 = elem8_2;
+                            } else if (elem8_2.isFailure()) {
+                                restoreLocation(seqStart8);
+                                alt3_1 = cut8 ? elem8_2.asCutFailure() : elem8_2;
+                            }
+                        }
+                        if (alt3_1.isSuccess()) {
+                            alt3_1 = CstParseResult.success(null, substring(seqStart8.offset(), pos), location());
+                        }
+                        if (alt3_1.isSuccess()) {
+                            elem0_1 = alt3_1;
+                        } else if (alt3_1.isCutFailure()) {
+                            elem0_1 = alt3_1.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        break;
+                    }
                 }
-                if (elem4_0.isCutFailure()) {
-                    restoreLocation(seqStart4);
-                    alt3_0 = elem4_0;
-                } else if (elem4_0.isFailure()) {
-                    restoreLocation(seqStart4);
-                    alt3_0 = cut4 ? elem4_0.asCutFailure() : elem4_0;
-                }
-            }
-            if (alt3_0.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                var tbStart6 = location();
-                tokenBoundaryDepth++;
-                var savedChildrenTb6 = new ArrayList<>(children);
-                var tbElem6 = matchLiteralCst("class", false);
-                tokenBoundaryDepth--;
-                children.clear();
-                children.addAll(savedChildrenTb6);
-                CstParseResult elem4_1;
-                if (tbElem6.isSuccess()) {
-                    var tbText6 = substring(tbStart6.offset(), pos);
-                    var tbSpan6 = SourceSpan.of(tbStart6, location());
-                    var tbNode6 = new CstNode.Token(tbSpan6, __ruleName, tbText6, List.of(), List.of());
-                    children.add(tbNode6);
-                    elem4_1 = CstParseResult.success(tbNode6, tbText6, location());
-                } else {
-                    elem4_1 = tbElem6;
-                }
-                if (elem4_1.isCutFailure()) {
-                    restoreLocation(seqStart4);
-                    alt3_0 = elem4_1;
-                } else if (elem4_1.isFailure()) {
-                    restoreLocation(seqStart4);
-                    alt3_0 = cut4 ? elem4_1.asCutFailure() : elem4_1;
-                }
-            }
-            if (alt3_0.isSuccess()) {
-                alt3_0 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
-            }
-            if (alt3_0.isSuccess()) {
-                elem0_1 = alt3_0;
-            } else if (alt3_0.isCutFailure()) {
-                elem0_1 = alt3_0.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            children.clear();
-            children.addAll(savedChildren3);
-            CstParseResult alt3_1 = CstParseResult.success(null, "", location());
-            var seqStart8 = location();
-            boolean cut8 = false;
-            if (alt3_1.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                var elem8_0 = matchLiteralCst("::", false);
-                if (elem8_0.isSuccess() && elem8_0.node.isPresent()) {
-                    children.add(elem8_0.node.unwrap());
-                }
-                if (elem8_0.isCutFailure()) {
-                    restoreLocation(seqStart8);
-                    alt3_1 = elem8_0;
-                } else if (elem8_0.isFailure()) {
-                    restoreLocation(seqStart8);
-                    alt3_1 = cut8 ? elem8_0.asCutFailure() : elem8_0;
-                }
-            }
-            if (alt3_1.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                var optStart10 = location();
-                var savedChildrenOpt10 = new ArrayList<>(children);
-                children.clear();
-                var optElem10 = parse_TypeArgs();
-                if (optElem10.isSuccess() && optElem10.node.isPresent()) {
-                    children.add(optElem10.node.unwrap());
-                }
-                CstParseResult elem8_1;
-                if (optElem10.isCutFailure()) {
-                    restoreLocation(optStart10);
-                    children.clear();
-                    children.addAll(savedChildrenOpt10);
-                    elem8_1 = optElem10;
-                } else if (optElem10.isSuccess()) {
-                    var optChildren10 = new ArrayList<>(children);
-                    children.clear();
-                    children.addAll(savedChildrenOpt10);
-                    children.addAll(optChildren10);
-                    elem8_1 = optElem10;
-                } else {
-                    restoreLocation(optStart10);
-                    children.clear();
-                    children.addAll(savedChildrenOpt10);
-                    elem8_1 = CstParseResult.success(null, "", location());
-                }
-                if (elem8_1.isCutFailure()) {
-                    restoreLocation(seqStart8);
-                    alt3_1 = elem8_1;
-                } else if (elem8_1.isFailure()) {
-                    restoreLocation(seqStart8);
-                    alt3_1 = cut8 ? elem8_1.asCutFailure() : elem8_1;
-                }
-            }
-            if (alt3_1.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                CstParseResult elem8_2 = null;
-                var choiceStart13 = location();
-                var savedChildren13 = new ArrayList<>(children);
-                children.clear();
-                children.addAll(savedChildren13);
-                var tbStart14 = location();
-                tokenBoundaryDepth++;
-                var savedChildrenTb14 = new ArrayList<>(children);
-                var tbElem14 = matchLiteralCst("new", false);
-                tokenBoundaryDepth--;
-                children.clear();
-                children.addAll(savedChildrenTb14);
-                CstParseResult alt13_0;
-                if (tbElem14.isSuccess()) {
-                    var tbText14 = substring(tbStart14.offset(), pos);
-                    var tbSpan14 = SourceSpan.of(tbStart14, location());
-                    var tbNode14 = new CstNode.Token(tbSpan14, __ruleName, tbText14, List.of(), List.of());
-                    children.add(tbNode14);
-                    alt13_0 = CstParseResult.success(tbNode14, tbText14, location());
-                } else {
-                    alt13_0 = tbElem14;
-                }
-                if (alt13_0.isSuccess()) {
-                    elem8_2 = alt13_0;
-                } else if (alt13_0.isCutFailure()) {
-                    elem8_2 = alt13_0.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart13);
-                children.clear();
-                children.addAll(savedChildren13);
-                var alt13_1 = parse_Identifier();
-                if (alt13_1.isSuccess() && alt13_1.node.isPresent()) {
-                    children.add(alt13_1.node.unwrap());
-                }
-                if (alt13_1.isSuccess()) {
-                    elem8_2 = alt13_1;
-                } else if (alt13_1.isCutFailure()) {
-                    elem8_2 = alt13_1.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart13);
-                }
-                }
-                if (elem8_2 == null) {
-                    children.clear();
-                    children.addAll(savedChildren13);
-                    elem8_2 = CstParseResult.failure("one of alternatives");
-                }
-                if (elem8_2.isCutFailure()) {
-                    restoreLocation(seqStart8);
-                    alt3_1 = elem8_2;
-                } else if (elem8_2.isFailure()) {
-                    restoreLocation(seqStart8);
-                    alt3_1 = cut8 ? elem8_2.asCutFailure() : elem8_2;
-                }
-            }
-            if (alt3_1.isSuccess()) {
-                alt3_1 = CstParseResult.success(null, substring(seqStart8.offset(), pos), location());
-            }
-            if (alt3_1.isSuccess()) {
-                elem0_1 = alt3_1;
-            } else if (alt3_1.isCutFailure()) {
-                elem0_1 = alt3_1.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            }
             }
             if (elem0_1 == null) {
                 children.clear();
@@ -19389,7 +19620,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_LAMBDA;
         
@@ -19397,7 +19628,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_LambdaParams();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -19411,7 +19642,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = matchLiteralCst("->", false);
             if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
                 children.add(elem0_1.node.unwrap());
@@ -19425,7 +19656,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_2 = null;
             var choiceStart4 = location();
             var savedChildren4 = new ArrayList<>(children);
@@ -19501,7 +19732,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_LAMBDA_PARAMS;
         
@@ -19538,7 +19769,7 @@ public final class Java25Parser {
         var seqStart3 = location();
         boolean cut3 = false;
         if (alt0_2.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem3_0 = matchLiteralCst("(", false);
             if (elem3_0.isSuccess() && elem3_0.node.isPresent()) {
                 children.add(elem3_0.node.unwrap());
@@ -19552,7 +19783,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_2.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart5 = location();
             var savedChildrenOpt5 = new ArrayList<>(children);
             children.clear();
@@ -19587,19 +19818,19 @@ public final class Java25Parser {
             }
         }
         if (alt0_2.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem3_2 = CstParseResult.success(null, "", location());
             var zomStart7 = location();
             var savedChildrenZom7 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc7 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem7 = CstParseResult.success(null, "", location());
                 var seqStart9 = location();
                 boolean cut9 = false;
                 if (zomElem7.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem9_0 = matchLiteralCst(",", false);
                     if (elem9_0.isSuccess() && elem9_0.node.isPresent()) {
                         children.add(elem9_0.node.unwrap());
@@ -19613,7 +19844,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem7.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem9_1 = parse_LambdaParam();
                     if (elem9_1.isSuccess() && elem9_1.node.isPresent()) {
                         children.add(elem9_1.node.unwrap());
@@ -19662,7 +19893,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_2.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem3_3 = matchLiteralCst(")", false);
             if (elem3_3.isSuccess() && elem3_3.node.isPresent()) {
                 children.add(elem3_3.node.unwrap());
@@ -19722,7 +19953,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_LAMBDA_PARAM;
         
@@ -19730,14 +19961,14 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_0 = CstParseResult.success(null, "", location());
             var zomStart1 = location();
             var savedChildrenZom1 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc1 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem1 = parse_Annotation();
                 if (zomElem1.isSuccess() && zomElem1.node.isPresent()) {
                     children.add(zomElem1.node.unwrap());
@@ -19775,14 +20006,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart3 = location();
             var savedChildrenZom3 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc3 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem3 = parse_Modifier();
                 if (zomElem3.isSuccess() && zomElem3.node.isPresent()) {
                     children.add(zomElem3.node.unwrap());
@@ -19820,7 +20051,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart5 = location();
             var savedChildrenOpt5 = new ArrayList<>(children);
             children.clear();
@@ -19828,7 +20059,7 @@ public final class Java25Parser {
             var seqStart7 = location();
             boolean cut7 = false;
             if (optElem5.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult elem7_0 = null;
                 var choiceStart9 = location();
                 var savedChildren9 = new ArrayList<>(children);
@@ -19841,7 +20072,7 @@ public final class Java25Parser {
                 var seqStart11 = location();
                 boolean cut11 = false;
                 if (tbElem10.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem11_0 = matchLiteralCst("var", false);
                     if (elem11_0.isCutFailure()) {
                         restoreLocation(seqStart11);
@@ -19987,7 +20218,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart22 = location();
             var savedChildrenOpt22 = new ArrayList<>(children);
             children.clear();
@@ -20022,7 +20253,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_4 = null;
             var choiceStart25 = location();
             var savedChildren25 = new ArrayList<>(children);
@@ -20098,7 +20329,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ARGS;
         
@@ -20106,7 +20337,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Expr();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -20120,19 +20351,19 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_0 = matchLiteralCst(",", false);
                     if (elem4_0.isSuccess() && elem4_0.node.isPresent()) {
                         children.add(elem4_0.node.unwrap());
@@ -20146,7 +20377,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_1 = parse_Expr();
                     if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                         children.add(elem4_1.node.unwrap());
@@ -20227,7 +20458,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_EXPR_LIST;
         
@@ -20235,7 +20466,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Expr();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -20249,19 +20480,19 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_0 = matchLiteralCst(",", false);
                     if (elem4_0.isSuccess() && elem4_0.node.isPresent()) {
                         children.add(elem4_0.node.unwrap());
@@ -20275,7 +20506,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_1 = parse_Expr();
                     if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                         children.add(elem4_1.node.unwrap());
@@ -20356,7 +20587,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_TYPE;
         
@@ -20364,14 +20595,14 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_0 = CstParseResult.success(null, "", location());
             var zomStart1 = location();
             var savedChildrenZom1 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc1 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem1 = parse_Annotation();
                 if (zomElem1.isSuccess() && zomElem1.node.isPresent()) {
                     children.add(zomElem1.node.unwrap());
@@ -20409,7 +20640,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = null;
             var choiceStart4 = location();
             var savedChildren4 = new ArrayList<>(children);
@@ -20453,7 +20684,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart7 = location();
             var savedChildrenOpt7 = new ArrayList<>(children);
             children.clear();
@@ -20520,7 +20751,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_PRIM_TYPE;
         
@@ -20531,80 +20762,117 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem1_0 = null;
             var choiceStart3 = location();
-            var alt3_0 = matchLiteralCst("boolean", false);
-            if (alt3_0.isSuccess()) {
-                elem1_0 = alt3_0;
-            } else if (alt3_0.isCutFailure()) {
-                elem1_0 = alt3_0.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_1 = matchLiteralCst("byte", false);
-            if (alt3_1.isSuccess()) {
-                elem1_0 = alt3_1;
-            } else if (alt3_1.isCutFailure()) {
-                elem1_0 = alt3_1.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_2 = matchLiteralCst("short", false);
-            if (alt3_2.isSuccess()) {
-                elem1_0 = alt3_2;
-            } else if (alt3_2.isCutFailure()) {
-                elem1_0 = alt3_2.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_3 = matchLiteralCst("int", false);
-            if (alt3_3.isSuccess()) {
-                elem1_0 = alt3_3;
-            } else if (alt3_3.isCutFailure()) {
-                elem1_0 = alt3_3.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_4 = matchLiteralCst("long", false);
-            if (alt3_4.isSuccess()) {
-                elem1_0 = alt3_4;
-            } else if (alt3_4.isCutFailure()) {
-                elem1_0 = alt3_4.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_5 = matchLiteralCst("float", false);
-            if (alt3_5.isSuccess()) {
-                elem1_0 = alt3_5;
-            } else if (alt3_5.isCutFailure()) {
-                elem1_0 = alt3_5.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_6 = matchLiteralCst("double", false);
-            if (alt3_6.isSuccess()) {
-                elem1_0 = alt3_6;
-            } else if (alt3_6.isCutFailure()) {
-                elem1_0 = alt3_6.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_7 = matchLiteralCst("char", false);
-            if (alt3_7.isSuccess()) {
-                elem1_0 = alt3_7;
-            } else if (alt3_7.isCutFailure()) {
-                elem1_0 = alt3_7.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_8 = matchLiteralCst("void", false);
-            if (alt3_8.isSuccess()) {
-                elem1_0 = alt3_8;
-            } else if (alt3_8.isCutFailure()) {
-                elem1_0 = alt3_8.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
+            if (pos < input.length()) {
+                char dispatchChar3 = input.charAt(pos);
+                switch (dispatchChar3) {
+                    case 'b':
+                    {
+                        var alt3_0 = matchLiteralCst("boolean", false);
+                        if (alt3_0.isSuccess()) {
+                            elem1_0 = alt3_0;
+                        } else if (alt3_0.isCutFailure()) {
+                            elem1_0 = alt3_0.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        var alt3_1 = matchLiteralCst("byte", false);
+                        if (alt3_1.isSuccess()) {
+                            elem1_0 = alt3_1;
+                        } else if (alt3_1.isCutFailure()) {
+                            elem1_0 = alt3_1.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        }
+                        break;
+                    }
+                    case 's':
+                    {
+                        var alt3_2 = matchLiteralCst("short", false);
+                        if (alt3_2.isSuccess()) {
+                            elem1_0 = alt3_2;
+                        } else if (alt3_2.isCutFailure()) {
+                            elem1_0 = alt3_2.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        break;
+                    }
+                    case 'i':
+                    {
+                        var alt3_3 = matchLiteralCst("int", false);
+                        if (alt3_3.isSuccess()) {
+                            elem1_0 = alt3_3;
+                        } else if (alt3_3.isCutFailure()) {
+                            elem1_0 = alt3_3.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        break;
+                    }
+                    case 'l':
+                    {
+                        var alt3_4 = matchLiteralCst("long", false);
+                        if (alt3_4.isSuccess()) {
+                            elem1_0 = alt3_4;
+                        } else if (alt3_4.isCutFailure()) {
+                            elem1_0 = alt3_4.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        break;
+                    }
+                    case 'f':
+                    {
+                        var alt3_5 = matchLiteralCst("float", false);
+                        if (alt3_5.isSuccess()) {
+                            elem1_0 = alt3_5;
+                        } else if (alt3_5.isCutFailure()) {
+                            elem1_0 = alt3_5.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        break;
+                    }
+                    case 'd':
+                    {
+                        var alt3_6 = matchLiteralCst("double", false);
+                        if (alt3_6.isSuccess()) {
+                            elem1_0 = alt3_6;
+                        } else if (alt3_6.isCutFailure()) {
+                            elem1_0 = alt3_6.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        break;
+                    }
+                    case 'c':
+                    {
+                        var alt3_7 = matchLiteralCst("char", false);
+                        if (alt3_7.isSuccess()) {
+                            elem1_0 = alt3_7;
+                        } else if (alt3_7.isCutFailure()) {
+                            elem1_0 = alt3_7.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        break;
+                    }
+                    case 'v':
+                    {
+                        var alt3_8 = matchLiteralCst("void", false);
+                        if (alt3_8.isSuccess()) {
+                            elem1_0 = alt3_8;
+                        } else if (alt3_8.isCutFailure()) {
+                            elem1_0 = alt3_8.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        break;
+                    }
+                }
             }
             if (elem1_0 == null) {
                 elem1_0 = CstParseResult.failure("one of alternatives");
@@ -20676,7 +20944,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_REF_TYPE;
         
@@ -20684,7 +20952,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_AnnotatedTypeName();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -20698,14 +20966,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
@@ -20716,7 +20984,7 @@ public final class Java25Parser {
                     var seqStart7 = location();
                     boolean cut7 = false;
                     if (andElem5.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         var elem7_0 = matchLiteralCst(".", false);
                         if (elem7_0.isCutFailure()) {
                             restoreLocation(seqStart7);
@@ -20727,7 +20995,7 @@ public final class Java25Parser {
                         }
                     }
                     if (andElem5.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         CstParseResult elem7_1 = null;
                         var choiceStart10 = location();
                         var alt10_0 = matchLiteralCst("@", false);
@@ -20773,7 +21041,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_1 = matchLiteralCst(".", false);
                     if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                         children.add(elem4_1.node.unwrap());
@@ -20787,7 +21055,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_2 = parse_AnnotatedTypeName();
                     if (elem4_2.isSuccess() && elem4_2.node.isPresent()) {
                         children.add(elem4_2.node.unwrap());
@@ -20868,7 +21136,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ANNOTATED_TYPE_NAME;
         
@@ -20876,14 +21144,14 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_0 = CstParseResult.success(null, "", location());
             var zomStart1 = location();
             var savedChildrenZom1 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc1 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem1 = parse_Annotation();
                 if (zomElem1.isSuccess() && zomElem1.node.isPresent()) {
                     children.add(zomElem1.node.unwrap());
@@ -20921,7 +21189,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_1 = parse_Identifier();
             if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
                 children.add(elem0_1.node.unwrap());
@@ -20935,7 +21203,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart4 = location();
             var savedChildrenOpt4 = new ArrayList<>(children);
             children.clear();
@@ -21002,7 +21270,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_DIMS;
         
@@ -21012,14 +21280,14 @@ public final class Java25Parser {
         var seqStart2 = location();
         boolean cut2 = false;
         if (oomFirst0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem2_0 = CstParseResult.success(null, "", location());
             var zomStart3 = location();
             var savedChildrenZom3 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc3 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem3 = parse_Annotation();
                 if (zomElem3.isSuccess() && zomElem3.node.isPresent()) {
                     children.add(zomElem3.node.unwrap());
@@ -21057,7 +21325,7 @@ public final class Java25Parser {
             }
         }
         if (oomFirst0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem2_1 = matchLiteralCst("[", false);
             if (elem2_1.isSuccess() && elem2_1.node.isPresent()) {
                 children.add(elem2_1.node.unwrap());
@@ -21071,7 +21339,7 @@ public final class Java25Parser {
             }
         }
         if (oomFirst0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem2_2 = matchLiteralCst("]", false);
             if (elem2_2.isSuccess() && elem2_2.node.isPresent()) {
                 children.add(elem2_2.node.unwrap());
@@ -21092,19 +21360,19 @@ public final class Java25Parser {
         if (oomFirst0.isSuccess()) {
             while (true) {
                 var beforeLoc0 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult oomElem0 = CstParseResult.success(null, "", location());
                 var seqStart8 = location();
                 boolean cut8 = false;
                 if (oomElem0.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     CstParseResult elem8_0 = CstParseResult.success(null, "", location());
                     var zomStart9 = location();
                     var savedChildrenZom9 = new ArrayList<>(children);
                     children.clear();
                     while (true) {
                         var beforeLoc9 = location();
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         var zomElem9 = parse_Annotation();
                         if (zomElem9.isSuccess() && zomElem9.node.isPresent()) {
                             children.add(zomElem9.node.unwrap());
@@ -21142,7 +21410,7 @@ public final class Java25Parser {
                     }
                 }
                 if (oomElem0.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem8_1 = matchLiteralCst("[", false);
                     if (elem8_1.isSuccess() && elem8_1.node.isPresent()) {
                         children.add(elem8_1.node.unwrap());
@@ -21156,7 +21424,7 @@ public final class Java25Parser {
                     }
                 }
                 if (oomElem0.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem8_2 = matchLiteralCst("]", false);
                     if (elem8_2.isSuccess() && elem8_2.node.isPresent()) {
                         children.add(elem8_2.node.unwrap());
@@ -21226,7 +21494,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ARRAY_TYPE;
         
@@ -21234,14 +21502,14 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_0 = CstParseResult.success(null, "", location());
             var zomStart1 = location();
             var savedChildrenZom1 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc1 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem1 = parse_Annotation();
                 if (zomElem1.isSuccess() && zomElem1.node.isPresent()) {
                     children.add(zomElem1.node.unwrap());
@@ -21279,7 +21547,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = null;
             var choiceStart4 = location();
             var savedChildren4 = new ArrayList<>(children);
@@ -21355,7 +21623,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_DIM_EXPRS;
         
@@ -21365,14 +21633,14 @@ public final class Java25Parser {
         var seqStart2 = location();
         boolean cut2 = false;
         if (oomFirst0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem2_0 = CstParseResult.success(null, "", location());
             var zomStart3 = location();
             var savedChildrenZom3 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc3 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem3 = parse_Annotation();
                 if (zomElem3.isSuccess() && zomElem3.node.isPresent()) {
                     children.add(zomElem3.node.unwrap());
@@ -21416,7 +21684,7 @@ public final class Java25Parser {
             var seqStart7 = location();
             boolean cut7 = false;
             if (andElem5.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem7_0 = matchLiteralCst("[", false);
                 if (elem7_0.isCutFailure()) {
                     restoreLocation(seqStart7);
@@ -21455,7 +21723,7 @@ public final class Java25Parser {
             }
         }
         if (oomFirst0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem2_2 = matchLiteralCst("[", false);
             if (elem2_2.isSuccess() && elem2_2.node.isPresent()) {
                 children.add(elem2_2.node.unwrap());
@@ -21469,7 +21737,7 @@ public final class Java25Parser {
             }
         }
         if (oomFirst0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem2_3 = parse_Expr();
             if (elem2_3.isSuccess() && elem2_3.node.isPresent()) {
                 children.add(elem2_3.node.unwrap());
@@ -21483,7 +21751,7 @@ public final class Java25Parser {
             }
         }
         if (oomFirst0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem2_4 = matchLiteralCst("]", false);
             if (elem2_4.isSuccess() && elem2_4.node.isPresent()) {
                 children.add(elem2_4.node.unwrap());
@@ -21504,19 +21772,19 @@ public final class Java25Parser {
         if (oomFirst0.isSuccess()) {
             while (true) {
                 var beforeLoc0 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult oomElem0 = CstParseResult.success(null, "", location());
                 var seqStart15 = location();
                 boolean cut15 = false;
                 if (oomElem0.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     CstParseResult elem15_0 = CstParseResult.success(null, "", location());
                     var zomStart16 = location();
                     var savedChildrenZom16 = new ArrayList<>(children);
                     children.clear();
                     while (true) {
                         var beforeLoc16 = location();
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         var zomElem16 = parse_Annotation();
                         if (zomElem16.isSuccess() && zomElem16.node.isPresent()) {
                             children.add(zomElem16.node.unwrap());
@@ -21560,7 +21828,7 @@ public final class Java25Parser {
                     var seqStart20 = location();
                     boolean cut20 = false;
                     if (andElem18.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         var elem20_0 = matchLiteralCst("[", false);
                         if (elem20_0.isCutFailure()) {
                             restoreLocation(seqStart20);
@@ -21599,7 +21867,7 @@ public final class Java25Parser {
                     }
                 }
                 if (oomElem0.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem15_2 = matchLiteralCst("[", false);
                     if (elem15_2.isSuccess() && elem15_2.node.isPresent()) {
                         children.add(elem15_2.node.unwrap());
@@ -21613,7 +21881,7 @@ public final class Java25Parser {
                     }
                 }
                 if (oomElem0.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem15_3 = parse_Expr();
                     if (elem15_3.isSuccess() && elem15_3.node.isPresent()) {
                         children.add(elem15_3.node.unwrap());
@@ -21627,7 +21895,7 @@ public final class Java25Parser {
                     }
                 }
                 if (oomElem0.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem15_4 = matchLiteralCst("]", false);
                     if (elem15_4.isSuccess() && elem15_4.node.isPresent()) {
                         children.add(elem15_4.node.unwrap());
@@ -21697,187 +21965,196 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_TYPE_ARGS;
         
         CstParseResult result = null;
         var choiceStart0 = location();
         var savedChildren0 = new ArrayList<>(children);
-        children.clear();
-        children.addAll(savedChildren0);
-        CstParseResult alt0_0 = CstParseResult.success(null, "", location());
-        var seqStart1 = location();
-        boolean cut1 = false;
-        if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem1_0 = matchLiteralCst("<", false);
-            if (elem1_0.isSuccess() && elem1_0.node.isPresent()) {
-                children.add(elem1_0.node.unwrap());
-            }
-            if (elem1_0.isCutFailure()) {
-                restoreLocation(seqStart1);
-                alt0_0 = elem1_0;
-            } else if (elem1_0.isFailure()) {
-                restoreLocation(seqStart1);
-                alt0_0 = cut1 ? elem1_0.asCutFailure() : elem1_0;
-            }
-        }
-        if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem1_1 = matchLiteralCst(">", false);
-            if (elem1_1.isSuccess() && elem1_1.node.isPresent()) {
-                children.add(elem1_1.node.unwrap());
-            }
-            if (elem1_1.isCutFailure()) {
-                restoreLocation(seqStart1);
-                alt0_0 = elem1_1;
-            } else if (elem1_1.isFailure()) {
-                restoreLocation(seqStart1);
-                alt0_0 = cut1 ? elem1_1.asCutFailure() : elem1_1;
-            }
-        }
-        if (alt0_0.isSuccess()) {
-            alt0_0 = CstParseResult.success(null, substring(seqStart1.offset(), pos), location());
-        }
-        if (alt0_0.isSuccess()) {
-            result = alt0_0;
-        } else if (alt0_0.isCutFailure()) {
-            result = alt0_0.asRegularFailure();
-        } else {
-            restoreLocation(choiceStart0);
-        children.clear();
-        children.addAll(savedChildren0);
-        CstParseResult alt0_1 = CstParseResult.success(null, "", location());
-        var seqStart4 = location();
-        boolean cut4 = false;
-        if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem4_0 = matchLiteralCst("<", false);
-            if (elem4_0.isSuccess() && elem4_0.node.isPresent()) {
-                children.add(elem4_0.node.unwrap());
-            }
-            if (elem4_0.isCutFailure()) {
-                restoreLocation(seqStart4);
-                alt0_1 = elem4_0;
-            } else if (elem4_0.isFailure()) {
-                restoreLocation(seqStart4);
-                alt0_1 = cut4 ? elem4_0.asCutFailure() : elem4_0;
-            }
-        }
-        if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem4_1 = parse_TypeArg();
-            if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
-                children.add(elem4_1.node.unwrap());
-            }
-            if (elem4_1.isCutFailure()) {
-                restoreLocation(seqStart4);
-                alt0_1 = elem4_1;
-            } else if (elem4_1.isFailure()) {
-                restoreLocation(seqStart4);
-                alt0_1 = cut4 ? elem4_1.asCutFailure() : elem4_1;
-            }
-        }
-        if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            CstParseResult elem4_2 = CstParseResult.success(null, "", location());
-            var zomStart7 = location();
-            var savedChildrenZom7 = new ArrayList<>(children);
-            children.clear();
-            while (true) {
-                var beforeLoc7 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                CstParseResult zomElem7 = CstParseResult.success(null, "", location());
-                var seqStart9 = location();
-                boolean cut9 = false;
-                if (zomElem7.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                    var elem9_0 = matchLiteralCst(",", false);
-                    if (elem9_0.isSuccess() && elem9_0.node.isPresent()) {
-                        children.add(elem9_0.node.unwrap());
+        if (pos < input.length()) {
+            char dispatchChar0 = input.charAt(pos);
+            switch (dispatchChar0) {
+                case '<':
+                {
+                    children.clear();
+                    children.addAll(savedChildren0);
+                    CstParseResult alt0_0 = CstParseResult.success(null, "", location());
+                    var seqStart1 = location();
+                    boolean cut1 = false;
+                    if (alt0_0.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem1_0 = matchLiteralCst("<", false);
+                        if (elem1_0.isSuccess() && elem1_0.node.isPresent()) {
+                            children.add(elem1_0.node.unwrap());
+                        }
+                        if (elem1_0.isCutFailure()) {
+                            restoreLocation(seqStart1);
+                            alt0_0 = elem1_0;
+                        } else if (elem1_0.isFailure()) {
+                            restoreLocation(seqStart1);
+                            alt0_0 = cut1 ? elem1_0.asCutFailure() : elem1_0;
+                        }
                     }
-                    if (elem9_0.isCutFailure()) {
-                        restoreLocation(seqStart9);
-                        zomElem7 = elem9_0;
-                    } else if (elem9_0.isFailure()) {
-                        restoreLocation(seqStart9);
-                        zomElem7 = cut9 ? elem9_0.asCutFailure() : elem9_0;
+                    if (alt0_0.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem1_1 = matchLiteralCst(">", false);
+                        if (elem1_1.isSuccess() && elem1_1.node.isPresent()) {
+                            children.add(elem1_1.node.unwrap());
+                        }
+                        if (elem1_1.isCutFailure()) {
+                            restoreLocation(seqStart1);
+                            alt0_0 = elem1_1;
+                        } else if (elem1_1.isFailure()) {
+                            restoreLocation(seqStart1);
+                            alt0_0 = cut1 ? elem1_1.asCutFailure() : elem1_1;
+                        }
                     }
-                }
-                if (zomElem7.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                    var elem9_1 = parse_TypeArg();
-                    if (elem9_1.isSuccess() && elem9_1.node.isPresent()) {
-                        children.add(elem9_1.node.unwrap());
+                    if (alt0_0.isSuccess()) {
+                        alt0_0 = CstParseResult.success(null, substring(seqStart1.offset(), pos), location());
                     }
-                    if (elem9_1.isCutFailure()) {
-                        restoreLocation(seqStart9);
-                        zomElem7 = elem9_1;
-                    } else if (elem9_1.isFailure()) {
-                        restoreLocation(seqStart9);
-                        zomElem7 = cut9 ? elem9_1.asCutFailure() : elem9_1;
+                    if (alt0_0.isSuccess()) {
+                        result = alt0_0;
+                    } else if (alt0_0.isCutFailure()) {
+                        result = alt0_0.asRegularFailure();
+                    } else {
+                        restoreLocation(choiceStart0);
+                    children.clear();
+                    children.addAll(savedChildren0);
+                    CstParseResult alt0_1 = CstParseResult.success(null, "", location());
+                    var seqStart4 = location();
+                    boolean cut4 = false;
+                    if (alt0_1.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem4_0 = matchLiteralCst("<", false);
+                        if (elem4_0.isSuccess() && elem4_0.node.isPresent()) {
+                            children.add(elem4_0.node.unwrap());
+                        }
+                        if (elem4_0.isCutFailure()) {
+                            restoreLocation(seqStart4);
+                            alt0_1 = elem4_0;
+                        } else if (elem4_0.isFailure()) {
+                            restoreLocation(seqStart4);
+                            alt0_1 = cut4 ? elem4_0.asCutFailure() : elem4_0;
+                        }
                     }
-                }
-                if (zomElem7.isSuccess()) {
-                    zomElem7 = CstParseResult.success(null, substring(seqStart9.offset(), pos), location());
-                }
-                if (zomElem7.isCutFailure()) {
-                    elem4_2 = zomElem7;
+                    if (alt0_1.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem4_1 = parse_TypeArg();
+                        if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
+                            children.add(elem4_1.node.unwrap());
+                        }
+                        if (elem4_1.isCutFailure()) {
+                            restoreLocation(seqStart4);
+                            alt0_1 = elem4_1;
+                        } else if (elem4_1.isFailure()) {
+                            restoreLocation(seqStart4);
+                            alt0_1 = cut4 ? elem4_1.asCutFailure() : elem4_1;
+                        }
+                    }
+                    if (alt0_1.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        CstParseResult elem4_2 = CstParseResult.success(null, "", location());
+                        var zomStart7 = location();
+                        var savedChildrenZom7 = new ArrayList<>(children);
+                        children.clear();
+                        while (true) {
+                            var beforeLoc7 = location();
+                            if (tokenBoundaryDepth == 0) skipWhitespace();
+                            CstParseResult zomElem7 = CstParseResult.success(null, "", location());
+                            var seqStart9 = location();
+                            boolean cut9 = false;
+                            if (zomElem7.isSuccess()) {
+                                if (tokenBoundaryDepth == 0) skipWhitespace();
+                                var elem9_0 = matchLiteralCst(",", false);
+                                if (elem9_0.isSuccess() && elem9_0.node.isPresent()) {
+                                    children.add(elem9_0.node.unwrap());
+                                }
+                                if (elem9_0.isCutFailure()) {
+                                    restoreLocation(seqStart9);
+                                    zomElem7 = elem9_0;
+                                } else if (elem9_0.isFailure()) {
+                                    restoreLocation(seqStart9);
+                                    zomElem7 = cut9 ? elem9_0.asCutFailure() : elem9_0;
+                                }
+                            }
+                            if (zomElem7.isSuccess()) {
+                                if (tokenBoundaryDepth == 0) skipWhitespace();
+                                var elem9_1 = parse_TypeArg();
+                                if (elem9_1.isSuccess() && elem9_1.node.isPresent()) {
+                                    children.add(elem9_1.node.unwrap());
+                                }
+                                if (elem9_1.isCutFailure()) {
+                                    restoreLocation(seqStart9);
+                                    zomElem7 = elem9_1;
+                                } else if (elem9_1.isFailure()) {
+                                    restoreLocation(seqStart9);
+                                    zomElem7 = cut9 ? elem9_1.asCutFailure() : elem9_1;
+                                }
+                            }
+                            if (zomElem7.isSuccess()) {
+                                zomElem7 = CstParseResult.success(null, substring(seqStart9.offset(), pos), location());
+                            }
+                            if (zomElem7.isCutFailure()) {
+                                elem4_2 = zomElem7;
+                                break;
+                            }
+                            if (zomElem7.isFailure() || location().offset() == beforeLoc7.offset()) {
+                                restoreLocation(beforeLoc7);
+                                break;
+                            }
+                        }
+                        if (!elem4_2.isCutFailure()) {
+                            var zomChildren7 = new ArrayList<>(children);
+                            children.clear();
+                            children.addAll(savedChildrenZom7);
+                            if (zomChildren7.size() == 1) {
+                                children.add(zomChildren7.getFirst());
+                            } else if (!zomChildren7.isEmpty()) {
+                                var zomSpan7 = SourceSpan.of(zomStart7, location());
+                                children.add(new CstNode.NonTerminal(zomSpan7, __ruleName, zomChildren7, List.of(), List.of()));
+                            }
+                            elem4_2 = CstParseResult.success(null, substring(zomStart7.offset(), pos), location());
+                        } else {
+                            children.clear();
+                            children.addAll(savedChildrenZom7);
+                        }
+                        if (elem4_2.isCutFailure()) {
+                            restoreLocation(seqStart4);
+                            alt0_1 = elem4_2;
+                        } else if (elem4_2.isFailure()) {
+                            restoreLocation(seqStart4);
+                            alt0_1 = cut4 ? elem4_2.asCutFailure() : elem4_2;
+                        }
+                    }
+                    if (alt0_1.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem4_3 = matchLiteralCst(">", false);
+                        if (elem4_3.isSuccess() && elem4_3.node.isPresent()) {
+                            children.add(elem4_3.node.unwrap());
+                        }
+                        if (elem4_3.isCutFailure()) {
+                            restoreLocation(seqStart4);
+                            alt0_1 = elem4_3;
+                        } else if (elem4_3.isFailure()) {
+                            restoreLocation(seqStart4);
+                            alt0_1 = cut4 ? elem4_3.asCutFailure() : elem4_3;
+                        }
+                    }
+                    if (alt0_1.isSuccess()) {
+                        alt0_1 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
+                    }
+                    if (alt0_1.isSuccess()) {
+                        result = alt0_1;
+                    } else if (alt0_1.isCutFailure()) {
+                        result = alt0_1.asRegularFailure();
+                    } else {
+                        restoreLocation(choiceStart0);
+                    }
+                    }
                     break;
                 }
-                if (zomElem7.isFailure() || location().offset() == beforeLoc7.offset()) {
-                    restoreLocation(beforeLoc7);
-                    break;
-                }
             }
-            if (!elem4_2.isCutFailure()) {
-                var zomChildren7 = new ArrayList<>(children);
-                children.clear();
-                children.addAll(savedChildrenZom7);
-                if (zomChildren7.size() == 1) {
-                    children.add(zomChildren7.getFirst());
-                } else if (!zomChildren7.isEmpty()) {
-                    var zomSpan7 = SourceSpan.of(zomStart7, location());
-                    children.add(new CstNode.NonTerminal(zomSpan7, __ruleName, zomChildren7, List.of(), List.of()));
-                }
-                elem4_2 = CstParseResult.success(null, substring(zomStart7.offset(), pos), location());
-            } else {
-                children.clear();
-                children.addAll(savedChildrenZom7);
-            }
-            if (elem4_2.isCutFailure()) {
-                restoreLocation(seqStart4);
-                alt0_1 = elem4_2;
-            } else if (elem4_2.isFailure()) {
-                restoreLocation(seqStart4);
-                alt0_1 = cut4 ? elem4_2.asCutFailure() : elem4_2;
-            }
-        }
-        if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem4_3 = matchLiteralCst(">", false);
-            if (elem4_3.isSuccess() && elem4_3.node.isPresent()) {
-                children.add(elem4_3.node.unwrap());
-            }
-            if (elem4_3.isCutFailure()) {
-                restoreLocation(seqStart4);
-                alt0_1 = elem4_3;
-            } else if (elem4_3.isFailure()) {
-                restoreLocation(seqStart4);
-                alt0_1 = cut4 ? elem4_3.asCutFailure() : elem4_3;
-            }
-        }
-        if (alt0_1.isSuccess()) {
-            alt0_1 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
-        }
-        if (alt0_1.isSuccess()) {
-            result = alt0_1;
-        } else if (alt0_1.isCutFailure()) {
-            result = alt0_1.asRegularFailure();
-        } else {
-            restoreLocation(choiceStart0);
-        }
         }
         if (result == null) {
             children.clear();
@@ -21914,7 +22191,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_TYPE_ARG;
         
@@ -21939,7 +22216,7 @@ public final class Java25Parser {
         var seqStart2 = location();
         boolean cut2 = false;
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem2_0 = matchLiteralCst("?", false);
             if (elem2_0.isSuccess() && elem2_0.node.isPresent()) {
                 children.add(elem2_0.node.unwrap());
@@ -21953,7 +22230,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart4 = location();
             var savedChildrenOpt4 = new ArrayList<>(children);
             children.clear();
@@ -21961,14 +22238,14 @@ public final class Java25Parser {
             var seqStart6 = location();
             boolean cut6 = false;
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult elem6_0 = CstParseResult.success(null, "", location());
                 var zomStart7 = location();
                 var savedChildrenZom7 = new ArrayList<>(children);
                 children.clear();
                 while (true) {
                     var beforeLoc7 = location();
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var zomElem7 = parse_Annotation();
                     if (zomElem7.isSuccess() && zomElem7.node.isPresent()) {
                         children.add(zomElem7.node.unwrap());
@@ -22006,35 +22283,48 @@ public final class Java25Parser {
                 }
             }
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult elem6_1 = null;
                 var choiceStart10 = location();
                 var savedChildren10 = new ArrayList<>(children);
-                children.clear();
-                children.addAll(savedChildren10);
-                var alt10_0 = matchLiteralCst("extends", false);
-                if (alt10_0.isSuccess() && alt10_0.node.isPresent()) {
-                    children.add(alt10_0.node.unwrap());
-                }
-                if (alt10_0.isSuccess()) {
-                    elem6_1 = alt10_0;
-                } else if (alt10_0.isCutFailure()) {
-                    elem6_1 = alt10_0.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart10);
-                children.clear();
-                children.addAll(savedChildren10);
-                var alt10_1 = matchLiteralCst("super", false);
-                if (alt10_1.isSuccess() && alt10_1.node.isPresent()) {
-                    children.add(alt10_1.node.unwrap());
-                }
-                if (alt10_1.isSuccess()) {
-                    elem6_1 = alt10_1;
-                } else if (alt10_1.isCutFailure()) {
-                    elem6_1 = alt10_1.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart10);
-                }
+                if (pos < input.length()) {
+                    char dispatchChar10 = input.charAt(pos);
+                    switch (dispatchChar10) {
+                        case 'e':
+                        {
+                            children.clear();
+                            children.addAll(savedChildren10);
+                            var alt10_0 = matchLiteralCst("extends", false);
+                            if (alt10_0.isSuccess() && alt10_0.node.isPresent()) {
+                                children.add(alt10_0.node.unwrap());
+                            }
+                            if (alt10_0.isSuccess()) {
+                                elem6_1 = alt10_0;
+                            } else if (alt10_0.isCutFailure()) {
+                                elem6_1 = alt10_0.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart10);
+                            }
+                            break;
+                        }
+                        case 's':
+                        {
+                            children.clear();
+                            children.addAll(savedChildren10);
+                            var alt10_1 = matchLiteralCst("super", false);
+                            if (alt10_1.isSuccess() && alt10_1.node.isPresent()) {
+                                children.add(alt10_1.node.unwrap());
+                            }
+                            if (alt10_1.isSuccess()) {
+                                elem6_1 = alt10_1;
+                            } else if (alt10_1.isCutFailure()) {
+                                elem6_1 = alt10_1.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart10);
+                            }
+                            break;
+                        }
+                    }
                 }
                 if (elem6_1 == null) {
                     children.clear();
@@ -22050,7 +22340,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem6_2 = parse_Type();
                 if (elem6_2.isSuccess() && elem6_2.node.isPresent()) {
                     children.add(elem6_2.node.unwrap());
@@ -22138,7 +22428,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_QUALIFIED_NAME;
         
@@ -22146,7 +22436,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = parse_Identifier();
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -22160,14 +22450,14 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_1 = CstParseResult.success(null, "", location());
             var zomStart2 = location();
             var savedChildrenZom2 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc2 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem2 = CstParseResult.success(null, "", location());
                 var seqStart4 = location();
                 boolean cut4 = false;
@@ -22178,7 +22468,7 @@ public final class Java25Parser {
                     var seqStart7 = location();
                     boolean cut7 = false;
                     if (andElem5.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         var elem7_0 = matchLiteralCst(".", false);
                         if (elem7_0.isCutFailure()) {
                             restoreLocation(seqStart7);
@@ -22189,7 +22479,7 @@ public final class Java25Parser {
                         }
                     }
                     if (andElem5.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         var elem7_1 = parse_Identifier();
                         if (elem7_1.isCutFailure()) {
                             restoreLocation(seqStart7);
@@ -22215,7 +22505,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_1 = matchLiteralCst(".", false);
                     if (elem4_1.isSuccess() && elem4_1.node.isPresent()) {
                         children.add(elem4_1.node.unwrap());
@@ -22229,7 +22519,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem2.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem4_2 = parse_Identifier();
                     if (elem4_2.isSuccess() && elem4_2.node.isPresent()) {
                         children.add(elem4_2.node.unwrap());
@@ -22310,7 +22600,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_IDENTIFIER;
         
@@ -22334,7 +22624,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var tbStart3 = location();
             tokenBoundaryDepth++;
             var savedChildrenTb3 = new ArrayList<>(children);
@@ -22342,7 +22632,7 @@ public final class Java25Parser {
             var seqStart4 = location();
             boolean cut4 = false;
             if (tbElem3.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem4_0 = matchCharClassCst("a-zA-Z_$", false, false);
                 if (elem4_0.isCutFailure()) {
                     restoreLocation(seqStart4);
@@ -22353,12 +22643,12 @@ public final class Java25Parser {
                 }
             }
             if (tbElem3.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult elem4_1 = CstParseResult.success(null, "", location());
                 var zomStart6 = location();
                 while (true) {
                     var beforeLoc6 = location();
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var zomElem6 = matchCharClassCst("a-zA-Z0-9_$", false, false);
                     if (zomElem6.isCutFailure()) {
                         elem4_1 = zomElem6;
@@ -22437,7 +22727,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_MODIFIER;
         
@@ -22448,120 +22738,157 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem1_0 = null;
             var choiceStart3 = location();
-            var alt3_0 = matchLiteralCst("public", false);
-            if (alt3_0.isSuccess()) {
-                elem1_0 = alt3_0;
-            } else if (alt3_0.isCutFailure()) {
-                elem1_0 = alt3_0.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_1 = matchLiteralCst("protected", false);
-            if (alt3_1.isSuccess()) {
-                elem1_0 = alt3_1;
-            } else if (alt3_1.isCutFailure()) {
-                elem1_0 = alt3_1.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_2 = matchLiteralCst("private", false);
-            if (alt3_2.isSuccess()) {
-                elem1_0 = alt3_2;
-            } else if (alt3_2.isCutFailure()) {
-                elem1_0 = alt3_2.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_3 = matchLiteralCst("static", false);
-            if (alt3_3.isSuccess()) {
-                elem1_0 = alt3_3;
-            } else if (alt3_3.isCutFailure()) {
-                elem1_0 = alt3_3.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_4 = matchLiteralCst("final", false);
-            if (alt3_4.isSuccess()) {
-                elem1_0 = alt3_4;
-            } else if (alt3_4.isCutFailure()) {
-                elem1_0 = alt3_4.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_5 = matchLiteralCst("abstract", false);
-            if (alt3_5.isSuccess()) {
-                elem1_0 = alt3_5;
-            } else if (alt3_5.isCutFailure()) {
-                elem1_0 = alt3_5.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_6 = matchLiteralCst("native", false);
-            if (alt3_6.isSuccess()) {
-                elem1_0 = alt3_6;
-            } else if (alt3_6.isCutFailure()) {
-                elem1_0 = alt3_6.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_7 = matchLiteralCst("synchronized", false);
-            if (alt3_7.isSuccess()) {
-                elem1_0 = alt3_7;
-            } else if (alt3_7.isCutFailure()) {
-                elem1_0 = alt3_7.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_8 = matchLiteralCst("transient", false);
-            if (alt3_8.isSuccess()) {
-                elem1_0 = alt3_8;
-            } else if (alt3_8.isCutFailure()) {
-                elem1_0 = alt3_8.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_9 = matchLiteralCst("volatile", false);
-            if (alt3_9.isSuccess()) {
-                elem1_0 = alt3_9;
-            } else if (alt3_9.isCutFailure()) {
-                elem1_0 = alt3_9.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_10 = matchLiteralCst("strictfp", false);
-            if (alt3_10.isSuccess()) {
-                elem1_0 = alt3_10;
-            } else if (alt3_10.isCutFailure()) {
-                elem1_0 = alt3_10.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_11 = matchLiteralCst("default", false);
-            if (alt3_11.isSuccess()) {
-                elem1_0 = alt3_11;
-            } else if (alt3_11.isCutFailure()) {
-                elem1_0 = alt3_11.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_12 = matchLiteralCst("sealed", false);
-            if (alt3_12.isSuccess()) {
-                elem1_0 = alt3_12;
-            } else if (alt3_12.isCutFailure()) {
-                elem1_0 = alt3_12.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            var alt3_13 = matchLiteralCst("non-sealed", false);
-            if (alt3_13.isSuccess()) {
-                elem1_0 = alt3_13;
-            } else if (alt3_13.isCutFailure()) {
-                elem1_0 = alt3_13.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart3);
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
+            if (pos < input.length()) {
+                char dispatchChar3 = input.charAt(pos);
+                switch (dispatchChar3) {
+                    case 'p':
+                    {
+                        var alt3_0 = matchLiteralCst("public", false);
+                        if (alt3_0.isSuccess()) {
+                            elem1_0 = alt3_0;
+                        } else if (alt3_0.isCutFailure()) {
+                            elem1_0 = alt3_0.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        var alt3_1 = matchLiteralCst("protected", false);
+                        if (alt3_1.isSuccess()) {
+                            elem1_0 = alt3_1;
+                        } else if (alt3_1.isCutFailure()) {
+                            elem1_0 = alt3_1.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        var alt3_2 = matchLiteralCst("private", false);
+                        if (alt3_2.isSuccess()) {
+                            elem1_0 = alt3_2;
+                        } else if (alt3_2.isCutFailure()) {
+                            elem1_0 = alt3_2.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        }
+                        }
+                        break;
+                    }
+                    case 's':
+                    {
+                        var alt3_3 = matchLiteralCst("static", false);
+                        if (alt3_3.isSuccess()) {
+                            elem1_0 = alt3_3;
+                        } else if (alt3_3.isCutFailure()) {
+                            elem1_0 = alt3_3.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        var alt3_7 = matchLiteralCst("synchronized", false);
+                        if (alt3_7.isSuccess()) {
+                            elem1_0 = alt3_7;
+                        } else if (alt3_7.isCutFailure()) {
+                            elem1_0 = alt3_7.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        var alt3_10 = matchLiteralCst("strictfp", false);
+                        if (alt3_10.isSuccess()) {
+                            elem1_0 = alt3_10;
+                        } else if (alt3_10.isCutFailure()) {
+                            elem1_0 = alt3_10.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        var alt3_12 = matchLiteralCst("sealed", false);
+                        if (alt3_12.isSuccess()) {
+                            elem1_0 = alt3_12;
+                        } else if (alt3_12.isCutFailure()) {
+                            elem1_0 = alt3_12.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        }
+                        }
+                        }
+                        break;
+                    }
+                    case 'f':
+                    {
+                        var alt3_4 = matchLiteralCst("final", false);
+                        if (alt3_4.isSuccess()) {
+                            elem1_0 = alt3_4;
+                        } else if (alt3_4.isCutFailure()) {
+                            elem1_0 = alt3_4.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        break;
+                    }
+                    case 'a':
+                    {
+                        var alt3_5 = matchLiteralCst("abstract", false);
+                        if (alt3_5.isSuccess()) {
+                            elem1_0 = alt3_5;
+                        } else if (alt3_5.isCutFailure()) {
+                            elem1_0 = alt3_5.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        break;
+                    }
+                    case 'n':
+                    {
+                        var alt3_6 = matchLiteralCst("native", false);
+                        if (alt3_6.isSuccess()) {
+                            elem1_0 = alt3_6;
+                        } else if (alt3_6.isCutFailure()) {
+                            elem1_0 = alt3_6.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        var alt3_13 = matchLiteralCst("non-sealed", false);
+                        if (alt3_13.isSuccess()) {
+                            elem1_0 = alt3_13;
+                        } else if (alt3_13.isCutFailure()) {
+                            elem1_0 = alt3_13.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        }
+                        break;
+                    }
+                    case 't':
+                    {
+                        var alt3_8 = matchLiteralCst("transient", false);
+                        if (alt3_8.isSuccess()) {
+                            elem1_0 = alt3_8;
+                        } else if (alt3_8.isCutFailure()) {
+                            elem1_0 = alt3_8.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        break;
+                    }
+                    case 'v':
+                    {
+                        var alt3_9 = matchLiteralCst("volatile", false);
+                        if (alt3_9.isSuccess()) {
+                            elem1_0 = alt3_9;
+                        } else if (alt3_9.isCutFailure()) {
+                            elem1_0 = alt3_9.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        break;
+                    }
+                    case 'd':
+                    {
+                        var alt3_11 = matchLiteralCst("default", false);
+                        if (alt3_11.isSuccess()) {
+                            elem1_0 = alt3_11;
+                        } else if (alt3_11.isCutFailure()) {
+                            elem1_0 = alt3_11.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart3);
+                        }
+                        break;
+                    }
+                }
             }
             if (elem1_0 == null) {
                 elem1_0 = CstParseResult.failure("one of alternatives");
@@ -22633,7 +22960,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ANNOTATION;
         
@@ -22641,7 +22968,7 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_0 = matchLiteralCst("@", false);
             if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
                 children.add(elem0_0.node.unwrap());
@@ -22671,7 +22998,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem0_2 = parse_QualifiedName();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
@@ -22685,7 +23012,7 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart5 = location();
             var savedChildrenOpt5 = new ArrayList<>(children);
             children.clear();
@@ -22693,7 +23020,7 @@ public final class Java25Parser {
             var seqStart7 = location();
             boolean cut7 = false;
             if (optElem5.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem7_0 = matchLiteralCst("(", false);
                 if (elem7_0.isSuccess() && elem7_0.node.isPresent()) {
                     children.add(elem7_0.node.unwrap());
@@ -22707,7 +23034,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem5.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var optStart9 = location();
                 var savedChildrenOpt9 = new ArrayList<>(children);
                 children.clear();
@@ -22742,7 +23069,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem5.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem7_2 = matchLiteralCst(")", false);
                 if (elem7_2.isSuccess() && elem7_2.node.isPresent()) {
                     children.add(elem7_2.node.unwrap());
@@ -22817,7 +23144,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ANNOTATION_VALUE;
         
@@ -22830,7 +23157,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = parse_Identifier();
             if (elem1_0.isSuccess() && elem1_0.node.isPresent()) {
                 children.add(elem1_0.node.unwrap());
@@ -22844,7 +23171,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_1 = matchLiteralCst("=", false);
             if (elem1_1.isSuccess() && elem1_1.node.isPresent()) {
                 children.add(elem1_1.node.unwrap());
@@ -22858,7 +23185,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_2 = parse_AnnotationElem();
             if (elem1_2.isSuccess() && elem1_2.node.isPresent()) {
                 children.add(elem1_2.node.unwrap());
@@ -22872,19 +23199,19 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem1_3 = CstParseResult.success(null, "", location());
             var zomStart5 = location();
             var savedChildrenZom5 = new ArrayList<>(children);
             children.clear();
             while (true) {
                 var beforeLoc5 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem5 = CstParseResult.success(null, "", location());
                 var seqStart7 = location();
                 boolean cut7 = false;
                 if (zomElem5.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem7_0 = matchLiteralCst(",", false);
                     if (elem7_0.isSuccess() && elem7_0.node.isPresent()) {
                         children.add(elem7_0.node.unwrap());
@@ -22898,7 +23225,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem5.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem7_1 = parse_Identifier();
                     if (elem7_1.isSuccess() && elem7_1.node.isPresent()) {
                         children.add(elem7_1.node.unwrap());
@@ -22912,7 +23239,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem5.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem7_2 = matchLiteralCst("=", false);
                     if (elem7_2.isSuccess() && elem7_2.node.isPresent()) {
                         children.add(elem7_2.node.unwrap());
@@ -22926,7 +23253,7 @@ public final class Java25Parser {
                     }
                 }
                 if (zomElem5.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem7_3 = parse_AnnotationElem();
                     if (elem7_3.isSuccess() && elem7_3.node.isPresent()) {
                         children.add(elem7_3.node.unwrap());
@@ -23032,7 +23359,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_ANNOTATION_ELEM;
         
@@ -23057,7 +23384,7 @@ public final class Java25Parser {
         var seqStart2 = location();
         boolean cut2 = false;
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem2_0 = matchLiteralCst("{", false);
             if (elem2_0.isSuccess() && elem2_0.node.isPresent()) {
                 children.add(elem2_0.node.unwrap());
@@ -23071,7 +23398,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart4 = location();
             var savedChildrenOpt4 = new ArrayList<>(children);
             children.clear();
@@ -23079,7 +23406,7 @@ public final class Java25Parser {
             var seqStart6 = location();
             boolean cut6 = false;
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem6_0 = parse_AnnotationElem();
                 if (elem6_0.isSuccess() && elem6_0.node.isPresent()) {
                     children.add(elem6_0.node.unwrap());
@@ -23093,19 +23420,19 @@ public final class Java25Parser {
                 }
             }
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult elem6_1 = CstParseResult.success(null, "", location());
                 var zomStart8 = location();
                 var savedChildrenZom8 = new ArrayList<>(children);
                 children.clear();
                 while (true) {
                     var beforeLoc8 = location();
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     CstParseResult zomElem8 = CstParseResult.success(null, "", location());
                     var seqStart10 = location();
                     boolean cut10 = false;
                     if (zomElem8.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         var elem10_0 = matchLiteralCst(",", false);
                         if (elem10_0.isSuccess() && elem10_0.node.isPresent()) {
                             children.add(elem10_0.node.unwrap());
@@ -23119,7 +23446,7 @@ public final class Java25Parser {
                         }
                     }
                     if (zomElem8.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         var elem10_1 = parse_AnnotationElem();
                         if (elem10_1.isSuccess() && elem10_1.node.isPresent()) {
                             children.add(elem10_1.node.unwrap());
@@ -23168,7 +23495,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem4.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var optStart13 = location();
                 var savedChildrenOpt13 = new ArrayList<>(children);
                 children.clear();
@@ -23232,7 +23559,7 @@ public final class Java25Parser {
             }
         }
         if (alt0_1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem2_2 = matchLiteralCst("}", false);
             if (elem2_2.isSuccess() && elem2_2.node.isPresent()) {
                 children.add(elem2_2.node.unwrap());
@@ -23304,7 +23631,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_LITERAL;
         
@@ -23320,32 +23647,49 @@ public final class Java25Parser {
         var seqStart2 = location();
         boolean cut2 = false;
         if (tbElem1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem2_0 = null;
             var choiceStart4 = location();
-            var alt4_0 = matchLiteralCst("null", false);
-            if (alt4_0.isSuccess()) {
-                elem2_0 = alt4_0;
-            } else if (alt4_0.isCutFailure()) {
-                elem2_0 = alt4_0.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart4);
-            var alt4_1 = matchLiteralCst("true", false);
-            if (alt4_1.isSuccess()) {
-                elem2_0 = alt4_1;
-            } else if (alt4_1.isCutFailure()) {
-                elem2_0 = alt4_1.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart4);
-            var alt4_2 = matchLiteralCst("false", false);
-            if (alt4_2.isSuccess()) {
-                elem2_0 = alt4_2;
-            } else if (alt4_2.isCutFailure()) {
-                elem2_0 = alt4_2.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart4);
-            }
-            }
+            if (pos < input.length()) {
+                char dispatchChar4 = input.charAt(pos);
+                switch (dispatchChar4) {
+                    case 'n':
+                    {
+                        var alt4_0 = matchLiteralCst("null", false);
+                        if (alt4_0.isSuccess()) {
+                            elem2_0 = alt4_0;
+                        } else if (alt4_0.isCutFailure()) {
+                            elem2_0 = alt4_0.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart4);
+                        }
+                        break;
+                    }
+                    case 't':
+                    {
+                        var alt4_1 = matchLiteralCst("true", false);
+                        if (alt4_1.isSuccess()) {
+                            elem2_0 = alt4_1;
+                        } else if (alt4_1.isCutFailure()) {
+                            elem2_0 = alt4_1.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart4);
+                        }
+                        break;
+                    }
+                    case 'f':
+                    {
+                        var alt4_2 = matchLiteralCst("false", false);
+                        if (alt4_2.isSuccess()) {
+                            elem2_0 = alt4_2;
+                        } else if (alt4_2.isCutFailure()) {
+                            elem2_0 = alt4_2.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart4);
+                        }
+                        break;
+                    }
+                }
             }
             if (elem2_0 == null) {
                 elem2_0 = CstParseResult.failure("one of alternatives");
@@ -23468,7 +23812,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_CHAR_LIT;
         
@@ -23479,7 +23823,7 @@ public final class Java25Parser {
         var seqStart1 = location();
         boolean cut1 = false;
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_0 = matchLiteralCst("'", false);
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -23490,12 +23834,12 @@ public final class Java25Parser {
             }
         }
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem1_1 = CstParseResult.success(null, "", location());
             var zomStart3 = location();
             while (true) {
                 var beforeLoc3 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult zomElem3 = null;
                 var choiceStart5 = location();
                 var alt5_0 = matchCharClassCst("'\\\\", true, false);
@@ -23509,7 +23853,7 @@ public final class Java25Parser {
                 var seqStart7 = location();
                 boolean cut7 = false;
                 if (alt5_1.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem7_0 = matchLiteralCst("\\", false);
                     if (elem7_0.isCutFailure()) {
                         restoreLocation(seqStart7);
@@ -23520,7 +23864,7 @@ public final class Java25Parser {
                     }
                 }
                 if (alt5_1.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var elem7_1 = matchAnyCst();
                     if (elem7_1.isCutFailure()) {
                         restoreLocation(seqStart7);
@@ -23565,7 +23909,7 @@ public final class Java25Parser {
             }
         }
         if (tbElem0.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem1_2 = matchLiteralCst("'", false);
             if (elem1_2.isCutFailure()) {
                 restoreLocation(seqStart1);
@@ -23621,250 +23965,259 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_STRING_LIT;
         
         CstParseResult result = null;
         var choiceStart0 = location();
         var savedChildren0 = new ArrayList<>(children);
-        children.clear();
-        children.addAll(savedChildren0);
-        var tbStart1 = location();
-        tokenBoundaryDepth++;
-        var savedChildrenTb1 = new ArrayList<>(children);
-        CstParseResult tbElem1 = CstParseResult.success(null, "", location());
-        var seqStart2 = location();
-        boolean cut2 = false;
-        if (tbElem1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem2_0 = matchLiteralCst("\"\"\"", false);
-            if (elem2_0.isCutFailure()) {
-                restoreLocation(seqStart2);
-                tbElem1 = elem2_0;
-            } else if (elem2_0.isFailure()) {
-                restoreLocation(seqStart2);
-                tbElem1 = cut2 ? elem2_0.asCutFailure() : elem2_0;
-            }
-        }
-        if (tbElem1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            CstParseResult elem2_1 = CstParseResult.success(null, "", location());
-            var zomStart4 = location();
-            while (true) {
-                var beforeLoc4 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                CstParseResult zomElem4 = CstParseResult.success(null, "", location());
-                var seqStart6 = location();
-                boolean cut6 = false;
-                if (zomElem4.isSuccess()) {
-                    var notStart7 = location();
-                    var notElem7 = matchLiteralCst("\"\"\"", false);
-                    restoreLocation(notStart7);
-                    var elem6_0 = notElem7.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
-                    if (elem6_0.isCutFailure()) {
-                        restoreLocation(seqStart6);
-                        zomElem4 = elem6_0;
-                    } else if (elem6_0.isFailure()) {
-                        restoreLocation(seqStart6);
-                        zomElem4 = cut6 ? elem6_0.asCutFailure() : elem6_0;
+        if (pos < input.length()) {
+            char dispatchChar0 = input.charAt(pos);
+            switch (dispatchChar0) {
+                case '"':
+                {
+                    children.clear();
+                    children.addAll(savedChildren0);
+                    var tbStart1 = location();
+                    tokenBoundaryDepth++;
+                    var savedChildrenTb1 = new ArrayList<>(children);
+                    CstParseResult tbElem1 = CstParseResult.success(null, "", location());
+                    var seqStart2 = location();
+                    boolean cut2 = false;
+                    if (tbElem1.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem2_0 = matchLiteralCst("\"\"\"", false);
+                        if (elem2_0.isCutFailure()) {
+                            restoreLocation(seqStart2);
+                            tbElem1 = elem2_0;
+                        } else if (elem2_0.isFailure()) {
+                            restoreLocation(seqStart2);
+                            tbElem1 = cut2 ? elem2_0.asCutFailure() : elem2_0;
+                        }
                     }
-                }
-                if (zomElem4.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                    var elem6_1 = matchAnyCst();
-                    if (elem6_1.isCutFailure()) {
-                        restoreLocation(seqStart6);
-                        zomElem4 = elem6_1;
-                    } else if (elem6_1.isFailure()) {
-                        restoreLocation(seqStart6);
-                        zomElem4 = cut6 ? elem6_1.asCutFailure() : elem6_1;
+                    if (tbElem1.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        CstParseResult elem2_1 = CstParseResult.success(null, "", location());
+                        var zomStart4 = location();
+                        while (true) {
+                            var beforeLoc4 = location();
+                            if (tokenBoundaryDepth == 0) skipWhitespace();
+                            CstParseResult zomElem4 = CstParseResult.success(null, "", location());
+                            var seqStart6 = location();
+                            boolean cut6 = false;
+                            if (zomElem4.isSuccess()) {
+                                var notStart7 = location();
+                                var notElem7 = matchLiteralCst("\"\"\"", false);
+                                restoreLocation(notStart7);
+                                var elem6_0 = notElem7.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
+                                if (elem6_0.isCutFailure()) {
+                                    restoreLocation(seqStart6);
+                                    zomElem4 = elem6_0;
+                                } else if (elem6_0.isFailure()) {
+                                    restoreLocation(seqStart6);
+                                    zomElem4 = cut6 ? elem6_0.asCutFailure() : elem6_0;
+                                }
+                            }
+                            if (zomElem4.isSuccess()) {
+                                if (tokenBoundaryDepth == 0) skipWhitespace();
+                                var elem6_1 = matchAnyCst();
+                                if (elem6_1.isCutFailure()) {
+                                    restoreLocation(seqStart6);
+                                    zomElem4 = elem6_1;
+                                } else if (elem6_1.isFailure()) {
+                                    restoreLocation(seqStart6);
+                                    zomElem4 = cut6 ? elem6_1.asCutFailure() : elem6_1;
+                                }
+                            }
+                            if (zomElem4.isSuccess()) {
+                                zomElem4 = CstParseResult.success(null, substring(seqStart6.offset(), pos), location());
+                            }
+                            if (zomElem4.isCutFailure()) {
+                                elem2_1 = zomElem4;
+                                break;
+                            }
+                            if (zomElem4.isFailure() || location().offset() == beforeLoc4.offset()) {
+                                restoreLocation(beforeLoc4);
+                                break;
+                            }
+                        }
+                        if (!elem2_1.isCutFailure()) {
+                            elem2_1 = CstParseResult.success(null, substring(zomStart4.offset(), pos), location());
+                        }
+                        if (elem2_1.isCutFailure()) {
+                            restoreLocation(seqStart2);
+                            tbElem1 = elem2_1;
+                        } else if (elem2_1.isFailure()) {
+                            restoreLocation(seqStart2);
+                            tbElem1 = cut2 ? elem2_1.asCutFailure() : elem2_1;
+                        }
                     }
-                }
-                if (zomElem4.isSuccess()) {
-                    zomElem4 = CstParseResult.success(null, substring(seqStart6.offset(), pos), location());
-                }
-                if (zomElem4.isCutFailure()) {
-                    elem2_1 = zomElem4;
+                    if (tbElem1.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem2_2 = matchLiteralCst("\"\"\"", false);
+                        if (elem2_2.isCutFailure()) {
+                            restoreLocation(seqStart2);
+                            tbElem1 = elem2_2;
+                        } else if (elem2_2.isFailure()) {
+                            restoreLocation(seqStart2);
+                            tbElem1 = cut2 ? elem2_2.asCutFailure() : elem2_2;
+                        }
+                    }
+                    if (tbElem1.isSuccess()) {
+                        tbElem1 = CstParseResult.success(null, substring(seqStart2.offset(), pos), location());
+                    }
+                    tokenBoundaryDepth--;
+                    children.clear();
+                    children.addAll(savedChildrenTb1);
+                    CstParseResult alt0_0;
+                    if (tbElem1.isSuccess()) {
+                        var tbText1 = substring(tbStart1.offset(), pos);
+                        var tbSpan1 = SourceSpan.of(tbStart1, location());
+                        var tbNode1 = new CstNode.Token(tbSpan1, __ruleName, tbText1, List.of(), List.of());
+                        children.add(tbNode1);
+                        alt0_0 = CstParseResult.success(tbNode1, tbText1, location());
+                    } else {
+                        alt0_0 = tbElem1;
+                    }
+                    if (alt0_0.isSuccess()) {
+                        result = alt0_0;
+                    } else if (alt0_0.isCutFailure()) {
+                        result = alt0_0.asRegularFailure();
+                    } else {
+                        restoreLocation(choiceStart0);
+                    children.clear();
+                    children.addAll(savedChildren0);
+                    var tbStart11 = location();
+                    tokenBoundaryDepth++;
+                    var savedChildrenTb11 = new ArrayList<>(children);
+                    CstParseResult tbElem11 = CstParseResult.success(null, "", location());
+                    var seqStart12 = location();
+                    boolean cut12 = false;
+                    if (tbElem11.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem12_0 = matchLiteralCst("\"", false);
+                        if (elem12_0.isCutFailure()) {
+                            restoreLocation(seqStart12);
+                            tbElem11 = elem12_0;
+                        } else if (elem12_0.isFailure()) {
+                            restoreLocation(seqStart12);
+                            tbElem11 = cut12 ? elem12_0.asCutFailure() : elem12_0;
+                        }
+                    }
+                    if (tbElem11.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        CstParseResult elem12_1 = CstParseResult.success(null, "", location());
+                        var zomStart14 = location();
+                        while (true) {
+                            var beforeLoc14 = location();
+                            if (tokenBoundaryDepth == 0) skipWhitespace();
+                            CstParseResult zomElem14 = null;
+                            var choiceStart16 = location();
+                            var alt16_0 = matchCharClassCst("\"\\\\", true, false);
+                            if (alt16_0.isSuccess()) {
+                                zomElem14 = alt16_0;
+                            } else if (alt16_0.isCutFailure()) {
+                                zomElem14 = alt16_0.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart16);
+                            CstParseResult alt16_1 = CstParseResult.success(null, "", location());
+                            var seqStart18 = location();
+                            boolean cut18 = false;
+                            if (alt16_1.isSuccess()) {
+                                if (tokenBoundaryDepth == 0) skipWhitespace();
+                                var elem18_0 = matchLiteralCst("\\", false);
+                                if (elem18_0.isCutFailure()) {
+                                    restoreLocation(seqStart18);
+                                    alt16_1 = elem18_0;
+                                } else if (elem18_0.isFailure()) {
+                                    restoreLocation(seqStart18);
+                                    alt16_1 = cut18 ? elem18_0.asCutFailure() : elem18_0;
+                                }
+                            }
+                            if (alt16_1.isSuccess()) {
+                                if (tokenBoundaryDepth == 0) skipWhitespace();
+                                var elem18_1 = matchAnyCst();
+                                if (elem18_1.isCutFailure()) {
+                                    restoreLocation(seqStart18);
+                                    alt16_1 = elem18_1;
+                                } else if (elem18_1.isFailure()) {
+                                    restoreLocation(seqStart18);
+                                    alt16_1 = cut18 ? elem18_1.asCutFailure() : elem18_1;
+                                }
+                            }
+                            if (alt16_1.isSuccess()) {
+                                alt16_1 = CstParseResult.success(null, substring(seqStart18.offset(), pos), location());
+                            }
+                            if (alt16_1.isSuccess()) {
+                                zomElem14 = alt16_1;
+                            } else if (alt16_1.isCutFailure()) {
+                                zomElem14 = alt16_1.asRegularFailure();
+                            } else {
+                                restoreLocation(choiceStart16);
+                            }
+                            }
+                            if (zomElem14 == null) {
+                                zomElem14 = CstParseResult.failure("one of alternatives");
+                            }
+                            if (zomElem14.isCutFailure()) {
+                                elem12_1 = zomElem14;
+                                break;
+                            }
+                            if (zomElem14.isFailure() || location().offset() == beforeLoc14.offset()) {
+                                restoreLocation(beforeLoc14);
+                                break;
+                            }
+                        }
+                        if (!elem12_1.isCutFailure()) {
+                            elem12_1 = CstParseResult.success(null, substring(zomStart14.offset(), pos), location());
+                        }
+                        if (elem12_1.isCutFailure()) {
+                            restoreLocation(seqStart12);
+                            tbElem11 = elem12_1;
+                        } else if (elem12_1.isFailure()) {
+                            restoreLocation(seqStart12);
+                            tbElem11 = cut12 ? elem12_1.asCutFailure() : elem12_1;
+                        }
+                    }
+                    if (tbElem11.isSuccess()) {
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
+                        var elem12_2 = matchLiteralCst("\"", false);
+                        if (elem12_2.isCutFailure()) {
+                            restoreLocation(seqStart12);
+                            tbElem11 = elem12_2;
+                        } else if (elem12_2.isFailure()) {
+                            restoreLocation(seqStart12);
+                            tbElem11 = cut12 ? elem12_2.asCutFailure() : elem12_2;
+                        }
+                    }
+                    if (tbElem11.isSuccess()) {
+                        tbElem11 = CstParseResult.success(null, substring(seqStart12.offset(), pos), location());
+                    }
+                    tokenBoundaryDepth--;
+                    children.clear();
+                    children.addAll(savedChildrenTb11);
+                    CstParseResult alt0_1;
+                    if (tbElem11.isSuccess()) {
+                        var tbText11 = substring(tbStart11.offset(), pos);
+                        var tbSpan11 = SourceSpan.of(tbStart11, location());
+                        var tbNode11 = new CstNode.Token(tbSpan11, __ruleName, tbText11, List.of(), List.of());
+                        children.add(tbNode11);
+                        alt0_1 = CstParseResult.success(tbNode11, tbText11, location());
+                    } else {
+                        alt0_1 = tbElem11;
+                    }
+                    if (alt0_1.isSuccess()) {
+                        result = alt0_1;
+                    } else if (alt0_1.isCutFailure()) {
+                        result = alt0_1.asRegularFailure();
+                    } else {
+                        restoreLocation(choiceStart0);
+                    }
+                    }
                     break;
                 }
-                if (zomElem4.isFailure() || location().offset() == beforeLoc4.offset()) {
-                    restoreLocation(beforeLoc4);
-                    break;
-                }
             }
-            if (!elem2_1.isCutFailure()) {
-                elem2_1 = CstParseResult.success(null, substring(zomStart4.offset(), pos), location());
-            }
-            if (elem2_1.isCutFailure()) {
-                restoreLocation(seqStart2);
-                tbElem1 = elem2_1;
-            } else if (elem2_1.isFailure()) {
-                restoreLocation(seqStart2);
-                tbElem1 = cut2 ? elem2_1.asCutFailure() : elem2_1;
-            }
-        }
-        if (tbElem1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem2_2 = matchLiteralCst("\"\"\"", false);
-            if (elem2_2.isCutFailure()) {
-                restoreLocation(seqStart2);
-                tbElem1 = elem2_2;
-            } else if (elem2_2.isFailure()) {
-                restoreLocation(seqStart2);
-                tbElem1 = cut2 ? elem2_2.asCutFailure() : elem2_2;
-            }
-        }
-        if (tbElem1.isSuccess()) {
-            tbElem1 = CstParseResult.success(null, substring(seqStart2.offset(), pos), location());
-        }
-        tokenBoundaryDepth--;
-        children.clear();
-        children.addAll(savedChildrenTb1);
-        CstParseResult alt0_0;
-        if (tbElem1.isSuccess()) {
-            var tbText1 = substring(tbStart1.offset(), pos);
-            var tbSpan1 = SourceSpan.of(tbStart1, location());
-            var tbNode1 = new CstNode.Token(tbSpan1, __ruleName, tbText1, List.of(), List.of());
-            children.add(tbNode1);
-            alt0_0 = CstParseResult.success(tbNode1, tbText1, location());
-        } else {
-            alt0_0 = tbElem1;
-        }
-        if (alt0_0.isSuccess()) {
-            result = alt0_0;
-        } else if (alt0_0.isCutFailure()) {
-            result = alt0_0.asRegularFailure();
-        } else {
-            restoreLocation(choiceStart0);
-        children.clear();
-        children.addAll(savedChildren0);
-        var tbStart11 = location();
-        tokenBoundaryDepth++;
-        var savedChildrenTb11 = new ArrayList<>(children);
-        CstParseResult tbElem11 = CstParseResult.success(null, "", location());
-        var seqStart12 = location();
-        boolean cut12 = false;
-        if (tbElem11.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem12_0 = matchLiteralCst("\"", false);
-            if (elem12_0.isCutFailure()) {
-                restoreLocation(seqStart12);
-                tbElem11 = elem12_0;
-            } else if (elem12_0.isFailure()) {
-                restoreLocation(seqStart12);
-                tbElem11 = cut12 ? elem12_0.asCutFailure() : elem12_0;
-            }
-        }
-        if (tbElem11.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            CstParseResult elem12_1 = CstParseResult.success(null, "", location());
-            var zomStart14 = location();
-            while (true) {
-                var beforeLoc14 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                CstParseResult zomElem14 = null;
-                var choiceStart16 = location();
-                var alt16_0 = matchCharClassCst("\"\\\\", true, false);
-                if (alt16_0.isSuccess()) {
-                    zomElem14 = alt16_0;
-                } else if (alt16_0.isCutFailure()) {
-                    zomElem14 = alt16_0.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart16);
-                CstParseResult alt16_1 = CstParseResult.success(null, "", location());
-                var seqStart18 = location();
-                boolean cut18 = false;
-                if (alt16_1.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                    var elem18_0 = matchLiteralCst("\\", false);
-                    if (elem18_0.isCutFailure()) {
-                        restoreLocation(seqStart18);
-                        alt16_1 = elem18_0;
-                    } else if (elem18_0.isFailure()) {
-                        restoreLocation(seqStart18);
-                        alt16_1 = cut18 ? elem18_0.asCutFailure() : elem18_0;
-                    }
-                }
-                if (alt16_1.isSuccess()) {
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-                    var elem18_1 = matchAnyCst();
-                    if (elem18_1.isCutFailure()) {
-                        restoreLocation(seqStart18);
-                        alt16_1 = elem18_1;
-                    } else if (elem18_1.isFailure()) {
-                        restoreLocation(seqStart18);
-                        alt16_1 = cut18 ? elem18_1.asCutFailure() : elem18_1;
-                    }
-                }
-                if (alt16_1.isSuccess()) {
-                    alt16_1 = CstParseResult.success(null, substring(seqStart18.offset(), pos), location());
-                }
-                if (alt16_1.isSuccess()) {
-                    zomElem14 = alt16_1;
-                } else if (alt16_1.isCutFailure()) {
-                    zomElem14 = alt16_1.asRegularFailure();
-                } else {
-                    restoreLocation(choiceStart16);
-                }
-                }
-                if (zomElem14 == null) {
-                    zomElem14 = CstParseResult.failure("one of alternatives");
-                }
-                if (zomElem14.isCutFailure()) {
-                    elem12_1 = zomElem14;
-                    break;
-                }
-                if (zomElem14.isFailure() || location().offset() == beforeLoc14.offset()) {
-                    restoreLocation(beforeLoc14);
-                    break;
-                }
-            }
-            if (!elem12_1.isCutFailure()) {
-                elem12_1 = CstParseResult.success(null, substring(zomStart14.offset(), pos), location());
-            }
-            if (elem12_1.isCutFailure()) {
-                restoreLocation(seqStart12);
-                tbElem11 = elem12_1;
-            } else if (elem12_1.isFailure()) {
-                restoreLocation(seqStart12);
-                tbElem11 = cut12 ? elem12_1.asCutFailure() : elem12_1;
-            }
-        }
-        if (tbElem11.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
-            var elem12_2 = matchLiteralCst("\"", false);
-            if (elem12_2.isCutFailure()) {
-                restoreLocation(seqStart12);
-                tbElem11 = elem12_2;
-            } else if (elem12_2.isFailure()) {
-                restoreLocation(seqStart12);
-                tbElem11 = cut12 ? elem12_2.asCutFailure() : elem12_2;
-            }
-        }
-        if (tbElem11.isSuccess()) {
-            tbElem11 = CstParseResult.success(null, substring(seqStart12.offset(), pos), location());
-        }
-        tokenBoundaryDepth--;
-        children.clear();
-        children.addAll(savedChildrenTb11);
-        CstParseResult alt0_1;
-        if (tbElem11.isSuccess()) {
-            var tbText11 = substring(tbStart11.offset(), pos);
-            var tbSpan11 = SourceSpan.of(tbStart11, location());
-            var tbNode11 = new CstNode.Token(tbSpan11, __ruleName, tbText11, List.of(), List.of());
-            children.add(tbNode11);
-            alt0_1 = CstParseResult.success(tbNode11, tbText11, location());
-        } else {
-            alt0_1 = tbElem11;
-        }
-        if (alt0_1.isSuccess()) {
-            result = alt0_1;
-        } else if (alt0_1.isCutFailure()) {
-            result = alt0_1.asRegularFailure();
-        } else {
-            restoreLocation(choiceStart0);
-        }
         }
         if (result == null) {
             children.clear();
@@ -23901,7 +24254,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_NUM_LIT;
         
@@ -23917,7 +24270,7 @@ public final class Java25Parser {
         var seqStart2 = location();
         boolean cut2 = false;
         if (tbElem1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem2_0 = matchLiteralCst("0", false);
             if (elem2_0.isCutFailure()) {
                 restoreLocation(seqStart2);
@@ -23928,7 +24281,7 @@ public final class Java25Parser {
             }
         }
         if (tbElem1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem2_1 = matchCharClassCst("xX", false, false);
             if (elem2_1.isCutFailure()) {
                 restoreLocation(seqStart2);
@@ -23939,14 +24292,14 @@ public final class Java25Parser {
             }
         }
         if (tbElem1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var oomFirst5 = matchCharClassCst("0-9a-fA-F_", false, false);
             CstParseResult elem2_2 = oomFirst5;
             var oomStart5 = location();
             if (oomFirst5.isSuccess()) {
                 while (true) {
                     var beforeLoc5 = location();
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var oomElem5 = matchCharClassCst("0-9a-fA-F_", false, false);
                     if (oomElem5.isCutFailure()) {
                         elem2_2 = oomElem5;
@@ -23967,7 +24320,7 @@ public final class Java25Parser {
             }
         }
         if (tbElem1.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart8 = location();
             var optElem8 = matchCharClassCst("lL", false, false);
             CstParseResult elem2_3;
@@ -24019,7 +24372,7 @@ public final class Java25Parser {
         var seqStart11 = location();
         boolean cut11 = false;
         if (tbElem10.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem11_0 = matchLiteralCst("0", false);
             if (elem11_0.isCutFailure()) {
                 restoreLocation(seqStart11);
@@ -24030,7 +24383,7 @@ public final class Java25Parser {
             }
         }
         if (tbElem10.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem11_1 = matchCharClassCst("bB", false, false);
             if (elem11_1.isCutFailure()) {
                 restoreLocation(seqStart11);
@@ -24041,14 +24394,14 @@ public final class Java25Parser {
             }
         }
         if (tbElem10.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var oomFirst14 = matchCharClassCst("01_", false, false);
             CstParseResult elem11_2 = oomFirst14;
             var oomStart14 = location();
             if (oomFirst14.isSuccess()) {
                 while (true) {
                     var beforeLoc14 = location();
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var oomElem14 = matchCharClassCst("01_", false, false);
                     if (oomElem14.isCutFailure()) {
                         elem11_2 = oomElem14;
@@ -24069,7 +24422,7 @@ public final class Java25Parser {
             }
         }
         if (tbElem10.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart17 = location();
             var optElem17 = matchCharClassCst("lL", false, false);
             CstParseResult elem11_3;
@@ -24121,7 +24474,7 @@ public final class Java25Parser {
         var seqStart20 = location();
         boolean cut20 = false;
         if (tbElem19.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem20_0 = matchCharClassCst("0-9", false, false);
             if (elem20_0.isCutFailure()) {
                 restoreLocation(seqStart20);
@@ -24132,12 +24485,12 @@ public final class Java25Parser {
             }
         }
         if (tbElem19.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem20_1 = CstParseResult.success(null, "", location());
             var zomStart22 = location();
             while (true) {
                 var beforeLoc22 = location();
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var zomElem22 = matchCharClassCst("0-9_", false, false);
                 if (zomElem22.isCutFailure()) {
                     elem20_1 = zomElem22;
@@ -24160,13 +24513,13 @@ public final class Java25Parser {
             }
         }
         if (tbElem19.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart24 = location();
             CstParseResult optElem24 = CstParseResult.success(null, "", location());
             var seqStart26 = location();
             boolean cut26 = false;
             if (optElem24.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem26_0 = matchLiteralCst(".", false);
                 if (elem26_0.isCutFailure()) {
                     restoreLocation(seqStart26);
@@ -24177,12 +24530,12 @@ public final class Java25Parser {
                 }
             }
             if (optElem24.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 CstParseResult elem26_1 = CstParseResult.success(null, "", location());
                 var zomStart28 = location();
                 while (true) {
                     var beforeLoc28 = location();
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var zomElem28 = matchCharClassCst("0-9_", false, false);
                     if (zomElem28.isCutFailure()) {
                         elem26_1 = zomElem28;
@@ -24226,13 +24579,13 @@ public final class Java25Parser {
             }
         }
         if (tbElem19.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart30 = location();
             CstParseResult optElem30 = CstParseResult.success(null, "", location());
             var seqStart32 = location();
             boolean cut32 = false;
             if (optElem30.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem32_0 = matchCharClassCst("eE", false, false);
                 if (elem32_0.isCutFailure()) {
                     restoreLocation(seqStart32);
@@ -24243,7 +24596,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem30.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var optStart34 = location();
                 var optElem34 = matchCharClassCst("+\\-", false, false);
                 CstParseResult elem32_1;
@@ -24265,14 +24618,14 @@ public final class Java25Parser {
                 }
             }
             if (optElem30.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var oomFirst36 = matchCharClassCst("0-9_", false, false);
                 CstParseResult elem32_2 = oomFirst36;
                 var oomStart36 = location();
                 if (oomFirst36.isSuccess()) {
                     while (true) {
                         var beforeLoc36 = location();
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         var oomElem36 = matchCharClassCst("0-9_", false, false);
                         if (oomElem36.isCutFailure()) {
                             elem32_2 = oomElem36;
@@ -24314,7 +24667,7 @@ public final class Java25Parser {
             }
         }
         if (tbElem19.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart39 = location();
             var optElem39 = matchCharClassCst("fFdDlL", false, false);
             CstParseResult elem20_4;
@@ -24366,7 +24719,7 @@ public final class Java25Parser {
         var seqStart42 = location();
         boolean cut42 = false;
         if (tbElem41.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var elem42_0 = matchLiteralCst(".", false);
             if (elem42_0.isCutFailure()) {
                 restoreLocation(seqStart42);
@@ -24377,14 +24730,14 @@ public final class Java25Parser {
             }
         }
         if (tbElem41.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var oomFirst44 = matchCharClassCst("0-9_", false, false);
             CstParseResult elem42_1 = oomFirst44;
             var oomStart44 = location();
             if (oomFirst44.isSuccess()) {
                 while (true) {
                     var beforeLoc44 = location();
-                    if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
                     var oomElem44 = matchCharClassCst("0-9_", false, false);
                     if (oomElem44.isCutFailure()) {
                         elem42_1 = oomElem44;
@@ -24405,13 +24758,13 @@ public final class Java25Parser {
             }
         }
         if (tbElem41.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart47 = location();
             CstParseResult optElem47 = CstParseResult.success(null, "", location());
             var seqStart49 = location();
             boolean cut49 = false;
             if (optElem47.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var elem49_0 = matchCharClassCst("eE", false, false);
                 if (elem49_0.isCutFailure()) {
                     restoreLocation(seqStart49);
@@ -24422,7 +24775,7 @@ public final class Java25Parser {
                 }
             }
             if (optElem47.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var optStart51 = location();
                 var optElem51 = matchCharClassCst("+\\-", false, false);
                 CstParseResult elem49_1;
@@ -24444,14 +24797,14 @@ public final class Java25Parser {
                 }
             }
             if (optElem47.isSuccess()) {
-                if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                if (tokenBoundaryDepth == 0) skipWhitespace();
                 var oomFirst53 = matchCharClassCst("0-9_", false, false);
                 CstParseResult elem49_2 = oomFirst53;
                 var oomStart53 = location();
                 if (oomFirst53.isSuccess()) {
                     while (true) {
                         var beforeLoc53 = location();
-                        if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+                        if (tokenBoundaryDepth == 0) skipWhitespace();
                         var oomElem53 = matchCharClassCst("0-9_", false, false);
                         if (oomElem53.isCutFailure()) {
                             elem49_2 = oomElem53;
@@ -24493,7 +24846,7 @@ public final class Java25Parser {
             }
         }
         if (tbElem41.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             var optStart56 = location();
             var optElem56 = matchCharClassCst("fFdD", false, false);
             CstParseResult elem42_3;
@@ -24575,7 +24928,7 @@ public final class Java25Parser {
         }
         
         // Skip leading whitespace (collect trivia)
-        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : drainTriviaAndSkipWhitespace();
+        var leadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_KEYWORD;
         
@@ -24583,698 +24936,767 @@ public final class Java25Parser {
         var seqStart0 = location();
         boolean cut0 = false;
         if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) pendingTrivia.addAll(skipWhitespace());
+            if (tokenBoundaryDepth == 0) skipWhitespace();
             CstParseResult elem0_0 = null;
             var choiceStart2 = location();
             var savedChildren2 = new ArrayList<>(children);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_0 = matchLiteralCst("abstract", false);
-            if (alt2_0.isSuccess() && alt2_0.node.isPresent()) {
-                children.add(alt2_0.node.unwrap());
-            }
-            if (alt2_0.isSuccess()) {
-                elem0_0 = alt2_0;
-            } else if (alt2_0.isCutFailure()) {
-                elem0_0 = alt2_0.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_1 = matchLiteralCst("assert", false);
-            if (alt2_1.isSuccess() && alt2_1.node.isPresent()) {
-                children.add(alt2_1.node.unwrap());
-            }
-            if (alt2_1.isSuccess()) {
-                elem0_0 = alt2_1;
-            } else if (alt2_1.isCutFailure()) {
-                elem0_0 = alt2_1.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_2 = matchLiteralCst("boolean", false);
-            if (alt2_2.isSuccess() && alt2_2.node.isPresent()) {
-                children.add(alt2_2.node.unwrap());
-            }
-            if (alt2_2.isSuccess()) {
-                elem0_0 = alt2_2;
-            } else if (alt2_2.isCutFailure()) {
-                elem0_0 = alt2_2.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_3 = matchLiteralCst("break", false);
-            if (alt2_3.isSuccess() && alt2_3.node.isPresent()) {
-                children.add(alt2_3.node.unwrap());
-            }
-            if (alt2_3.isSuccess()) {
-                elem0_0 = alt2_3;
-            } else if (alt2_3.isCutFailure()) {
-                elem0_0 = alt2_3.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_4 = matchLiteralCst("byte", false);
-            if (alt2_4.isSuccess() && alt2_4.node.isPresent()) {
-                children.add(alt2_4.node.unwrap());
-            }
-            if (alt2_4.isSuccess()) {
-                elem0_0 = alt2_4;
-            } else if (alt2_4.isCutFailure()) {
-                elem0_0 = alt2_4.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_5 = matchLiteralCst("case", false);
-            if (alt2_5.isSuccess() && alt2_5.node.isPresent()) {
-                children.add(alt2_5.node.unwrap());
-            }
-            if (alt2_5.isSuccess()) {
-                elem0_0 = alt2_5;
-            } else if (alt2_5.isCutFailure()) {
-                elem0_0 = alt2_5.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_6 = matchLiteralCst("catch", false);
-            if (alt2_6.isSuccess() && alt2_6.node.isPresent()) {
-                children.add(alt2_6.node.unwrap());
-            }
-            if (alt2_6.isSuccess()) {
-                elem0_0 = alt2_6;
-            } else if (alt2_6.isCutFailure()) {
-                elem0_0 = alt2_6.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_7 = matchLiteralCst("char", false);
-            if (alt2_7.isSuccess() && alt2_7.node.isPresent()) {
-                children.add(alt2_7.node.unwrap());
-            }
-            if (alt2_7.isSuccess()) {
-                elem0_0 = alt2_7;
-            } else if (alt2_7.isCutFailure()) {
-                elem0_0 = alt2_7.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_8 = matchLiteralCst("class", false);
-            if (alt2_8.isSuccess() && alt2_8.node.isPresent()) {
-                children.add(alt2_8.node.unwrap());
-            }
-            if (alt2_8.isSuccess()) {
-                elem0_0 = alt2_8;
-            } else if (alt2_8.isCutFailure()) {
-                elem0_0 = alt2_8.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_9 = matchLiteralCst("const", false);
-            if (alt2_9.isSuccess() && alt2_9.node.isPresent()) {
-                children.add(alt2_9.node.unwrap());
-            }
-            if (alt2_9.isSuccess()) {
-                elem0_0 = alt2_9;
-            } else if (alt2_9.isCutFailure()) {
-                elem0_0 = alt2_9.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_10 = matchLiteralCst("continue", false);
-            if (alt2_10.isSuccess() && alt2_10.node.isPresent()) {
-                children.add(alt2_10.node.unwrap());
-            }
-            if (alt2_10.isSuccess()) {
-                elem0_0 = alt2_10;
-            } else if (alt2_10.isCutFailure()) {
-                elem0_0 = alt2_10.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_11 = matchLiteralCst("default", false);
-            if (alt2_11.isSuccess() && alt2_11.node.isPresent()) {
-                children.add(alt2_11.node.unwrap());
-            }
-            if (alt2_11.isSuccess()) {
-                elem0_0 = alt2_11;
-            } else if (alt2_11.isCutFailure()) {
-                elem0_0 = alt2_11.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_12 = matchLiteralCst("double", false);
-            if (alt2_12.isSuccess() && alt2_12.node.isPresent()) {
-                children.add(alt2_12.node.unwrap());
-            }
-            if (alt2_12.isSuccess()) {
-                elem0_0 = alt2_12;
-            } else if (alt2_12.isCutFailure()) {
-                elem0_0 = alt2_12.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_13 = matchLiteralCst("do", false);
-            if (alt2_13.isSuccess() && alt2_13.node.isPresent()) {
-                children.add(alt2_13.node.unwrap());
-            }
-            if (alt2_13.isSuccess()) {
-                elem0_0 = alt2_13;
-            } else if (alt2_13.isCutFailure()) {
-                elem0_0 = alt2_13.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_14 = matchLiteralCst("else", false);
-            if (alt2_14.isSuccess() && alt2_14.node.isPresent()) {
-                children.add(alt2_14.node.unwrap());
-            }
-            if (alt2_14.isSuccess()) {
-                elem0_0 = alt2_14;
-            } else if (alt2_14.isCutFailure()) {
-                elem0_0 = alt2_14.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_15 = matchLiteralCst("enum", false);
-            if (alt2_15.isSuccess() && alt2_15.node.isPresent()) {
-                children.add(alt2_15.node.unwrap());
-            }
-            if (alt2_15.isSuccess()) {
-                elem0_0 = alt2_15;
-            } else if (alt2_15.isCutFailure()) {
-                elem0_0 = alt2_15.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_16 = matchLiteralCst("extends", false);
-            if (alt2_16.isSuccess() && alt2_16.node.isPresent()) {
-                children.add(alt2_16.node.unwrap());
-            }
-            if (alt2_16.isSuccess()) {
-                elem0_0 = alt2_16;
-            } else if (alt2_16.isCutFailure()) {
-                elem0_0 = alt2_16.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_17 = matchLiteralCst("false", false);
-            if (alt2_17.isSuccess() && alt2_17.node.isPresent()) {
-                children.add(alt2_17.node.unwrap());
-            }
-            if (alt2_17.isSuccess()) {
-                elem0_0 = alt2_17;
-            } else if (alt2_17.isCutFailure()) {
-                elem0_0 = alt2_17.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_18 = matchLiteralCst("finally", false);
-            if (alt2_18.isSuccess() && alt2_18.node.isPresent()) {
-                children.add(alt2_18.node.unwrap());
-            }
-            if (alt2_18.isSuccess()) {
-                elem0_0 = alt2_18;
-            } else if (alt2_18.isCutFailure()) {
-                elem0_0 = alt2_18.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_19 = matchLiteralCst("final", false);
-            if (alt2_19.isSuccess() && alt2_19.node.isPresent()) {
-                children.add(alt2_19.node.unwrap());
-            }
-            if (alt2_19.isSuccess()) {
-                elem0_0 = alt2_19;
-            } else if (alt2_19.isCutFailure()) {
-                elem0_0 = alt2_19.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_20 = matchLiteralCst("float", false);
-            if (alt2_20.isSuccess() && alt2_20.node.isPresent()) {
-                children.add(alt2_20.node.unwrap());
-            }
-            if (alt2_20.isSuccess()) {
-                elem0_0 = alt2_20;
-            } else if (alt2_20.isCutFailure()) {
-                elem0_0 = alt2_20.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_21 = matchLiteralCst("for", false);
-            if (alt2_21.isSuccess() && alt2_21.node.isPresent()) {
-                children.add(alt2_21.node.unwrap());
-            }
-            if (alt2_21.isSuccess()) {
-                elem0_0 = alt2_21;
-            } else if (alt2_21.isCutFailure()) {
-                elem0_0 = alt2_21.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_22 = matchLiteralCst("goto", false);
-            if (alt2_22.isSuccess() && alt2_22.node.isPresent()) {
-                children.add(alt2_22.node.unwrap());
-            }
-            if (alt2_22.isSuccess()) {
-                elem0_0 = alt2_22;
-            } else if (alt2_22.isCutFailure()) {
-                elem0_0 = alt2_22.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_23 = matchLiteralCst("implements", false);
-            if (alt2_23.isSuccess() && alt2_23.node.isPresent()) {
-                children.add(alt2_23.node.unwrap());
-            }
-            if (alt2_23.isSuccess()) {
-                elem0_0 = alt2_23;
-            } else if (alt2_23.isCutFailure()) {
-                elem0_0 = alt2_23.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_24 = matchLiteralCst("import", false);
-            if (alt2_24.isSuccess() && alt2_24.node.isPresent()) {
-                children.add(alt2_24.node.unwrap());
-            }
-            if (alt2_24.isSuccess()) {
-                elem0_0 = alt2_24;
-            } else if (alt2_24.isCutFailure()) {
-                elem0_0 = alt2_24.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_25 = matchLiteralCst("instanceof", false);
-            if (alt2_25.isSuccess() && alt2_25.node.isPresent()) {
-                children.add(alt2_25.node.unwrap());
-            }
-            if (alt2_25.isSuccess()) {
-                elem0_0 = alt2_25;
-            } else if (alt2_25.isCutFailure()) {
-                elem0_0 = alt2_25.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_26 = matchLiteralCst("interface", false);
-            if (alt2_26.isSuccess() && alt2_26.node.isPresent()) {
-                children.add(alt2_26.node.unwrap());
-            }
-            if (alt2_26.isSuccess()) {
-                elem0_0 = alt2_26;
-            } else if (alt2_26.isCutFailure()) {
-                elem0_0 = alt2_26.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_27 = matchLiteralCst("int", false);
-            if (alt2_27.isSuccess() && alt2_27.node.isPresent()) {
-                children.add(alt2_27.node.unwrap());
-            }
-            if (alt2_27.isSuccess()) {
-                elem0_0 = alt2_27;
-            } else if (alt2_27.isCutFailure()) {
-                elem0_0 = alt2_27.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_28 = matchLiteralCst("if", false);
-            if (alt2_28.isSuccess() && alt2_28.node.isPresent()) {
-                children.add(alt2_28.node.unwrap());
-            }
-            if (alt2_28.isSuccess()) {
-                elem0_0 = alt2_28;
-            } else if (alt2_28.isCutFailure()) {
-                elem0_0 = alt2_28.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_29 = matchLiteralCst("long", false);
-            if (alt2_29.isSuccess() && alt2_29.node.isPresent()) {
-                children.add(alt2_29.node.unwrap());
-            }
-            if (alt2_29.isSuccess()) {
-                elem0_0 = alt2_29;
-            } else if (alt2_29.isCutFailure()) {
-                elem0_0 = alt2_29.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_30 = matchLiteralCst("native", false);
-            if (alt2_30.isSuccess() && alt2_30.node.isPresent()) {
-                children.add(alt2_30.node.unwrap());
-            }
-            if (alt2_30.isSuccess()) {
-                elem0_0 = alt2_30;
-            } else if (alt2_30.isCutFailure()) {
-                elem0_0 = alt2_30.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_31 = matchLiteralCst("new", false);
-            if (alt2_31.isSuccess() && alt2_31.node.isPresent()) {
-                children.add(alt2_31.node.unwrap());
-            }
-            if (alt2_31.isSuccess()) {
-                elem0_0 = alt2_31;
-            } else if (alt2_31.isCutFailure()) {
-                elem0_0 = alt2_31.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_32 = matchLiteralCst("null", false);
-            if (alt2_32.isSuccess() && alt2_32.node.isPresent()) {
-                children.add(alt2_32.node.unwrap());
-            }
-            if (alt2_32.isSuccess()) {
-                elem0_0 = alt2_32;
-            } else if (alt2_32.isCutFailure()) {
-                elem0_0 = alt2_32.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_33 = matchLiteralCst("package", false);
-            if (alt2_33.isSuccess() && alt2_33.node.isPresent()) {
-                children.add(alt2_33.node.unwrap());
-            }
-            if (alt2_33.isSuccess()) {
-                elem0_0 = alt2_33;
-            } else if (alt2_33.isCutFailure()) {
-                elem0_0 = alt2_33.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_34 = matchLiteralCst("private", false);
-            if (alt2_34.isSuccess() && alt2_34.node.isPresent()) {
-                children.add(alt2_34.node.unwrap());
-            }
-            if (alt2_34.isSuccess()) {
-                elem0_0 = alt2_34;
-            } else if (alt2_34.isCutFailure()) {
-                elem0_0 = alt2_34.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_35 = matchLiteralCst("protected", false);
-            if (alt2_35.isSuccess() && alt2_35.node.isPresent()) {
-                children.add(alt2_35.node.unwrap());
-            }
-            if (alt2_35.isSuccess()) {
-                elem0_0 = alt2_35;
-            } else if (alt2_35.isCutFailure()) {
-                elem0_0 = alt2_35.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_36 = matchLiteralCst("public", false);
-            if (alt2_36.isSuccess() && alt2_36.node.isPresent()) {
-                children.add(alt2_36.node.unwrap());
-            }
-            if (alt2_36.isSuccess()) {
-                elem0_0 = alt2_36;
-            } else if (alt2_36.isCutFailure()) {
-                elem0_0 = alt2_36.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_37 = matchLiteralCst("return", false);
-            if (alt2_37.isSuccess() && alt2_37.node.isPresent()) {
-                children.add(alt2_37.node.unwrap());
-            }
-            if (alt2_37.isSuccess()) {
-                elem0_0 = alt2_37;
-            } else if (alt2_37.isCutFailure()) {
-                elem0_0 = alt2_37.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_38 = matchLiteralCst("short", false);
-            if (alt2_38.isSuccess() && alt2_38.node.isPresent()) {
-                children.add(alt2_38.node.unwrap());
-            }
-            if (alt2_38.isSuccess()) {
-                elem0_0 = alt2_38;
-            } else if (alt2_38.isCutFailure()) {
-                elem0_0 = alt2_38.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_39 = matchLiteralCst("static", false);
-            if (alt2_39.isSuccess() && alt2_39.node.isPresent()) {
-                children.add(alt2_39.node.unwrap());
-            }
-            if (alt2_39.isSuccess()) {
-                elem0_0 = alt2_39;
-            } else if (alt2_39.isCutFailure()) {
-                elem0_0 = alt2_39.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_40 = matchLiteralCst("strictfp", false);
-            if (alt2_40.isSuccess() && alt2_40.node.isPresent()) {
-                children.add(alt2_40.node.unwrap());
-            }
-            if (alt2_40.isSuccess()) {
-                elem0_0 = alt2_40;
-            } else if (alt2_40.isCutFailure()) {
-                elem0_0 = alt2_40.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_41 = matchLiteralCst("super", false);
-            if (alt2_41.isSuccess() && alt2_41.node.isPresent()) {
-                children.add(alt2_41.node.unwrap());
-            }
-            if (alt2_41.isSuccess()) {
-                elem0_0 = alt2_41;
-            } else if (alt2_41.isCutFailure()) {
-                elem0_0 = alt2_41.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_42 = matchLiteralCst("switch", false);
-            if (alt2_42.isSuccess() && alt2_42.node.isPresent()) {
-                children.add(alt2_42.node.unwrap());
-            }
-            if (alt2_42.isSuccess()) {
-                elem0_0 = alt2_42;
-            } else if (alt2_42.isCutFailure()) {
-                elem0_0 = alt2_42.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_43 = matchLiteralCst("synchronized", false);
-            if (alt2_43.isSuccess() && alt2_43.node.isPresent()) {
-                children.add(alt2_43.node.unwrap());
-            }
-            if (alt2_43.isSuccess()) {
-                elem0_0 = alt2_43;
-            } else if (alt2_43.isCutFailure()) {
-                elem0_0 = alt2_43.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_44 = matchLiteralCst("this", false);
-            if (alt2_44.isSuccess() && alt2_44.node.isPresent()) {
-                children.add(alt2_44.node.unwrap());
-            }
-            if (alt2_44.isSuccess()) {
-                elem0_0 = alt2_44;
-            } else if (alt2_44.isCutFailure()) {
-                elem0_0 = alt2_44.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_45 = matchLiteralCst("throws", false);
-            if (alt2_45.isSuccess() && alt2_45.node.isPresent()) {
-                children.add(alt2_45.node.unwrap());
-            }
-            if (alt2_45.isSuccess()) {
-                elem0_0 = alt2_45;
-            } else if (alt2_45.isCutFailure()) {
-                elem0_0 = alt2_45.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_46 = matchLiteralCst("throw", false);
-            if (alt2_46.isSuccess() && alt2_46.node.isPresent()) {
-                children.add(alt2_46.node.unwrap());
-            }
-            if (alt2_46.isSuccess()) {
-                elem0_0 = alt2_46;
-            } else if (alt2_46.isCutFailure()) {
-                elem0_0 = alt2_46.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_47 = matchLiteralCst("transient", false);
-            if (alt2_47.isSuccess() && alt2_47.node.isPresent()) {
-                children.add(alt2_47.node.unwrap());
-            }
-            if (alt2_47.isSuccess()) {
-                elem0_0 = alt2_47;
-            } else if (alt2_47.isCutFailure()) {
-                elem0_0 = alt2_47.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_48 = matchLiteralCst("true", false);
-            if (alt2_48.isSuccess() && alt2_48.node.isPresent()) {
-                children.add(alt2_48.node.unwrap());
-            }
-            if (alt2_48.isSuccess()) {
-                elem0_0 = alt2_48;
-            } else if (alt2_48.isCutFailure()) {
-                elem0_0 = alt2_48.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_49 = matchLiteralCst("try", false);
-            if (alt2_49.isSuccess() && alt2_49.node.isPresent()) {
-                children.add(alt2_49.node.unwrap());
-            }
-            if (alt2_49.isSuccess()) {
-                elem0_0 = alt2_49;
-            } else if (alt2_49.isCutFailure()) {
-                elem0_0 = alt2_49.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_50 = matchLiteralCst("void", false);
-            if (alt2_50.isSuccess() && alt2_50.node.isPresent()) {
-                children.add(alt2_50.node.unwrap());
-            }
-            if (alt2_50.isSuccess()) {
-                elem0_0 = alt2_50;
-            } else if (alt2_50.isCutFailure()) {
-                elem0_0 = alt2_50.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_51 = matchLiteralCst("volatile", false);
-            if (alt2_51.isSuccess() && alt2_51.node.isPresent()) {
-                children.add(alt2_51.node.unwrap());
-            }
-            if (alt2_51.isSuccess()) {
-                elem0_0 = alt2_51;
-            } else if (alt2_51.isCutFailure()) {
-                elem0_0 = alt2_51.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_52 = matchLiteralCst("while", false);
-            if (alt2_52.isSuccess() && alt2_52.node.isPresent()) {
-                children.add(alt2_52.node.unwrap());
-            }
-            if (alt2_52.isSuccess()) {
-                elem0_0 = alt2_52;
-            } else if (alt2_52.isCutFailure()) {
-                elem0_0 = alt2_52.asRegularFailure();
-            } else {
-                restoreLocation(choiceStart2);
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
+            if (pos < input.length()) {
+                char dispatchChar2 = input.charAt(pos);
+                switch (dispatchChar2) {
+                    case 'a':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_0 = matchLiteralCst("abstract", false);
+                        if (alt2_0.isSuccess() && alt2_0.node.isPresent()) {
+                            children.add(alt2_0.node.unwrap());
+                        }
+                        if (alt2_0.isSuccess()) {
+                            elem0_0 = alt2_0;
+                        } else if (alt2_0.isCutFailure()) {
+                            elem0_0 = alt2_0.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_1 = matchLiteralCst("assert", false);
+                        if (alt2_1.isSuccess() && alt2_1.node.isPresent()) {
+                            children.add(alt2_1.node.unwrap());
+                        }
+                        if (alt2_1.isSuccess()) {
+                            elem0_0 = alt2_1;
+                        } else if (alt2_1.isCutFailure()) {
+                            elem0_0 = alt2_1.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        }
+                        }
+                        break;
+                    }
+                    case 'b':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_2 = matchLiteralCst("boolean", false);
+                        if (alt2_2.isSuccess() && alt2_2.node.isPresent()) {
+                            children.add(alt2_2.node.unwrap());
+                        }
+                        if (alt2_2.isSuccess()) {
+                            elem0_0 = alt2_2;
+                        } else if (alt2_2.isCutFailure()) {
+                            elem0_0 = alt2_2.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_3 = matchLiteralCst("break", false);
+                        if (alt2_3.isSuccess() && alt2_3.node.isPresent()) {
+                            children.add(alt2_3.node.unwrap());
+                        }
+                        if (alt2_3.isSuccess()) {
+                            elem0_0 = alt2_3;
+                        } else if (alt2_3.isCutFailure()) {
+                            elem0_0 = alt2_3.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_4 = matchLiteralCst("byte", false);
+                        if (alt2_4.isSuccess() && alt2_4.node.isPresent()) {
+                            children.add(alt2_4.node.unwrap());
+                        }
+                        if (alt2_4.isSuccess()) {
+                            elem0_0 = alt2_4;
+                        } else if (alt2_4.isCutFailure()) {
+                            elem0_0 = alt2_4.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        }
+                        }
+                        }
+                        break;
+                    }
+                    case 'c':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_5 = matchLiteralCst("case", false);
+                        if (alt2_5.isSuccess() && alt2_5.node.isPresent()) {
+                            children.add(alt2_5.node.unwrap());
+                        }
+                        if (alt2_5.isSuccess()) {
+                            elem0_0 = alt2_5;
+                        } else if (alt2_5.isCutFailure()) {
+                            elem0_0 = alt2_5.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_6 = matchLiteralCst("catch", false);
+                        if (alt2_6.isSuccess() && alt2_6.node.isPresent()) {
+                            children.add(alt2_6.node.unwrap());
+                        }
+                        if (alt2_6.isSuccess()) {
+                            elem0_0 = alt2_6;
+                        } else if (alt2_6.isCutFailure()) {
+                            elem0_0 = alt2_6.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_7 = matchLiteralCst("char", false);
+                        if (alt2_7.isSuccess() && alt2_7.node.isPresent()) {
+                            children.add(alt2_7.node.unwrap());
+                        }
+                        if (alt2_7.isSuccess()) {
+                            elem0_0 = alt2_7;
+                        } else if (alt2_7.isCutFailure()) {
+                            elem0_0 = alt2_7.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_8 = matchLiteralCst("class", false);
+                        if (alt2_8.isSuccess() && alt2_8.node.isPresent()) {
+                            children.add(alt2_8.node.unwrap());
+                        }
+                        if (alt2_8.isSuccess()) {
+                            elem0_0 = alt2_8;
+                        } else if (alt2_8.isCutFailure()) {
+                            elem0_0 = alt2_8.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_9 = matchLiteralCst("const", false);
+                        if (alt2_9.isSuccess() && alt2_9.node.isPresent()) {
+                            children.add(alt2_9.node.unwrap());
+                        }
+                        if (alt2_9.isSuccess()) {
+                            elem0_0 = alt2_9;
+                        } else if (alt2_9.isCutFailure()) {
+                            elem0_0 = alt2_9.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_10 = matchLiteralCst("continue", false);
+                        if (alt2_10.isSuccess() && alt2_10.node.isPresent()) {
+                            children.add(alt2_10.node.unwrap());
+                        }
+                        if (alt2_10.isSuccess()) {
+                            elem0_0 = alt2_10;
+                        } else if (alt2_10.isCutFailure()) {
+                            elem0_0 = alt2_10.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        }
+                        }
+                        }
+                        }
+                        }
+                        }
+                        break;
+                    }
+                    case 'd':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_11 = matchLiteralCst("default", false);
+                        if (alt2_11.isSuccess() && alt2_11.node.isPresent()) {
+                            children.add(alt2_11.node.unwrap());
+                        }
+                        if (alt2_11.isSuccess()) {
+                            elem0_0 = alt2_11;
+                        } else if (alt2_11.isCutFailure()) {
+                            elem0_0 = alt2_11.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_12 = matchLiteralCst("double", false);
+                        if (alt2_12.isSuccess() && alt2_12.node.isPresent()) {
+                            children.add(alt2_12.node.unwrap());
+                        }
+                        if (alt2_12.isSuccess()) {
+                            elem0_0 = alt2_12;
+                        } else if (alt2_12.isCutFailure()) {
+                            elem0_0 = alt2_12.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_13 = matchLiteralCst("do", false);
+                        if (alt2_13.isSuccess() && alt2_13.node.isPresent()) {
+                            children.add(alt2_13.node.unwrap());
+                        }
+                        if (alt2_13.isSuccess()) {
+                            elem0_0 = alt2_13;
+                        } else if (alt2_13.isCutFailure()) {
+                            elem0_0 = alt2_13.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        }
+                        }
+                        }
+                        break;
+                    }
+                    case 'e':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_14 = matchLiteralCst("else", false);
+                        if (alt2_14.isSuccess() && alt2_14.node.isPresent()) {
+                            children.add(alt2_14.node.unwrap());
+                        }
+                        if (alt2_14.isSuccess()) {
+                            elem0_0 = alt2_14;
+                        } else if (alt2_14.isCutFailure()) {
+                            elem0_0 = alt2_14.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_15 = matchLiteralCst("enum", false);
+                        if (alt2_15.isSuccess() && alt2_15.node.isPresent()) {
+                            children.add(alt2_15.node.unwrap());
+                        }
+                        if (alt2_15.isSuccess()) {
+                            elem0_0 = alt2_15;
+                        } else if (alt2_15.isCutFailure()) {
+                            elem0_0 = alt2_15.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_16 = matchLiteralCst("extends", false);
+                        if (alt2_16.isSuccess() && alt2_16.node.isPresent()) {
+                            children.add(alt2_16.node.unwrap());
+                        }
+                        if (alt2_16.isSuccess()) {
+                            elem0_0 = alt2_16;
+                        } else if (alt2_16.isCutFailure()) {
+                            elem0_0 = alt2_16.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        }
+                        }
+                        }
+                        break;
+                    }
+                    case 'f':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_17 = matchLiteralCst("false", false);
+                        if (alt2_17.isSuccess() && alt2_17.node.isPresent()) {
+                            children.add(alt2_17.node.unwrap());
+                        }
+                        if (alt2_17.isSuccess()) {
+                            elem0_0 = alt2_17;
+                        } else if (alt2_17.isCutFailure()) {
+                            elem0_0 = alt2_17.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_18 = matchLiteralCst("finally", false);
+                        if (alt2_18.isSuccess() && alt2_18.node.isPresent()) {
+                            children.add(alt2_18.node.unwrap());
+                        }
+                        if (alt2_18.isSuccess()) {
+                            elem0_0 = alt2_18;
+                        } else if (alt2_18.isCutFailure()) {
+                            elem0_0 = alt2_18.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_19 = matchLiteralCst("final", false);
+                        if (alt2_19.isSuccess() && alt2_19.node.isPresent()) {
+                            children.add(alt2_19.node.unwrap());
+                        }
+                        if (alt2_19.isSuccess()) {
+                            elem0_0 = alt2_19;
+                        } else if (alt2_19.isCutFailure()) {
+                            elem0_0 = alt2_19.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_20 = matchLiteralCst("float", false);
+                        if (alt2_20.isSuccess() && alt2_20.node.isPresent()) {
+                            children.add(alt2_20.node.unwrap());
+                        }
+                        if (alt2_20.isSuccess()) {
+                            elem0_0 = alt2_20;
+                        } else if (alt2_20.isCutFailure()) {
+                            elem0_0 = alt2_20.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_21 = matchLiteralCst("for", false);
+                        if (alt2_21.isSuccess() && alt2_21.node.isPresent()) {
+                            children.add(alt2_21.node.unwrap());
+                        }
+                        if (alt2_21.isSuccess()) {
+                            elem0_0 = alt2_21;
+                        } else if (alt2_21.isCutFailure()) {
+                            elem0_0 = alt2_21.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        }
+                        }
+                        }
+                        }
+                        }
+                        break;
+                    }
+                    case 'g':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_22 = matchLiteralCst("goto", false);
+                        if (alt2_22.isSuccess() && alt2_22.node.isPresent()) {
+                            children.add(alt2_22.node.unwrap());
+                        }
+                        if (alt2_22.isSuccess()) {
+                            elem0_0 = alt2_22;
+                        } else if (alt2_22.isCutFailure()) {
+                            elem0_0 = alt2_22.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        }
+                        break;
+                    }
+                    case 'i':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_23 = matchLiteralCst("implements", false);
+                        if (alt2_23.isSuccess() && alt2_23.node.isPresent()) {
+                            children.add(alt2_23.node.unwrap());
+                        }
+                        if (alt2_23.isSuccess()) {
+                            elem0_0 = alt2_23;
+                        } else if (alt2_23.isCutFailure()) {
+                            elem0_0 = alt2_23.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_24 = matchLiteralCst("import", false);
+                        if (alt2_24.isSuccess() && alt2_24.node.isPresent()) {
+                            children.add(alt2_24.node.unwrap());
+                        }
+                        if (alt2_24.isSuccess()) {
+                            elem0_0 = alt2_24;
+                        } else if (alt2_24.isCutFailure()) {
+                            elem0_0 = alt2_24.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_25 = matchLiteralCst("instanceof", false);
+                        if (alt2_25.isSuccess() && alt2_25.node.isPresent()) {
+                            children.add(alt2_25.node.unwrap());
+                        }
+                        if (alt2_25.isSuccess()) {
+                            elem0_0 = alt2_25;
+                        } else if (alt2_25.isCutFailure()) {
+                            elem0_0 = alt2_25.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_26 = matchLiteralCst("interface", false);
+                        if (alt2_26.isSuccess() && alt2_26.node.isPresent()) {
+                            children.add(alt2_26.node.unwrap());
+                        }
+                        if (alt2_26.isSuccess()) {
+                            elem0_0 = alt2_26;
+                        } else if (alt2_26.isCutFailure()) {
+                            elem0_0 = alt2_26.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_27 = matchLiteralCst("int", false);
+                        if (alt2_27.isSuccess() && alt2_27.node.isPresent()) {
+                            children.add(alt2_27.node.unwrap());
+                        }
+                        if (alt2_27.isSuccess()) {
+                            elem0_0 = alt2_27;
+                        } else if (alt2_27.isCutFailure()) {
+                            elem0_0 = alt2_27.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_28 = matchLiteralCst("if", false);
+                        if (alt2_28.isSuccess() && alt2_28.node.isPresent()) {
+                            children.add(alt2_28.node.unwrap());
+                        }
+                        if (alt2_28.isSuccess()) {
+                            elem0_0 = alt2_28;
+                        } else if (alt2_28.isCutFailure()) {
+                            elem0_0 = alt2_28.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        }
+                        }
+                        }
+                        }
+                        }
+                        }
+                        break;
+                    }
+                    case 'l':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_29 = matchLiteralCst("long", false);
+                        if (alt2_29.isSuccess() && alt2_29.node.isPresent()) {
+                            children.add(alt2_29.node.unwrap());
+                        }
+                        if (alt2_29.isSuccess()) {
+                            elem0_0 = alt2_29;
+                        } else if (alt2_29.isCutFailure()) {
+                            elem0_0 = alt2_29.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        }
+                        break;
+                    }
+                    case 'n':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_30 = matchLiteralCst("native", false);
+                        if (alt2_30.isSuccess() && alt2_30.node.isPresent()) {
+                            children.add(alt2_30.node.unwrap());
+                        }
+                        if (alt2_30.isSuccess()) {
+                            elem0_0 = alt2_30;
+                        } else if (alt2_30.isCutFailure()) {
+                            elem0_0 = alt2_30.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_31 = matchLiteralCst("new", false);
+                        if (alt2_31.isSuccess() && alt2_31.node.isPresent()) {
+                            children.add(alt2_31.node.unwrap());
+                        }
+                        if (alt2_31.isSuccess()) {
+                            elem0_0 = alt2_31;
+                        } else if (alt2_31.isCutFailure()) {
+                            elem0_0 = alt2_31.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_32 = matchLiteralCst("null", false);
+                        if (alt2_32.isSuccess() && alt2_32.node.isPresent()) {
+                            children.add(alt2_32.node.unwrap());
+                        }
+                        if (alt2_32.isSuccess()) {
+                            elem0_0 = alt2_32;
+                        } else if (alt2_32.isCutFailure()) {
+                            elem0_0 = alt2_32.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        }
+                        }
+                        }
+                        break;
+                    }
+                    case 'p':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_33 = matchLiteralCst("package", false);
+                        if (alt2_33.isSuccess() && alt2_33.node.isPresent()) {
+                            children.add(alt2_33.node.unwrap());
+                        }
+                        if (alt2_33.isSuccess()) {
+                            elem0_0 = alt2_33;
+                        } else if (alt2_33.isCutFailure()) {
+                            elem0_0 = alt2_33.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_34 = matchLiteralCst("private", false);
+                        if (alt2_34.isSuccess() && alt2_34.node.isPresent()) {
+                            children.add(alt2_34.node.unwrap());
+                        }
+                        if (alt2_34.isSuccess()) {
+                            elem0_0 = alt2_34;
+                        } else if (alt2_34.isCutFailure()) {
+                            elem0_0 = alt2_34.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_35 = matchLiteralCst("protected", false);
+                        if (alt2_35.isSuccess() && alt2_35.node.isPresent()) {
+                            children.add(alt2_35.node.unwrap());
+                        }
+                        if (alt2_35.isSuccess()) {
+                            elem0_0 = alt2_35;
+                        } else if (alt2_35.isCutFailure()) {
+                            elem0_0 = alt2_35.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_36 = matchLiteralCst("public", false);
+                        if (alt2_36.isSuccess() && alt2_36.node.isPresent()) {
+                            children.add(alt2_36.node.unwrap());
+                        }
+                        if (alt2_36.isSuccess()) {
+                            elem0_0 = alt2_36;
+                        } else if (alt2_36.isCutFailure()) {
+                            elem0_0 = alt2_36.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        }
+                        }
+                        }
+                        }
+                        break;
+                    }
+                    case 'r':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_37 = matchLiteralCst("return", false);
+                        if (alt2_37.isSuccess() && alt2_37.node.isPresent()) {
+                            children.add(alt2_37.node.unwrap());
+                        }
+                        if (alt2_37.isSuccess()) {
+                            elem0_0 = alt2_37;
+                        } else if (alt2_37.isCutFailure()) {
+                            elem0_0 = alt2_37.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        }
+                        break;
+                    }
+                    case 's':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_38 = matchLiteralCst("short", false);
+                        if (alt2_38.isSuccess() && alt2_38.node.isPresent()) {
+                            children.add(alt2_38.node.unwrap());
+                        }
+                        if (alt2_38.isSuccess()) {
+                            elem0_0 = alt2_38;
+                        } else if (alt2_38.isCutFailure()) {
+                            elem0_0 = alt2_38.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_39 = matchLiteralCst("static", false);
+                        if (alt2_39.isSuccess() && alt2_39.node.isPresent()) {
+                            children.add(alt2_39.node.unwrap());
+                        }
+                        if (alt2_39.isSuccess()) {
+                            elem0_0 = alt2_39;
+                        } else if (alt2_39.isCutFailure()) {
+                            elem0_0 = alt2_39.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_40 = matchLiteralCst("strictfp", false);
+                        if (alt2_40.isSuccess() && alt2_40.node.isPresent()) {
+                            children.add(alt2_40.node.unwrap());
+                        }
+                        if (alt2_40.isSuccess()) {
+                            elem0_0 = alt2_40;
+                        } else if (alt2_40.isCutFailure()) {
+                            elem0_0 = alt2_40.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_41 = matchLiteralCst("super", false);
+                        if (alt2_41.isSuccess() && alt2_41.node.isPresent()) {
+                            children.add(alt2_41.node.unwrap());
+                        }
+                        if (alt2_41.isSuccess()) {
+                            elem0_0 = alt2_41;
+                        } else if (alt2_41.isCutFailure()) {
+                            elem0_0 = alt2_41.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_42 = matchLiteralCst("switch", false);
+                        if (alt2_42.isSuccess() && alt2_42.node.isPresent()) {
+                            children.add(alt2_42.node.unwrap());
+                        }
+                        if (alt2_42.isSuccess()) {
+                            elem0_0 = alt2_42;
+                        } else if (alt2_42.isCutFailure()) {
+                            elem0_0 = alt2_42.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_43 = matchLiteralCst("synchronized", false);
+                        if (alt2_43.isSuccess() && alt2_43.node.isPresent()) {
+                            children.add(alt2_43.node.unwrap());
+                        }
+                        if (alt2_43.isSuccess()) {
+                            elem0_0 = alt2_43;
+                        } else if (alt2_43.isCutFailure()) {
+                            elem0_0 = alt2_43.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        }
+                        }
+                        }
+                        }
+                        }
+                        }
+                        break;
+                    }
+                    case 't':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_44 = matchLiteralCst("this", false);
+                        if (alt2_44.isSuccess() && alt2_44.node.isPresent()) {
+                            children.add(alt2_44.node.unwrap());
+                        }
+                        if (alt2_44.isSuccess()) {
+                            elem0_0 = alt2_44;
+                        } else if (alt2_44.isCutFailure()) {
+                            elem0_0 = alt2_44.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_45 = matchLiteralCst("throws", false);
+                        if (alt2_45.isSuccess() && alt2_45.node.isPresent()) {
+                            children.add(alt2_45.node.unwrap());
+                        }
+                        if (alt2_45.isSuccess()) {
+                            elem0_0 = alt2_45;
+                        } else if (alt2_45.isCutFailure()) {
+                            elem0_0 = alt2_45.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_46 = matchLiteralCst("throw", false);
+                        if (alt2_46.isSuccess() && alt2_46.node.isPresent()) {
+                            children.add(alt2_46.node.unwrap());
+                        }
+                        if (alt2_46.isSuccess()) {
+                            elem0_0 = alt2_46;
+                        } else if (alt2_46.isCutFailure()) {
+                            elem0_0 = alt2_46.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_47 = matchLiteralCst("transient", false);
+                        if (alt2_47.isSuccess() && alt2_47.node.isPresent()) {
+                            children.add(alt2_47.node.unwrap());
+                        }
+                        if (alt2_47.isSuccess()) {
+                            elem0_0 = alt2_47;
+                        } else if (alt2_47.isCutFailure()) {
+                            elem0_0 = alt2_47.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_48 = matchLiteralCst("true", false);
+                        if (alt2_48.isSuccess() && alt2_48.node.isPresent()) {
+                            children.add(alt2_48.node.unwrap());
+                        }
+                        if (alt2_48.isSuccess()) {
+                            elem0_0 = alt2_48;
+                        } else if (alt2_48.isCutFailure()) {
+                            elem0_0 = alt2_48.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_49 = matchLiteralCst("try", false);
+                        if (alt2_49.isSuccess() && alt2_49.node.isPresent()) {
+                            children.add(alt2_49.node.unwrap());
+                        }
+                        if (alt2_49.isSuccess()) {
+                            elem0_0 = alt2_49;
+                        } else if (alt2_49.isCutFailure()) {
+                            elem0_0 = alt2_49.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        }
+                        }
+                        }
+                        }
+                        }
+                        }
+                        break;
+                    }
+                    case 'v':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_50 = matchLiteralCst("void", false);
+                        if (alt2_50.isSuccess() && alt2_50.node.isPresent()) {
+                            children.add(alt2_50.node.unwrap());
+                        }
+                        if (alt2_50.isSuccess()) {
+                            elem0_0 = alt2_50;
+                        } else if (alt2_50.isCutFailure()) {
+                            elem0_0 = alt2_50.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_51 = matchLiteralCst("volatile", false);
+                        if (alt2_51.isSuccess() && alt2_51.node.isPresent()) {
+                            children.add(alt2_51.node.unwrap());
+                        }
+                        if (alt2_51.isSuccess()) {
+                            elem0_0 = alt2_51;
+                        } else if (alt2_51.isCutFailure()) {
+                            elem0_0 = alt2_51.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        }
+                        }
+                        break;
+                    }
+                    case 'w':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_52 = matchLiteralCst("while", false);
+                        if (alt2_52.isSuccess() && alt2_52.node.isPresent()) {
+                            children.add(alt2_52.node.unwrap());
+                        }
+                        if (alt2_52.isSuccess()) {
+                            elem0_0 = alt2_52;
+                        } else if (alt2_52.isCutFailure()) {
+                            elem0_0 = alt2_52.asRegularFailure();
+                        } else {
+                            restoreLocation(choiceStart2);
+                        }
+                        break;
+                    }
+                }
             }
             if (elem0_0 == null) {
                 children.clear();
@@ -25326,21 +25748,10 @@ public final class Java25Parser {
 
     // === Helper Methods ===
 
-    /// Drain any pending (buffered) trivia and combine with freshly-skipped whitespace.
-    /// Used at rule entry points where leadingTrivia is captured.
-    private List<Trivia> drainTriviaAndSkipWhitespace() {
-        var fresh = skipWhitespace();
-        if (pendingTrivia.isEmpty()) {
-            return fresh;
-        }
-        var combined = new ArrayList<Trivia>(pendingTrivia.size() + fresh.size());
-        combined.addAll(pendingTrivia);
-        combined.addAll(fresh);
-        pendingTrivia.clear();
-        return combined;
-    }
-
     private List<Trivia> skipWhitespace() {
+        if (skippingWhitespace || tokenBoundaryDepth > 0 || pos >= input.length()) return List.of();
+        char c = input.charAt(pos);
+        if (c != ' ' && c != '\t' && c != '\r' && c != '\n' && c != '/') return List.of();
         var trivia = new ArrayList<Trivia>();
         if (skippingWhitespace || tokenBoundaryDepth > 0) return trivia;
         skippingWhitespace = true;
@@ -25554,33 +25965,51 @@ public final class Java25Parser {
         };
     }
 
+
     private CstParseResult matchLiteralCst(String text, boolean caseInsensitive) {
-        if (remaining() < text.length()) {
-            trackFailure("'" + text + "'");
-            return CstParseResult.failure("'" + text + "'");
+        int len = text.length();
+        if (input.length() - pos < len) {
+            var f = literalFailure(text);
+            trackFailure(f.expected.unwrap());
+            return f;
         }
         var startLoc = location();
-        for (int i = 0; i < text.length(); i++) {
-            char expected = text.charAt(i);
-            char actual = peek(i);
-            if (caseInsensitive) {
-                if (Character.toLowerCase(expected) != Character.toLowerCase(actual)) {
-                    trackFailure("'" + text + "'");
-                    return CstParseResult.failure("'" + text + "'");
+        if (caseInsensitive) {
+            for (int i = 0; i < len; i++) {
+                if (Character.toLowerCase(text.charAt(i)) != Character.toLowerCase(input.charAt(pos + i))) {
+                    var f = literalFailure(text);
+                    trackFailure(f.expected.unwrap());
+                    return f;
                 }
-            } else {
-                if (expected != actual) {
-                    trackFailure("'" + text + "'");
-                    return CstParseResult.failure("'" + text + "'");
+            }
+        } else {
+            for (int i = 0; i < len; i++) {
+                if (text.charAt(i) != input.charAt(pos + i)) {
+                    var f = literalFailure(text);
+                    trackFailure(f.expected.unwrap());
+                    return f;
                 }
             }
         }
-        for (int i = 0; i < text.length(); i++) {
-            advance();
+        if (text.indexOf('\n') < 0) {
+            pos += len;
+            column += len;
+        } else {
+            for (int i = 0; i < len; i++) advance();
         }
-        var span = SourceSpan.of(startLoc, location());
+        var endLoc = location();
+        var span = SourceSpan.of(startLoc, endLoc);
         var node = new CstNode.Terminal(span, RULE_PEG_LITERAL, text, List.of(), List.of());
-        return CstParseResult.success(node, text, location());
+        return CstParseResult.success(node, text, endLoc);
+    }
+
+    private CstParseResult literalFailure(String text) {
+        CstParseResult r = literalFailureCache.get(text);
+        if (r == null) {
+            r = CstParseResult.failure("'" + text + "'");
+            literalFailureCache.put(text, r);
+        }
+        return r;
     }
 
     private CstParseResult matchDictionaryCst(List<String> words, boolean caseInsensitive) {
@@ -25600,9 +26029,10 @@ public final class Java25Parser {
         for (int i = 0; i < longestLen; i++) {
             advance();
         }
-        var span = SourceSpan.of(startLoc, location());
+        var endLoc = location();
+        var span = SourceSpan.of(startLoc, endLoc);
         var node = new CstNode.Terminal(span, RULE_PEG_LITERAL, longestMatch, List.of(), List.of());
-        return CstParseResult.success(node, longestMatch, location());
+        return CstParseResult.success(node, longestMatch, endLoc);
     }
 
     private boolean matchesWord(String word, boolean caseInsensitive) {
@@ -25621,22 +26051,35 @@ public final class Java25Parser {
 
     private CstParseResult matchCharClassCst(String pattern, boolean negated, boolean caseInsensitive) {
         if (isAtEnd()) {
-            trackFailure("[" + (negated ? "^" : "") + pattern + "]");
-            return CstParseResult.failure("character class");
+            var f = charClassFailure(pattern, negated);
+            trackFailure(f.expected.unwrap());
+            return f;
         }
         var startLoc = location();
         char c = peek();
         boolean matches = matchesPattern(c, pattern, caseInsensitive);
         if (negated) matches = !matches;
         if (!matches) {
-            trackFailure("[" + (negated ? "^" : "") + pattern + "]");
-            return CstParseResult.failure("character class");
+            var f = charClassFailure(pattern, negated);
+            trackFailure(f.expected.unwrap());
+            return f;
         }
         advance();
         var text = String.valueOf(c);
-        var span = SourceSpan.of(startLoc, location());
+        var endLoc = location();
+        var span = SourceSpan.of(startLoc, endLoc);
         var node = new CstNode.Terminal(span, RULE_PEG_CHAR_CLASS, text, List.of(), List.of());
-        return CstParseResult.success(node, text, location());
+        return CstParseResult.success(node, text, endLoc);
+    }
+
+    private CstParseResult charClassFailure(String pattern, boolean negated) {
+        String key = negated ? "^" + pattern : pattern;
+        CstParseResult r = charClassFailureCache.get(key);
+        if (r == null) {
+            r = CstParseResult.failure("[" + (negated ? "^" : "") + pattern + "]");
+            charClassFailureCache.put(key, r);
+        }
+        return r;
     }
 
     private boolean matchesPattern(char c, String pattern, boolean caseInsensitive) {
@@ -25706,9 +26149,10 @@ public final class Java25Parser {
         var startLoc = location();
         char c = advance();
         var text = String.valueOf(c);
-        var span = SourceSpan.of(startLoc, location());
+        var endLoc = location();
+        var span = SourceSpan.of(startLoc, endLoc);
         var node = new CstNode.Terminal(span, RULE_PEG_ANY, text, List.of(), List.of());
-        return CstParseResult.success(node, text, location());
+        return CstParseResult.success(node, text, endLoc);
     }
 
     // === CST Parse Result ===
