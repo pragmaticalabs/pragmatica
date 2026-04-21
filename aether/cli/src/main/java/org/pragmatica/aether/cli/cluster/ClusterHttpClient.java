@@ -9,6 +9,7 @@ import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -26,23 +27,15 @@ public sealed interface ClusterHttpClient {
 
     HttpOperations HTTP_OPS = JdkHttpOperations.jdkHttpOperations();
 
-    /// Optional endpoint override — set by AetherCli when `-c/--connect/--endpoint` is provided.
-    /// When set, takes precedence over ClusterRegistry lookup. Without this override,
-    /// `cluster generation`, `cluster await-quiesced`, and other ClusterHttpClient-backed
-    /// subcommands ignore the `-c` flag and fall back to the registry, which fails with
-    /// ConnectException when no active cluster is registered locally.
     java.util.concurrent.atomic.AtomicReference<String> ENDPOINT_OVERRIDE = new java.util.concurrent.atomic.AtomicReference<>();
 
-    /// Optional API-key override — set by AetherCli when `--api-key` is provided.
-    /// Same reasoning as ENDPOINT_OVERRIDE: without this, `resolveApiKey` falls back
-    /// to the local ClusterRegistry and ignores the explicit CLI flag.
     java.util.concurrent.atomic.AtomicReference<String> API_KEY_OVERRIDE = new java.util.concurrent.atomic.AtomicReference<>();
 
-    static void setEndpointOverride(String endpointUrl) {
+    @Contract static void setEndpointOverride(String endpointUrl) {
         ENDPOINT_OVERRIDE.set(endpointUrl);
     }
 
-    static void setApiKeyOverride(String apiKey) {
+    @Contract static void setApiKeyOverride(String apiKey) {
         API_KEY_OVERRIDE.set(apiKey);
     }
 
