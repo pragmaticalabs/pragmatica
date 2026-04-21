@@ -246,6 +246,56 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
     }
 
     @Test
+    void reconcile_redispatches_whenTargetChangesMidReconciling() {
+        // Regression for Bug W: scale-up 5→7 places CTM in Reconciling(target=7, current=5).
+        // Before the new target (7) is reached, operator scales back down to 5. The snapshot's
+        // desiredCoreSize becomes 5 and actual membership reaches 7 (both provisioned nodes joined).
+        // Without the stale-target guard, handleSurplus short-circuits on `instanceof Reconciling`
+        // and the cluster stays stuck for minutes. With the fix, reconcileActive detects the target
+        // change, resets to Converged, and handleSurplus then terminates the surplus.
+        //
+        // Step 1: activate in a converged state (desired=5, actual=5) — bypasses Forming.
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            5,
+                                            5,
+                                            Set.of(PEER_A, PEER_B)),
+                               1L);
+        ctm.activate();
+        assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Converged.class);
+
+        // Step 2: operator scales up to 7 — deficit triggers provisioning and enters Reconciling(target=7).
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            5,
+                                            7,
+                                            Set.of(PEER_A, PEER_B)),
+                               2L);
+        ctm.onTopologyChange(org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Reconciling.class);
+        var reconciling = (NodeReconcilerState.Reconciling) ctm.reconcilerState();
+        assertThat(reconciling.targetSize()).isEqualTo(7);
+        assertThat(lifecycleManager.provisionCount.get()).isGreaterThanOrEqualTo(1);
+
+        // Step 3: operator scales back down to 5 while the previous scale-up is still in-flight.
+        // Both provisioned nodes joined (snapshot actual=7) with desired=5.
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            7,
+                                            5,
+                                            Set.of(PEER_A, PEER_B)),
+                               3L);
+
+        // Step 4: next reconcile trigger (topology event, safety-net poll, or onNodeReady).
+        ctm.onTopologyChange(org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded(PEER_B, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+
+        // The stale-target guard transitions Reconciling(target=7) → Converged and re-dispatches
+        // handleSurplus, which terminates the CTM-provisioned surplus (PEER_A and/or PEER_B).
+        assertThat(lifecycleManager.terminateCount.get()).isGreaterThanOrEqualTo(1);
+        assertThat(lifecycleManager.terminatedNodeIds()).isSubsetOf(Set.of(PEER_A, PEER_B));
+    }
+
+    @Test
     void reconcile_observesNewSnapshotTerm_onSubsequentTrigger() {
         snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),

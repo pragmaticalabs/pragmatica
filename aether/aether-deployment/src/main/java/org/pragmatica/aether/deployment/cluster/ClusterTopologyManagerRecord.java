@@ -362,8 +362,16 @@ import static org.pragmatica.lang.Unit.unit;
         var configured = snapshot.unwrap().desiredCoreSize();
         if (configured == 0) {return;}
         var actual = snapshotHealthyOnDutyCount();
+        var effectiveState = currentState;
+        if (effectiveState instanceof NodeReconcilerState.Reconciling reconciling && reconciling.targetSize() != configured) {
+            log.info("CTM: reconcile target changed during Reconciling ({} → {}), resetting to Converged for re-dispatch",
+                     reconciling.targetSize(),
+                     configured);
+            transitionTo(new NodeReconcilerState.Converged());
+            effectiveState = stateRef.get();
+        }
         if (actual == configured) {
-            if (! (currentState instanceof NodeReconcilerState.Converged)) {transitionTo(new NodeReconcilerState.Converged());}
+            if (! (effectiveState instanceof NodeReconcilerState.Converged)) {transitionTo(new NodeReconcilerState.Converged());}
             return;
         }
         if (actual <configured) {handleDeficit(actual, configured);} else {handleSurplus(actual, configured);}
