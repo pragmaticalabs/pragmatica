@@ -25,7 +25,7 @@
     </modules>
 
     <properties>
-        <peglib.version>0.2.1</peglib.version>
+        <peglib.version>0.2.2</peglib.version>
     </properties>
 
     <dependencyManagement>

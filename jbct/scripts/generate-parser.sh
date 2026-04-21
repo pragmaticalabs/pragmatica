@@ -56,9 +56,12 @@ GENERATOR_FILE="$TEMP_DIR/GenerateParser.java"
 
 cat > "$GENERATOR_FILE" << 'GENERATOR_CODE'
 import org.pragmatica.peg.PegParser;
+import org.pragmatica.peg.error.RecoveryStrategy;
 import org.pragmatica.peg.generator.ErrorReporting;
+import org.pragmatica.peg.parser.ParserConfig;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Set;
 
 public class GenerateParser {
     public static void main(String[] args) throws Exception {
@@ -74,6 +77,10 @@ public class GenerateParser {
 
         var grammar = Files.readString(Path.of(grammarFile));
 
+        // Use ParserConfig.DEFAULT: phase-1 flags + choiceDispatch on. Per peglib 0.2.2
+        // CHANGELOG, this is the fastest config on the Java grammar (4.23× vs no flags);
+        // adding markResetChildren / inlineLocations individually is net-negative and the
+        // all-structural combo lands slightly behind DEFAULT.
         var result = PegParser.generateCstParser(grammar, packageName, className, ErrorReporting.ADVANCED);
 
         if (result.isFailure()) {
@@ -91,7 +98,7 @@ public class GenerateParser {
 GENERATOR_CODE
 
 # Compile and run generator
-PEGLIB_JAR="$HOME/.m2/repository/org/pragmatica-lite/peglib/0.2.1/peglib-0.2.1.jar"
+PEGLIB_JAR="$HOME/.m2/repository/org/pragmatica-lite/peglib/0.2.2/peglib-0.2.2.jar"
 CORE_JAR="$HOME/.m2/repository/org/pragmatica-lite/core/1.0.0-rc1/core-1.0.0-rc1.jar"
 CLASSPATH="$PEGLIB_JAR:$CORE_JAR"
 
