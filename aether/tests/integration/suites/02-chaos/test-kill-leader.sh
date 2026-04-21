@@ -24,6 +24,10 @@ test_kill_leader_and_reelect() {
     # Legitimate chaos window: give SWIM/Rabia failure detection a window to fire.
     sleep 10
 
+    # Pinned MGMT_ENTRY_POINT may have been the leader we just killed — rotate to a
+    # surviving core node so CLI calls below can reach the cluster.
+    rotate_mgmt_entry_point || log_warn "No surviving core node reachable"
+
     # Poll for new leader via CLI failover (server-side quiescence may lag without a
     # live leader to advance the snapshot; wait_for_leader polls direct mgmt ports).
     # Rabia re-election can take up to ~60s in adverse timing.

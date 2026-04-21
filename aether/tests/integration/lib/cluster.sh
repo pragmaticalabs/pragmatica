@@ -53,6 +53,25 @@ pick_non_leader() {
     done
 }
 
+# Rotate MGMT_ENTRY_POINT to any surviving core node reachable on ports MGMT_PORT..MGMT_PORT+NODE_COUNT-1.
+# Chaos tests that kill the current entry point call this AFTER the kill to restore CLI access.
+# Normal tests don't need this — they rely on the pinned entry point + product forwarding.
+rotate_mgmt_entry_point() {
+    local base_port="${MGMT_PORT}"
+    for i in $(seq 0 $((NODE_COUNT - 1))); do
+        local port=$((base_port + i))
+        local endpoint="http://${TARGET_HOST}:${port}"
+        if curl -sf -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
+            export MGMT_ENTRY_POINT="$endpoint"
+            export CLUSTER_ENDPOINT="$endpoint"
+            log_info "Rotated MGMT_ENTRY_POINT to ${endpoint}" >&2
+            return 0
+        fi
+    done
+    log_warn "rotate_mgmt_entry_point: no surviving core node on ports ${base_port}..${base_port}+$((NODE_COUNT - 1))" >&2
+    return 1
+}
+
 cluster_slices() {
     aether_json slices
 }
