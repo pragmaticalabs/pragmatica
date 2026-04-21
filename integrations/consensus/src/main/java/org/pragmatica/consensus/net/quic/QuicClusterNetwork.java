@@ -303,7 +303,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
             if (peerLinks.remove(nodeId, connection)) {
                 connectionEstablishedAt.remove(nodeId);
                 passivePeers.remove(nodeId);
-                cleanupPeerQueues(nodeId);
                 quicMetrics.onConnectionClosed();
                 connection.close()
                           .onSuccess(_ -> log.info("Node {} disconnected from node {}", self.id(), nodeId))
@@ -312,7 +311,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
         } else {
             log.debug("DisconnectNode for {} — no peer link present, propagating REMOVE to topology only", nodeId);
         }
+        // Order matters: processViewChange(REMOVE) unregisters the peer from topology, so the
+        // subsequent dropPeerQueues sees an empty topology entry and proceeds with cleanup.
+        // On a transient peerLinks eviction (send-path), cleanupPeerQueues sees the peer still
+        // in topology and preserves the queue for reconnect.
         processViewChange(REMOVE, nodeId);
+        dropPeerQueues(nodeId);
     }
 
     @Override
@@ -323,8 +327,35 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     @Override
     public <M extends ProtocolMessage> Unit broadcast(M message) {
-        peerLinks.forEach((peerId, conn) -> broadcastToEligiblePeer(peerId, conn, message));
+        // Iterate the authoritative topology, not `peerLinks`. When a peer is transiently
+        // evicted from `peerLinks` (QUIC handshake storm after mass restart, stale-connection
+        // eviction during send) but is still registered in topology, enqueue the message
+        // into the per-peer backpressure queue so the drain on reconnect delivers it.
+        // Dropping here causes Rabia consensus to stall until the stall detector re-broadcasts.
+        for (var peerId : topologyManager.topology()) {
+            if (peerId.equals(self.id())) {
+                continue;
+            }
+            if (passivePeers.contains(peerId) && !message.deliverToPassive()) {
+                continue;
+            }
+            var conn = peerLinks.get(peerId);
+            if (conn != null && conn.isActive()) {
+                sendToConnection(peerId, message, conn);
+            } else {
+                if (conn != null) {
+                    evictStaleConnection(peerId, conn);
+                }
+                queueForReconnect(peerId, message);
+            }
+        }
         return unit();
+    }
+
+    private <M extends ProtocolMessage> void queueForReconnect(NodeId peerId, M message) {
+        var streamType = StreamType.forMessage(message);
+        var bytes = serializer.encode(message);
+        enqueueOrDrop(bytes, peerId, streamType);
     }
 
     @Override
@@ -663,8 +694,20 @@ public class QuicClusterNetwork implements ClusterNetwork {
         log.debug("Write to {} failed; deferring removal to QUIC channel lifecycle", peerId);
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Queue cleanup with size tracking
+    /// Drops queues only when the peer is no longer in topology (authoritative removal).
+    /// Transient `peerLinks` eviction via the send path keeps the queue alive so that
+    /// messages enqueued by `broadcast` survive the reconnect and drain when the new
+    /// channel becomes writable.
     private void cleanupPeerQueues(NodeId peerId) {
+        if (topologyManager.get(peerId).isPresent()) {
+            log.debug("Preserving queued messages for peer {} — still in topology (transient eviction)", peerId);
+            return;
+        }
+        dropPeerQueues(peerId);
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") // Queue cleanup with size tracking
+    private void dropPeerQueues(NodeId peerId) {
         var peerQueues = outboundQueues.remove(peerId);
         if (peerQueues != null) {
             var totalDropped = peerQueues.values()
@@ -675,12 +718,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 quicMetrics.onBackpressureQueueCleared(totalDropped);
                 log.debug("Cleaned up {} queued messages for disconnected peer {}", totalDropped, peerId);
             }
-        }
-    }
-
-    private <M extends ProtocolMessage> void broadcastToEligiblePeer(NodeId peerId, QuicPeerConnection conn, M message) {
-        if (!passivePeers.contains(peerId) || message.deliverToPassive()) {
-            sendToConnection(peerId, message, conn);
         }
     }
 
