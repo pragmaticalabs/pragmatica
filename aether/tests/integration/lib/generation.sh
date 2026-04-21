@@ -71,16 +71,16 @@ await_generation_quiesced() {
 
     # Preferred: aether CLI
     if command -v aether >/dev/null 2>&1; then
-        if aether -c "$host_port" --api-key "${API_KEY}" cluster await-quiesced \
-            --epoch "$target_epoch" --timeout "${timeout}s" >/dev/null 2>&1; then
-            local elapsed=$(( $(_now_ms) - start_ns ))
+        aether -c "$host_port" --api-key "${API_KEY}" cluster await-quiesced \
+            --epoch "$target_epoch" --timeout "${timeout}s" >/dev/null 2>&1
+        local rc=$?
+        local elapsed=$(( $(_now_ms) - start_ns ))
+        if [ "$rc" -eq 0 ]; then
             log_pass "quiesced at ${target_epoch} (${elapsed}ms)"
             return 0
         fi
-        local rc=$?
-        # CLI failed; fall through to raw HTTP only on unknown-subcommand error.
-        # Any real rejection (408) maps to exit!=0 — surface that.
-        local elapsed=$(( $(_now_ms) - start_ns ))
+        # Why: $? after `fi` with no else is 0 when the if-body didn't run —
+        # capture rc immediately after the command or this log always reads "rc=0".
         log_warn "await-quiesced CLI rc=${rc} after ${elapsed}ms — falling back to REST"
     fi
 
