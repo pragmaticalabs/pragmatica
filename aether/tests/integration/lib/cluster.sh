@@ -294,8 +294,15 @@ restart_all_nodes() {
     fi
     local prefix="${CLUSTER_NAME:-aether-b-node-}"
     remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=${prefix}' --filter 'status=exited' -q | xargs -r docker start" 2>/dev/null
+    # Rotate entry point — the previous pinned node may have been killed during the suite.
+    rotate_mgmt_entry_point 2>/dev/null || true
     wait_for_node_count "${NODE_COUNT:-5}" 60 || \
         log_warn "restart_all_nodes: cluster did not settle to ${NODE_COUNT:-5} nodes within 60s"
+    # Wait for a leader to emerge before returning. Without this, the next suite's
+    # `wait_for_leader 60s` check fires immediately and usually times out because
+    # Rabia is still completing initial election on the restarted containers.
+    wait_for_leader 120 || \
+        log_warn "restart_all_nodes: no leader elected within 120s after container restart"
 }
 
 kill_node() {

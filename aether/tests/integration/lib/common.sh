@@ -95,16 +95,41 @@ log_step()  { echo -e "${BLUE}[STEP]${NC}  $1"; }
 # HTTP helpers — management API
 # Retained for tests that need raw HTTP access (status codes, custom headers)
 # ---------------------------------------------------------------------------
+# Resolve an endpoint that actually responds to /health/live. Preserves the pinned
+# CLUSTER_ENDPOINT when it's up; rotates once to any live core node when the pinned
+# endpoint is dead (e.g., during chaos-suite recovery where the pinned node was killed).
+_resolve_live_endpoint() {
+    if curl -sf -m 2 -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/health/live" >/dev/null 2>&1; then
+        echo "${CLUSTER_ENDPOINT}"
+        return 0
+    fi
+    local base_port="${MGMT_PORT}"
+    for i in $(seq 0 $((NODE_COUNT - 1))); do
+        local port=$((base_port + i))
+        local endpoint="http://${TARGET_HOST}:${port}"
+        if curl -sf -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
+            echo "${endpoint}"
+            return 0
+        fi
+    done
+    echo "${CLUSTER_ENDPOINT}"  # fall back; caller will see curl failure
+    return 1
+}
+
 api_get() {
     local path="$1"
-    curl -sf -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}${path}"
+    local endpoint
+    endpoint=$(_resolve_live_endpoint)
+    curl -sf -H "X-API-Key: ${API_KEY}" "${endpoint}${path}"
 }
 
 api_post() {
     local path="$1"
     local body="${2:-"{}"}"
+    local endpoint
+    endpoint=$(_resolve_live_endpoint)
     curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-        -d "$body" "${CLUSTER_ENDPOINT}${path}"
+        -d "$body" "${endpoint}${path}"
 }
 
 api_put() {
