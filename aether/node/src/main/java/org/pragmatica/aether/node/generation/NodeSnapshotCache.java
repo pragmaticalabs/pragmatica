@@ -74,7 +74,15 @@ public interface NodeSnapshotCache extends GenerationSnapshotSource {
 
     static NodeSnapshotCache nodeSnapshotCache(NodeId self,
                                                Function<byte[], Option<ClusterGenerationSnapshot>> snapshotDecoder) {
-        return new NodeSnapshotCacheRecord(self, snapshotDecoder, new AtomicReference<>(State.INITIAL));
+        return nodeSnapshotCache(self,
+                                 snapshotDecoder,
+                                 _ -> {});
+    }
+
+    static NodeSnapshotCache nodeSnapshotCache(NodeId self,
+                                               Function<byte[], Option<ClusterGenerationSnapshot>> snapshotDecoder,
+                                               java.util.function.Consumer<NodeId> leaderObserver) {
+        return new NodeSnapshotCacheRecord(self, snapshotDecoder, leaderObserver, new AtomicReference<>(State.INITIAL));
     }
 
     record State(long rabiaTerm, Epoch epoch, Option<ClusterGenerationSnapshot> snapshot) {
@@ -84,6 +92,7 @@ public interface NodeSnapshotCache extends GenerationSnapshotSource {
 
 record NodeSnapshotCacheRecord(NodeId self,
                                Function<byte[], Option<ClusterGenerationSnapshot>> snapshotDecoder,
+                               java.util.function.Consumer<NodeId> leaderObserver,
                                AtomicReference<NodeSnapshotCache.State> stateRef) implements NodeSnapshotCache {
     private static final Logger log = LoggerFactory.getLogger(NodeSnapshotCacheRecord.class);
 
@@ -102,6 +111,7 @@ record NodeSnapshotCacheRecord(NodeId self,
     @Override@Contract public void onClusterSyncPing(ClusterSyncPing ping) {
         var incomingEpoch = Epoch.epoch(ping.epochTerm(), ping.epochCounter());
         var updated = stateRef.updateAndGet(current -> applyPing(current, ping, incomingEpoch));
+        if (ping.snapshot().isPresent()) {leaderObserver.accept(ping.sender());}
         logTransition(ping, incomingEpoch, updated);
     }
 

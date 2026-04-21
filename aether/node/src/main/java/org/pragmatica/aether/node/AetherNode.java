@@ -799,7 +799,13 @@ public interface AetherNode extends ManageableNode {
         java.util.function.Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder = serializer::encode;
         java.util.function.Function<byte[], Option<ClusterGenerationSnapshot>> snapshotDecoder = bytes -> decodeSnapshot(deserializer,
                                                                                                                          bytes);
-        var nodeSnapshotCache = NodeSnapshotCache.nodeSnapshotCache(config.self(), snapshotDecoder);
+        var nodeSnapshotCache = NodeSnapshotCache.nodeSnapshotCache(config.self(),
+                                                                    snapshotDecoder,
+                                                                    leader -> {
+                                                                        if (clusterNode.leaderManager().leader()
+                                                                                                     .isEmpty()) {clusterNode.leaderManager()
+                                                                                                                                           .onLeaderCommitted(leader);}
+                                                                    });
         Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier = () -> isLeaderGate.get()
                                                                             ? Option.some(healthReconciler.currentSnapshot())
                                                                             : nodeSnapshotCache.current();
