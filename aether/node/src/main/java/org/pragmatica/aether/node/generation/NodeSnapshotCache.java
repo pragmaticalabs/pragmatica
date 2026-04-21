@@ -110,8 +110,9 @@ record NodeSnapshotCacheRecord(NodeId self,
 
     @Override@Contract public void onClusterSyncPing(ClusterSyncPing ping) {
         var incomingEpoch = Epoch.epoch(ping.epochTerm(), ping.epochCounter());
+        var previous = stateRef.get();
         var updated = stateRef.updateAndGet(current -> applyPing(current, ping, incomingEpoch));
-        if (ping.snapshot().isPresent()) {leaderObserver.accept(ping.sender());}
+        if (ping.snapshot().isPresent() && !updated.equals(previous)) {leaderObserver.accept(ping.sender());}
         logTransition(ping, incomingEpoch, updated);
     }
 
