@@ -298,8 +298,20 @@ restart_all_nodes() {
         done
         return 0
     fi
+    # Why: `docker start` on exited containers re-uses identical NodeIds / addresses,
+    # which triggers a 5-way simultaneous QUIC handshake storm on boot. The storm
+    # causes peerLinks to flap, consensus messages to drop (QuicClusterNetwork.broadcast
+    # only sends to peers in peerLinks at that instant), and Rabia proposals to starve.
+    # `docker-compose down -v && up -d` performs an orchestrated tear-down that clears
+    # peerLinks before restart — avoids the double-initiate race and gives clean boot.
     local prefix="${CLUSTER_NAME:-aether-b-node-}"
-    remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=${prefix}' --filter 'status=exited' -q | xargs -r docker start" 2>/dev/null
+    local compose="${COMPOSE_FILE:-${SCRIPT_DIR:-/tmp}/docker-compose-b.yml}"
+    if [ -f "$compose" ] && [ "${prefix}" = "aether-b-node-" ]; then
+        remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null || true; cd ~ && docker compose -f docker-compose-b.yml down -v && docker compose -f docker-compose-b.yml up -d" 2>/dev/null
+    else
+        # Fallback for non-standard cluster names — best-effort start of exited containers.
+        remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=${prefix}' --filter 'status=exited' -q | xargs -r docker start" 2>/dev/null
+    fi
     # Rotate entry point — the previous pinned node may have been killed during the suite.
     rotate_mgmt_entry_point 2>/dev/null || true
     # Strict recovery assertions — no more log_warn pass-through.

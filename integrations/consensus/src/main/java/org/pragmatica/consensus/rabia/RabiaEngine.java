@@ -666,8 +666,17 @@ public class RabiaEngine<C extends Command> {
             phaseStallCheck);
     }
 
-    /// Checks if the current phase is stalled due to missing proposals and re-broadcasts
-    /// the node's own proposal if needed.
+    /// Checks if the current phase is stalled and re-broadcasts this node's own
+    /// protocol messages (Propose, VoteRound1, VoteRound2) so peers that missed the
+    /// first send due to transient QUIC reconnect can collect them.
+    ///
+    /// Why: on a 5-way simultaneous restart, peerLinks flap during the QUIC handshake
+    /// storm. `QuicClusterNetwork.broadcast` only sends to peers currently in peerLinks,
+    /// so a message sent while a peer is in re-dial gets dropped. Proposals used to be
+    /// the only message re-broadcast — votes were one-shot and could be lost, leaving
+    /// consensus deadlocked until the 3s proposal timeout retries (and the storm repeats).
+    /// Votes are idempotent at the receiver (registerRound1Vote/registerRound2Vote are
+    /// keyed on (phase, sender)), so re-broadcasting is safe.
     private void checkPhaseStall() {
         if (!(engineState.get() instanceof EngineState.InPhase)) {
             return;
@@ -683,6 +692,20 @@ public class RabiaEngine<C extends Command> {
                       self, phase, phaseData.proposalCount(), quorumSize);
             Option.option(phaseData.getProposal(self))
                   .onPresent(batch -> network.broadcast(new Propose<>(self, phase, batch)));
+        }
+        if (phaseData.hasVotedRound1(self) && !phaseData.hasRound1MajorityVotes(quorumSize)) {
+            var value = phaseData.getRound1Vote(self);
+            if (value != null) {
+                log.debug("Node {} stall detected in phase {}: round1 votes short of quorum, re-broadcasting own R1 vote", self, phase);
+                network.broadcast(new VoteRound1(self, phase, value));
+            }
+        }
+        if (phaseData.hasVotedRound2(self) && !phaseData.hasRound2MajorityVotes(quorumSize)) {
+            var value = phaseData.getRound2Vote(self);
+            if (value != null) {
+                log.debug("Node {} stall detected in phase {}: round2 votes short of quorum, re-broadcasting own R2 vote", self, phase);
+                network.broadcast(new VoteRound2(self, phase, value));
+            }
         }
     }
 

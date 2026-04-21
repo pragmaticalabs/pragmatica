@@ -98,9 +98,19 @@ final class PhaseData<C extends Command> {
         round1Votes.put(node, value);
     }
 
+    /// Returns this node's round 1 vote value, or null if not cast.
+    StateValue getRound1Vote(NodeId node) {
+        return round1Votes.get(node);
+    }
+
     /// Checks if a node has already voted in round 2.
     boolean hasVotedRound2(NodeId node) {
         return round2Votes.containsKey(node);
+    }
+
+    /// Returns this node's round 2 vote value, or null if not cast.
+    StateValue getRound2Vote(NodeId node) {
+        return round2Votes.get(node);
     }
 
     /// Registers a round 2 vote from a node.
