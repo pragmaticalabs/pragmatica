@@ -14,11 +14,19 @@ MGMT_PORT="${MGMT_PORT:-5150}"
 APP_PORT="${APP_PORT:-8070}"
 LB_PORT="${LB_PORT:-9090}"
 LB_MGMT_PORT="${LB_MGMT_PORT:-9091}"
-# App traffic → LB public port; management API → LB management port (separate port, security-critical)
-CLUSTER_ENDPOINT="${CLUSTER_ENDPOINT:-http://${TARGET_HOST}:${LB_MGMT_PORT}}"
+# Witness (operator entry point) — stable node that tests MUST NOT kill.
+# Tests hit MGMT_ENTRY_POINT for every management call; the product's HttpForwardRequest
+# routes the request to the appropriate node. Exercises the forwarding contract rather
+# than relying on client-side port-hopping.
+# Default cluster-B witness: port 5165 (aether-b-witness). Cluster A is non-destructive —
+# its tests can keep targeting MGMT_PORT (5150).
+MGMT_ENTRY_POINT="${MGMT_ENTRY_POINT:-http://${TARGET_HOST}:${MGMT_PORT}}"
+# App traffic → LB public port; management API → MGMT_ENTRY_POINT (witness or LB).
+CLUSTER_ENDPOINT="${CLUSTER_ENDPOINT:-${MGMT_ENTRY_POINT}}"
 APP_ENDPOINT="${APP_ENDPOINT:-http://${TARGET_HOST}:${LB_PORT}}"
 LB_ENDPOINT="${LB_ENDPOINT:-http://${TARGET_HOST}:${LB_PORT}}"
-# Direct node access (for node-specific queries and CLI failover)
+# Direct node access (legitimate per-node queries — e.g., "is METRICS ACTIVE on node-2?").
+# NOT a client-side failover mechanism. Management calls go through MGMT_ENTRY_POINT.
 DIRECT_ENDPOINT="http://${TARGET_HOST}:${MGMT_PORT}"
 API_KEY="${AETHER_API_KEY:-aether-integration-test-key}"
 ADMIN_API_KEY="${AETHER_ADMIN_API_KEY:-${API_KEY}}"
@@ -32,29 +40,14 @@ export AETHER_API_KEY="${API_KEY}"
 AETHER_CLI="aether -c ${TARGET_HOST}:${LB_PORT}"
 NODE_COUNT="${NODE_COUNT:-5}"
 
-# Try CLI command against available nodes (failover on connection failure).
-# Tries the LB endpoint first (if set), then falls back to iterating direct node ports
-# MGMT_PORT, MGMT_PORT+1, ... MGMT_PORT+NODE_COUNT-1.
-#
-# Without the fallback, a dead node that happens to be pointed at by LB_MGMT_ENDPOINT
-# (or the "LB fallback to direct" case when no real LB is deployed) blocks every CLI
-# query for the full request-timeout window — wait_for_leader then times out even
-# though a new leader has already been elected on a surviving node.
+# Run an Aether CLI command against MGMT_ENTRY_POINT (the witness node).
+# The cluster's HttpForwardRequest mechanism routes the command to the appropriate
+# node internally; no client-side port-hopping is performed here. If MGMT_ENTRY_POINT
+# is unreachable, the command fails — that is a real cluster bug and should not be masked.
 aether_failover() {
-    # --request-timeout is an integer number of seconds (CLI: "--request-timeout=<requestTimeoutSeconds>")
     local timeout="${AETHER_CLI_TIMEOUT:-5}"
-    if [ -n "${LB_MGMT_ENDPOINT:-}" ]; then
-        local lb_host_port="${LB_MGMT_ENDPOINT#http://}"
-        local result
-        result=$(aether -c "${lb_host_port}" --api-key "${API_KEY}" "--request-timeout=${timeout}" "$@" 2>/dev/null) && { echo "$result"; return 0; }
-    fi
-    local base_port="${MGMT_PORT}"
-    for i in $(seq 0 $((NODE_COUNT - 1))); do
-        local port=$((base_port + i))
-        local result
-        result=$(aether -c "${TARGET_HOST}:${port}" --api-key "${API_KEY}" "--request-timeout=${timeout}" "$@" 2>/dev/null) && { echo "$result"; return 0; }
-    done
-    return 1
+    local host_port="${MGMT_ENTRY_POINT#http://}"
+    aether -c "${host_port}" --api-key "${API_KEY}" "--request-timeout=${timeout}" "$@"
 }
 
 # Query a CLI command and extract a single field (--format value --field)
@@ -111,38 +104,33 @@ api_delete() {
     curl -sf -X DELETE -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}${path}"
 }
 
-# Direct core node access (bypasses LB — for CTM-impacting writes and node-specific queries)
-# Tries ports MGMT_PORT through MGMT_PORT+NODE_COUNT-1 with failover
+# Per-node HTTP helpers — for legitimate per-node state queries.
+# Example: "is METRICS task group ACTIVE on node-2 specifically?"
+# NOT a client-side failover mechanism. Management calls go through api_get/api_post → MGMT_ENTRY_POINT.
+#
+# Caller supplies the 0-based offset of the target core node (0 → MGMT_PORT, 1 → MGMT_PORT+1, ...).
+node_api_get() {
+    local offset="$1" path="$2"
+    local port=$((MGMT_PORT + offset))
+    curl -sf -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}${path}"
+}
+
+node_api_post() {
+    local offset="$1" path="$2" body="${3:-"{}"}"
+    local port=$((MGMT_PORT + offset))
+    curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+        -d "$body" "http://${TARGET_HOST}:${port}${path}"
+}
+
+# Back-compat shims — forward to the MGMT_ENTRY_POINT, no client-side failover.
+# Existing callers using direct_api_get/direct_api_post as a "bypass LB" mechanism
+# were really just hitting the cluster's management API; witness handles that via forwarding.
 direct_api_get() {
-    local path="$1"
-    if [ -n "${LB_MGMT_ENDPOINT:-}" ] && [ -z "${DIRECT_ENDPOINT:-}" ]; then
-        api_get "$path"
-        return $?
-    fi
-    local base_port="${MGMT_PORT}"
-    for i in $(seq 0 $((NODE_COUNT - 1))); do
-        local port=$((base_port + i))
-        local result
-        result=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}${path}" 2>/dev/null) && { echo "$result"; return 0; }
-    done
-    return 1
+    api_get "$1"
 }
 
 direct_api_post() {
-    local path="$1"
-    local body="${2:-"{}"}"
-    if [ -n "${LB_MGMT_ENDPOINT:-}" ] && [ -z "${DIRECT_ENDPOINT:-}" ]; then
-        api_post "$path" "$body"
-        return $?
-    fi
-    local base_port="${MGMT_PORT}"
-    for i in $(seq 0 $((NODE_COUNT - 1))); do
-        local port=$((base_port + i))
-        local result
-        result=$(curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-            -d "$body" "http://${TARGET_HOST}:${port}${path}" 2>/dev/null) && { echo "$result"; return 0; }
-    done
-    return 1
+    api_post "$1" "${2:-"{}"}"
 }
 
 # HTTP helpers — app HTTP (port 8070)

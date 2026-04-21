@@ -46,6 +46,10 @@ CLUSTER_A_LB_MGMT=""
 # Cluster B: destructive (sequential)
 COMPOSE_B="${SCRIPT_DIR}/docker-compose-b.yml"
 CLUSTER_B_NAME="test-b"
+# CLUSTER_B_MGMT pins to node-1's management port (5160). Node-1 is the stable operator
+# entry point for Cluster B — tests MUST NOT kill node-1. All management calls are
+# forwarded internally by the cluster via HttpForwardRequest. This exercises the
+# product's forwarding contract instead of client-side port-hopping.
 CLUSTER_B_MGMT="http://${TARGET_HOST:-localhost}:5160"
 # Direct (LB-less) app-HTTP fallback — node-1's host-mapped app port (see docker-compose-b.yml)
 CLUSTER_B_APP_DIRECT="http://${TARGET_HOST:-localhost}:8080"
@@ -222,24 +226,29 @@ run_suite() {
     # are only served on the app HTTP listener.
     # Note: $cluster may be overwritten by suite.conf (`cluster=destructive`
     # sets it to a semantic label). Normalize to a/b based on the MGMT target.
-    local cluster_endpoint lb_app lb_mgmt cluster_id
+    local cluster_endpoint lb_app lb_mgmt cluster_id node_base
     if [ "$cluster" = "a" ]; then
         cluster_endpoint="$CLUSTER_A_MGMT"
         lb_app="${CLUSTER_A_LB_APP:-$CLUSTER_A_APP_DIRECT}"
         lb_mgmt="${CLUSTER_A_LB_MGMT:-$CLUSTER_A_MGMT}"
         cluster_id="a"
+        # Cluster A is non-destructive — no witness; node-1 mgmt (5150) doubles as entry point.
+        node_base="5150"
     else
         cluster_endpoint="$CLUSTER_B_MGMT"
         lb_app="${CLUSTER_B_LB_APP:-$CLUSTER_B_APP_DIRECT}"
         lb_mgmt="${CLUSTER_B_LB_MGMT:-$CLUSTER_B_MGMT}"
         cluster_id="b"
+        # Core nodes 5160–5164; node-1 is pinned entry point (never killed).
+        node_base="5160"
     fi
 
     # Export for the suite scripts
     export CLUSTER_ENDPOINT="$lb_mgmt"
     export APP_ENDPOINT="$lb_app"
     export DIRECT_ENDPOINT="$cluster_endpoint"
-    export MGMT_PORT="${cluster_endpoint##*:}"
+    export MGMT_PORT="$node_base"
+    export MGMT_ENTRY_POINT="$cluster_endpoint"
     export CLUSTER_ID="$cluster_id"
     export CLUSTER_NAME="aether-${cluster_id}-node-"
     # aether_failover reads global LB_MGMT_ENDPOINT — must point at THIS cluster, not whichever

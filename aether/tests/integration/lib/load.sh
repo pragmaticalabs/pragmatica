@@ -45,49 +45,25 @@ start_load() {
     log_info "Load PID: $!"
 }
 
-# Start background management API load with per-request failover across core nodes.
-# Matches the spec's per-node management-API semantic (cluster-bootstrap-spec §5.1.7:
-# "management port is reached directly on each node's primary address; the elected LB
-# floating IP does NOT forward management traffic"). Docker env has no LoadBalancerProvider,
-# so CLUSTER_ENDPOINT falls back to a single node's mgmt port. Without per-request failover,
-# killing that exact node during the load window produces ~100% errors — which measures
-# that one node's liveness, not cluster resilience.
-#
-# Failover strategy: on each tick, try the primary `CLUSTER_ENDPOINT`; if it fails,
-# iterate through direct node ports MGMT_PORT..MGMT_PORT+NODE_COUNT-1 until one succeeds.
-# A tick is counted as success if ANY node responds 2xx/3xx; failure only if every node
-# in the loop fails.
+# Start background management API load against MGMT_ENTRY_POINT (witness).
+# The witness node is stable by fixture contract; client-side failover was removed to
+# exercise the product's HttpForwardRequest contract under chaos rather than masking
+# forwarding bugs with per-request port-hopping.
+# A tick is success if MGMT_ENTRY_POINT responds 2xx/3xx, failure otherwise.
 start_mgmt_load() {
     local rps="$1" duration="$2" path="$3"
     local interval
     interval=$(awk "BEGIN {printf \"%.4f\", 1.0/${rps}}" 2>/dev/null || echo "0.5")
     local end_time=$(($(now_epoch) + duration))
 
-    log_info "Starting management load: ${rps} rps for ${duration}s — GET ${path} (with per-request failover)"
+    log_info "Starting management load: ${rps} rps for ${duration}s — GET ${path} (via ${MGMT_ENTRY_POINT})"
 
     (
         local success=0 failure=0
         while [ "$(now_epoch)" -lt "$end_time" ]; do
-            local tick_ok=false
-            local primary_status
-            primary_status=$(http_status "${CLUSTER_ENDPOINT}${path}" -H "X-API-Key: ${API_KEY}")
-            if [ "$primary_status" -ge 200 ] && [ "$primary_status" -lt 400 ] 2>/dev/null; then
-                tick_ok=true
-            else
-                local base_port="${MGMT_PORT}"
-                for i in $(seq 0 $((NODE_COUNT - 1))); do
-                    local port=$((base_port + i))
-                    local endpoint="http://${TARGET_HOST}:${port}"
-                    [ "$endpoint" = "$CLUSTER_ENDPOINT" ] && continue
-                    local status
-                    status=$(http_status "${endpoint}${path}" -H "X-API-Key: ${API_KEY}")
-                    if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
-                        tick_ok=true
-                        break
-                    fi
-                done
-            fi
-            if [ "$tick_ok" = true ]; then
+            local status
+            status=$(http_status "${MGMT_ENTRY_POINT}${path}" -H "X-API-Key: ${API_KEY}")
+            if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
                 success=$((success + 1))
             else
                 failure=$((failure + 1))
