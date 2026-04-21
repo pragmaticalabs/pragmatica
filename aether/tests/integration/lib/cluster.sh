@@ -284,6 +284,12 @@ drop_ctm_replacements() {
 ## NODE_COUNT (default 5). SWIM-driven membership reconciliation can take 15-30s
 ## to remove phantoms left by CTM auto-heal — without this barrier the next suite
 ## sees `expected 5, got 6` and cascades into a flood of false failures.
+## Enforced recovery assertions — any of these failing marks the current suite's
+## cleanup as FAILED rather than quietly warning. A destructive suite that leaves
+## the cluster unable to elect a leader or reach target node count represents
+## either a harness bug (wrong tear-down sequence) or a real product reliability
+## regression (cluster can't recover from the scenario this suite exercised).
+## Either way, subsequent suites must not inherit a broken cluster under a warn.
 restart_all_nodes() {
     log_info "Restoring cluster to baseline (CLUSTER_NAME=${CLUSTER_NAME:-aether-b-node-})..."
     if [ "$CLOUD_MODE" = "true" ]; then
@@ -296,13 +302,22 @@ restart_all_nodes() {
     remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=${prefix}' --filter 'status=exited' -q | xargs -r docker start" 2>/dev/null
     # Rotate entry point — the previous pinned node may have been killed during the suite.
     rotate_mgmt_entry_point 2>/dev/null || true
-    wait_for_node_count "${NODE_COUNT:-5}" 60 || \
-        log_warn "restart_all_nodes: cluster did not settle to ${NODE_COUNT:-5} nodes within 60s"
-    # Wait for a leader to emerge before returning. Without this, the next suite's
-    # `wait_for_leader 60s` check fires immediately and usually times out because
-    # Rabia is still completing initial election on the restarted containers.
-    wait_for_leader 120 || \
-        log_warn "restart_all_nodes: no leader elected within 120s after container restart"
+    # Strict recovery assertions — no more log_warn pass-through.
+    if ! wait_for_node_count "${NODE_COUNT:-5}" 60; then
+        log_fail "restart_all_nodes: cluster failed to reach ${NODE_COUNT:-5} nodes within 60s"
+        return 1
+    fi
+    if ! wait_for_leader 120; then
+        log_fail "restart_all_nodes: no leader elected within 120s after container restart — cluster did not recover from the destructive scenario"
+        return 1
+    fi
+    # Final quiescence barrier — cluster has nodes + leader; confirm snapshot converged.
+    if ! await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 60; then
+        log_fail "restart_all_nodes: cluster leader and node count recovered but generation did not quiesce within 60s"
+        return 1
+    fi
+    log_info "restart_all_nodes: cluster recovered (${NODE_COUNT:-5} nodes, leader elected, generation quiesced)"
+    return 0
 }
 
 kill_node() {
