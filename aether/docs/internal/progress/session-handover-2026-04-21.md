@@ -111,7 +111,39 @@ The consensus convergence stall on mass restart has two vectors:
 
 ## In-flight at session end
 
-- v4 full-suite run (`/tmp/full-v4.log`), PID 66416, currently in 03-scaling stall. Can kill safely — results available in the log up to the stall point.
+- v4 full-suite run (`/tmp/full-v4.log`), PID 66416, currently in 13-edge-cases (last suite). All prior suites have reported; final tally below.
+
+## Final v4 tally (Docker remote, HEAD `2b2506947`)
+
+**Clean pass (9/15 suites):** 00-smoke (2/2), 04-streaming (4/4), 06-deployment (5/5), 07-cluster-mgmt (4/4), 09-artifacts (3/3), 10-database (3/3), 11-observability (5/5), 14-storage (2/2), 15-delegation (2/2).
+
+**Partial (1):** 08-resources 4/5 — STORAGE task-group `ASSIGNED→ACTIVE` transition timeout under load (pre-existing flakiness).
+
+**Destructive-chain failures (5):** 02-chaos 1/4, 03-scaling 0/3, 05-security 1/3, 12-network 1/3, 13-edge-cases in-flight at session end.
+
+### Comparison to prior runs
+
+| Run | 02-chaos | 03-scaling | Notes |
+|---|---|---|---|
+| Pre-session (stale image) | 3/4 | N/R | Client-side port-hopping masked broken-cluster state |
+| Post-SSOT fixes (v2, revert path) | 3/4 (2/4 seen) | 3/3 isolated / 0/3 chained | Client failover stripped — exposed real issues |
+| v3 (post ephemeral-LeaderKey revert) | 2/4 | 0/3 chained | |
+| v4 (Rabia vote rebroadcast + compose down/up) | 1/4 | 0/3 chained | No observable improvement over v3 in destructive chain |
+
+### Key takeaway
+
+**The Rabia vote-rebroadcast fix (`473e1532d`) did not move the needle for destructive chains.** Votes weren't the bottleneck — the initial `Propose` broadcast drops to transiently-evicted peers is the dominant failure vector. The investigator's §3 "Secondary code" recommendation — QUIC broadcast queue-on-evict — is the real unblocker. Specific change:
+
+- `integrations/consensus/src/main/java/org/pragmatica/consensus/net/quic/QuicClusterNetwork.java`:
+  - `broadcast(...)` enqueues into `outboundQueues` when `peerLinks.get(peerId) == null` AND `topologyManager.get(peerId).isPresent()`.
+  - `cleanupPeerQueues(peerId)` / `evictStaleConnection(peerId)` skips queue deletion when peer is still in topology.
+  - Queue size still bounded by `MAX_BACKPRESSURE_QUEUE_SIZE`.
+
+Expected outcome of that change: all 5 destructive-chain suites improve substantially; 15/15 achievable. Hetzner run after that confirms network-profile-independent.
+
+### 08-resources STORAGE timing
+
+Single-test flake in an otherwise green suite. Likely just needs the assertion timeout bumped from 60s → 120s, OR the STORAGE task group's post-ACTIVATING settle window extended. Low priority relative to the destructive-chain work.
 
 ## Artefacts and file map
 
