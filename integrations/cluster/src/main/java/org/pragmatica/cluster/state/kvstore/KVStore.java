@@ -53,15 +53,6 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     private Option<V> handlePut(Put<K, V> put) {
-        // Why: LeaderKey is ephemeral runtime state — who the current leader is depends on
-        // live Rabia term + peer reachability. Persisting it to the storage map means it
-        // survives across full-cluster restart, which re-delivers a stale leader to nodes
-        // whose cached state is from a prior cluster lifetime. Route the notification so
-        // LeaderManager subscribers still see the commit, but skip the storage mutation.
-        if (put.key() instanceof LeaderKey) {
-            router.route(new ValuePut<>(put, Option.none()));
-            return Option.none();
-        }
         var oldValue = Option.option(storage.put(put.key(), put.value()));
         router.route(new ValuePut<>(put, oldValue));
         return oldValue;
@@ -84,20 +75,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return Result.lift(Causes::fromThrowable,
                            () -> deserializer.decode(snapshot))
                      .map(map -> (Map<K, V>) map)
-                     .map(KVStore::stripEphemeralLeaderKey)
                      .onSuccessRun(this::notifyRemoveAll)
                      .onSuccessRun(storage::clear)
                      .onSuccess(storage::putAll)
                      .onSuccessRun(this::notifyPutAll)
                      .mapToUnit();
-    }
-
-    // Why: legacy snapshots may have persisted LeaderKey/LeaderValue. Since leader identity
-    // is now ephemeral, strip any persisted leader entries from a restored snapshot so the
-    // restarted node does not adopt a stale leader from a prior cluster lifetime.
-    private static <K extends StructuredKey, V> Map<K, V> stripEphemeralLeaderKey(Map<K, V> restored) {
-        restored.keySet().removeIf(key -> key instanceof LeaderKey);
-        return restored;
     }
 
     private void notifyRemoveAll() {
