@@ -40,6 +40,8 @@ public class Java25ParserBenchmark {
         }
     }
 
+    // === Original parser (from jbct-parser dependency) ===
+
     @Benchmark
     public void parseCst(Blackhole bh) {
         bh.consume(new Java25Parser().parse(source));
@@ -53,5 +55,22 @@ public class Java25ParserBenchmark {
     @Benchmark
     public void parseWithDiagnostics(Blackhole bh) {
         bh.consume(new Java25Parser().parseWithDiagnostics(source));
+    }
+
+    // === Experimental copy (Java25ParserExp, local to this module) ===
+
+    @Benchmark
+    public void parseCstExp(Blackhole bh) {
+        bh.consume(new Java25ParserExp().parse(source));
+    }
+
+    @Benchmark
+    public void parseAstExp(Blackhole bh) {
+        bh.consume(new Java25ParserExp().parseAst(source));
+    }
+
+    @Benchmark
+    public void parseWithDiagnosticsExp(Blackhole bh) {
+        bh.consume(new Java25ParserExp().parseWithDiagnostics(source));
     }
 }
