@@ -1,6 +1,5 @@
 package org.pragmatica.aether.example.pgshowcase;
 
-import org.pragmatica.aether.example.pgshowcase.OrderPersistence.CreateOrderRequest;
 import org.pragmatica.aether.example.pgshowcase.OrderPersistence.OrderRow;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
@@ -80,7 +79,9 @@ import java.math.BigDecimal;
             }
 
             private Promise<OrderRow> createOrder(ValidInput valid) {
-                return orders.createOrder(new CreateOrderRequest(valid.userId(), valid.total(), "pending"));
+                return orders.createOrder(valid.userId(),
+                                          valid.total().doubleValue(),
+                                          "pending");
             }
 
             private static Result<ValidInput> validateInput(PlaceOrderRequest raw) {

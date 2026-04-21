@@ -35,12 +35,12 @@ public final class CodegenPipeline {
         for (var table : schema.tables().values()) {
             var result = recordGen.generate(table);
             if (result.isFailure()) return result.map(f -> List.of(f));
-            files.add(result.unwrap());
+            files.add(result.expect("table record generation: checked with isFailure above"));
         }
         for (var enumType : schema.enumTypes().values()) {
             var result = enumGen.generate(enumType);
             if (result.isFailure()) return result.map(f -> List.of(f));
-            files.add(result.unwrap());
+            files.add(result.expect("enum generation: checked with isFailure above"));
         }
         return Result.success(files);
     }

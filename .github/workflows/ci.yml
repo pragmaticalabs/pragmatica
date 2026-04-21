@@ -33,6 +33,10 @@ jobs:
         run: mvn test -B -pl integrations/db/postgres-async -Dpostgres-async.skipTests=false
         timeout-minutes: 10
 
+      - name: Verify examples (end-to-end pipeline check)
+        run: mvn verify -B -f examples/pom.xml
+        timeout-minutes: 15
+
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()

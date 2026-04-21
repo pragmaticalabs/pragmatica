@@ -151,6 +151,43 @@ class QueryValidatorTest {
     }
 
     @Nested
+    class CommonTableExpressions {
+        @Test void simpleCte() {
+            assertThat(validate(
+                "WITH recent AS (SELECT id FROM users WHERE created_at > NOW()) SELECT * FROM recent"
+            ).isValid()).isTrue();
+        }
+
+        @Test void multiCte() {
+            assertThat(validate(
+                "WITH a AS (SELECT id FROM users), b AS (SELECT user_id FROM orders) " +
+                "SELECT * FROM a JOIN b ON a.id = b.user_id"
+            ).isValid()).isTrue();
+        }
+
+        @Test void cteWithExplicitColumnList() {
+            assertThat(validate(
+                "WITH foo(x, y) AS (SELECT id, name FROM users) SELECT foo.x FROM foo"
+            ).isValid()).isTrue();
+        }
+
+        @Test void cteWithExplicitColumnListRejectsUnknownColumn() {
+            var result = validate(
+                "WITH foo(x) AS (SELECT id FROM users) SELECT foo.bogus FROM foo"
+            );
+            assertThat(result.hasErrors()).isTrue();
+            assertThat(result.columnErrors()).isNotEmpty();
+        }
+
+        @Test void cteInnerQueryValidatesTables() {
+            var result = validate("WITH a AS (SELECT * FROM bogus) SELECT * FROM a");
+            assertThat(result.hasErrors()).isTrue();
+            assertThat(result.tableErrors())
+                .anyMatch(e -> e.message().contains("bogus"));
+        }
+    }
+
+    @Nested
     class AliasResolution {
         @Test void tableAliasInWhere() {
             assertThat(validate(

@@ -57,13 +57,20 @@ public final class SchemaLoader {
                                                                          ProcessorError.schemaLoadFailed(schemaPath,
                                                                                                          cause.message())));
         if (result.isFailure()) {return Option.empty();}
-        var schema = result.unwrap();
+        var schema = result.expect("checked with isFailure above");
         cache.put(configPath, schema);
         return Option.present(schema);
     }
 
     public boolean isCached(String configPath) {
         return cache.containsKey(configPath);
+    }
+
+    /// Loads raw migration scripts for the given config path (no schema model building).
+    /// Returns an empty list if no migrations are discovered.
+    public List<String> loadMigrations(String configPath) {
+        var schemaPath = configToSchemaPath(configPath);
+        return loadMigrationScripts(schemaPath);
     }
 
     private List<String> loadMigrationScripts(String schemaPath) {
@@ -79,14 +86,14 @@ public final class SchemaLoader {
 
     private List<String> discoverMigrationFiles(String schemaPath) {
         var manifest = readResource(schemaPath + "migrations.list");
-        if (manifest.isPresent()) {return new ArrayList<>(List.of(manifest.unwrap().split("\n")));}
+        if (manifest.isPresent()) {return new ArrayList<>(List.of(manifest.expect("checked with isPresent above").split("\n")));}
         var files = new ArrayList<String>();
         int consecutiveMisses = 0;
         for (int i = 1;i <= 100;i++) {
             var prefix = String.format("V%03d__", i);
             var probeResult = probeResourcePrefix(schemaPath, prefix);
             if (probeResult.isPresent()) {
-                files.add(probeResult.unwrap());
+                files.add(probeResult.expect("checked with isPresent above"));
                 consecutiveMisses = 0;
             } else {
                 consecutiveMisses++;
