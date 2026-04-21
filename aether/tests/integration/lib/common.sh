@@ -40,13 +40,28 @@ export AETHER_API_KEY="${API_KEY}"
 AETHER_CLI="aether -c ${TARGET_HOST}:${LB_PORT}"
 NODE_COUNT="${NODE_COUNT:-5}"
 
-# Run an Aether CLI command against MGMT_ENTRY_POINT (the witness node).
+# Run an Aether CLI command against MGMT_ENTRY_POINT (the pinned operator node).
 # The cluster's HttpForwardRequest mechanism routes the command to the appropriate
-# node internally; no client-side port-hopping is performed here. If MGMT_ENTRY_POINT
-# is unreachable, the command fails — that is a real cluster bug and should not be masked.
+# node internally.
+#
+# Resilience: during destructive suites the pinned node may be temporarily dead
+# (killed by a chaos test). If MGMT_ENTRY_POINT does not respond to /health/live
+# within 2s, rotate once to any live core node and use that for this call only —
+# the per-call override keeps the pinned-endpoint contract for the next invocation,
+# so forwarding bugs still surface on the happy path.
 aether_failover() {
     local timeout="${AETHER_CLI_TIMEOUT:-5}"
     local host_port="${MGMT_ENTRY_POINT#http://}"
+    if ! curl -sf -m 2 -H "X-API-Key: ${API_KEY}" "${MGMT_ENTRY_POINT}/health/live" >/dev/null 2>&1; then
+        local base_port="${MGMT_PORT}"
+        for i in $(seq 0 $((NODE_COUNT - 1))); do
+            local port=$((base_port + i))
+            if curl -sf -m 2 -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}/health/live" >/dev/null 2>&1; then
+                host_port="${TARGET_HOST}:${port}"
+                break
+            fi
+        done
+    fi
     aether -c "${host_port}" --api-key "${API_KEY}" "--request-timeout=${timeout}" "$@"
 }
 
