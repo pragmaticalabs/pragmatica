@@ -102,10 +102,29 @@ import static org.pragmatica.lang.Option.some;
         cli.lookupConnection(args);
         cli.tlsSkipVerify = containsTlsSkipVerify(args);
         cli.httpOps = cli.buildHttpOperations();
+        // Share the resolved endpoint + api-key with ClusterHttpClient so `cluster <sub>`
+        // commands honour `-c/--connect/--endpoint` and `--api-key` instead of falling
+        // back to the local ClusterRegistry (which has no awareness of CLI flags).
+        org.pragmatica.aether.cli.cluster.ClusterHttpClient.setEndpointOverride(cli.resolveEndpointUrl());
+        extractApiKeyArg(args).orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()))
+                               .onPresent(org.pragmatica.aether.cli.cluster.ClusterHttpClient::setApiKeyOverride);
         if (isReplMode(args)) {cli.runRepl(cmd);} else {
             int exitCode = cmd.execute(args);
             System.exit(exitCode);
         }
+    }
+
+    private String resolveEndpointUrl() {
+        if (nodeAddress == null || nodeAddress.isBlank()) {return "";}
+        return hasScheme(nodeAddress) ? nodeAddress : resolveScheme() + nodeAddress;
+    }
+
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"}) private static Option<String> extractApiKeyArg(String[] args) {
+        for (int i = 0; i < args.length; i++) {
+            if (args[i].equals("--api-key") && i + 1 < args.length) {return some(args[i + 1]);}
+            if (args[i].startsWith("--api-key=")) {return some(args[i].substring("--api-key=".length()));}
+        }
+        return empty();
     }
 
     @SuppressWarnings("JBCT-SEQ-01") private static boolean isReplMode(String[] args) {

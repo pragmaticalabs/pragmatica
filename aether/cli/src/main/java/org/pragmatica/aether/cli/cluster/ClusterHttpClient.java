@@ -26,6 +26,26 @@ public sealed interface ClusterHttpClient {
 
     HttpOperations HTTP_OPS = JdkHttpOperations.jdkHttpOperations();
 
+    /// Optional endpoint override — set by AetherCli when `-c/--connect/--endpoint` is provided.
+    /// When set, takes precedence over ClusterRegistry lookup. Without this override,
+    /// `cluster generation`, `cluster await-quiesced`, and other ClusterHttpClient-backed
+    /// subcommands ignore the `-c` flag and fall back to the registry, which fails with
+    /// ConnectException when no active cluster is registered locally.
+    java.util.concurrent.atomic.AtomicReference<String> ENDPOINT_OVERRIDE = new java.util.concurrent.atomic.AtomicReference<>();
+
+    /// Optional API-key override — set by AetherCli when `--api-key` is provided.
+    /// Same reasoning as ENDPOINT_OVERRIDE: without this, `resolveApiKey` falls back
+    /// to the local ClusterRegistry and ignores the explicit CLI flag.
+    java.util.concurrent.atomic.AtomicReference<String> API_KEY_OVERRIDE = new java.util.concurrent.atomic.AtomicReference<>();
+
+    static void setEndpointOverride(String endpointUrl) {
+        ENDPOINT_OVERRIDE.set(endpointUrl);
+    }
+
+    static void setApiKeyOverride(String apiKey) {
+        API_KEY_OVERRIDE.set(apiKey);
+    }
+
     static Result<String> fetch(ManagementRoute route, List<String> params) {
         return route.assemble(params).flatMap(ClusterHttpClient::fetchPath);
     }
@@ -75,6 +95,8 @@ public sealed interface ClusterHttpClient {
     }
 
     static Result<String> resolveEndpoint() {
+        var override = ENDPOINT_OVERRIDE.get();
+        if (override != null && !override.isBlank()) {return Result.success(override);}
         return ClusterRegistry.load().flatMap(ClusterHttpClient::extractEndpoint);
     }
 
@@ -127,6 +149,8 @@ public sealed interface ClusterHttpClient {
     }
 
     private static Option<String> resolveApiKey() {
+        var override = API_KEY_OVERRIDE.get();
+        if (override != null && !override.isBlank()) {return option(override);}
         return ClusterRegistry.load().option()
                                    .flatMap(ClusterRegistry::current)
                                    .flatMap(ClusterRegistry.ClusterEntry::apiKeyEnv)
