@@ -18,7 +18,6 @@ package org.pragmatica.consensus.net.quic;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
-
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
@@ -73,6 +72,22 @@ import static org.pragmatica.lang.Unit.unit;
 /// Replaces TCP-based [org.pragmatica.consensus.net.netty.NettyClusterNetwork] with QUIC,
 /// providing stream multiplexing, built-in TLS 1.3, and independent flow control per
 /// message type. Connection direction is deterministic: the lower NodeId always initiates.
+///
+/// ## Per-peer state
+///
+/// Peer lifecycle is encapsulated in [PeerState] (one instance per NodeId in [peers]).
+/// Phases: `INIT → CONNECTING → CONNECTED ⇄ EVICTED → REMOVED`. Transitions are driven by:
+///
+///   - `connect(ConnectNode)` / `connectPeer(NodeInfo)` → `beginConnecting`
+///   - `onPeerConnected(...)` → `attach`, and drains the peer's offline buffer
+///   - `sendToConnection(...)` discovers a dead channel → `evict`
+///   - `disconnect(DisconnectNode)` → `authoritativeRemove`
+///   - `stop()` / `closePeerConnections()` → `authoritativeRemove` on all
+///
+/// The [outboundQueues] map remains for Netty stream-level writability backpressure — that
+/// queue is channel-specific (bytes are for the current `QuicStreamChannel`) and is wiped on
+/// eviction. The [PeerState] offline buffer is peer-level and survives transient evictions so
+/// consensus broadcasts delivered during a reconnect storm are not lost.
 public class QuicClusterNetwork implements ClusterNetwork {
     private static final Logger log = LoggerFactory.getLogger(QuicClusterNetwork.class);
 
@@ -86,10 +101,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private volatile QuicSslContext serverSslContext;
     private volatile QuicSslContext clientSslContext;
 
-    private final Map<NodeId, QuicPeerConnection> peerLinks = new ConcurrentHashMap<>();
-    private final Map<NodeId, Long> connectionEstablishedAt = new ConcurrentHashMap<>();
-    private final Set<NodeId> connectingInProgress = ConcurrentHashMap.newKeySet();
-    private final Set<NodeId> passivePeers = ConcurrentHashMap.newKeySet();
+    private final Map<NodeId, PeerState> peers = new ConcurrentHashMap<>();
     private final Map<NodeId, Map<StreamType, Queue<byte[]>>> outboundQueues = new ConcurrentHashMap<>();
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private final AtomicBoolean quorumEstablished = new AtomicBoolean(false);
@@ -219,17 +231,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     @Override
     public void listNodes(ListConnectedNodes listConnectedNodes) {
-        router.route(new NetworkServiceMessage.ConnectedNodesList(List.copyOf(peerLinks.keySet())));
+        router.route(new NetworkServiceMessage.ConnectedNodesList(connectedPeers().stream().toList()));
     }
 
     @Override
     public void handleSend(NetworkServiceMessage.Send send) {
-        sendToConnection(send.target(), send.payload(), peerLinks.get(send.target()));
+        dispatchPayload(send.target(), send.payload());
     }
 
     @Override
     public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {
-        peerLinks.forEach((peerId, conn) -> sendToConnection(peerId, broadcast.payload(), conn));
+        broadcastPayload(broadcast.payload(), false);
     }
 
     @Override
@@ -283,58 +295,65 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @Override
-    @SuppressWarnings("JBCT-PAT-01") // Channel protection window check + always-emit REMOVE
+    @SuppressWarnings("JBCT-PAT-01") // Channel protection window check + authoritative remove + view change
     public void disconnect(DisconnectNode disconnectNode) {
         var nodeId = disconnectNode.nodeId();
-        var connection = peerLinks.get(nodeId);
+        var peer = peers.get(nodeId);
         // SWIM-driven DisconnectNode is the authoritative "this peer is gone" signal.
         // We must always propagate REMOVE to topology so the snapshot prunes the peer,
-        // even if the QUIC link is already torn down (e.g., evicted earlier by send-path
-        // or never fully established). Otherwise CTM-provisioned replacements that die
-        // mid-flight stay in coreNodes forever — `coreCount=6` while `coreMax=5`.
-        if (connection != null) {
-            var establishedAt = connectionEstablishedAt.getOrDefault(nodeId, 0L);
-            var connectionAge = System.nanoTime() - establishedAt;
+        // even if the QUIC link is already torn down. Otherwise CTM-provisioned
+        // replacements that die mid-flight stay in coreNodes forever.
+        if (peer != null && peer.phase() == PeerState.Phase.CONNECTED) {
             var protectionNanos = topologyManager.helloTimeout().nanos() * 3;
-            if (connectionAge < protectionNanos) {
+            if (peer.phaseAgeNanos(System.nanoTime()) < protectionNanos) {
                 log.debug("DisconnectNode for {} ignored: connection is fresh (protection window)", nodeId);
                 return;
             }
-            if (peerLinks.remove(nodeId, connection)) {
-                connectionEstablishedAt.remove(nodeId);
-                passivePeers.remove(nodeId);
-                cleanupPeerQueues(nodeId);
-                quicMetrics.onConnectionClosed();
-                connection.close()
-                          .onSuccess(_ -> log.info("Node {} disconnected from node {}", self.id(), nodeId))
-                          .onFailure(cause -> log.warn("Node {} failed to disconnect from node {}: {}", self.id(), nodeId, cause.message()));
-            }
-        } else {
-            log.debug("DisconnectNode for {} — no peer link present, propagating REMOVE to topology only", nodeId);
         }
+        // Authoritative removal is idempotent; always fire. Drops the offline buffer.
+        if (peer != null) {
+            peer.authoritativeRemove(System.nanoTime())
+                .onPresent(this::closeDroppedConnection);
+        }
+        // Channel-level writability backpressure queue is bytes-for-the-dead-channel; wipe.
+        cleanupPeerQueues(nodeId);
+        quicMetrics.onConnectionClosed();
         processViewChange(REMOVE, nodeId);
+    }
+
+    private void closeDroppedConnection(QuicPeerConnection connection) {
+        connection.close()
+                  .onFailure(cause -> log.warn("Failed to close dropped connection for peer {}: {}",
+                                               connection.peerId(), cause.message()));
     }
 
     @Override
     public <M extends ProtocolMessage> Unit send(NodeId peerId, M message) {
-        sendToConnection(peerId, message, peerLinks.get(peerId));
+        dispatchPayload(peerId, message);
         return unit();
     }
 
     @Override
     public <M extends ProtocolMessage> Unit broadcast(M message) {
-        peerLinks.forEach((peerId, conn) -> broadcastToEligiblePeer(peerId, conn, message));
+        broadcastPayload(message, !message.deliverToPassive());
         return unit();
     }
 
     @Override
     public int connectedNodeCount() {
-        return peerLinks.size();
+        return (int) peers.values()
+                          .stream()
+                          .filter(p -> p.phase() == PeerState.Phase.CONNECTED)
+                          .count();
     }
 
     @Override
     public Set<NodeId> connectedPeers() {
-        return Set.copyOf(peerLinks.keySet());
+        return peers.values()
+                    .stream()
+                    .filter(p -> p.phase() == PeerState.Phase.CONNECTED)
+                    .map(PeerState::peerId)
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
     @Override
@@ -413,32 +432,33 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
     }
 
+    // --- Internal: peer state lookup ---
+
+    private PeerState getOrCreatePeer(NodeId peerId) {
+        return peers.computeIfAbsent(peerId, id -> PeerState.peerState(id, System.nanoTime()));
+    }
+
     // --- Internal: peer connection lifecycle ---
 
     @SuppressWarnings("JBCT-PAT-01") // Netty future callback chain
     private void connectPeer(NodeInfo peer) {
         var peerId = peer.id();
-        if (peerLinks.containsKey(peerId)) {
-            return;
-        }
         // Strict ConnectionDirection: only the lower NodeId initiates. The higher NodeId
-        // accepts the inbound connection. The previous "bypass when peerLinks empty" caused
-        // both sides to dial concurrently at cold start — both Hellos completed, the second
-        // arrival closed its own QuicChannel as duplicate, and that close cascaded a
-        // CONNECTION_CLOSE to the OTHER side's `peerLinks` entry (the kept server-accepted
-        // view shared the same UDP flow), silently killing reachability for cluster pairs.
+        // accepts the inbound connection. Bypassing this caused both sides to dial
+        // concurrently at cold start — both Hellos completed, the second arrival closed
+        // its own QuicChannel as duplicate, and that close cascaded a CONNECTION_CLOSE
+        // to the OTHER side's peer link, silently killing reachability for cluster pairs.
         if (!ConnectionDirection.shouldInitiate(self.id(), peerId)) {
             log.debug("Skipping connection to {}: higher NodeId does not initiate (waits for inbound)", peerId);
             return;
         }
-        // Prevent concurrent connection attempts to the same peer (TOCTOU race between
-        // containsKey check above and the async connect call below).
-        if (!connectingInProgress.add(peerId)) {
+        var state = getOrCreatePeer(peerId);
+        if (!state.beginConnecting(System.nanoTime())) {
+            // Already CONNECTING, CONNECTED, or REMOVED — nothing to do.
             return;
         }
         var address = new InetSocketAddress(peer.address().host(), peer.address().port());
         client.connect(peerId, address)
-              .onResult(_ -> connectingInProgress.remove(peerId))
               .onSuccess(conn -> onPeerConnected(conn, peer.role(), peer.address(), peer.labels()))
               .onFailure(cause -> onConnectFailed(peer, cause));
     }
@@ -446,11 +466,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private void onConnectFailed(NodeInfo peer, Cause cause) {
         quicMetrics.onHandshakeFailure();
         log.warn("Failed to connect from {} to {}: {}", self, peer, cause.message());
+        // Reset phase to EVICTED so a subsequent retry (via topology reconciler) can re-enter CONNECTING.
+        var state = peers.get(peer.id());
+        if (state != null && state.phase() == PeerState.Phase.CONNECTING) {
+            state.evict(System.nanoTime());
+        }
         router.route(new NetworkServiceMessage.ConnectionFailed(
             peer.id(), ConnectionError.networkError(peer.address().asString(), cause.message())));
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Multi-step peer registration
+    @SuppressWarnings("JBCT-PAT-01") // Multi-step peer registration with attach outcome dispatch
     private void onPeerConnected(QuicPeerConnection connection, NodeRole peerRole, NodeAddress peerAddress, Map<String, String> peerLabels) {
         var peerId = connection.peerId();
 
@@ -462,34 +487,33 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return;
         }
 
-        // Track passive role directly from Hello handshake
-        if (peerRole == NodeRole.PASSIVE) {
-            passivePeers.add(peerId);
-        }
-
         // Check for unknown node — build NodeInfo from Hello data (NodeId, role, address, labels)
         Option<NodeInfo> unknownNodeInfo = topologyManager.get(peerId).isEmpty()
             ? buildUnknownNodeInfo(peerId, peerRole, peerAddress, peerLabels)
             : Option.empty();
 
-        var existing = peerLinks.putIfAbsent(peerId, connection);
-        if (existing != null) {
-            if (!existing.isActive()) {
-                // Old connection is stale — replace with the new known-good one
-                peerLinks.put(peerId, connection);
-                existing.close();
-                log.info("Replaced stale connection for peer {} (old was inactive)", peerId);
-            } else {
-                // Both connections are active — keep the existing one to avoid disrupting in-flight messages
+        var state = getOrCreatePeer(peerId);
+        if (peerRole == NodeRole.PASSIVE) {
+            state.markPassive();
+        }
+
+        var outcome = state.attach(connection, System.nanoTime());
+        switch (outcome) {
+            case PeerState.AttachResult.REJECTED -> {
+                log.debug("Rejecting connection from REMOVED peer {}", peerId);
+                connection.close();
+                return;
+            }
+            case PeerState.AttachResult.DUPLICATE -> {
                 log.debug("Duplicate connection from {}, closing new (existing is active)", peerId);
                 connection.close();
                 return;
             }
+            case PeerState.AttachResult.ACCEPTED -> quicMetrics.onConnectionEstablished();
         }
 
-        connectionEstablishedAt.put(peerId, System.nanoTime());
-        quicMetrics.onConnectionEstablished();
         installWritabilityHandler(connection, peerId);
+        drainOfflineBufferInto(state, connection);
 
         // Register BEFORE ConnectionEstablished if unknown — direct call on topology observer.
         unknownNodeInfo.onPresent(topologyManager::registerPeer);
@@ -508,60 +532,104 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return Option.some(NodeInfo.nodeInfo(peerId, peerAddress, peerRole, peerLabels));
     }
 
-    private void trackPassiveRole(NodeId nodeId, Option<NodeInfo> unknownNodeInfo) {
-        unknownNodeInfo.orElse(() -> topologyManager.get(nodeId))
-                       .filter(info -> info.role() == NodeRole.PASSIVE)
-                       .onPresent(_ -> passivePeers.add(nodeId));
+    /// Drain the per-peer offline buffer into a freshly-attached connection. Called from
+    /// [onPeerConnected] right after `attach` returns ACCEPTED. The offline buffer holds
+    /// messages that were offered while the peer was in CONNECTING/EVICTED phase (e.g. during
+    /// a QUIC handshake storm after a mass restart). Without this drain those messages would
+    /// be lost and Rabia consensus would stall until the stall detector re-broadcasts.
+    @SuppressWarnings("JBCT-PAT-01") // Best-effort drain loop
+    private void drainOfflineBufferInto(PeerState state, QuicPeerConnection connection) {
+        var drained = state.drainOfflineBuffer();
+        if (drained.isEmpty()) {
+            return;
+        }
+        var stream = connection.stream(StreamType.CONSENSUS);
+        if (stream.isEmpty()) {
+            log.warn("Cannot drain {} offline messages for peer {} — no CONSENSUS stream",
+                     drained.size(), state.peerId());
+            return;
+        }
+        var ch = stream.unwrap();
+        for (var bytes : drained) {
+            writeIfWritable(ch, bytes, state.peerId(), StreamType.CONSENSUS);
+        }
+        log.debug("Drained {} offline messages to newly-connected peer {}", drained.size(), state.peerId());
     }
 
     // --- Internal: message send ---
 
-    private void sendToConnection(NodeId peerId, Object message, QuicPeerConnection connection) {
-        if (connection == null) {
-            log.debug("Node {} is not connected (no peer link)", peerId);
+    /// Dispatch a typed message to a single peer — runs through the PeerState machine:
+    /// SendNow → write to captured connection; Queued → buffered for reconnect; Dropped → REMOVED.
+    private void dispatchPayload(NodeId peerId, Object message) {
+        var state = peers.get(peerId);
+        if (state == null) {
+            log.debug("No peer state for {} — dropping message", peerId);
             return;
         }
-        if (!connection.isActive()) {
-            // QUIC has no separate channel-close callback firing into this class, so dead
-            // connections must be evicted by whoever notices them first — typically the
-            // send path. Past the formation protection window we evict, REMOVE, and let
-            // reconnect happen. Within the window we silently skip to absorb handshake-
-            // settlement races (server-side ready, client-side still racing).
-            evictStaleConnection(peerId, connection);
-            return;
-        }
-        writeToStream(peerId, message, connection);
+        var bytes = serializer.encode(message);
+        dispatchSerialized(state, message, bytes);
     }
 
-    private void evictStaleConnection(NodeId peerId, QuicPeerConnection connection) {
-        if (!peerLinks.remove(peerId, connection)) {
-            log.debug("Node {} stale link already replaced — nothing to evict", peerId);
-            return;
+    /// Broadcast a typed message to all known peers. When `skipPassive` is true, peers whose
+    /// role is PASSIVE are filtered (used by `broadcast(ProtocolMessage)` when the message
+    /// opts out of passive delivery via `deliverToPassive() == false`).
+    ///
+    /// Serialization is lazy — performed at most once, and only when at least one eligible peer
+    /// is about to receive the message. This keeps `broadcast` a true no-op when `peers` is
+    /// empty or all peers are filtered, preserving test fixtures that broadcast unregistered
+    /// codec types in isolation.
+    @SuppressWarnings("JBCT-PAT-01") // Iterate, lazy-serialize on first eligible, dispatch
+    private void broadcastPayload(Object message, boolean skipPassive) {
+        byte[] bytes = null;
+        for (var state : peers.values()) {
+            if (skipPassive && state.isPassive()) {
+                continue;
+            }
+            if (bytes == null) {
+                bytes = serializer.encode(message);
+            }
+            dispatchSerialized(state, message, bytes);
         }
-        connectionEstablishedAt.remove(peerId);
-        cleanupPeerQueues(peerId);
-        quicMetrics.onConnectionClosed();
-        log.warn("Node {} evicted stale (inactive) link from peerLinks — peer remains in topology, reconnect will follow", peerId);
-        // Re-dial the peer if we are the initiator side. Higher NodeIds wait for inbound.
-        if (ConnectionDirection.shouldInitiate(self.id(), peerId)) {
-            topologyManager.get(peerId).onPresent(this::connectPeer);
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") // Outcome dispatch with metrics + write
+    private void dispatchSerialized(PeerState state, Object message, byte[] bytes) {
+        var outcome = state.offerOutbound(bytes);
+        switch (outcome) {
+            case PeerState.OfferOutcome.SendNow(QuicPeerConnection connection) ->
+                writeToStream(state.peerId(), message, bytes, connection);
+            case PeerState.OfferOutcome.Queued(boolean oldestEvicted) -> {
+                quicMetrics.onBackpressureQueued();
+                if (oldestEvicted) {
+                    quicMetrics.onBackpressureDrop();
+                    log.debug("Offline buffer for peer {} at capacity — dropped oldest", state.peerId());
+                }
+            }
+            case PeerState.OfferOutcome.Dropped ignored ->
+                log.debug("Message to REMOVED peer {} dropped", state.peerId());
         }
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Stream selection and write
-    private void writeToStream(NodeId peerId, Object message, QuicPeerConnection connection) {
-        var bytes = serializer.encode(message);
+    private void writeToStream(NodeId peerId, Object message, byte[] bytes, QuicPeerConnection connection) {
+        if (!connection.isActive()) {
+            // Connection went dead between offerOutbound capture and write. Evict and re-dispatch
+            // so the bytes land in the offline buffer for the next attach.
+            evictStaleConnection(peerId, connection);
+            var state = peers.get(peerId);
+            if (state != null) {
+                dispatchSerialized(state, message, bytes);
+            }
+            return;
+        }
         var streamType = StreamType.forMessage(message);
-
-        // Use the appropriate stream, falling back to CONSENSUS if not available
         var stream = connection.stream(streamType)
                                .fold(() -> connection.stream(StreamType.CONSENSUS), Option::some);
-
         stream.onPresent(ch -> writeIfWritable(ch, bytes, peerId, streamType))
               .onEmpty(() -> log.warn("No stream available for peer {}", peerId));
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Backpressure: enqueue-or-drop + drain-then-send
+    @SuppressWarnings("JBCT-PAT-01") // Netty-writability: drain-then-send or enqueue
     private void writeIfWritable(QuicStreamChannel ch, byte[] bytes, NodeId peerId, StreamType streamType) {
         if (!ch.isWritable()) {
             enqueueOrDrop(bytes, peerId, streamType);
@@ -657,7 +725,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private void handleWriteFailure(NodeId peerId) {
         // Write failure is advisory — the QUIC channel-close handler owns authoritative
-        // peer removal (unregisterPeer + processViewChange(REMOVE)). Clearing peerLinks
+        // peer removal (unregisterPeer + processViewChange(REMOVE)). Clearing peer state
         // here races with handshake completion from the reverse direction and prematurely
         // drops the peer from Rabia's membership view.
         log.debug("Write to {} failed; deferring removal to QUIC channel lifecycle", peerId);
@@ -678,9 +746,31 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
     }
 
-    private <M extends ProtocolMessage> void broadcastToEligiblePeer(NodeId peerId, QuicPeerConnection conn, M message) {
-        if (!passivePeers.contains(peerId) || message.deliverToPassive()) {
-            sendToConnection(peerId, message, conn);
+    @SuppressWarnings("JBCT-PAT-01") // Evict transition + channel close + reconnect attempt
+    private void evictStaleConnection(NodeId peerId, QuicPeerConnection connection) {
+        var state = peers.get(peerId);
+        if (state == null) {
+            return;
+        }
+        var evicted = state.evict(System.nanoTime());
+        if (evicted.isEmpty()) {
+            log.debug("Node {} stale link already replaced — nothing to evict", peerId);
+            return;
+        }
+        // Wipe channel-level writability backpressure — bytes were for the dead channel.
+        cleanupPeerQueues(peerId);
+        quicMetrics.onConnectionClosed();
+        evicted.onPresent(this::closeDroppedConnection);
+        log.warn("Node {} evicted stale (inactive) link — peer remains in topology, offline buffer preserved for reconnect",
+                 peerId);
+        // Re-dial the peer if we are the initiator side. Higher NodeIds wait for inbound.
+        if (ConnectionDirection.shouldInitiate(self.id(), peerId)) {
+            topologyManager.get(peerId).onPresent(this::connectPeer);
+        }
+        // Explicit use of the `connection` parameter to satisfy the API contract — the
+        // identity check already happened inside `state.evict()` which matches by phase.
+        if (connection != null && connection.isActive()) {
+            connection.close();
         }
     }
 
@@ -704,7 +794,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
             log.warn("Ignoring view change {} for self node {}", operation, peerId);
             return;
         }
-        var activePeerCount = peerLinks.size() - passivePeers.size();
+        var activePeerCount = activeConnectedCount();
         var quorumSize = topologyManager.quorumSize();
         var clusterSize = topologyManager.clusterSize();
         var currentlyHaveQuorum = (activePeerCount + 1) >= quorumSize;
@@ -746,6 +836,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
         router.route(viewChange);
     }
 
+    private int activeConnectedCount() {
+        return (int) peers.values()
+                          .stream()
+                          .filter(p -> p.phase() == PeerState.Phase.CONNECTED && !p.isPassive())
+                          .count();
+    }
+
     private void reportPeerRemoval(NodeId peerId) {
         if (isLeaderSupplier.getAsBoolean()) {
             disconnectListener.onDisconnect(peerId);
@@ -758,7 +855,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private List<NodeId> currentView() {
         return Stream.concat(
                 Stream.of(self.id()),
-                peerLinks.keySet().stream().filter(id -> !passivePeers.contains(id)))
+                peers.values()
+                     .stream()
+                     .filter(p -> p.phase() == PeerState.Phase.CONNECTED && !p.isPassive())
+                     .map(PeerState::peerId))
             .sorted()
             .toList();
     }
@@ -767,12 +867,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private Promise<Unit> closePeerConnections() {
         var promises = new ArrayList<Promise<Unit>>();
-        for (var conn : peerLinks.values()) {
-            promises.add(conn.close());
+        var now = System.nanoTime();
+        for (var state : peers.values()) {
+            state.authoritativeRemove(now)
+                 .onPresent(conn -> promises.add(conn.close()));
         }
-        peerLinks.clear();
-        connectionEstablishedAt.clear();
-        passivePeers.clear();
+        peers.clear();
         outboundQueues.clear();
         if (promises.isEmpty()) {
             return Promise.unitPromise();
