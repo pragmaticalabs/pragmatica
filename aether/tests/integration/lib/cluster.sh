@@ -306,11 +306,24 @@ restart_all_nodes() {
     # peerLinks before restart — avoids the double-initiate race and gives clean boot.
     local prefix="${CLUSTER_NAME:-aether-b-node-}"
     local compose="${COMPOSE_FILE:-${SCRIPT_DIR:-/tmp}/docker-compose-b.yml}"
+    # Surface stderr from the remote compose tear-down/up. Prior form swallowed it via
+    # `2>/dev/null`, hiding a real bug where compose would fail (network in use, CTM
+    # container port collision, etc) and leave containers running from the previous
+    # broken state — yet the test harness believed it had reset the cluster and
+    # interpreted subsequent "no leader elected" as a Rabia convergence failure rather
+    # than the real cause: the compose cycle never ran.
+    local restart_out restart_rc
     if [ -f "$compose" ] && [ "${prefix}" = "aether-b-node-" ]; then
-        remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null || true; cd ~ && docker compose -f docker-compose-b.yml down -v && docker compose -f docker-compose-b.yml up -d" 2>/dev/null
+        restart_out=$(remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null || true; cd ~ && docker compose -f docker-compose-b.yml down -v && docker compose -f docker-compose-b.yml up -d" 2>&1)
+        restart_rc=$?
     else
         # Fallback for non-standard cluster names — best-effort start of exited containers.
-        remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=${prefix}' --filter 'status=exited' -q | xargs -r docker start" 2>/dev/null
+        restart_out=$(remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=${prefix}' --filter 'status=exited' -q | xargs -r docker start" 2>&1)
+        restart_rc=$?
+    fi
+    if [ "$restart_rc" -ne 0 ]; then
+        log_fail "restart_all_nodes: compose cycle returned rc=${restart_rc}. Output: ${restart_out}"
+        return 1
     fi
     # Rotate entry point — the previous pinned node may have been killed during the suite.
     rotate_mgmt_entry_point 2>/dev/null || true
