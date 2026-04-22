@@ -153,10 +153,18 @@ Maximum event size: configurable per stream, default **1 MB**. Streams are not d
 
 ### 4.1 Stream Declaration
 
+> **Addressing note:** stream identity is scoped by the three-component scheme defined in
+> [`event-stream-namespaces-spec.md`](event-stream-namespaces-spec.md). The namespace is implicit
+> (derived from the declaring blueprint's Maven coordinates); the TOML section name is the
+> `<stream>` token; a `version = "X.Y.Z"` field is required (or `"latest"` for consumers).
+> `streamName` in the implementation examples below is a conceptual placeholder for the full
+> three-component address.
+
 Streams are declared in the application blueprint alongside slices, scheduled tasks, and pub/sub topics:
 
 ```toml
 [streams.order-events]
+version = "1.0.0"                # Required. Triplet (producer) or "latest" (consumer only).
 partitions = 6
 retention = "time"               # "time", "count", or "size"
 retention-value = "5m"           # 5 minutes (for time-based)

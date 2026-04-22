@@ -3,7 +3,13 @@
 Status: Approved for implementation
 Target: 1.0.0-rc1
 Tracking: —
-Related: feature #141 (ReadPreference), #137 (cross-node publish routing), #134 (cluster zone support parent), #135 (zone-aware NEAREST, deferred), #136 (read-your-writes, deferred), #137 (chunking, deferred)
+Related: feature #141 (ReadPreference), #137 (cross-node publish routing), #134 (cluster zone support parent), #135 (zone-aware NEAREST, deferred), #136 (read-your-writes, deferred), #137 (chunking, deferred), [`event-stream-namespaces-spec.md`](event-stream-namespaces-spec.md) (three-component stream addressing)
+
+> **Addressing note:** the `streamName` parameters on the forwarding messages below are conceptual —
+> at runtime every stream is addressed by the full `<namespace>:<stream>:<version>` triple defined
+> in [`event-stream-namespaces-spec.md`](event-stream-namespaces-spec.md). Wire-protocol changes to
+> thread the full address through are covered in the foundational PR for that spec; this document
+> concerns only the read-forwarding routing logic.
 
 Source doc convention: every method or code block that implements a numbered section of this spec carries a `// SPEC: §N.M` comment referencing this file. A grep for `SPEC: §` across `aether-stream/` and related modules must round-trip against the sections below.
 

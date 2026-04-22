@@ -346,15 +346,32 @@ public record OrderEvent(
 
 ### 3.1 Stream Declaration (TOML)
 
+> **Addressing note:** stream identity follows the three-component scheme
+> `<namespace>:<stream>:<version>` defined in [`event-stream-namespaces-spec.md`](event-stream-namespaces-spec.md).
+> In a blueprint's `resources.toml`, the namespace is implicit (derived from the blueprint's Maven
+> coordinates) and the local TOML section name (`order-events` below) is the `<stream>` token.
+> Each declaration must carry a `version` (triplet for producers, triplet or `"latest"` for consumers).
+> External references use a `source = "ns:stream:version"` form instead of a local config.
+> The KV-Store key examples in §5–§6 below use `streamName` as a conceptual placeholder — at runtime,
+> all keys are scoped by the full three-component address per the namespaces spec.
+
 Streams are declared in the blueprint's `resources.toml` alongside other resource configurations, under the `[streams.*]` section.
 
 ```toml
 [streams.order-events]
+version = "1.0.0"                 # Required. Triplet (producer) or "latest" (consumer only).
 partitions = 6                    # Number of partitions (default: 4)
 retention = "time"                # "time", "count", or "size" (default: "time")
 retention-value = "5m"            # Duration for time, integer for count, size string for size
 max-event-size = "64KB"           # Maximum serialized event size (default: "1MB")
 backpressure = "drop-oldest"      # "block", "drop-oldest", "reject" (default: "drop-oldest")
+```
+
+External stream references use the `source` field instead of local config:
+
+```toml
+[streams.inventory_feed]
+source = "io.acme.inventory:stock-updates:2.0.0"   # Fully-qualified address; consumer-only in RC1
 ```
 
 ### 3.2 Consumer Group Configuration
