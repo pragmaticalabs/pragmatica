@@ -32,7 +32,15 @@ x-node-common: &node-common
     timeout: 5s
     retries: 6
     start_period: 30s
-  restart: unless-stopped
+  # Cluster B runs DESTRUCTIVE tests (02-chaos, 03-scaling, etc.) that use
+  # `docker kill` to simulate node failure. `restart: unless-stopped` would
+  # defeat those tests — Docker auto-restarts the killed container within
+  # seconds, the cluster never actually loses the node, and Rabia keeps
+  # handshake-flapping with a "dead" peer that Docker keeps reviving,
+  # leading to "no leader elected" pseudo-failures. Tests explicitly call
+  # `restart_all_nodes` via `docker compose down -v && up -d` when they
+  # want containers back. `restart: "no"` keeps kill_node authoritative.
+  restart: "no"
 
 services:
   # --- 5-node Aether Cluster B ---
