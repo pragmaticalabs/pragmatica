@@ -13,10 +13,15 @@ import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.stream.StreamResource;
+import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -37,6 +42,19 @@ import static org.pragmatica.lang.utils.Causes.cause;
                      .or(success(Map.of()));
     }
 
+    /// Parse `[streams.*]` sections into [StreamResource] declarations.
+    ///
+    /// Each section is either:
+    ///  - [StreamResource.Owned] — internal declaration with `version = "..."` and optional config fields.
+    ///  - [StreamResource.External] — reference with `source = "namespace:stream:version"`.
+    ///
+    /// `version` and `source` are mutually exclusive. Absence of both is a parse error.
+    static Result<Map<String, StreamResource>> parseResources(String toml) {
+        return option(toml).filter(s -> !s.isBlank())
+                     .map(StreamConfigParser::parseResourceToml)
+                     .or(success(Map.of()));
+    }
+
     static Result<Map<String, ConsumerConfig>> parseConsumers(String toml, String streamName) {
         return option(toml).filter(s -> !s.isBlank())
                      .map(t -> parseConsumerToml(t, streamName))
@@ -46,6 +64,63 @@ import static org.pragmatica.lang.utils.Causes.cause;
     private static Result<Map<String, StreamConfig>> parseStreamToml(String toml) {
         return TomlParser.parse(toml).mapError(err -> cause("Stream config parse error: " + err.message()))
                                .map(StreamConfigParser::extractStreamConfigs);
+    }
+
+    private static Result<Map<String, StreamResource>> parseResourceToml(String toml) {
+        return TomlParser.parse(toml).mapError(err -> cause("Stream config parse error: " + err.message()))
+                               .flatMap(StreamConfigParser::extractStreamResources);
+    }
+
+    private static Result<Map<String, StreamResource>> extractStreamResources(TomlDocument doc) {
+        var result = new LinkedHashMap<String, StreamResource>();
+        for (var sectionName : doc.sectionNames()) {
+            if (!isStreamSection(sectionName)) {continue;}
+            var streamName = sectionName.substring(STREAMS_PREFIX.length());
+            if (streamName.contains(".")) {continue;}  // skip sub-sections like streams.x.consumers.y
+            var parsed = parseStreamResource(doc, sectionName, streamName);
+            if (parsed.isFailure()) {return parsed.fold(Result::failure, _ -> success(Map.of()));}
+            parsed.onSuccess(res -> result.put(streamName, res));
+        }
+        return success(Map.copyOf(result));
+    }
+
+    private static Result<StreamResource> parseStreamResource(TomlDocument doc, String section, String streamName) {
+        var sourceOpt = doc.getString(section, "source");
+        var versionOpt = doc.getString(section, "version");
+
+        if (sourceOpt.isPresent() && versionOpt.isPresent()) {
+            return Causes.cause("Stream resource '" + streamName + "' must not set both 'source' and 'version'").result();
+        }
+        if (sourceOpt.isPresent()) {
+            return sourceOpt.fold(() -> missingStreamResource(streamName),
+                                  source -> parseExternalResource(streamName, source));
+        }
+        if (versionOpt.isEmpty()) {
+            return missingStreamResource(streamName);
+        }
+        return versionOpt.fold(() -> missingStreamResource(streamName),
+                               version -> parseOwnedResource(doc, section, streamName, version));
+    }
+
+    private static Result<StreamResource> missingStreamResource(String streamName) {
+        return Causes.<Cause>cause(
+                "Stream resource '" + streamName + "' must specify either 'version' (owned) or 'source' (external)"
+        ).result();
+    }
+
+    private static Result<StreamResource> parseExternalResource(String streamName, String source) {
+        return StreamAddress.streamAddress(source)
+                             .map(addr -> StreamResource.external(streamName, addr));
+    }
+
+    private static Result<StreamResource> parseOwnedResource(TomlDocument doc,
+                                                              String section,
+                                                              String streamName,
+                                                              String version) {
+        return StreamVersionSpec.streamVersionSpec(version)
+                                 .map(spec -> StreamResource.owned(streamName,
+                                                                    spec,
+                                                                    parseStreamSection(doc, section, streamName)));
     }
 
     private static Result<Map<String, ConsumerConfig>> parseConsumerToml(String toml, String streamName) {
