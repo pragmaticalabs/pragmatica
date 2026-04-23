@@ -388,6 +388,138 @@ class LeaderManagerTest {
         }
 
         @Test
+        void onLeaderCommitted_rejectsStaleCommit_whenLeaderNotInTopology() throws InterruptedException {
+            // Regression: a committed leader that is NOT in the local topology must be dropped,
+            // not silently re-installed. Previously a stale consensus replay could re-install the
+            // dead leader and block re-election indefinitely.
+            var minNode = nodes.getFirst();
+            var localRouter = MessageRouter.mutable();
+            var localWatcher = new Watcher<LeaderNotification>(new CopyOnWriteArrayList<>());
+            var localProposals = new CopyOnWriteArrayList<LeaderProposal>();
+            LeaderManager.LeaderProposalHandler handler = (candidate, viewSequence) -> {
+                localProposals.add(new LeaderProposal(candidate, viewSequence));
+                return Promise.unitPromise();
+            };
+            localRouter.addRoute(LeaderChange.class, localWatcher::watch);
+            var localManager = LeaderManager.leaderManager(minNode, localRouter, handler);
+            localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
+            localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
+
+            // Topology only contains [a, b] — NOT node-c
+            localRouter.route(nodeAdded(minNode, List.of(minNode)));
+            localRouter.route(nodeAdded(self, List.of(minNode, self)));
+            localRouter.route(QuorumStateNotification.established());
+
+            // Stale commit: leader = node-c which is NOT in our topology
+            var stale = nodes.getLast();
+            localManager.onLeaderCommitted(stale);
+
+            Thread.sleep(100);
+
+            assertThat(localManager.leader()).isEqualTo(Option.none());
+            assertThat(localWatcher.collected()).isEmpty();
+        }
+
+        @Test
+        void nodeRemoved_whenLeaderGone_followerReElects() throws InterruptedException {
+            // Leader dies → follower must clear leader, emit no-leader notification, and start
+            // submitting proposals (re-election, any node can propose).
+            var follower = self; // node-b
+            var leaderNode = nodes.getFirst(); // node-a — will die
+            var localRouter = MessageRouter.mutable();
+            var localWatcher = new Watcher<LeaderNotification>(new CopyOnWriteArrayList<>());
+            var localProposals = new CopyOnWriteArrayList<LeaderProposal>();
+            LeaderManager.LeaderProposalHandler handler = (candidate, viewSequence) -> {
+                localProposals.add(new LeaderProposal(candidate, viewSequence));
+                return Promise.unitPromise();
+            };
+            localRouter.addRoute(LeaderChange.class, localWatcher::watch);
+            var localManager = LeaderManager.leaderManager(follower, localRouter, handler, nodes);
+            localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
+            localRouter.addRoute(NodeRemoved.class, localManager::nodeRemoved);
+            localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
+
+            var list = new ArrayList<NodeId>();
+            for (var n : nodes) {
+                list.add(n);
+                localRouter.route(nodeAdded(n, list.stream().sorted().toList()));
+            }
+            localRouter.route(QuorumStateNotification.established());
+
+            localManager.onLeaderCommitted(leaderNode);
+            Thread.sleep(50);
+            assertThat(localManager.leader()).isEqualTo(Option.some(leaderNode));
+            localWatcher.collected().clear();
+            localProposals.clear();
+
+            // Leader (node-a) removed
+            var survivors = List.of(follower, nodes.getLast());
+            localRouter.route(nodeRemoved(leaderNode, survivors));
+
+            // Wait for re-election tick (proposalRetryDelay ~500ms + jitter)
+            Thread.sleep(1500);
+
+            assertThat(localManager.leader()).isEqualTo(Option.none());
+            assertThat(localWatcher.collected())
+                .anyMatch(n -> n instanceof LeaderChange lc && lc.leaderId().isEmpty());
+            // Follower (self=b) submits in re-election — any-node-can-propose
+            assertThat(localProposals).isNotEmpty();
+        }
+
+        @Test
+        void stop_drainsEventsAndBecomesInert() {
+            // After stop(): events are silently ignored, leader is cleared, no exceptions.
+            var localRouter = MessageRouter.mutable();
+            LeaderManager.LeaderProposalHandler handler = (candidate, viewSequence) -> Promise.unitPromise();
+            var localManager = LeaderManager.leaderManager(self, localRouter, handler);
+            localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
+            localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
+
+            localManager.stop();
+
+            localRouter.route(nodeAdded(self, List.of(self)));
+            localRouter.route(QuorumStateNotification.established());
+            localManager.onLeaderCommitted(self);
+
+            assertThat(localManager.leader()).isEqualTo(Option.none());
+            assertThat(localManager.isLeader()).isFalse();
+        }
+
+        @Test
+        void triggerElectionBeforeQuorumEstablished_bufferedReplay() throws InterruptedException {
+            // AetherNode flow: triggerElection may arrive before QuorumEstablished. The FSM must
+            // buffer it and replay once quorum establishes, yielding a submitted proposal for
+            // the min-rank candidate.
+            var minNode = nodes.getFirst();
+            var localRouter = MessageRouter.mutable();
+            var localProposals = new CopyOnWriteArrayList<LeaderProposal>();
+            LeaderManager.LeaderProposalHandler handler = (candidate, viewSequence) -> {
+                localProposals.add(new LeaderProposal(candidate, viewSequence));
+                return Promise.unitPromise();
+            };
+            var localManager = LeaderManager.leaderManager(minNode, localRouter, handler, nodes);
+            localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
+            localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
+
+            var list = new ArrayList<NodeId>();
+            for (var n : nodes) {
+                list.add(n);
+                localRouter.route(nodeAdded(n, list.stream().sorted().toList()));
+            }
+
+            // triggerElection BEFORE QuorumEstablished — should be buffered
+            localManager.triggerElection();
+            // Now establish quorum — buffered ConsensusReady replays
+            localRouter.route(QuorumStateNotification.established());
+
+            // Wait past staggered initial delay (base 2s + rank 0)
+            Thread.sleep(3_000);
+
+            assertThat(localProposals).isNotEmpty();
+            assertThat(localProposals.getFirst().candidate()).isEqualTo(minNode);
+        }
+
+        @Test
         void onQuorumDisappeared_sendsImmediateNotification() throws InterruptedException {
             // Setup cluster
             var list = new ArrayList<NodeId>();

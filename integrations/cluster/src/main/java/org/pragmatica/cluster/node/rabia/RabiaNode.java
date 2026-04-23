@@ -264,6 +264,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
             @Override
             public Promise<Unit> stop() {
+                leaderManager().stop();
                 return consensus().stop()
                                 .onResultRun(topologyManager()::stop)
                                 .flatMap(network()::stop);
