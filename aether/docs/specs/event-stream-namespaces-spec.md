@@ -75,23 +75,26 @@ Application namespaces are derived from the declaring blueprint's Maven coordina
 
 ### 4.1. Rule
 
-Given a blueprint Maven artifact with `groupId = G` and `artifactId = A`, where `A` ends with the mandatory `-blueprint` suffix:
+Given a blueprint Maven artifact with `groupId = G` and `artifactId = A`:
 
 ```
-namespace = G + "." + strip_suffix(A, "-blueprint")
+namespace = G + "." + A
 ```
 
 Examples:
 
 | groupId | artifactId | Derived namespace |
 |---|---|---|
-| `com.example` | `myapp-blueprint` | `com.example.myapp` |
-| `org.pragmatica.aether` | `forge-blueprint` | `org.pragmatica.aether.forge` |
-| `io.acme.billing` | `invoice-service-blueprint` | `io.acme.billing.invoice-service` |
+| `com.example` | `url-shortener` | `com.example.url-shortener` |
+| `org.pragmatica.aether` | `forge` | `org.pragmatica.aether.forge` |
+| `io.acme.billing` | `invoice-service` | `io.acme.billing.invoice-service` |
+
+Blueprint identity is signalled by the Maven **classifier** `blueprint` on the produced JAR (see
+`GenerateBlueprintMojo`, constant `CLASSIFIER = "blueprint"`), not by a suffix on the artifactId.
+The artifactId is taken verbatim; no stripping, no required marker.
 
 ### 4.2. Invariants
 
-- `-blueprint` suffix is **mandatory** on blueprint artifactIds. Blueprint builds must fail if the suffix is missing (see §15).
 - The Maven coordinate pair `(groupId, artifactId)` is globally unique by Maven's own rules, so derived namespaces are globally unique by construction.
 - Two deploys of the same blueprint (same coords, different Maven version) resolve to the **same** namespace. Streams survive blueprint version bumps.
 - A rename of `groupId` or `artifactId` produces a different namespace. Old and new streams are independent from the cluster's perspective.
@@ -360,10 +363,13 @@ These are mechanical consistency edits and are part of the same change set.
 
 The blueprint build (jbct / `GenerateBlueprintMojo`) must enforce:
 
-1. Blueprint artifactId ends with `-blueprint`. Build fails with a clear message otherwise.
-2. Derived namespace is not reserved (case-insensitive check against `{"system"}`). Build fails otherwise.
-3. Each stream resource in `resources.toml` satisfies the grammar and parser rules in §3.2 and §11.
-4. Each producer stream resource specifies an exact version (not `"latest"`).
+1. Derived namespace is not reserved (case-insensitive check against `{"system"}`). Build fails otherwise.
+2. Each stream resource in `resources.toml` satisfies the grammar and parser rules in §3.2 and §11.
+3. Each producer stream resource specifies an exact version (not `"latest"`).
+
+Blueprint identity itself is signalled by the Maven classifier `blueprint` on the produced JAR
+(`GenerateBlueprintMojo.CLASSIFIER`); there is no required suffix on the artifactId. The artifactId
+flows into the namespace verbatim.
 
 Build-time validation catches configuration errors early; runtime validation (§15.1) catches any that slip past (e.g., from hand-edited blueprints or legacy toolchains).
 
