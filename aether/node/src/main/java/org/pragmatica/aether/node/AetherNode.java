@@ -1073,6 +1073,11 @@ public interface AetherNode extends ManageableNode {
                                                                                leaderEpochSupplier,
                                                                                isLeaderGate::get,
                                                                                metricsScheduler);
+        // Let the SWIM detector recognise "the faulty peer IS the current leader" on follower
+        // nodes and bypass the buffer-upstream single-writer rule by routing DisconnectNode
+        // locally. Without this, a dead leader pins LeaderKey forever because the buffered
+        // observation has no live leader to fold it. See CoreSwimHealthDetector.onMemberFaulty.
+        swimHealthDetector.setCurrentLeaderSupplier(() -> clusterNode.leaderManager().leader());
         allEntries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
                                                  notification -> startSwimOnQuorum(notification,
                                                                                    swimHealthDetector,

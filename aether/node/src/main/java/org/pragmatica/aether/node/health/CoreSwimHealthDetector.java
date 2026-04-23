@@ -85,6 +85,15 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private volatile long faultyWindowStart;
     private volatile boolean locallyDisconnected;
 
+    /// Supplier for the current leader's NodeId (present when a leader is known, empty otherwise).
+    /// Used by the follower FAULTY path to detect the special case where the faulty peer IS the
+    /// current leader. Without this, the "buffer observation upstream" single-writer rule causes
+    /// the dead leader to pin `LeaderKey` forever (the leader can't process observations about
+    /// its own death). On match, follower routes `DisconnectNode` locally so LeaderManager fires
+    /// re-election. Default: always empty (no leader tracked) — preserves pre-fix behavior when
+    /// unwired. Wired by higher layers (AetherNode) to LeaderManager::leader.
+    private volatile Supplier<Option<NodeId>> currentLeaderSupplier = Option::none;
+
     private CoreSwimHealthDetector(MessageRouter router,
                                    TopologyConfig topologyConfig,
                                    Serializer serializer,
@@ -217,26 +226,64 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     }
 
     @Override@SuppressWarnings("JBCT-RET-01") public void onMemberFaulty(SwimMember member) {
-        if (!isLeaderSupplier.getAsBoolean()) {
-            log.warn("SWIM member faulty: {} — follower sensor, buffering observation upstream", member.nodeId());
-            bufferHealthObservation(member.nodeId(), HealthHint.FAULTY);
+        if (isLocalDisconnect(member)) {return;}
+        if (isLeaderSupplier.getAsBoolean()) {
+            log.error("SWIM member faulty: {}, routing DisconnectNode", member.nodeId());
+            router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(member.nodeId()));
+            emitLeaderHint(member.nodeId(), HealthHint.FAULTY);
             return;
         }
-        if (isLocalDisconnect(member)) {return;}
-        log.error("SWIM member faulty: {}, routing DisconnectNode", member.nodeId());
-        router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(member.nodeId()));
-        emitLeaderHint(member.nodeId(), HealthHint.FAULTY);
+        // Follower path: default is to buffer upstream so the leader's HealthReconciler
+        // folds the observation (single-writer rule, ClusterSync refactor commit 2).
+        // SPECIAL CASE: if the faulty peer IS the current leader, the leader cannot
+        // process observations about its own death — the buffer goes nowhere. In that
+        // case, the follower routes DisconnectNode locally so its own LeaderManager sees
+        // `NodeRemoved`, detects leader-was-removed, and triggers a new leader proposal
+        // via Rabia (first proposer's commit wins; others no-op on adopting the new leader).
+        if (shouldRouteDisconnectLocally(member.nodeId())) {
+            log.warn("SWIM member faulty: {} — follower needs local transport action (leader empty or faulty-is-leader), routing DisconnectNode to unblock re-election",
+                     member.nodeId());
+            router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(member.nodeId()));
+        } else {
+            log.warn("SWIM member faulty: {} — follower sensor, buffering observation upstream", member.nodeId());
+        }
+        bufferHealthObservation(member.nodeId(), HealthHint.FAULTY);
     }
 
     @Override@SuppressWarnings("JBCT-RET-01") public void onMemberLeft(NodeId leftNodeId) {
-        if (!isLeaderSupplier.getAsBoolean()) {
-            log.warn("SWIM member left: {} — follower sensor, buffering FAULTY observation upstream", leftNodeId);
-            bufferHealthObservation(leftNodeId, HealthHint.FAULTY);
+        if (isLeaderSupplier.getAsBoolean()) {
+            log.warn("SWIM member left: {}, routing DisconnectNode", leftNodeId);
+            router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(leftNodeId));
+            emitLeaderHint(leftNodeId, HealthHint.FAULTY);
             return;
         }
-        log.warn("SWIM member left: {}, routing DisconnectNode", leftNodeId);
-        router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(leftNodeId));
-        emitLeaderHint(leftNodeId, HealthHint.FAULTY);
+        if (shouldRouteDisconnectLocally(leftNodeId)) {
+            log.warn("SWIM member left: {} — follower needs local transport action (leader empty or faulty-is-leader), routing DisconnectNode to unblock re-election",
+                     leftNodeId);
+            router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(leftNodeId));
+        } else {
+            log.warn("SWIM member left: {} — follower sensor, buffering FAULTY observation upstream", leftNodeId);
+        }
+        bufferHealthObservation(leftNodeId, HealthHint.FAULTY);
+    }
+
+    /// True when the faulty peer IS the current leader. In that specific case, the buffer-
+    /// upstream single-writer rule has nowhere to go (the leader cannot process observations
+    /// about its own death), so the follower must take local transport action by routing
+    /// `DisconnectNode`. Any other faulty peer still buffers upstream — this avoids the
+    /// handshake-storm failure mode where every follower removes every transiently suspected
+    /// peer on its own.
+    private boolean shouldRouteDisconnectLocally(NodeId faultyPeer) {
+        return currentLeaderSupplier.get()
+                                    .filter(faultyPeer::equals)
+                                    .isPresent();
+    }
+
+    /// Wire the current-leader supplier so the follower FAULTY path can detect "dead leader"
+    /// and bypass the buffer-upstream rule. Called by higher layers (AetherNode) with
+    /// `LeaderManager::leader`. Leaving this unwired preserves pre-fix buffer-only behavior.
+    public void setCurrentLeaderSupplier(Supplier<Option<NodeId>> supplier) {
+        this.currentLeaderSupplier = supplier == null ? Option::none : supplier;
     }
 
     private void reportHint(NodeId nodeId, HealthHint hint) {

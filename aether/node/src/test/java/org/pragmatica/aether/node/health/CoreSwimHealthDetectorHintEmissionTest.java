@@ -41,7 +41,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///     the injected sink and `onMemberFaulty`/`onMemberLeft` route `DisconnectNode`.
 ///   - **Follower:** callbacks DO NOT emit through the sink — observations buffer
 ///     into the `PeerObservationBuffer` for upstream delivery on the next pong
-///     (ClusterSync refactor commit 2). `DisconnectNode` routing is leader-only.
+///     (ClusterSync refactor commit 2). `DisconnectNode` is ALSO routed locally so
+///     the follower's `QuicClusterNetwork` can drop the dead peer and `LeaderManager`
+///     can trigger re-election when the dead peer was the leader. Single-writer rule
+///     applies to authoritative membership atoms, not per-node transport hygiene.
 class CoreSwimHealthDetectorHintEmissionTest {
     private static final NodeId SELF = new NodeId("node-1");
     private static final NodeId PEER_A = new NodeId("node-2");

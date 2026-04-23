@@ -837,9 +837,20 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private int activeConnectedCount() {
+        // Count CONNECTED and EVICTED peers as still active for quorum purposes. EVICTED is a
+        // transient local-view state (stale QUIC link awaiting reconnect); the peer remains in
+        // topology and its offline buffer is preserved. Only REMOVED (authoritative departure
+        // via DisconnectNode) drops the peer from the quorum count. Without this, a brief QUIC
+        // flap on any peer pushes `activeConnectedCount` below quorum and routes a spurious
+        // `QuorumStateNotification.DISAPPEARED`, which calls `LeaderManager.stop()` and clears
+        // `currentLeader` — then SWIM FAULTY on the (real) dead leader fires too late for the
+        // "follower detects dead leader" re-election path, because `currentLeader` is already
+        // empty and the narrow match fails.
         return (int) peers.values()
                           .stream()
-                          .filter(p -> p.phase() == PeerState.Phase.CONNECTED && !p.isPassive())
+                          .filter(p -> !p.isPassive())
+                          .filter(p -> p.phase() == PeerState.Phase.CONNECTED
+                                       || p.phase() == PeerState.Phase.EVICTED)
                           .count();
     }
 
