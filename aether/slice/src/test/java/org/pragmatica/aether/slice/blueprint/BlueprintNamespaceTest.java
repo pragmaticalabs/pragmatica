@@ -8,8 +8,6 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
-import org.pragmatica.aether.slice.blueprint.BlueprintNamespace.BlueprintNamespaceError.General;
-import org.pragmatica.aether.slice.stream.StreamAddress.StreamAddressError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
@@ -35,26 +33,31 @@ class BlueprintNamespaceTest {
     class Derivation {
 
         @Test
-        void stripsBlueprintSuffix() {
-            var namespace = deriveNamespace(group("com.example"), artifact("myapp-blueprint")).unwrap();
+        void concatenatesGroupAndArtifact() {
+            var namespace = deriveNamespace(group("com.example"), artifact("url-shortener")).unwrap();
 
-            assertThat(namespace).isEqualTo("com.example.myapp");
+            assertThat(namespace).isEqualTo("com.example.url-shortener");
         }
 
         @Test
         void preservesHyphensWithinArtifactId() {
-            var namespace = deriveNamespace(group("io.acme.billing"),
-                                             artifact("invoice-service-blueprint")).unwrap();
+            var namespace = deriveNamespace(group("io.acme.billing"), artifact("invoice-service")).unwrap();
 
             assertThat(namespace).isEqualTo("io.acme.billing.invoice-service");
         }
 
         @Test
         void preservesDottedGroupId() {
-            var namespace = deriveNamespace(group("org.pragmatica.aether"),
-                                             artifact("forge-blueprint")).unwrap();
+            var namespace = deriveNamespace(group("org.pragmatica.aether"), artifact("forge")).unwrap();
 
             assertThat(namespace).isEqualTo("org.pragmatica.aether.forge");
+        }
+
+        @Test
+        void acceptsSingleTokenArtifact() {
+            var namespace = deriveNamespace(group("com.example"), artifact("banking")).unwrap();
+
+            assertThat(namespace).isEqualTo("com.example.banking");
         }
     }
 
@@ -62,42 +65,22 @@ class BlueprintNamespaceTest {
     class Rejections {
 
         @Test
-        void rejectsMissingBlueprintSuffix() {
-            var error = errorOf(deriveNamespace(group("com.example"), artifact("myapp")));
-
-            assertThat(error).isEqualTo(General.MISSING_BLUEPRINT_SUFFIX);
+        void rejectsSystemReservedNamespaceAtAppLevel() {
+            // The literal reserved namespace "system" can only arise if coords resolve to exactly "system".
+            // Not reachable through current GroupId grammar (requires at least one dot).
+            // Sanity: typical coords pass.
+            assertThat(deriveNamespace(group("com.example"), artifact("any")).isSuccess()).isTrue();
         }
 
         @Test
-        void rejectsWrongSuffixFormat() {
-            // artifactId `my-blueprinted` doesn't end with exactly `-blueprint`
-            var error = errorOf(deriveNamespace(group("com.example"), artifact("my-blueprinted")));
+        void namespaceValidationErrorsAreSurfaced() {
+            // All legal Maven coord combinations produce valid namespaces under the current grammar.
+            // Guard: if the reserved/charset rules ever tighten, errors must propagate as
+            // StreamAddressError, not leak as raw validation noise. Regression surface only.
+            var result = deriveNamespace(group("com.example"), artifact("x"));
 
-            assertThat(error).isEqualTo(General.MISSING_BLUEPRINT_SUFFIX);
-        }
-
-        @Test
-        void rejectsSystemReservedNamespace() {
-            // groupId `system.core` with artifactId `x-blueprint` would give `system.core.x` (not reserved).
-            // But a blueprint with coords producing literal `system` can only happen if stripping yields
-            // an empty string and groupId equals `system` — which isn't legal because GroupId requires
-            // at least one dot. Instead, exercise the reserved path by constructing a pathological case
-            // that derives to the literal `system`: not reachable through the artifact types' grammar.
-            // We confirm the validateAppNamespace reserved check is wired by asserting a non-system
-            // coord works (sanity) — the direct reserved-check path is covered in StreamAddressTest.
-            assertThat(deriveNamespace(group("com.example"), artifact("x-blueprint")).isSuccess()).isTrue();
-        }
-
-        @Test
-        void propagatesNamespaceValidationErrors() {
-            // All legal (GroupId, ArtifactId) combos currently validate as acceptable namespaces
-            // after `-blueprint` stripping. Surface-area guard: if any invariant changes in the future
-            // the error type should still be a StreamAddressError (not a leaked Maven-grammar error).
-            var error = errorOf(deriveNamespace(group("com.example"), artifact("blueprint")));
-
-            // `blueprint` does NOT end with `-blueprint` (no hyphen), so suffix check fires.
-            assertThat(error).isEqualTo(General.MISSING_BLUEPRINT_SUFFIX);
-            assertThat(error).isNotInstanceOf(StreamAddressError.class);
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(errorOf(result)).isNull();
         }
     }
 }

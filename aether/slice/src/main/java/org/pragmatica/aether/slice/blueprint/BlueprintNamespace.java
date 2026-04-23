@@ -8,39 +8,17 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.slice.stream.StreamAddress;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
 
 /// Derives the stream namespace for a blueprint from its Maven coordinates.
 ///
-/// Rule: `namespace = groupId + "." + strip_suffix(artifactId, "-blueprint")`.
+/// Rule: `namespace = groupId + "." + artifactId`.
 ///
-/// The `-blueprint` suffix is mandatory on blueprint artifactIds. A blueprint
-/// whose artifactId lacks the suffix cannot participate in stream addressing
-/// and is rejected at build time and at runtime.
+/// Blueprint identity is signalled by the Maven classifier `blueprint` on the produced JAR
+/// (see `GenerateBlueprintMojo`), not by a suffix on the artifactId. The artifactId is taken
+/// verbatim; no stripping, no required marker.
 public final class BlueprintNamespace {
-    public static final String BLUEPRINT_SUFFIX = "-blueprint";
-
-    public sealed interface BlueprintNamespaceError extends Cause {
-        enum General implements BlueprintNamespaceError {
-            MISSING_BLUEPRINT_SUFFIX("Blueprint artifactId must end with '-blueprint'");
-            private final String message;
-            General(String message) {
-                this.message = message;
-            }
-            @Override public String message() {
-                return message;
-            }
-        }
-
-        @SuppressWarnings("unused") record unused() implements BlueprintNamespaceError {
-            @Override public String message() {
-                return "";
-            }
-        }
-    }
-
     private BlueprintNamespace() {}
 
     public static Result<String> deriveNamespace(BlueprintId blueprintId) {
@@ -52,12 +30,6 @@ public final class BlueprintNamespace {
     }
 
     public static Result<String> deriveNamespace(GroupId groupId, ArtifactId artifactId) {
-        var artifactIdString = artifactId.id();
-        if (!artifactIdString.endsWith(BLUEPRINT_SUFFIX)) {
-            return BlueprintNamespaceError.General.MISSING_BLUEPRINT_SUFFIX.result();
-        }
-        var strippedArtifactId = artifactIdString.substring(0, artifactIdString.length() - BLUEPRINT_SUFFIX.length());
-        var candidate = groupId.id() + "." + strippedArtifactId;
-        return StreamAddress.validateAppNamespace(candidate);
+        return StreamAddress.validateAppNamespace(groupId.id() + "." + artifactId.id());
     }
 }
