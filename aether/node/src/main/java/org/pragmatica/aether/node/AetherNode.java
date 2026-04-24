@@ -1077,7 +1077,12 @@ public interface AetherNode extends ManageableNode {
         // nodes and bypass the buffer-upstream single-writer rule by routing DisconnectNode
         // locally. Without this, a dead leader pins LeaderKey forever because the buffered
         // observation has no live leader to fold it. See CoreSwimHealthDetector.onMemberFaulty.
-        swimHealthDetector.setCurrentLeaderSupplier(() -> clusterNode.leaderManager().leader());
+        //
+        // Event-driven: subscribe to LeaderNotification.LeaderChange and push the authoritative
+        // leader into the detector's FSM. The FSM's Running / LocalDisconnect states hold the
+        // current leader as state data (see plan §"Running ──leaderChange──► Running(…, updatedLeader)").
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 change -> swimHealthDetector.onLeaderChanged(change.leaderId())));
         allEntries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
                                                  notification -> startSwimOnQuorum(notification,
                                                                                    swimHealthDetector,
