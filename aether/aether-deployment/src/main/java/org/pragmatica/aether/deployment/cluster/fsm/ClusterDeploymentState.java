@@ -256,49 +256,55 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private void handleAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut,
                                            TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
-            handleAppBlueprintChange(valuePut.cause().key(), valuePut.cause().value());
-            tx.ignore();
+            tx.handle(() -> handleAppBlueprintChange(valuePut.cause().key(), valuePut.cause().value()));
         }
 
         private void handleSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut,
                                           TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
-            handleSliceTargetChange(valuePut.cause().key(), valuePut.cause().value());
-            tx.ignore();
+            tx.handle(() -> handleSliceTargetChange(valuePut.cause().key(), valuePut.cause().value()));
         }
 
         private void handleVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut,
                                              TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> processVersionRoutingPut(valuePut));
+        }
+
+        private void processVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) {
             var routingKey = valuePut.cause().key();
             log.info("Rolling update started for {}", routingKey.artifactBase());
             activeRoutings.add(routingKey.artifactBase());
-            tx.ignore();
         }
 
         private void handleAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove,
                                               TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
-            handleAppBlueprintRemoval(valueRemove.cause().key());
-            tx.ignore();
+            tx.handle(() -> handleAppBlueprintRemoval(valueRemove.cause().key()));
         }
 
         private void handleSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove,
                                              TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> processSliceTargetRemove(valueRemove));
+        }
+
+        private void processSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
             var key = valueRemove.cause().key();
             var artifactBase = key.artifactBase();
             blueprints.keySet().stream()
                       .filter(artifactBase::matches)
                       .toList()
                       .forEach(this::issueDeallocationCommands);
-            tx.ignore();
         }
 
         private void handleVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove,
                                                 TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
-            handleRoutingRemoval(valueRemove.cause().key());
-            tx.ignore();
+            tx.handle(() -> handleRoutingRemoval(valueRemove.cause().key()));
         }
 
         private void handleTopologyChange(TopologyChangeNotification topologyChange,
                                           TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> processTopologyChange(topologyChange));
+        }
+
+        private void processTopologyChange(TopologyChangeNotification topologyChange) {
             log.info("Received topology change: {}", topologyChange);
             switch (topologyChange) {
                 case NodeAdded(NodeId addedNode, List<NodeId> _) -> handleNodeAdded(addedNode);
@@ -307,7 +313,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 case NodeDown(NodeId downNode, List<NodeId> _) -> handleNodeDown(downNode);
                 default -> {}
             }
-            tx.ignore();
         }
 
         private void handleNodeAdded(NodeId addedNode) {
@@ -322,48 +327,67 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private void handleNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut,
                                             TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> processNodeLifecyclePut(valuePut));
+        }
+
+        private void processNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {
             var nodeId = valuePut.cause().key().nodeId();
             var state = valuePut.cause().value().state();
             handleNodeLifecycleChange(nodeId, state);
-            tx.ignore();
         }
 
         private void handleActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut,
                                                   TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> processActivationDirectivePutEvent(valuePut));
+        }
+
+        private void processActivationDirectivePutEvent(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) {
             var nodeId = valuePut.cause().key().nodeId();
             var role = valuePut.cause().value().role();
             processActivationDirectivePut(nodeId, role);
-            tx.ignore();
         }
 
         private void handleActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove,
                                                      TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> processActivationDirectiveRemove(valueRemove));
+        }
+
+        private void processActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) {
             var nodeId = valueRemove.cause().key().nodeId();
             if (workerNodes.remove(nodeId)) {
                 log.info("Worker node {} deregistered, total workers: {}", nodeId, workerNodes.size());
                 reconcile();
             }
-            tx.ignore();
         }
 
         private void handleNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut,
                                            TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> processNodeArtifactPut(valuePut));
+        }
+
+        private void processNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
             var key = valuePut.cause().key();
             var value = valuePut.cause().value();
             trackSliceState(SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId()),
                             new SliceNodeValue(value.state(), value.failureReason(), value.fatal()));
-            tx.ignore();
         }
 
         private void handleNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove,
                                               TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> processNodeArtifactRemove(valueRemove));
+        }
+
+        private void processNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
             var key = valueRemove.cause().key();
             handleSliceNodeRemoval(SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId()));
-            tx.ignore();
         }
 
         private void handleSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut,
                                             TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> processSchemaVersionPut(valuePut));
+        }
+
+        private void processSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) {
             var value = valuePut.cause().value();
             var datasource = value.datasourceName();
             switch (value.status()) {
@@ -372,7 +396,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 case FAILED -> log.warn("Schema migration failed for datasource: {}", datasource);
                 case MIGRATING -> log.debug("Schema migration in progress for datasource: {}", datasource);
             }
-            tx.ignore();
         }
 
         // --- Entry bootstrap ---

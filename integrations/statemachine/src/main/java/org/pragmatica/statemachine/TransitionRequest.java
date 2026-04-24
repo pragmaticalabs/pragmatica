@@ -69,5 +69,15 @@ public final class TransitionRequest<S extends FsmState<S, E>, E> {
         fsm.recordIgnored(fromState, event);
     }
 
+    /// Handle the event via a side effect without changing state. Distinct from `ignore` —
+    /// `handle` says "the event was consumed at the side-effect layer; no transition needed".
+    /// Generates `fsm.events.handled` observability instead of `fsm.events.ignored`.
+    ///
+    /// The action MUST NOT dispatch events (reentrancy) and MUST NOT throw (JBCT).
+    public void handle(Runnable action) {
+        action.run();
+        fsm.recordHandled(fromState, event);
+    }
+
     private static final Runnable NO_ACTION = () -> {};
 }

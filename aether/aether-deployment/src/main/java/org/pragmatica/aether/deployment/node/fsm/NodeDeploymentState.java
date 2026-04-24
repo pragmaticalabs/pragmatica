@@ -203,13 +203,17 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 tx.ignore();
                 return;
             }
+            tx.handle(() -> processNodeArtifactPut(valuePut));
+        }
+
+        private void processNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+            var key = valuePut.cause().key();
             var value = valuePut.cause().value();
             var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId());
             var sliceNodeValue = SliceNodeValue.sliceNodeValue(value.state());
             log.debug("NodeArtifactKey put received for key: {}, state: {}", key, value.state());
             recordDeployment(sliceKey, sliceNodeValue);
             processStateTransition(sliceKey, value.state());
-            tx.ignore();
         }
 
         private void handleNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove,
@@ -220,18 +224,20 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 return;
             }
             var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId());
-            handleSliceValueRemove(sliceKey);
-            tx.ignore();
+            tx.handle(() -> handleSliceValueRemove(sliceKey));
         }
 
         private void handleNodeRoutesPut(ValuePut<AetherKey.NodeRoutesKey, org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue> valuePut,
                                          TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> processNodeRoutesPut(valuePut));
+        }
+
+        private void processNodeRoutesPut(ValuePut<AetherKey.NodeRoutesKey, org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue> valuePut) {
             var key = valuePut.cause().key();
             var value = valuePut.cause().value();
             var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), ctx.self());
             routingEpochAckTracker.observeAck(sliceKey, key.nodeId(), value.observedCoreEpoch())
                                   .onPresent(this::fastTransitionToActive);
-            tx.ignore();
         }
 
         // --- post-entry bootstrap ---

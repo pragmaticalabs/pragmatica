@@ -17,6 +17,7 @@ import org.pragmatica.statemachine.FsmTags;
 /// - `fsm_transitions_total{fsm,node_id,from,to}` — counter of completed transitions.
 /// - `fsm_cas_lost_total{fsm,node_id,expected,actual}` — counter of CAS losses (another thread won).
 /// - `fsm_events_ignored_total{fsm,node_id,state,event}` — counter of explicitly-ignored events.
+/// - `fsm_events_handled_total{fsm,node_id,state,event}` — counter of side-effect-handled events.
 ///
 /// The `fsm` tag carries the bounded FSM kind (e.g. `leader-election`, `control-loop`) while the
 /// `node_id` tag carries the per-instance discriminator. This split prevents cardinality explosion
@@ -64,6 +65,18 @@ public final class MicrometerFsmObserver<S, E> implements FsmObserver<S, E> {
     @Override
     public void onEventIgnored(FsmTags tags, S state, E event) {
         Counter.builder("fsm_events_ignored_total")
+               .tags("fsm", tags.kind(),
+                     "node_id", tags.instance(),
+                     "state", label(state),
+                     "event", label(event))
+               .register(registry)
+               .increment();
+    }
+
+    @Contract
+    @Override
+    public void onHandled(FsmTags tags, S state, E event) {
+        Counter.builder("fsm_events_handled_total")
                .tags("fsm", tags.kind(),
                      "node_id", tags.instance(),
                      "state", label(state),

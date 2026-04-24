@@ -88,8 +88,7 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
 
         private void handleSnapshotSeededAmbient(SnapshotSeeded event,
                                                  TransitionRequest<HealthReconcilerState, ClusterFsmEvent> tx) {
-            ctx.setAmbientSnapshot(event.snapshot());
-            tx.ignore();
+            tx.handle(() -> ctx.setAmbientSnapshot(event.snapshot()));
         }
     }
 
@@ -110,8 +109,7 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
 
         private void handleSnapshotSeededAmbient(SnapshotSeeded event,
                                                  TransitionRequest<HealthReconcilerState, ClusterFsmEvent> tx) {
-            ctx.setAmbientSnapshot(event.snapshot());
-            tx.ignore();
+            tx.handle(() -> ctx.setAmbientSnapshot(event.snapshot()));
         }
     }
 
@@ -135,8 +133,7 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
 
         private void handleSnapshotSeededAmbient(SnapshotSeeded event,
                                                  TransitionRequest<HealthReconcilerState, ClusterFsmEvent> tx) {
-            ctx.setAmbientSnapshot(event.snapshot());
-            tx.ignore();
+            tx.handle(() -> ctx.setAmbientSnapshot(event.snapshot()));
         }
     }
 

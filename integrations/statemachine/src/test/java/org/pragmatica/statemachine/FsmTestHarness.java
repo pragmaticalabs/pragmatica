@@ -94,16 +94,23 @@ public final class FsmTestHarness<S extends FsmState<S, E>, E> {
         return observer.ignored();
     }
 
+    public List<Handled<S, E>> handled() {
+        return observer.handled();
+    }
+
     public record Transition<S>(S from, S to) {}
 
     public record CasLoss<S>(S expected, S actual) {}
 
     public record Ignored<S, E>(S state, E event) {}
 
+    public record Handled<S, E>(S state, E event) {}
+
     private static final class RecordingObserver<S, E> implements FsmObserver<S, E> {
         private final List<Transition<S>> transitions = new CopyOnWriteArrayList<>();
         private final List<CasLoss<S>> casLosses = new CopyOnWriteArrayList<>();
         private final List<Ignored<S, E>> ignored = new CopyOnWriteArrayList<>();
+        private final List<Handled<S, E>> handled = new CopyOnWriteArrayList<>();
 
         @Override
         public void onTransition(FsmTags tags, S from, S to) {
@@ -120,6 +127,11 @@ public final class FsmTestHarness<S extends FsmState<S, E>, E> {
             ignored.add(new Ignored<>(state, event));
         }
 
+        @Override
+        public void onHandled(FsmTags tags, S state, E event) {
+            handled.add(new Handled<>(state, event));
+        }
+
         List<Transition<S>> transitions() {
             return List.copyOf(transitions);
         }
@@ -130,6 +142,10 @@ public final class FsmTestHarness<S extends FsmState<S, E>, E> {
 
         List<Ignored<S, E>> ignored() {
             return List.copyOf(ignored);
+        }
+
+        List<Handled<S, E>> handled() {
+            return List.copyOf(handled);
         }
     }
 }

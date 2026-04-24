@@ -24,12 +24,18 @@ public interface FsmObserver<S, E> {
     /// (event dropped through the default branch).
     void onEventIgnored(FsmTags tags, S state, E event);
 
+    /// Fired when a state's `handle` method consumed the event via a side effect (no transition,
+    /// not a fall-through ignore). Distinct from [`#onEventIgnored`] — the event was handled at
+    /// the side-effect layer and must not conflate with truly-dropped events in dashboards.
+    default void onHandled(FsmTags tags, S state, E event) {}
+
     /// No-op observer. Returned from [`#noop`].
     @SuppressWarnings("rawtypes")
     FsmObserver NOOP = new FsmObserver() {
         @Override public void onTransition(FsmTags tags, Object from, Object to) {}
         @Override public void onCasLost(FsmTags tags, Object expected, Object actual) {}
         @Override public void onEventIgnored(FsmTags tags, Object state, Object event) {}
+        @Override public void onHandled(FsmTags tags, Object state, Object event) {}
     };
 
     @SuppressWarnings("unchecked")

@@ -455,6 +455,52 @@ class FsmTest {
         assertThat(casLostCounter.get()).isEqualTo(3);
     }
 
+    // --- handle (side-effect with no transition) ---
+
+    @Test
+    void handle_runsActionThenRecordsObserver() {
+        var counter = new AtomicInteger();
+        var state = new DoorState() {
+            @Override public void handle(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
+                tx.handle(counter::incrementAndGet);
+            }
+        };
+        var harness = FsmTestHarness.<DoorState, DoorEvent>harness("door", state);
+
+        harness.dispatch(new DoorEvent.Open());
+
+        assertThat(counter.get()).isEqualTo(1);
+        assertThat(harness.handled()).hasSize(1);
+        assertThat(harness.handled().getFirst().state()).isSameAs(state);
+        assertThat(harness.handled().getFirst().event()).isInstanceOf(DoorEvent.Open.class);
+        assertThat(harness.transitions()).isEmpty();
+        assertThat(harness.ignored()).isEmpty();
+        assertThat(harness.casLosses()).isEmpty();
+    }
+
+    @Test
+    void handle_distinguishedFromIgnore() {
+        var counter = new AtomicInteger();
+        var state = new DoorState() {
+            @Override public void handle(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
+                switch (event) {
+                    case DoorEvent.Open _ -> tx.handle(counter::incrementAndGet);
+                    default -> tx.ignore();
+                }
+            }
+        };
+        var harness = FsmTestHarness.<DoorState, DoorEvent>harness("door", state);
+
+        harness.dispatch(new DoorEvent.Open());
+        harness.dispatch(new DoorEvent.Close());
+
+        assertThat(counter.get()).isEqualTo(1);
+        assertThat(harness.handled()).hasSize(1);
+        assertThat(harness.ignored()).hasSize(1);
+        assertThat(harness.handled().getFirst().event()).isInstanceOf(DoorEvent.Open.class);
+        assertThat(harness.ignored().getFirst().event()).isInstanceOf(DoorEvent.Close.class);
+    }
+
     @Test
     void forwardOnCasLoss_reachesNewState() {
         // Two states where A→B on X, and B explicitly ignores X. Dispatching X twice from two

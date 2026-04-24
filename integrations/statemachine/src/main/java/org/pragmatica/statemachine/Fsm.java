@@ -129,6 +129,11 @@ public final class Fsm<S extends FsmState<S, E>, E> {
         observer.onEventIgnored(tags, state, event);
     }
 
+    /// Package-private helper invoked by [`TransitionRequest#handle`].
+    void recordHandled(S state, E event) {
+        observer.onHandled(tags, state, event);
+    }
+
     /// Package-private CAS operation invoked by [`TransitionRequest`].
     ///
     /// Returns `true` if the CAS succeeded (and all hooks fired); `false` if another thread
