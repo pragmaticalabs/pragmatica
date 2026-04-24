@@ -23,7 +23,7 @@ import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.lang.io.TimeSpan;
@@ -69,7 +69,7 @@ public sealed interface TaskAssignmentCoordinator {
 
     Map<TaskGroup, TaskAssignmentValue> assignments();
 
-    Result<Unit> reassign(TaskGroup group, NodeId target);
+    Promise<Unit> reassign(TaskGroup group, NodeId target);
 
     static TaskAssignmentCoordinator noOp() {
         return new NoOpCoordinator();
@@ -79,7 +79,7 @@ public sealed interface TaskAssignmentCoordinator {
         @Override public void onLeaderChange(LeaderChange leaderChange) {}
         @Override public void onTopologyChange(TopologyChangeNotification notification) {}
         @Override public Map<TaskGroup, TaskAssignmentValue> assignments() { return Map.of(); }
-        @Override public Result<Unit> reassign(TaskGroup group, NodeId target) { return Result.unitResult(); }
+        @Override public Promise<Unit> reassign(TaskGroup group, NodeId target) { return Promise.UNIT; }
     }
 
     static TaskAssignmentCoordinator taskAssignmentCoordinator(NodeId self,
@@ -204,7 +204,7 @@ public sealed interface TaskAssignmentCoordinator {
             reconcile();
         }
 
-        Result<Unit> reassign(TaskGroup group, NodeId target) {
+        Promise<Unit> reassign(TaskGroup group, NodeId target) {
             return writeAssignment(group, target);
         }
 
@@ -315,15 +315,17 @@ public sealed interface TaskAssignmentCoordinator {
                                       .toList();
         }
 
-        private Result<Unit> writeAssignment(TaskGroup group, NodeId target) {
+        private Promise<Unit> writeAssignment(TaskGroup group, NodeId target) {
             var key = TaskAssignmentKey.taskAssignmentKey(group);
             var value = TaskAssignmentValue.taskAssignmentValue(target);
             assignmentMap.put(group, value);
             var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
-            ctx.clusterNode.apply(List.of(command))
-                           .onFailure(cause -> log.error("Consensus proposal failed for task group {} assignment: {}",
-                                                         group, cause.message()));
-            return Result.unitResult();
+            return ctx.clusterNode.apply(List.of(command))
+                                  .onSuccess(_ -> log.info("Task group {} assignment to node {} committed via consensus",
+                                                           group, target))
+                                  .onFailure(cause -> log.warn("Consensus proposal failed for task group {} assignment: {}",
+                                                               group, cause.message()))
+                                  .mapToUnit();
         }
     }
 
@@ -357,10 +359,10 @@ public sealed interface TaskAssignmentCoordinator {
         }
 
         @Override
-        public Result<Unit> reassign(TaskGroup group, NodeId target) {
+        public Promise<Unit> reassign(TaskGroup group, NodeId target) {
             return fsm.current() instanceof Active active
                    ? active.reassign(group, target)
-                   : CoordinatorError.NOT_LEADER.result();
+                   : CoordinatorError.NOT_LEADER.promise();
         }
 
         Map<TaskGroup, TaskAssignmentValue> activeAssignments() {

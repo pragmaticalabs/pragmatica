@@ -56,7 +56,7 @@ public final class TaskRoutes implements RouteSource {
                          ManagementRoutes.<ReassignResponse>route(ManagementRoute.CLUSTER_TASK_REASSIGN)
                                          .withPath(aString())
                                          .withBody(ReassignRequest.class)
-                                         .toResult(this::reassignTask)
+                                         .to(this::reassignTask)
                                          .asJson());
     }
 
@@ -77,13 +77,15 @@ public final class TaskRoutes implements RouteSource {
                                       value.failureReason());
     }
 
-    private Result<ReassignResponse> reassignTask(String group, ReassignRequest request) {
-        return parseTaskGroup(group).flatMap(taskGroup -> reassignToNode(taskGroup, request.targetNode()));
+    private Promise<ReassignResponse> reassignTask(String group, ReassignRequest request) {
+        return parseTaskGroup(group).async()
+                                    .flatMap(taskGroup -> reassignToNode(taskGroup, request.targetNode()));
     }
 
-    private Result<ReassignResponse> reassignToNode(TaskGroup taskGroup, String targetNodeId) {
-        return NodeId.nodeId(targetNodeId).flatMap(nodeId -> coordinator().reassign(taskGroup, nodeId))
-                            .map(_ -> new ReassignResponse("reassigned"));
+    private Promise<ReassignResponse> reassignToNode(TaskGroup taskGroup, String targetNodeId) {
+        return NodeId.nodeId(targetNodeId).async()
+                     .flatMap(nodeId -> coordinator().reassign(taskGroup, nodeId))
+                     .map(_ -> new ReassignResponse("reassigned"));
     }
 
     private static Result<TaskGroup> parseTaskGroup(String group) {
