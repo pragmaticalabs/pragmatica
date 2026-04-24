@@ -42,9 +42,16 @@ public final class CertificateRenewalScheduler {
 
     /// Public-facing status enum derived from the current FSM state.
     public enum RenewalStatus {
+        /// Pre-start: scheduler constructed but `start()` not yet invoked.
+        INITIALIZING,
+        /// Last renewal succeeded; timer scheduled for the next renewal.
         HEALTHY,
+        /// Renewal attempt currently in flight.
         RENEWING,
-        FAILED
+        /// Last renewal failed; exponential-backoff retry scheduled.
+        FAILED,
+        /// `stop()` was invoked; terminal state, no further renewals.
+        STOPPED
     }
 
     /// Events driving the scheduler FSM. None cross module boundaries.
@@ -267,10 +274,10 @@ public final class CertificateRenewalScheduler {
     public RenewalStatus renewalStatus() {
         return switch (fsm.current()) {
             case Healthy _ -> RenewalStatus.HEALTHY;
-            case Idle _ -> RenewalStatus.HEALTHY;
+            case Idle _ -> RenewalStatus.INITIALIZING;
             case Renewing _ -> RenewalStatus.RENEWING;
             case RetryBackoff _ -> RenewalStatus.FAILED;
-            case Stopped _ -> RenewalStatus.FAILED;
+            case Stopped _ -> RenewalStatus.STOPPED;
         };
     }
 
