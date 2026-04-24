@@ -48,6 +48,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 
 /// Shared context for the [`ControlLoop`] FSM. Holds:
 /// - Configuration that never changes during the FSM's lifetime (self, interval, eventPublisher,
@@ -84,6 +85,7 @@ public final class ControlLoopContext {
     private final TimeSpan interval;
     private final Consumer<ScalingEvent> eventPublisher;
     private final CompositeLoadFactor compositeLoadFactor;
+    private final LongSupplier clock;
 
     // --- Per-FSM state singletons (data-free) ---
     private final ControlLoopState.Dormant dormant;
@@ -109,6 +111,22 @@ public final class ControlLoopContext {
                        TimeSpan interval,
                        ControllerConfig config,
                        Consumer<ScalingEvent> eventPublisher) {
+        this(fsm, self, controller, metricsCollector, invocationMetricsCollector, cluster, kvStore,
+             interval, config, eventPublisher, System::currentTimeMillis);
+    }
+
+    /// Full-arity constructor with injectable clock — for tests that need deterministic time.
+    public ControlLoopContext(Fsm<ControlLoopState, ClusterFsmEvent> fsm,
+                       NodeId self,
+                       ClusterController controller,
+                       ClusterSyncCollector metricsCollector,
+                       Option<InvocationMetricsCollector> invocationMetricsCollector,
+                       ClusterNode<KVCommand<AetherKey>> cluster,
+                       KVStore<AetherKey, AetherValue> kvStore,
+                       TimeSpan interval,
+                       ControllerConfig config,
+                       Consumer<ScalingEvent> eventPublisher,
+                       LongSupplier clock) {
         this.fsm = fsm;
         this.self = self;
         this.controller = controller;
@@ -120,8 +138,15 @@ public final class ControlLoopContext {
         this.eventPublisher = eventPublisher;
         this.configRef = new AtomicReference<>(config);
         this.compositeLoadFactor = CompositeLoadFactor.compositeLoadFactor(config.scalingConfig());
+        this.clock = clock;
         this.dormant = new ControlLoopState.Dormant(this);
         this.stopped = new ControlLoopState.Stopped(this);
+    }
+
+    /// Current time in milliseconds. Reads from the injected clock so tests can make FSM
+    /// transitions deterministic. Equivalent to `System.currentTimeMillis()` in production.
+    public long nowMs() {
+        return clock.getAsLong();
     }
 
     // --- Fsm / state accessors ---
@@ -276,7 +301,7 @@ public final class ControlLoopContext {
     // --- Private helpers ---
 
     private void markSliceCooldown(Artifact artifact) {
-        var timestamp = System.currentTimeMillis();
+        var timestamp = nowMs();
         sliceActivationTimes.put(artifact, timestamp);
         persistCooldown(artifact.asString(), timestamp);
         log.debug("Slice {} reached ACTIVE, cooldown started", artifact);
@@ -327,7 +352,7 @@ public final class ControlLoopContext {
 
     private void evaluateScalingDecisions(Map<ScalingMetric, Double> currentMetrics) {
         var loadFactorResult = computeLoadFactorWithCurrentValues(currentMetrics);
-        cleanupExpiredCooldowns(System.currentTimeMillis());
+        cleanupExpiredCooldowns(nowMs());
         var guard = checkGuardRails(loadFactorResult);
         if (guard.isPresent()) {
             guard.onPresent(reason -> log.debug("Auto-scaling blocked: {}", reason));
@@ -361,7 +386,7 @@ public final class ControlLoopContext {
     }
 
     private Option<String> checkActiveCooldowns() {
-        var now = System.currentTimeMillis();
+        var now = nowMs();
         var currentConfig = configRef.get();
         for (var entry : sliceActivationTimes.entrySet()) {
             var elapsed = now - entry.getValue();
@@ -478,7 +503,7 @@ public final class ControlLoopContext {
     }
 
     private boolean isStaleEvidence(CommunityScalingRequest request) {
-        var age = System.currentTimeMillis() - request.evidence().timestampMs();
+        var age = nowMs() - request.evidence().timestampMs();
         if (age > STALE_EVIDENCE_MS) {
             log.info("Rejecting stale community scaling request from {} (age: {}ms)",
                      request.communityId(), age);
@@ -490,7 +515,7 @@ public final class ControlLoopContext {
     private boolean isInCommunityCooldown(CommunityScalingRequest request) {
         var artifactKey = request.artifact().asString();
         var lastScaling = communityScalingCooldowns.get(artifactKey);
-        if (lastScaling != null && (System.currentTimeMillis() - lastScaling) < configRef.get().sliceCooldownMs()) {
+        if (lastScaling != null && (nowMs() - lastScaling) < configRef.get().sliceCooldownMs()) {
             log.debug("Community scaling request for {} in cooldown", artifactKey);
             return true;
         }
@@ -513,7 +538,7 @@ public final class ControlLoopContext {
                  newInstances,
                  request.governorId().id());
         putBlueprint(request.artifact(), newInstances, blueprint.minInstances());
-        var cooldownTimestamp = System.currentTimeMillis();
+        var cooldownTimestamp = nowMs();
         communityScalingCooldowns.put(artifactKey, cooldownTimestamp);
         persistCooldown(artifactKey, cooldownTimestamp);
         var key = SliceTargetKey.sliceTargetKey(request.artifact().base());
@@ -550,7 +575,7 @@ public final class ControlLoopContext {
         if (timestamp <= 0) {
             return;
         }
-        var now = System.currentTimeMillis();
+        var now = nowMs();
         var cooldownMs = configRef.get().sliceCooldownMs();
         if ((now - timestamp) < cooldownMs) {
             communityScalingCooldowns.put(artifactKey, timestamp);

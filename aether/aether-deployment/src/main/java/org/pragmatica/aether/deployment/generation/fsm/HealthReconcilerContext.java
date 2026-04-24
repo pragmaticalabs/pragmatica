@@ -60,6 +60,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 
@@ -102,6 +103,7 @@ public final class HealthReconcilerContext {
     private final AutoHealConfig autoHealConfig;
     private final GenerationChangedSink generationChangedSink;
     private final PeerObservationReducer peerObservationReducer;
+    private final LongSupplier clock;
     private final HealthReconcilerState dormant;
     private final HealthReconcilerState quorumWaiting;
     private final HealthReconcilerState following;
@@ -130,6 +132,21 @@ public final class HealthReconcilerContext {
                                    AutoHealConfig autoHealConfig,
                                    GenerationChangedSink generationChangedSink,
                                    PeerObservationReducer peerObservationReducer) {
+        this(fsm, self, cluster, hlcClock, rabiaTermSupplier, externalLeaderSupplier,
+             autoHealConfig, generationChangedSink, peerObservationReducer, System::currentTimeMillis);
+    }
+
+    /// Full-arity constructor with injectable clock — for tests that need deterministic time.
+    public HealthReconcilerContext(Fsm<HealthReconcilerState, ClusterFsmEvent> fsm,
+                                   NodeId self,
+                                   ClusterNode<KVCommand<AetherKey>> cluster,
+                                   HlcClock hlcClock,
+                                   Supplier<Long> rabiaTermSupplier,
+                                   BooleanSupplier externalLeaderSupplier,
+                                   AutoHealConfig autoHealConfig,
+                                   GenerationChangedSink generationChangedSink,
+                                   PeerObservationReducer peerObservationReducer,
+                                   LongSupplier clock) {
         this.fsm = fsm;
         this.self = self;
         this.cluster = cluster;
@@ -139,11 +156,18 @@ public final class HealthReconcilerContext {
         this.autoHealConfig = autoHealConfig;
         this.generationChangedSink = generationChangedSink;
         this.peerObservationReducer = peerObservationReducer;
+        this.clock = clock;
         this.ambientSnapshot = new AtomicReference<>(empty(rabiaTermSupplier.get()));
         this.dormant = new HealthReconcilerState.Dormant(this);
         this.quorumWaiting = new HealthReconcilerState.QuorumWaiting(this);
         this.following = new HealthReconcilerState.Following(this);
         this.stopped = new HealthReconcilerState.Stopped(this);
+    }
+
+    /// Current time in milliseconds. Reads from the injected clock so tests can make FSM
+    /// transitions deterministic. Equivalent to `System.currentTimeMillis()` in production.
+    public long nowMs() {
+        return clock.getAsLong();
     }
 
     public Fsm<HealthReconcilerState, ClusterFsmEvent> fsm() {
@@ -769,7 +793,7 @@ public final class HealthReconcilerContext {
                                             GenerationReason reason,
                                             TermAdvance termAdvance) {
         var draining = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING,
-                                                             System.currentTimeMillis(),
+                                                             nowMs(),
                                                              member.host(),
                                                              member.port(),
                                                              current.epoch(),
@@ -818,7 +842,7 @@ public final class HealthReconcilerContext {
                                     TermAdvance termAdvance) {
         pendingRemovals.add(nodeId);
         var leftValue = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
-                                                              System.currentTimeMillis(),
+                                                              nowMs(),
                                                               member.host(),
                                                               member.port(),
                                                               current.epoch(),
