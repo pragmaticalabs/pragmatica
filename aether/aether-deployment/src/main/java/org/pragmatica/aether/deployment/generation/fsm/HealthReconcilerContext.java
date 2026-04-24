@@ -330,7 +330,7 @@ public final class HealthReconcilerContext {
                                                         SignalReceived event,
                                                         TransitionRequest<HealthReconcilerState, ClusterFsmEvent> tx) {
         var outcome = processSignal(state.startEpoch(), state.snapshot(), event.signal());
-        if (!outcome.changed()) {
+        if (outcome.membershipChange() == MembershipChange.UNCHANGED) {
             tx.ignore();
             return;
         }
@@ -342,7 +342,7 @@ public final class HealthReconcilerContext {
                                                               SignalReceived event,
                                                               TransitionRequest<HealthReconcilerState, ClusterFsmEvent> tx) {
         var outcome = processSignal(state.startEpoch(), state.snapshot(), event.signal());
-        if (!outcome.changed()) {
+        if (outcome.membershipChange() == MembershipChange.UNCHANGED) {
             tx.ignore();
             return;
         }
@@ -356,7 +356,7 @@ public final class HealthReconcilerContext {
     @Contract private void applyOutcomeEffects(Epoch startEpoch,
                                                ClusterGenerationSnapshot previous,
                                                SignalOutcome outcome) {
-        if (outcome.resetTerm()) {
+        if (outcome.termAdvance() == TermAdvance.ADVANCED) {
             clearLeaderData();
         }
         if (!outcome.commands().isEmpty()) {
@@ -368,11 +368,9 @@ public final class HealthReconcilerContext {
                               outcome.attemptedNodeIds());
             return;
         }
-        if (outcome.emitNotice()) {
-            generationChangedSink.emit(GenerationChangedNotice.generationChangedNotice(previous.epoch(),
-                                                                                       outcome.nextSnapshot().epoch(),
-                                                                                       outcome.reason()));
-        }
+        generationChangedSink.emit(GenerationChangedNotice.generationChangedNotice(previous.epoch(),
+                                                                                   outcome.nextSnapshot().epoch(),
+                                                                                   outcome.reason()));
     }
 
     @Contract public void handleMembershipReseedFromLeadingSteady(HealthReconcilerState.LeadingSteady state,
@@ -476,36 +474,36 @@ public final class HealthReconcilerContext {
     }
 
     private SignalOutcome processSignal(Epoch startEpoch, ClusterGenerationSnapshot snapshot, HealthSignal signal) {
-        if (!externalLeaderSupplier.getAsBoolean()) {return SignalOutcome.unchanged(snapshot);}
-        if (isFencedOut(startEpoch, snapshot, signal)) {return SignalOutcome.unchanged(snapshot);}
+        if (!externalLeaderSupplier.getAsBoolean()) {return SignalOutcome.unchanged(snapshot, TermAdvance.STABLE);}
+        if (isFencedOut(startEpoch, snapshot, signal)) {return SignalOutcome.unchanged(snapshot, TermAdvance.STABLE);}
         var afterTerm = reconcileLeaderTermIfChanged(snapshot);
         return switch (signal){
-            case HealthSignal.PingTimeout ping -> handlePingTimeout(afterTerm.snapshot(), ping, afterTerm.resetTerm());
-            case HealthSignal.SwimHint swim -> handleSwimHint(afterTerm.snapshot(), swim, afterTerm.resetTerm());
+            case HealthSignal.PingTimeout ping -> handlePingTimeout(afterTerm.snapshot(), ping, afterTerm.termAdvance());
+            case HealthSignal.SwimHint swim -> handleSwimHint(afterTerm.snapshot(), swim, afterTerm.termAdvance());
             case HealthSignal.QuicDisconnect quic -> handleQuicDisconnect(afterTerm.snapshot(),
                                                                           quic,
-                                                                          afterTerm.resetTerm());
+                                                                          afterTerm.termAdvance());
             case HealthSignal.DrainCompleted drain -> handleDrainCompleted(afterTerm.snapshot(),
                                                                            drain,
-                                                                           afterTerm.resetTerm());
+                                                                           afterTerm.termAdvance());
             case HealthSignal.GovernorAnnounced announced -> handleGovernorAnnounced(afterTerm.snapshot(),
                                                                                      announced,
-                                                                                     afterTerm.resetTerm());
+                                                                                     afterTerm.termAdvance());
             case HealthSignal.CommunityDissolved dissolved -> handleCommunityDissolved(afterTerm.snapshot(),
                                                                                        dissolved,
-                                                                                       afterTerm.resetTerm());
+                                                                                       afterTerm.termAdvance());
             case HealthSignal.SpokesmanAssignmentFailed failed -> handleSpokesmanAssignmentFailed(afterTerm.snapshot(),
                                                                                                   failed,
-                                                                                                  afterTerm.resetTerm());
+                                                                                                  afterTerm.termAdvance());
             case HealthSignal.OperatorAction action -> handleOperatorAction(afterTerm.snapshot(),
                                                                             action.intent(),
-                                                                            afterTerm.resetTerm());
+                                                                            afterTerm.termAdvance());
             case HealthSignal.RemoteSwimHint remote -> handleRemoteSwimHint(afterTerm.snapshot(),
                                                                             remote,
-                                                                            afterTerm.resetTerm());
+                                                                            afterTerm.termAdvance());
             case HealthSignal.RemoteConnectivity remote -> handleRemoteConnectivity(afterTerm.snapshot(),
                                                                                     remote,
-                                                                                    afterTerm.resetTerm());
+                                                                                    afterTerm.termAdvance());
         };
     }
 
@@ -536,10 +534,10 @@ public final class HealthReconcilerContext {
             log.info("HealthReconciler detected new Rabia term {} (was {}); resetting to (term,0)",
                      currentTerm,
                      snapshot.rabiaTerm());
-            return new TermReconciliation(empty(currentTerm), true);
+            return new TermReconciliation(empty(currentTerm), TermAdvance.ADVANCED);
         }
         pruneMapsAgainstCore(snapshot.coreMembers().keySet());
-        return new TermReconciliation(snapshot, false);
+        return new TermReconciliation(snapshot, TermAdvance.STABLE);
     }
 
     private void pruneMapsAgainstCore(Set<NodeId> liveCore) {
@@ -550,26 +548,26 @@ public final class HealthReconcilerContext {
 
     private SignalOutcome handlePingTimeout(ClusterGenerationSnapshot current,
                                             HealthSignal.PingTimeout ping,
-                                            boolean resetTerm) {
+                                            TermAdvance termAdvance) {
         var nodeId = ping.nodeId();
         var missed = consecutivePingMisses.merge(nodeId, 1, Integer::sum);
         return Option.option(current.coreMembers().get(nodeId)).filter(_ -> !pendingRemovals.contains(nodeId))
-                            .map(member -> applyPingTimeoutDecision(current, nodeId, member, missed, resetTerm))
-                            .or(() -> SignalOutcome.unchanged(current, resetTerm));
+                            .map(member -> applyPingTimeoutDecision(current, nodeId, member, missed, termAdvance))
+                            .or(() -> SignalOutcome.unchanged(current, termAdvance));
     }
 
     private SignalOutcome applyPingTimeoutDecision(ClusterGenerationSnapshot current,
                                                    NodeId nodeId,
                                                    CoreMember member,
                                                    int missed,
-                                                   boolean resetTerm) {
+                                                   TermAdvance termAdvance) {
         if (shouldEvict(missed, member, nodeId)) {return evictNode(current,
                                                                    nodeId,
                                                                    member,
                                                                    GenerationReason.MEMBER_REMOVED,
-                                                                   resetTerm);}
-        if (shouldMarkSuspected(missed, member)) {return markSuspectedInMemory(current, nodeId, resetTerm);}
-        return SignalOutcome.unchanged(current, resetTerm);
+                                                                   termAdvance);}
+        if (shouldMarkSuspected(missed, member)) {return markSuspectedInMemory(current, nodeId, termAdvance);}
+        return SignalOutcome.unchanged(current, termAdvance);
     }
 
     private boolean shouldEvict(int missed, CoreMember member, NodeId nodeId) {
@@ -582,84 +580,84 @@ public final class HealthReconcilerContext {
 
     private SignalOutcome handleSwimHint(ClusterGenerationSnapshot current,
                                          HealthSignal.SwimHint swim,
-                                         boolean resetTerm) {
+                                         TermAdvance termAdvance) {
         swimHints.put(swim.nodeId(), swim.state());
         return switch (swim.state()){
-            case SUSPECTED, FAULTY -> markSuspectedInMemory(current, swim.nodeId(), resetTerm);
-            case HEALTHY -> clearSuspectedInMemory(current, swim.nodeId(), resetTerm);
+            case SUSPECTED, FAULTY -> markSuspectedInMemory(current, swim.nodeId(), termAdvance);
+            case HEALTHY -> clearSuspectedInMemory(current, swim.nodeId(), termAdvance);
         };
     }
 
     private SignalOutcome handleQuicDisconnect(ClusterGenerationSnapshot current,
                                                HealthSignal.QuicDisconnect quic,
-                                               boolean resetTerm) {
-        if (!current.coreMembers().containsKey(quic.nodeId())) {return SignalOutcome.unchanged(current, resetTerm);}
+                                               TermAdvance termAdvance) {
+        if (!current.coreMembers().containsKey(quic.nodeId())) {return SignalOutcome.unchanged(current, termAdvance);}
         var missed = consecutivePingMisses.merge(quic.nodeId(), 1, Integer::sum);
         log.debug("QUIC disconnect from {} (counted as advisory miss {})", quic.nodeId(), missed);
-        return SignalOutcome.unchanged(current, resetTerm);
+        return SignalOutcome.unchanged(current, termAdvance);
     }
 
     private SignalOutcome handleDrainCompleted(ClusterGenerationSnapshot current,
                                                HealthSignal.DrainCompleted drain,
-                                               boolean resetTerm) {
+                                               TermAdvance termAdvance) {
         return Option.option(current.coreMembers().get(drain.nodeId())).filter(member -> member.lifecycle() != NodeLifecycleState.DECOMMISSIONED)
                             .map(member -> performDrainCompletion(current,
                                                                   drain.nodeId(),
                                                                   member,
-                                                                  resetTerm))
+                                                                  termAdvance))
                             .or(() -> logAndUnchanged(current,
                                                       drain.nodeId(),
-                                                      resetTerm));
+                                                      termAdvance));
     }
 
-    private SignalOutcome logAndUnchanged(ClusterGenerationSnapshot current, NodeId nodeId, boolean resetTerm) {
+    private SignalOutcome logAndUnchanged(ClusterGenerationSnapshot current, NodeId nodeId, TermAdvance termAdvance) {
         log.debug("DrainCompleted({}) ignored — member absent or already decommissioned", nodeId);
-        return SignalOutcome.unchanged(current, resetTerm);
+        return SignalOutcome.unchanged(current, termAdvance);
     }
 
     private SignalOutcome performDrainCompletion(ClusterGenerationSnapshot current,
                                                  NodeId nodeId,
                                                  CoreMember member,
-                                                 boolean resetTerm) {
+                                                 TermAdvance termAdvance) {
         log.info("DrainCompleted({}) — writing DECOMMISSIONED via single-writer reconciler", nodeId);
-        return evictNode(current, nodeId, member, GenerationReason.MEMBER_REMOVED, resetTerm);
+        return evictNode(current, nodeId, member, GenerationReason.MEMBER_REMOVED, termAdvance);
     }
 
     private SignalOutcome handleGovernorAnnounced(ClusterGenerationSnapshot current,
                                                   HealthSignal.GovernorAnnounced announced,
-                                                  boolean resetTerm) {
+                                                  TermAdvance termAdvance) {
         if (current.communities().containsKey(announced.communityId())) {return bumpCounter(current,
                                                                                             GenerationReason.HEALTH_CHANGE,
-                                                                                            resetTerm);}
-        return assignNewCommunity(current, announced.communityId(), resetTerm);
+                                                                                            termAdvance);}
+        return assignNewCommunity(current, announced.communityId(), termAdvance);
     }
 
     private SignalOutcome handleCommunityDissolved(ClusterGenerationSnapshot current,
                                                    HealthSignal.CommunityDissolved dissolved,
-                                                   boolean resetTerm) {
+                                                   TermAdvance termAdvance) {
         return Option.option(current.communities().get(dissolved.communityId())).map(community -> dissolveCommunity(current,
                                                                                                                     dissolved.communityId(),
                                                                                                                     community,
-                                                                                                                    resetTerm))
-                            .or(() -> SignalOutcome.unchanged(current, resetTerm));
+                                                                                                                    termAdvance))
+                            .or(() -> SignalOutcome.unchanged(current, termAdvance));
     }
 
     private SignalOutcome dissolveCommunity(ClusterGenerationSnapshot current,
                                             String communityId,
                                             CommunitySummary community,
-                                            boolean resetTerm) {
+                                            TermAdvance termAdvance) {
         var survivors = coreNodesFromSnapshot(current);
         if (survivors.isEmpty()) {
             log.warn("CommunityDissolved({}) — no surviving core nodes to absorb partitions", communityId);
-            return SignalOutcome.unchanged(current, resetTerm);
+            return SignalOutcome.unchanged(current, termAdvance);
         }
         var commands = buildDissolveCommands(current, communityId, community.partitions(), survivors);
-        return applyCommandsWithCounterBump(current, commands, GenerationReason.COMMUNITY_DISSOLVED, Set.of(), resetTerm);
+        return applyCommandsWithCounterBump(current, commands, GenerationReason.COMMUNITY_DISSOLVED, Set.of(), termAdvance);
     }
 
     private SignalOutcome handleSpokesmanAssignmentFailed(ClusterGenerationSnapshot current,
                                                           HealthSignal.SpokesmanAssignmentFailed failed,
-                                                          boolean resetTerm) {
+                                                          TermAdvance termAdvance) {
         var survivors = coreNodesFromSnapshot(current).stream()
                                              .filter(id -> !id.equals(failed.coreNodeId()))
                                              .toList();
@@ -667,70 +665,70 @@ public final class HealthReconcilerContext {
             log.warn("SpokesmanAssignmentFailed({}, {}) — no surviving core nodes",
                      failed.coreNodeId(),
                      failed.affectedCommunities());
-            return SignalOutcome.unchanged(current, resetTerm);
+            return SignalOutcome.unchanged(current, termAdvance);
         }
         var commands = buildReassignCommands(current, failed.coreNodeId(), failed.affectedCommunities(), survivors);
         return applyCommandsWithCounterBump(current,
                                             commands,
                                             GenerationReason.SPOKESMAN_REBALANCED,
                                             Set.of(),
-                                            resetTerm);
+                                            termAdvance);
     }
 
     private SignalOutcome handleOperatorAction(ClusterGenerationSnapshot current,
                                                OperatorIntent intent,
-                                               boolean resetTerm) {
+                                               TermAdvance termAdvance) {
         return switch (intent){
-            case OperatorIntent.RemoveMember remove -> operatorRemove(current, remove.nodeId(), resetTerm);
-            case OperatorIntent.SetDesiredSize resize -> operatorSetDesiredSize(current, resize.size(), resetTerm);
-            case OperatorIntent.DrainMember drain -> operatorDrain(current, drain.nodeId(), resetTerm);
+            case OperatorIntent.RemoveMember remove -> operatorRemove(current, remove.nodeId(), termAdvance);
+            case OperatorIntent.SetDesiredSize resize -> operatorSetDesiredSize(current, resize.size(), termAdvance);
+            case OperatorIntent.DrainMember drain -> operatorDrain(current, drain.nodeId(), termAdvance);
         };
     }
 
-    private SignalOutcome operatorRemove(ClusterGenerationSnapshot current, NodeId nodeId, boolean resetTerm) {
+    private SignalOutcome operatorRemove(ClusterGenerationSnapshot current, NodeId nodeId, TermAdvance termAdvance) {
         return Option.option(current.coreMembers().get(nodeId)).map(member -> applyOperatorRemoveDecision(current,
                                                                                                           nodeId,
                                                                                                           member,
-                                                                                                          resetTerm))
-                            .or(() -> SignalOutcome.unchanged(current, resetTerm));
+                                                                                                          termAdvance))
+                            .or(() -> SignalOutcome.unchanged(current, termAdvance));
     }
 
     private SignalOutcome applyOperatorRemoveDecision(ClusterGenerationSnapshot current,
                                                       NodeId nodeId,
                                                       CoreMember member,
-                                                      boolean resetTerm) {
+                                                      TermAdvance termAdvance) {
         if (isDrainingOrTerminal(member)) {
             log.debug("operatorRemove({}) ignored — already {} (await DrainCompleted)", nodeId, member.lifecycle());
-            return SignalOutcome.unchanged(current, resetTerm);
+            return SignalOutcome.unchanged(current, termAdvance);
         }
-        return writeDrainingAtom(current, nodeId, member, GenerationReason.MEMBER_REMOVED, resetTerm);
+        return writeDrainingAtom(current, nodeId, member, GenerationReason.MEMBER_REMOVED, termAdvance);
     }
 
-    private SignalOutcome operatorSetDesiredSize(ClusterGenerationSnapshot current, int newSize, boolean resetTerm) {
-        if (current.desiredCoreSize() == newSize) {return SignalOutcome.unchanged(current, resetTerm);}
+    private SignalOutcome operatorSetDesiredSize(ClusterGenerationSnapshot current, int newSize, TermAdvance termAdvance) {
+        if (current.desiredCoreSize() == newSize) {return SignalOutcome.unchanged(current, termAdvance);}
         return updateAndBump(current,
                              s -> s.withDesiredCoreSize(newSize),
                              GenerationReason.CLUSTER_SIZE_CHANGED,
-                             resetTerm);
+                             termAdvance);
     }
 
-    private SignalOutcome operatorDrain(ClusterGenerationSnapshot current, NodeId nodeId, boolean resetTerm) {
+    private SignalOutcome operatorDrain(ClusterGenerationSnapshot current, NodeId nodeId, TermAdvance termAdvance) {
         return Option.option(current.coreMembers().get(nodeId)).map(member -> applyOperatorDrainDecision(current,
                                                                                                          nodeId,
                                                                                                          member,
-                                                                                                         resetTerm))
-                            .or(() -> SignalOutcome.unchanged(current, resetTerm));
+                                                                                                         termAdvance))
+                            .or(() -> SignalOutcome.unchanged(current, termAdvance));
     }
 
     private SignalOutcome applyOperatorDrainDecision(ClusterGenerationSnapshot current,
                                                      NodeId nodeId,
                                                      CoreMember member,
-                                                     boolean resetTerm) {
+                                                     TermAdvance termAdvance) {
         if (isDrainingOrTerminal(member)) {
             log.debug("operatorDrain({}) ignored — already {}", nodeId, member.lifecycle());
-            return SignalOutcome.unchanged(current, resetTerm);
+            return SignalOutcome.unchanged(current, termAdvance);
         }
-        return writeDrainingAtom(current, nodeId, member, GenerationReason.HEALTH_CHANGE, resetTerm);
+        return writeDrainingAtom(current, nodeId, member, GenerationReason.HEALTH_CHANGE, termAdvance);
     }
 
     private static boolean isDrainingOrTerminal(CoreMember member) {
@@ -740,29 +738,29 @@ public final class HealthReconcilerContext {
 
     private SignalOutcome handleRemoteSwimHint(ClusterGenerationSnapshot current,
                                                HealthSignal.RemoteSwimHint remote,
-                                               boolean resetTerm) {
-        if (!current.coreMembers().containsKey(remote.peer())) {return SignalOutcome.unchanged(current, resetTerm);}
+                                               TermAdvance termAdvance) {
+        if (!current.coreMembers().containsKey(remote.peer())) {return SignalOutcome.unchanged(current, termAdvance);}
         peerObservationReducer.recordHint(remote.observer(), remote.peer(), remote.hint(), remote.observedAtEpoch());
         var totalObservers = current.coreMembers().size();
         var resolved = peerObservationReducer.resolvedHint(remote.peer(), totalObservers);
         var currentHint = Option.option(current.coreMembers().get(remote.peer())).map(CoreMember::healthHint)
                                        .or(HealthHint.HEALTHY);
-        if (resolved == currentHint) {return SignalOutcome.unchanged(current, resetTerm);}
+        if (resolved == currentHint) {return SignalOutcome.unchanged(current, termAdvance);}
         return handleSwimHint(current,
                               new HealthSignal.SwimHint(remote.peer(), resolved, remote.observedAtEpoch()),
-                              resetTerm);
+                              termAdvance);
     }
 
     private SignalOutcome handleRemoteConnectivity(ClusterGenerationSnapshot current,
                                                    HealthSignal.RemoteConnectivity remote,
-                                                   boolean resetTerm) {
-        if (!current.coreMembers().containsKey(remote.peer())) {return SignalOutcome.unchanged(current, resetTerm);}
+                                                   TermAdvance termAdvance) {
+        if (!current.coreMembers().containsKey(remote.peer())) {return SignalOutcome.unchanged(current, termAdvance);}
         return switch (remote.state()){
             case DISCONNECTED, STALE -> handleQuicDisconnect(current,
                                                              new HealthSignal.QuicDisconnect(remote.peer(),
                                                                                              remote.observedAtEpoch()),
-                                                             resetTerm);
-            case CONNECTED -> SignalOutcome.unchanged(current, resetTerm);
+                                                             termAdvance);
+            case CONNECTED -> SignalOutcome.unchanged(current, termAdvance);
         };
     }
 
@@ -770,7 +768,7 @@ public final class HealthReconcilerContext {
                                             NodeId nodeId,
                                             CoreMember member,
                                             GenerationReason reason,
-                                            boolean resetTerm) {
+                                            TermAdvance termAdvance) {
         var draining = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING,
                                                              System.currentTimeMillis(),
                                                              member.host(),
@@ -780,45 +778,45 @@ public final class HealthReconcilerContext {
                                                              member.provisioningSource());
         var commands = List.<KVCommand<AetherKey>>of(new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId),
                                                                                                draining));
-        return applyCommandsWithCounterBump(current, commands, reason, Set.of(), resetTerm);
+        return applyCommandsWithCounterBump(current, commands, reason, Set.of(), termAdvance);
     }
 
-    private SignalOutcome markSuspectedInMemory(ClusterGenerationSnapshot current, NodeId nodeId, boolean resetTerm) {
+    private SignalOutcome markSuspectedInMemory(ClusterGenerationSnapshot current, NodeId nodeId, TermAdvance termAdvance) {
         return Option.option(current.coreMembers().get(nodeId)).filter(member -> member.healthHint() != HealthHint.SUSPECTED)
                             .map(member -> applyHealthHintChange(current,
                                                                  nodeId,
                                                                  member.withHealthHint(HealthHint.SUSPECTED),
-                                                                 resetTerm))
-                            .or(() -> SignalOutcome.unchanged(current, resetTerm));
+                                                                 termAdvance))
+                            .or(() -> SignalOutcome.unchanged(current, termAdvance));
     }
 
-    private SignalOutcome clearSuspectedInMemory(ClusterGenerationSnapshot current, NodeId nodeId, boolean resetTerm) {
+    private SignalOutcome clearSuspectedInMemory(ClusterGenerationSnapshot current, NodeId nodeId, TermAdvance termAdvance) {
         return Option.option(current.coreMembers().get(nodeId)).filter(member -> member.healthHint() != HealthHint.HEALTHY)
-                            .map(member -> applyClearSuspected(current, nodeId, member, resetTerm))
-                            .or(() -> SignalOutcome.unchanged(current, resetTerm));
+                            .map(member -> applyClearSuspected(current, nodeId, member, termAdvance))
+                            .or(() -> SignalOutcome.unchanged(current, termAdvance));
     }
 
     private SignalOutcome applyClearSuspected(ClusterGenerationSnapshot current,
                                               NodeId nodeId,
                                               CoreMember member,
-                                              boolean resetTerm) {
+                                              TermAdvance termAdvance) {
         consecutivePingMisses.remove(nodeId);
-        return applyHealthHintChange(current, nodeId, member.withHealthHint(HealthHint.HEALTHY), resetTerm);
+        return applyHealthHintChange(current, nodeId, member.withHealthHint(HealthHint.HEALTHY), termAdvance);
     }
 
     private SignalOutcome applyHealthHintChange(ClusterGenerationSnapshot current,
                                                 NodeId nodeId,
                                                 CoreMember replacement,
-                                                boolean resetTerm) {
+                                                TermAdvance termAdvance) {
         var updatedMap = replaceMember(current.coreMembers(), nodeId, replacement);
-        return updateAndBump(current, s -> s.withCoreMembers(updatedMap), GenerationReason.HEALTH_CHANGE, resetTerm);
+        return updateAndBump(current, s -> s.withCoreMembers(updatedMap), GenerationReason.HEALTH_CHANGE, termAdvance);
     }
 
     private SignalOutcome evictNode(ClusterGenerationSnapshot current,
                                     NodeId nodeId,
                                     CoreMember member,
                                     GenerationReason reason,
-                                    boolean resetTerm) {
+                                    TermAdvance termAdvance) {
         pendingRemovals.add(nodeId);
         var leftValue = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
                                                               System.currentTimeMillis(),
@@ -830,7 +828,7 @@ public final class HealthReconcilerContext {
         var commands = new ArrayList<KVCommand<AetherKey>>();
         commands.add(new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId), leftValue));
         commands.addAll(handlePartitionsOf(current, nodeId));
-        return applyCommandsWithCounterBump(current, commands, reason, Set.of(nodeId), resetTerm);
+        return applyCommandsWithCounterBump(current, commands, reason, Set.of(nodeId), termAdvance);
     }
 
     private List<KVCommand<AetherKey>> handlePartitionsOf(ClusterGenerationSnapshot current, NodeId departedNode) {
@@ -858,11 +856,11 @@ public final class HealthReconcilerContext {
         return commands;
     }
 
-    private SignalOutcome assignNewCommunity(ClusterGenerationSnapshot current, String communityId, boolean resetTerm) {
+    private SignalOutcome assignNewCommunity(ClusterGenerationSnapshot current, String communityId, TermAdvance termAdvance) {
         var survivors = coreNodesFromSnapshot(current);
         if (survivors.isEmpty()) {
             log.warn("GovernorAnnounced({}) — no surviving core nodes; deferring spokesman assignment", communityId);
-            return SignalOutcome.unchanged(current, resetTerm);
+            return SignalOutcome.unchanged(current, termAdvance);
         }
         var loads = computeSpokesmanLoad(current);
         var target = selectLeastLoadedCoreNode(survivors, loads);
@@ -873,7 +871,7 @@ public final class HealthReconcilerContext {
                                                   loads.getOrDefault(target, 0) + 1L);
         var commands = List.<KVCommand<AetherKey>>of(new KVCommand.Put<AetherKey, AetherValue>(SpokesmanKey.spokesmanKey(target),
                                                                                                value));
-        return applyCommandsWithCounterBump(current, commands, GenerationReason.COMMUNITY_FORMED, Set.of(), resetTerm);
+        return applyCommandsWithCounterBump(current, commands, GenerationReason.COMMUNITY_FORMED, Set.of(), termAdvance);
     }
 
     private List<KVCommand<AetherKey>> buildDissolveCommands(ClusterGenerationSnapshot current,
@@ -961,22 +959,22 @@ public final class HealthReconcilerContext {
                                                        List<KVCommand<AetherKey>> commands,
                                                        GenerationReason reason,
                                                        Set<NodeId> attemptedNodeIds,
-                                                       boolean resetTerm) {
-        if (commands.isEmpty()) {return bumpCounter(current, reason, resetTerm);}
+                                                       TermAdvance termAdvance) {
+        if (commands.isEmpty()) {return bumpCounter(current, reason, termAdvance);}
         var next = current.withBumpedCounter(reason);
-        return new SignalOutcome(next, reason, commands, attemptedNodeIds, true, false, resetTerm);
+        return SignalOutcome.changed(next, reason, commands, attemptedNodeIds, termAdvance);
     }
 
-    private SignalOutcome bumpCounter(ClusterGenerationSnapshot current, GenerationReason reason, boolean resetTerm) {
-        return updateAndBump(current, UnaryOperator.identity(), reason, resetTerm);
+    private SignalOutcome bumpCounter(ClusterGenerationSnapshot current, GenerationReason reason, TermAdvance termAdvance) {
+        return updateAndBump(current, UnaryOperator.identity(), reason, termAdvance);
     }
 
     private SignalOutcome updateAndBump(ClusterGenerationSnapshot current,
                                         UnaryOperator<ClusterGenerationSnapshot> transform,
                                         GenerationReason reason,
-                                        boolean resetTerm) {
+                                        TermAdvance termAdvance) {
         var next = transform.apply(current).withBumpedCounter(reason);
-        return new SignalOutcome(next, reason, List.of(), Set.of(), true, true, resetTerm);
+        return SignalOutcome.changed(next, reason, List.of(), Set.of(), termAdvance);
     }
 
     private Option<ReseedApplied> computeReseedResult(ClusterGenerationSnapshot current,
@@ -1041,34 +1039,50 @@ public final class HealthReconcilerContext {
         return List.copyOf(copy);
     }
 
-    // TODO(rc2): SignalOutcome conflates cluster-generation change with leader-term reset. The
-    // `unchanged(snapshot, resetTerm)` factory currently folds `changed` / `emitNotice` / `resetTerm`
-    // into a single boolean, which is only correct because every caller that sets resetTerm=true also
-    // wants the downstream notice emitted. Split into explicit fields (`changed`, `emitNotice`,
-    // `resetTerm`) with named factories once RC2 review happens.
+    /// Whether the membership / cluster-generation moved as a result of processing a signal.
+    /// CHANGED implies either KV commands were emitted or the snapshot epoch was bumped in-memory
+    /// (and the consumer must transition + emit a GenerationChangedNotice).
+    public enum MembershipChange { CHANGED, UNCHANGED }
+
+    /// Whether the leader Rabia term advanced relative to the snapshot's recorded term.
+    /// ADVANCED requires the consumer to clear leader-scoped bookkeeping.
+    public enum TermAdvance { ADVANCED, STABLE }
+
     private record SignalOutcome(ClusterGenerationSnapshot nextSnapshot,
                                  GenerationReason reason,
                                  List<KVCommand<AetherKey>> commands,
                                  Set<NodeId> attemptedNodeIds,
-                                 boolean changed,
-                                 boolean emitNotice,
-                                 boolean resetTerm) {
-        static SignalOutcome unchanged(ClusterGenerationSnapshot snapshot) {
-            return new SignalOutcome(snapshot, GenerationReason.HEALTH_CHANGE, List.of(), Set.of(), false, false, false);
+                                 MembershipChange membershipChange,
+                                 TermAdvance termAdvance) {
+        static SignalOutcome changed(ClusterGenerationSnapshot snapshot,
+                                     GenerationReason reason,
+                                     List<KVCommand<AetherKey>> commands,
+                                     Set<NodeId> attemptedNodeIds,
+                                     TermAdvance termAdvance) {
+            return new SignalOutcome(snapshot,
+                                     reason,
+                                     commands,
+                                     attemptedNodeIds,
+                                     MembershipChange.CHANGED,
+                                     termAdvance);
         }
 
-        static SignalOutcome unchanged(ClusterGenerationSnapshot snapshot, boolean resetTerm) {
-            return new SignalOutcome(snapshot,
-                                     GenerationReason.HEALTH_CHANGE,
-                                     List.of(),
-                                     Set.of(),
-                                     resetTerm,
-                                     resetTerm,
-                                     resetTerm);
+        // A term advance forces a CHANGED outcome: `reconcileLeaderTermIfChanged` resets the snapshot
+        // to `empty(currentTerm)`, which is itself a real generation change that must be published
+        // and have leader-scoped state cleared.
+        static SignalOutcome unchanged(ClusterGenerationSnapshot snapshot, TermAdvance termAdvance) {
+            return termAdvance == TermAdvance.ADVANCED
+                  ? changed(snapshot, GenerationReason.HEALTH_CHANGE, List.of(), Set.of(), termAdvance)
+                  : new SignalOutcome(snapshot,
+                                      GenerationReason.HEALTH_CHANGE,
+                                      List.of(),
+                                      Set.of(),
+                                      MembershipChange.UNCHANGED,
+                                      TermAdvance.STABLE);
         }
     }
 
-    private record TermReconciliation(ClusterGenerationSnapshot snapshot, boolean resetTerm){}
+    private record TermReconciliation(ClusterGenerationSnapshot snapshot, TermAdvance termAdvance){}
 
     private record ReseedApplied(ClusterGenerationSnapshot nextSnapshot,
                                  GenerationReason reason,
