@@ -11,6 +11,9 @@ import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
+import org.pragmatica.aether.http.fsm.AppHttpContext;
+import org.pragmatica.aether.http.fsm.AppHttpEvents;
+import org.pragmatica.aether.http.fsm.AppHttpState;
 import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.update.DeploymentManager.ActiveRouting;
 import org.pragmatica.aether.update.VersionRouting;
@@ -41,6 +44,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
@@ -53,6 +57,7 @@ import org.pragmatica.http.server.RequestContext;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -61,19 +66,18 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.net.tcp.security.CertificateBundle;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.statemachine.Fsm;
-import org.pragmatica.statemachine.FsmState;
-import org.pragmatica.statemachine.TransitionRequest;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
@@ -84,73 +88,23 @@ import static org.pragmatica.lang.Unit.unit;
 
 /// Application HTTP server for cluster-wide HTTP routing.
 ///
-///
 /// Handles HTTP requests by:
 /// <ol>
 ///   - Looking up routes locally via HttpRoutePublisher
 ///   - If not local, forwarding to remote nodes via HttpForwarder
 /// </ol>
 ///
-///
 /// Separate from ManagementServer for security isolation.
+///
+/// Lifecycle is owned by an internal FSM ([`AppHttpState`] + [`AppHttpContext`]) —
+/// `Stopped → Starting → (H1Only | H3Only | Dual) → RouteReady ↔ CertRotating → Stopped`. The FSM
+/// is the single source of truth; server refs, the current [`RouteTable`], and the "routes
+/// published" boolean are all carried as fields on state records (no parallel atomic holders).
 @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) public interface AppHttpServer {
     Promise<Unit> start();
 
-    /// Lifecycle states tracked by internal Fsm. Flattens the multi-dimensional state
-    /// (H1 running, H3 running, route sync received, cert rotating) into a single enum for
-    /// observability and consistency with other FSM-backed components.
-    sealed interface AppHttpServerState extends FsmState<AppHttpServerState, AppHttpServerEvent>
-            permits AppHttpServerState.Stopped, AppHttpServerState.Starting, AppHttpServerState.Running, AppHttpServerState.CertRotating {
-        record Stopped() implements AppHttpServerState {
-            public static final Stopped INSTANCE = new Stopped();
-            @Override public void handle(AppHttpServerEvent event, TransitionRequest<AppHttpServerState, AppHttpServerEvent> tx) {
-                switch (event) {
-                    case AppHttpServerEvent.StartRequested _ -> tx.transitionTo(Starting.INSTANCE);
-                    default -> tx.ignore();
-                }
-            }
-        }
-        record Starting() implements AppHttpServerState {
-            public static final Starting INSTANCE = new Starting();
-            @Override public void handle(AppHttpServerEvent event, TransitionRequest<AppHttpServerState, AppHttpServerEvent> tx) {
-                switch (event) {
-                    case AppHttpServerEvent.StartCompleted _ -> tx.transitionTo(Running.INSTANCE);
-                    case AppHttpServerEvent.StopRequested _ -> tx.transitionTo(Stopped.INSTANCE);
-                    default -> tx.ignore();
-                }
-            }
-        }
-        record Running() implements AppHttpServerState {
-            public static final Running INSTANCE = new Running();
-            @Override public void handle(AppHttpServerEvent event, TransitionRequest<AppHttpServerState, AppHttpServerEvent> tx) {
-                switch (event) {
-                    case AppHttpServerEvent.RotateStarted _ -> tx.transitionTo(CertRotating.INSTANCE);
-                    case AppHttpServerEvent.StopRequested _ -> tx.transitionTo(Stopped.INSTANCE);
-                    default -> tx.ignore();
-                }
-            }
-        }
-        record CertRotating() implements AppHttpServerState {
-            public static final CertRotating INSTANCE = new CertRotating();
-            @Override public void handle(AppHttpServerEvent event, TransitionRequest<AppHttpServerState, AppHttpServerEvent> tx) {
-                switch (event) {
-                    case AppHttpServerEvent.RotateCompleted _ -> tx.transitionTo(Running.INSTANCE);
-                    case AppHttpServerEvent.StopRequested _ -> tx.transitionTo(Stopped.INSTANCE);
-                    default -> tx.ignore();
-                }
-            }
-        }
-    }
-
-    sealed interface AppHttpServerEvent {
-        record StartRequested() implements AppHttpServerEvent {}
-        record StartCompleted() implements AppHttpServerEvent {}
-        record StopRequested() implements AppHttpServerEvent {}
-        record RotateStarted() implements AppHttpServerEvent {}
-        record RotateCompleted() implements AppHttpServerEvent {}
-    }
     Promise<Unit> stop();
-    Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle);
+    Promise<Unit> rotateCertificate(CertificateBundle newBundle);
     Option<Integer> boundPort();
     @MessageReceiver void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut);
     @MessageReceiver void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove);
@@ -292,16 +246,7 @@ import static org.pragmatica.lang.Unit.unit;
     private final Option<HttpRequestObserver> requestObserver;
     private final Option<HttpForwarder> httpForwarder;
 
-    private final Fsm<AppHttpServerState, AppHttpServerEvent> lifecycle =
-        Fsm.fsm("app-http-server", AppHttpServerState.Stopped.INSTANCE);
-
-    private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
-
-    private final AtomicReference<HttpServer> h3ServerRef = new AtomicReference<>();
-
-    private final AtomicReference<RouteTable> routeTableRef = new AtomicReference<>(RouteTable.empty());
-
-    private final AtomicBoolean routeSyncReceived = new AtomicBoolean(false);
+    private final AppHttpContext context;
 
     AppHttpServerImpl(AppHttpConfig config,
                       ForwardingTimeouts forwardingTimeouts,
@@ -339,6 +284,22 @@ import static org.pragmatica.lang.Unit.unit;
                                                 deserializer,
                                                 forwardingTimeouts,
                                                 taskGroupOwnerResolver);
+        this.context = buildContext(selfNodeId);
+    }
+
+    private static AppHttpContext buildContext(NodeId selfNodeId) {
+        var ctxHolder = new AtomicReference<AppHttpContext>();
+        Function<Fsm<AppHttpState, ClusterFsmEvent>, AppHttpState> initialStateFactory =
+                fsm -> buildContextAndStopped(fsm, ctxHolder);
+        Fsm.fsm("app-http-server-" + selfNodeId.id(), initialStateFactory);
+        return ctxHolder.get();
+    }
+
+    private static AppHttpState buildContextAndStopped(Fsm<AppHttpState, ClusterFsmEvent> fsm,
+                                                       AtomicReference<AppHttpContext> ctxHolder) {
+        var ctx = new AppHttpContext(fsm);
+        ctxHolder.set(ctx);
+        return ctx.stopped();
     }
 
     private static SecurityValidator buildSecurityValidator(AppHttpConfig config) {
@@ -385,15 +346,22 @@ import static org.pragmatica.lang.Unit.unit;
             return Promise.success(unit());
         }
         log.info("Starting App HTTP server on port {} (protocol: {})", config.port(), config.httpProtocol());
-        lifecycle.dispatch(new AppHttpServerEvent.StartRequested());
-        rebuildRouter();
+        context.dispatch(new AppHttpEvents.StartRequested());
         var protocol = config.httpProtocol();
         var startPromise = protocol.includesH1()
                           ? startH1Server().flatMap(_ -> protocol.includesH3()
                                                          ? startH3Server()
                                                          : Promise.success(unit()))
                           : startH3Server();
-        return startPromise.onSuccess(_ -> lifecycle.dispatch(new AppHttpServerEvent.StartCompleted()));
+        return startPromise.onSuccess(_ -> onStartCompleted());
+    }
+
+    private void onStartCompleted() {
+        // Always compute and publish the current route table snapshot from the registry so the FSM
+        // reaches RouteReady with the freshest data. When `httpRoutePublisher` is absent there is
+        // no quorum/sync dependency, so the first publish is all that's required to enable route
+        // dispatch; when present, subsequent KV callbacks keep it up to date.
+        publishRouteTable();
     }
 
     private Promise<Unit> startH1Server() {
@@ -448,54 +416,51 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private Unit registerStartedH1Server(HttpServer server) {
-        serverRef.set(server);
         log.info("App HTTP server started on port {} (HTTP/1.1)", server.port());
+        context.dispatch(new AppHttpEvents.H1Ready(server));
         return unit();
     }
 
     private Unit registerStartedH3Server(HttpServer server) {
-        h3ServerRef.set(server);
         log.info("App HTTP server started on port {} (HTTP/3 QUIC)", server.port());
+        context.dispatch(new AppHttpEvents.H3Ready(server));
         return unit();
     }
 
     @Override public Promise<Unit> stop() {
-        lifecycle.dispatch(new AppHttpServerEvent.StopRequested());
-        var h1Stop = Option.option(serverRef.get()).map(server -> server.stop()
-                                                                             .onSuccessRun(() -> log.info("App HTTP/1.1 server stopped")))
-                                  .or(Promise.success(unit()));
-        var h3Stop = Option.option(h3ServerRef.get()).map(server -> server.stop()
-                                                                               .onSuccessRun(() -> log.info("App HTTP/3 server stopped")))
-                                  .or(Promise.success(unit()));
-        return h1Stop.flatMap(_ -> h3Stop);
+        var servers = context.currentServers();
+        context.dispatch(new AppHttpEvents.StopRequested());
+        return context.stopServersAsync(servers.server(), servers.h3())
+                      .onSuccessRun(() -> log.info("App HTTP server stopped"));
     }
 
-    @Override public Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
+    @Override public Promise<Unit> rotateCertificate(CertificateBundle newBundle) {
         if (!config.enabled()) {return Promise.success(unit());}
         log.info("Rotating app HTTP server TLS certificate");
-        lifecycle.dispatch(new AppHttpServerEvent.RotateStarted());
-        return stopHttpServers().flatMap(_ -> restartWithNewBundle(newBundle))
-                                .onSuccess(_ -> lifecycle.dispatch(new AppHttpServerEvent.RotateCompleted()));
+        var previous = context.currentServers();
+        var currentRoutes = context.currentRoutes();
+        context.dispatch(new AppHttpEvents.CertRotationRequested(newBundle));
+        return context.stopServersAsync(previous.server(), previous.h3())
+                      .flatMap(_ -> restartWithNewBundle(newBundle))
+                      .onSuccess(pair -> context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(),
+                                                                                                 pair.h3(),
+                                                                                                 currentRoutes)))
+                      .mapToUnit();
     }
 
-    private Promise<Unit> stopHttpServers() {
-        var h1Stop = Option.option(serverRef.getAndSet(null)).map(HttpServer::stop)
-                                  .or(Promise.success(unit()));
-        var h3Stop = Option.option(h3ServerRef.getAndSet(null)).map(HttpServer::stop)
-                                  .or(Promise.success(unit()));
-        return h1Stop.flatMap(_ -> h3Stop);
-    }
-
-    @SuppressWarnings("JBCT-PAT-01") private Promise<Unit> restartWithNewBundle(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
+    @SuppressWarnings("JBCT-PAT-01")
+    private Promise<AppHttpContext.ServerPair> restartWithNewBundle(CertificateBundle newBundle) {
         var newTlsConfig = buildTlsFromBundle(newBundle);
         var protocol = config.httpProtocol();
-        if (protocol.includesH1()) {return restartH1WithTls(newTlsConfig).flatMap(_ -> protocol.includesH3()
-                                                                                      ? restartH3WithBundle(newBundle)
-                                                                                      : Promise.success(unit()));}
-        return restartH3WithBundle(newBundle);
+        if (protocol.includesH1()) {
+            return restartH1WithTls(newTlsConfig).flatMap(serverOpt -> protocol.includesH3()
+                                                                       ? restartH3WithBundle(newBundle).map(h3Opt -> new AppHttpContext.ServerPair(serverOpt, h3Opt))
+                                                                       : Promise.success(new AppHttpContext.ServerPair(serverOpt, Option.<HttpServer>none())));
+        }
+        return restartH3WithBundle(newBundle).map(h3Opt -> new AppHttpContext.ServerPair(Option.<HttpServer>none(), h3Opt));
     }
 
-    private Promise<Unit> restartH1WithTls(Option<TlsConfig> newTls) {
+    private Promise<Option<HttpServer>> restartH1WithTls(Option<TlsConfig> newTls) {
         var serverConfig = HttpServerConfig.httpServerConfig("app-http",
                                                              config.port())
         .withMaxContentLength(config.maxRequestSize());
@@ -508,73 +473,95 @@ import static org.pragmatica.lang.Unit.unit;
                                                                                                 bg,
                                                                                                 wg)))
         .or(HttpServer.httpServer(finalConfig, handler));
-        return serverPromise.map(this::registerStartedH1Server).onSuccess(_ -> log.info("App HTTP/1.1 server restarted with new certificate"))
-                                .onFailure(cause -> log.error("Failed to restart app HTTP/1.1 server: {}",
-                                                              cause.message()));
+        return serverPromise.map(Option::some)
+                            .onSuccessRun(() -> log.info("App HTTP/1.1 server restarted with new certificate"))
+                            .onFailure(cause -> log.error("Failed to restart app HTTP/1.1 server: {}",
+                                                          cause.message()));
     }
 
-    private Promise<Unit> restartH3WithBundle(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
+    private Promise<Option<HttpServer>> restartH3WithBundle(CertificateBundle newBundle) {
         var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle);
-        return quicTls.map(this::startH3WithSslContext).onFailure(cause -> log.error("Failed to create QUIC SSL context for app server rotation: {}",
-                                                                                     cause.message()))
-                          .or(Promise.success(unit()));
+        return quicTls.map(this::startH3WithSslContextReturningServer)
+                      .onFailure(cause -> log.error("Failed to create QUIC SSL context for app server rotation: {}",
+                                                    cause.message()))
+                      .or(Promise.success(Option.<HttpServer>none()));
     }
 
-    private static Option<TlsConfig> buildTlsFromBundle(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
+    private Promise<Option<HttpServer>> startH3WithSslContextReturningServer(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
+        var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3",
+                                                             config.port())
+        .withMaxContentLength(config.maxRequestSize());
+        var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
+                                                                         quicSslContext,
+                                                                         this::handleRequest,
+                                                                         wg))
+        .or(HttpServer.http3Server(serverConfig, quicSslContext, this::handleRequest));
+        return serverPromise.map(Option::some);
+    }
+
+    private static Option<TlsConfig> buildTlsFromBundle(CertificateBundle newBundle) {
         var identity = new TlsConfig.Identity.FromProvider(newBundle.certificatePem(), newBundle.privateKeyPem());
         var trust = new TlsConfig.Trust.FromCaBytes(newBundle.caCertificatePem());
         return Option.some(new TlsConfig.Server(identity, Option.some(trust)));
     }
 
     @Override public Option<Integer> boundPort() {
-        return Option.option(serverRef.get()).map(HttpServer::port);
+        return context.boundPort();
     }
 
     @Override public void rebuildRouter() {
+        publishRouteTable();
+    }
+
+    @Contract
+    private void publishRouteTable() {
+        var newTable = computeRouteTable();
+        log.debug("Router rebuilt: {} local routes, {} remote routes",
+                  newTable.localRoutes().size(),
+                  newTable.remoteRoutes().size());
+        context.dispatch(new AppHttpEvents.RouteTablePublished(newTable));
+    }
+
+    private RouteTable computeRouteTable() {
         var localRoutes = httpRoutePublisher.map(HttpRoutePublisher::allLocalRoutes).or(Set.of());
         var localIdentities = localRoutes.stream().map(HttpNodeRouteKey::routeIdentity)
-                                                .collect(java.util.stream.Collectors.toSet());
+                                                  .collect(java.util.stream.Collectors.toSet());
         var remoteRoutes = routeRegistry.allRoutes().stream()
-                                                  .filter(route -> !localIdentities.contains(route.httpMethod() + ":" + route.pathPrefix()))
-                                                  .toList();
-        var newTable = RouteTable.routeTable(localRoutes, remoteRoutes);
-        routeTableRef.set(newTable);
-        log.debug("Router rebuilt: {} local routes, {} remote routes", localRoutes.size(), remoteRoutes.size());
+                                                    .filter(route -> !localIdentities.contains(route.httpMethod() + ":" + route.pathPrefix()))
+                                                    .toList();
+        return RouteTable.routeTable(localRoutes, remoteRoutes);
     }
 
     @Override public boolean isRouteReady() {
-        return routeSyncReceived.get() || httpRoutePublisher.isEmpty();
+        return context.isRouteReady() || httpRoutePublisher.isEmpty();
     }
 
     @Override public void onQuorumStateChange(QuorumStateNotification notification) {
         if (notification.state() == QuorumStateNotification.State.ESTABLISHED) {
-            routeSyncReceived.set(true);
             log.info("Quorum established — marking route sync complete");
+            context.dispatch(new ClusterFsmEvent.QuorumEstablished());
+            publishRouteTable();
         }
     }
 
     @Override public void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut) {
-        routeSyncReceived.set(true);
         log.debug("HttpNodeRouteKey added, rebuilding router");
-        rebuildRouter();
+        publishRouteTable();
     }
 
     @Override public void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove) {
-        routeSyncReceived.set(true);
         log.debug("HttpNodeRouteKey removed, rebuilding router");
-        rebuildRouter();
+        publishRouteTable();
     }
 
     @Override public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
-        routeSyncReceived.set(true);
         log.debug("NodeRoutesKey added, rebuilding router");
-        rebuildRouter();
+        publishRouteTable();
     }
 
     @Override public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
-        routeSyncReceived.set(true);
         log.debug("NodeRoutesKey removed, rebuilding router");
-        rebuildRouter();
+        publishRouteTable();
     }
 
     private void handleRequest(RequestContext request, ResponseWriter response) {
@@ -586,7 +573,7 @@ import static org.pragmatica.lang.Unit.unit;
         var method = request.method().name();
         var path = request.path();
         log.trace("Received {} {} [{}]", method, path, requestId);
-        var routeTable = routeTableRef.get();
+        var routeTable = context.currentRoutes();
         var normalizedPath = normalizePath(path);
         if (isHealthEndpoint(normalizedPath)) {
             sendHealthResponse(response, requestId);
@@ -705,7 +692,7 @@ import static org.pragmatica.lang.Unit.unit;
             handleRemoteRoute(request, response, remoteRouteOpt.unwrap(), requestId);
             return;
         }
-        if (!routeSyncReceived.get() && httpRoutePublisher.isPresent()) {
+        if (!isRouteReady() && httpRoutePublisher.isPresent()) {
             log.debug("Route not yet available for {} {} [{}] — node starting, routes not synchronized",
                       method,
                       request.path(),
@@ -893,23 +880,23 @@ import static org.pragmatica.lang.Unit.unit;
                                    SliceRouter router,
                                    HttpNodeRouteKey routeKey,
                                    String requestId) {
-        var context = toHttpRequestContext(request, requestId);
+        var httpCtx = toHttpRequestContext(request, requestId);
         var routeInfo = resolveRouteInfo(routeKey.httpMethod(), routeKey.pathPrefix());
         var startTime = System.nanoTime();
         routeInfo.onPresent(info -> recordMetricsStart(info));
-        router.handle(context).onSuccess(responseData -> handleLocalRouterSuccess(response,
+        router.handle(httpCtx).onSuccess(responseData -> handleLocalRouterSuccess(response,
                                                                                   responseData,
                                                                                   requestId,
                                                                                   routeInfo,
                                                                                   startTime,
-                                                                                  context))
+                                                                                  httpCtx))
                      .onFailure(cause -> handleLocalRouterFailure(response,
                                                                   request.path(),
                                                                   requestId,
                                                                   cause,
                                                                   routeInfo,
                                                                   startTime,
-                                                                  context));
+                                                                  httpCtx));
     }
 
     private void handleLocalRouterSuccess(ResponseWriter response,
@@ -917,10 +904,10 @@ import static org.pragmatica.lang.Unit.unit;
                                           String requestId,
                                           Option<ResolvedRoute> routeInfo,
                                           long startTime,
-                                          HttpRequestContext context) {
+                                          HttpRequestContext httpCtx) {
         routeInfo.onPresent(info -> recordMetricsSuccess(info,
                                                          startTime,
-                                                         context.body().length,
+                                                         httpCtx.body().length,
                                                          responseData.body().length));
         sendResponse(response, responseData, requestId);
     }
@@ -931,8 +918,8 @@ import static org.pragmatica.lang.Unit.unit;
                                           Cause cause,
                                           Option<ResolvedRoute> routeInfo,
                                           long startTime,
-                                          HttpRequestContext context) {
-        routeInfo.onPresent(info -> recordMetricsFailure(info, startTime, context.body().length, cause));
+                                          HttpRequestContext httpCtx) {
+        routeInfo.onPresent(info -> recordMetricsFailure(info, startTime, httpCtx.body().length, cause));
         handleLocalRouteFailure(response, path, requestId, cause);
     }
 
@@ -993,8 +980,8 @@ import static org.pragmatica.lang.Unit.unit;
                         requestId);
             return;
         }
-        var context = toHttpRequestContext(request, requestId);
-        httpForwarder.unwrap().forward(context,
+        var httpCtx = toHttpRequestContext(request, requestId);
+        httpForwarder.unwrap().forward(httpCtx,
                                        route.httpMethod(),
                                        route.pathPrefix(),
                                        requestId)
@@ -1018,7 +1005,7 @@ import static org.pragmatica.lang.Unit.unit;
         Result.<HttpRequestContext, byte[]>lift1(des::decode,
                                                  request.requestData())
               .onFailure(cause -> logAndSendForwardError(network, request, "Deserialization failed", cause))
-              .onSuccess(context -> dispatchForwardedRequest(context, request, network, ser));
+              .onSuccess(httpCtx -> dispatchForwardedRequest(httpCtx, request, network, ser));
     }
 
     private void logAndSendForwardError(ClusterNetwork network,
@@ -1029,12 +1016,12 @@ import static org.pragmatica.lang.Unit.unit;
         sendForwardError(network, request, prefix + ": " + cause.message());
     }
 
-    @SuppressWarnings("JBCT-RET-01") private void dispatchForwardedRequest(HttpRequestContext context,
+    @SuppressWarnings("JBCT-RET-01") private void dispatchForwardedRequest(HttpRequestContext httpCtx,
                                                                            HttpForwardRequest request,
                                                                            ClusterNetwork network,
                                                                            Serializer ser) {
-        var method = context.method();
-        var path = context.path();
+        var method = httpCtx.method();
+        var path = httpCtx.path();
         var normalizedPath = normalizePath(path);
         var routerOpt = httpRoutePublisher.flatMap(pub -> findLocalRouterForPath(pub, method, normalizedPath));
         if (routerOpt.isEmpty()) {
@@ -1045,15 +1032,15 @@ import static org.pragmatica.lang.Unit.unit;
         var routeInfo = resolveRouteInfo(method, normalizedPath);
         var startTime = System.nanoTime();
         routeInfo.onPresent(this::recordMetricsStart);
-        routerOpt.unwrap().handle(context)
+        routerOpt.unwrap().handle(httpCtx)
                         .onSuccess(responseData -> handleForwardSuccess(network,
                                                                         request,
                                                                         ser,
                                                                         responseData,
                                                                         routeInfo,
                                                                         startTime,
-                                                                        context))
-                        .onFailure(cause -> handleForwardFailure(network, request, cause, routeInfo, startTime, context));
+                                                                        httpCtx))
+                        .onFailure(cause -> handleForwardFailure(network, request, cause, routeInfo, startTime, httpCtx));
     }
 
     private void handleForwardSuccess(ClusterNetwork network,
@@ -1062,10 +1049,10 @@ import static org.pragmatica.lang.Unit.unit;
                                       HttpResponseData responseData,
                                       Option<ResolvedRoute> routeInfo,
                                       long startTime,
-                                      HttpRequestContext context) {
+                                      HttpRequestContext httpCtx) {
         routeInfo.onPresent(info -> recordMetricsSuccess(info,
                                                          startTime,
-                                                         context.body().length,
+                                                         httpCtx.body().length,
                                                          responseData.body().length));
         sendForwardSuccess(network, request, ser, responseData);
     }
@@ -1075,8 +1062,8 @@ import static org.pragmatica.lang.Unit.unit;
                                       Cause cause,
                                       Option<ResolvedRoute> routeInfo,
                                       long startTime,
-                                      HttpRequestContext context) {
-        routeInfo.onPresent(info -> recordMetricsFailure(info, startTime, context.body().length, cause));
+                                      HttpRequestContext httpCtx) {
+        routeInfo.onPresent(info -> recordMetricsFailure(info, startTime, httpCtx.body().length, cause));
         sendForwardError(network, request, cause.message());
     }
 
@@ -1279,16 +1266,5 @@ import static org.pragmatica.lang.Unit.unit;
                                       String errorType) {
         mc.recordComplete(route.artifact(), route.method());
         mc.recordFailure(route.artifact(), route.method(), durationNs, requestBytes, errorType);
-    }
-
-    record RouteTable(Set<HttpNodeRouteKey> localRoutes, List<HttpRouteRegistry.RouteInfo> remoteRoutes) {
-        static RouteTable empty() {
-            return new RouteTable(Set.of(), List.of());
-        }
-
-        static RouteTable routeTable(Set<HttpNodeRouteKey> localRoutes,
-                                     List<HttpRouteRegistry.RouteInfo> remoteRoutes) {
-            return new RouteTable(Set.copyOf(localRoutes), List.copyOf(remoteRoutes));
-        }
     }
 }
