@@ -8,6 +8,7 @@
 package org.pragmatica.statemachine;
 
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 /// GoF-style state machine with CAS-guarded transitions. Dispatch runs on the caller thread; no
 /// executor, no queue. Concurrent dispatches are serialized via `AtomicReference.compareAndSet`
@@ -24,10 +25,15 @@ public final class Fsm<S extends FsmState<S, E>, E> {
     private final AtomicReference<S> currentState;
     private final FsmObserver<S, E> observer;
 
-    private Fsm(String name, S initial, FsmObserver<S, E> observer) {
+    private Fsm(String name, FsmObserver<S, E> observer) {
         this.name = name;
-        this.currentState = new AtomicReference<>(initial);
+        this.currentState = new AtomicReference<>();
         this.observer = observer;
+    }
+
+    private Fsm(String name, S initial, FsmObserver<S, E> observer) {
+        this(name, observer);
+        this.currentState.set(initial);
     }
 
     public static <S extends FsmState<S, E>, E> Fsm<S, E> fsm(String name, S initial) {
@@ -36,6 +42,30 @@ public final class Fsm<S extends FsmState<S, E>, E> {
 
     public static <S extends FsmState<S, E>, E> Fsm<S, E> fsm(String name, S initial, FsmObserver<S, E> observer) {
         return new Fsm<>(name, initial, observer);
+    }
+
+    /// Constructor-driven initial state factory. The factory receives the partially-constructed
+    /// `Fsm` (with no initial state set yet) and returns the initial state. Intended for FSMs whose
+    /// state instances need to reference the enclosing FSM — for example, when a shared `Context`
+    /// object must hold the FSM reference before any state singleton is created.
+    ///
+    /// The factory MUST NOT call [`dispatch`] or read [`current`] — the FSM is in a transiently
+    /// uninitialized state during factory execution. It MAY store the FSM reference into a Context
+    /// that future state handlers will use.
+    ///
+    /// Initial state's [`FsmState#onEntry`] is NOT invoked automatically, matching the behavior of
+    /// the plain [`fsm(String, FsmState)`] overload.
+    public static <S extends FsmState<S, E>, E> Fsm<S, E> fsm(String name,
+                                                              Function<Fsm<S, E>, S> initialStateFactory) {
+        return fsm(name, initialStateFactory, FsmObserver.noop());
+    }
+
+    public static <S extends FsmState<S, E>, E> Fsm<S, E> fsm(String name,
+                                                              Function<Fsm<S, E>, S> initialStateFactory,
+                                                              FsmObserver<S, E> observer) {
+        var fsm = new Fsm<S, E>(name, observer);
+        fsm.currentState.set(initialStateFactory.apply(fsm));
+        return fsm;
     }
 
     public String name() {

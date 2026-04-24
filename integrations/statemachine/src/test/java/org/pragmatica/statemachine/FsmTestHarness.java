@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 
 /// Test utility for FSMs built with [`Fsm`]. Wraps an `Fsm` with a recording observer and exposes
 /// assertions over the observed transitions, CAS losses, and ignored events.
@@ -30,6 +31,13 @@ public final class FsmTestHarness<S extends FsmState<S, E>, E> {
     public static <S extends FsmState<S, E>, E> FsmTestHarness<S, E> harness(String name, S initial) {
         var observer = new RecordingObserver<S, E>();
         var fsm = Fsm.fsm(name, initial, observer);
+        return new FsmTestHarness<>(fsm, observer);
+    }
+
+    public static <S extends FsmState<S, E>, E> FsmTestHarness<S, E> harness(String name,
+                                                                             Function<Fsm<S, E>, S> initialStateFactory) {
+        var observer = new RecordingObserver<S, E>();
+        var fsm = Fsm.fsm(name, initialStateFactory, observer);
         return new FsmTestHarness<>(fsm, observer);
     }
 

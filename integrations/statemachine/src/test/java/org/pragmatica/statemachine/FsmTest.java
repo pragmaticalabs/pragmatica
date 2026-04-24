@@ -213,6 +213,92 @@ class FsmTest {
         assertThat(harness.ignored().size() + harness.casLosses().size()).isEqualTo(3);
     }
 
+    // --- Constructor-driven initial state factory ---
+
+    /// Minimal Context that receives the Fsm reference at construction time and exposes it to
+    /// state singletons. Matches the pattern used across all real FSMs in the codebase.
+    static final class CtxWithFsm {
+        final Fsm<DoorState, DoorEvent> fsm;
+        final DoorState closed;
+        final DoorState open;
+
+        CtxWithFsm(Fsm<DoorState, DoorEvent> fsm) {
+            this.fsm = fsm;
+            this.closed = new CtxState(this, "CLOSED");
+            this.open = new CtxState(this, "OPEN");
+        }
+    }
+
+    static final class CtxState implements DoorState {
+        final CtxWithFsm ctx;
+        final String name;
+
+        CtxState(CtxWithFsm ctx, String name) {
+            this.ctx = ctx;
+            this.name = name;
+        }
+
+        @Override
+        public void handle(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
+            switch (event) {
+                case DoorEvent.Open _ when name.equals("CLOSED") -> tx.transitionTo(ctx.open);
+                case DoorEvent.Close _ when name.equals("OPEN") -> tx.transitionTo(ctx.closed);
+                default -> tx.ignore();
+            }
+        }
+
+        @Override
+        public String toString() {
+            return name;
+        }
+    }
+
+    @Test
+    void factoryOverload_wiresContextBeforeDispatch() {
+        var ctxHolder = new java.util.concurrent.atomic.AtomicReference<CtxWithFsm>();
+        var harness = FsmTestHarness.<DoorState, DoorEvent>harness("ctx-door", f -> {
+            var ctx = new CtxWithFsm(f);
+            ctxHolder.set(ctx);
+            return ctx.closed;
+        });
+
+        // Context and Fsm cross-reference each other; state singletons built inside factory work.
+        assertThat(ctxHolder.get()).isNotNull();
+        assertThat(ctxHolder.get().fsm).isSameAs(harness.fsm());
+        assertThat(harness.state()).isSameAs(ctxHolder.get().closed);
+
+        harness.dispatch(new DoorEvent.Open());
+
+        assertThat(harness.state()).isSameAs(ctxHolder.get().open);
+        assertThat(harness.transitions()).hasSize(1);
+    }
+
+    @Test
+    void factoryOverload_dispatchFromExternalThreadUsesWiredContext() throws InterruptedException {
+        var ctxHolder = new java.util.concurrent.atomic.AtomicReference<CtxWithFsm>();
+        var harness = FsmTestHarness.<DoorState, DoorEvent>harness("ctx-door-2", f -> {
+            var ctx = new CtxWithFsm(f);
+            ctxHolder.set(ctx);
+            return ctx.closed;
+        });
+
+        // Prove the fsm reference captured in Context is fully usable post-construction: dispatch
+        // a burst of events through the Context-held fsm ref and verify state advances correctly.
+        var ctx = ctxHolder.get();
+        var latch = new java.util.concurrent.CountDownLatch(1);
+        var worker = new Thread(() -> {
+            ctx.fsm.dispatch(new DoorEvent.Open());
+            ctx.fsm.dispatch(new DoorEvent.Close());
+            ctx.fsm.dispatch(new DoorEvent.Open());
+            latch.countDown();
+        });
+        worker.start();
+        assertThat(latch.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+
+        assertThat(harness.state()).isSameAs(ctx.open);
+        assertThat(harness.transitions()).hasSize(3);
+    }
+
     @Test
     void forwardOnCasLoss_reachesNewState() {
         // Two states where A→B on X, and B explicitly ignores X. Dispatching X twice from two
