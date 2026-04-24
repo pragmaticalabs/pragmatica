@@ -226,27 +226,18 @@ class ClusterDeploymentManagerTest {
             assertThat(activeIdsAfter).containsExactlyInAnyOrder(NODE_1, NODE_2, NODE_3);
         }
 
-        private ClusterDeploymentManager.ClusterDeploymentState.Active activateAndGetActive() throws Exception {
+        private org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState.Active activateAndGetActive() {
             cdm.activate().await();
-            var stateField = cdm.getClass().getDeclaredField("state");
-            stateField.setAccessible(true);
-            @SuppressWarnings("unchecked")
-            var stateRef = (AtomicReference<ClusterDeploymentManager.ClusterDeploymentState>) stateField.get(cdm);
-            return (ClusterDeploymentManager.ClusterDeploymentState.Active) stateRef.get();
+            var adapter = (ClusterDeploymentManager.ClusterDeploymentManagerAdapter) cdm;
+            return (org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState.Active) adapter.context().fsm().current();
         }
 
-        @SuppressWarnings("unchecked")
-        private List<NodeId> invokeActiveNodes(ClusterDeploymentManager.ClusterDeploymentState.Active active) throws Exception {
-            var method = active.getClass().getDeclaredMethod("activeNodes");
-            method.setAccessible(true);
-            return (List<NodeId>) method.invoke(active);
+        private List<NodeId> invokeActiveNodes(org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState.Active active) {
+            return active.activeNodes();
         }
 
-        @SuppressWarnings("unchecked")
-        private java.util.Set<NodeId> invokeDrainingNodes(ClusterDeploymentManager.ClusterDeploymentState.Active active) throws Exception {
-            var method = active.getClass().getDeclaredMethod("drainingNodes");
-            method.setAccessible(true);
-            return (java.util.Set<NodeId>) method.invoke(active);
+        private java.util.Set<NodeId> invokeDrainingNodes(org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState.Active active) {
+            return active.drainingNodes();
         }
     }
 
