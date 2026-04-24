@@ -55,13 +55,12 @@ public final class LeaderElectionFsm {
                                                    TimeSpan perRankDelay,
                                                    FsmObserver<LeaderElectionState, ClusterFsmEvent> observer) {
         var ctxHolder = new AtomicReference<LeaderElectionContext>();
-        var fsmName = "leader-election-" + self.id();
         var timeout = LeaderElectionContext.proposalTimeoutFor(proposalRetryDelay);
         Function<Fsm<LeaderElectionState, ClusterFsmEvent>, LeaderElectionState> initialStateFactory =
             f -> buildContextAndInitialState(ctxHolder, f, self, proposalHandler, expectedCluster,
                                              router, proposalRetryDelay, baseElectionDelay,
                                              perRankDelay, timeout);
-        var fsm = Fsm.fsm(fsmName, initialStateFactory, observer);
+        var fsm = Fsm.fsm("leader-election", self.id(), initialStateFactory, observer);
         return new FsmWithContext(fsm, ctxHolder.get());
     }
 

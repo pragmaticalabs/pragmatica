@@ -9,13 +9,18 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.statemachine.FsmObserver;
+import org.pragmatica.statemachine.FsmTags;
 
 /// [`FsmObserver`] implementation that emits per-FSM metrics to a Micrometer `MeterRegistry`.
 ///
 /// Metrics emitted (tag set per FSM/state shown in curly braces):
-/// - `fsm_transitions_total{fsm,from,to}` — counter of completed transitions.
-/// - `fsm_cas_lost_total{fsm,expected,actual}` — counter of CAS losses (another thread won).
-/// - `fsm_events_ignored_total{fsm,state,event}` — counter of explicitly-ignored events.
+/// - `fsm_transitions_total{fsm,node_id,from,to}` — counter of completed transitions.
+/// - `fsm_cas_lost_total{fsm,node_id,expected,actual}` — counter of CAS losses (another thread won).
+/// - `fsm_events_ignored_total{fsm,node_id,state,event}` — counter of explicitly-ignored events.
+///
+/// The `fsm` tag carries the bounded FSM kind (e.g. `leader-election`, `control-loop`) while the
+/// `node_id` tag carries the per-instance discriminator. This split prevents cardinality explosion
+/// on the `fsm` label across node churn.
 ///
 /// State and event names are derived via the class's simple name. For data-carrying states,
 /// different entries into the same state class share the same label (since the label is derived
@@ -33,9 +38,10 @@ public final class MicrometerFsmObserver<S, E> implements FsmObserver<S, E> {
 
     @Contract
     @Override
-    public void onTransition(String fsmName, S from, S to) {
+    public void onTransition(FsmTags tags, S from, S to) {
         Counter.builder("fsm_transitions_total")
-               .tags("fsm", fsmName,
+               .tags("fsm", tags.kind(),
+                     "node_id", tags.instance(),
                      "from", label(from),
                      "to", label(to))
                .register(registry)
@@ -44,9 +50,10 @@ public final class MicrometerFsmObserver<S, E> implements FsmObserver<S, E> {
 
     @Contract
     @Override
-    public void onCasLost(String fsmName, S expected, S actual) {
+    public void onCasLost(FsmTags tags, S expected, S actual) {
         Counter.builder("fsm_cas_lost_total")
-               .tags("fsm", fsmName,
+               .tags("fsm", tags.kind(),
+                     "node_id", tags.instance(),
                      "expected", label(expected),
                      "actual", label(actual))
                .register(registry)
@@ -55,9 +62,10 @@ public final class MicrometerFsmObserver<S, E> implements FsmObserver<S, E> {
 
     @Contract
     @Override
-    public void onEventIgnored(String fsmName, S state, E event) {
+    public void onEventIgnored(FsmTags tags, S state, E event) {
         Counter.builder("fsm_events_ignored_total")
-               .tags("fsm", fsmName,
+               .tags("fsm", tags.kind(),
+                     "node_id", tags.instance(),
                      "state", label(state),
                      "event", label(event))
                .register(registry)

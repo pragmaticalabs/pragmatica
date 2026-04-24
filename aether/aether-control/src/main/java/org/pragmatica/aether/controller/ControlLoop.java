@@ -91,7 +91,7 @@ public interface ControlLoop extends DelegatedComponent {
             fsm -> buildContext(ctxHolder, fsm, self, controller, metricsCollector,
                                 invocationMetricsCollector, cluster, kvStore, interval,
                                 config, eventPublisher);
-        var fsm = Fsm.fsm("control-loop-" + self.id(), initialStateFactory);
+        var fsm = Fsm.fsm("control-loop", self.id(), initialStateFactory);
         return new controlLoop(ctxHolder.get(), fsm);
     }
 

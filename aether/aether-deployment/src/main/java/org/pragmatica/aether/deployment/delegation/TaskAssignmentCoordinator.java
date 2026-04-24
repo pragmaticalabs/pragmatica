@@ -98,7 +98,7 @@ public sealed interface TaskAssignmentCoordinator {
         Function<Fsm<CoordinatorState, ClusterFsmEvent>, CoordinatorState> initialStateFactory =
             f -> buildContextAndInitialState(ctxHolder, f, self, clusterNode, kvStore,
                                              topologyManager, reconcileInterval);
-        var fsm = Fsm.fsm("task-assignment-coordinator-" + self.id(), initialStateFactory);
+        var fsm = Fsm.fsm("task-assignment", self.id(), initialStateFactory);
         return new taskAssignmentCoordinator(ctxHolder.get(), fsm);
     }
 

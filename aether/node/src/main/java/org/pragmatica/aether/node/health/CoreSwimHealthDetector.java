@@ -107,12 +107,11 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                 PeerObservationBuffer observationBuffer) {
         var buffer = observationBuffer == null ? PeerObservationBuffer.NOOP : observationBuffer;
         var ctxHolder = new AtomicReference<SwimHealthContext>();
-        var fsmName = "core-swim-health-detector-" + topologyConfig.self().id();
         Function<Fsm<SwimHealthState, SwimHealthEvents>, SwimHealthState> initialStateFactory =
                 fsm -> buildContextAndStopped(fsm, ctxHolder, router, topologyConfig, serializer,
                                               deserializer, signalSink, epochSupplier,
                                               isLeaderSupplier, buffer);
-        Fsm.fsm(fsmName, initialStateFactory);
+        Fsm.fsm("swim-health", topologyConfig.self().id(), initialStateFactory);
         return new CoreSwimHealthDetector(ctxHolder.get());
     }
 

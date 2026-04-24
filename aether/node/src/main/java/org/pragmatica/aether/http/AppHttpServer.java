@@ -301,7 +301,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         var ctxHolder = new AtomicReference<AppHttpContext>();
         Function<Fsm<AppHttpState, ClusterFsmEvent>, AppHttpState> initialStateFactory =
                 fsm -> buildContextAndStopped(fsm, ctxHolder);
-        var fsm = Fsm.fsm("app-http-server-" + selfNodeId.id(), initialStateFactory);
+        var fsm = Fsm.fsm("app-http", selfNodeId.id(), initialStateFactory);
         return new FsmAndContext(fsm, ctxHolder.get());
     }
 

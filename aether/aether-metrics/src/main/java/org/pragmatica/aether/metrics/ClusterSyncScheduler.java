@@ -107,7 +107,6 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
                                                      int pingTimeoutThreshold,
                                                      Supplier<Epoch> epochSupplier) {
         var ctxHolder = new AtomicReference<ClusterSyncContext>();
-        var fsmName = "cluster-sync-scheduler-" + self.id();
         Function<Fsm<ClusterSyncState, ClusterFsmEvent>, ClusterSyncState> initialStateFactory =
                 fsm -> buildContextAndDormant(fsm,
                                               ctxHolder,
@@ -123,7 +122,7 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
                                               epochSupplier);
         // Fsm constructor publishes itself into ctxHolder via initialStateFactory —
         // we only need the context here; the FSM reference lives on ctx.fsm().
-        var _fsm = Fsm.fsm(fsmName, initialStateFactory);
+        var _fsm = Fsm.fsm("cluster-sync", self.id(), initialStateFactory);
         return new ClusterSyncSchedulerAdapter(ctxHolder.get());
     }
 

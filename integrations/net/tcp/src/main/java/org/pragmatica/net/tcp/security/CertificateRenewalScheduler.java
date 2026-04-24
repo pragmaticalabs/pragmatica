@@ -227,7 +227,7 @@ public final class CertificateRenewalScheduler {
         Function<Fsm<SchedulerState, RenewalEvent>, SchedulerState> initialStateFactory =
             f -> buildContextAndInitialState(ctxHolder, f, provider, nodeId, hostname,
                                              renewalCallback, initialNotAfter);
-        var fsm = Fsm.fsm("certificate-renewal-scheduler-" + nodeId, initialStateFactory);
+        var fsm = Fsm.fsm("cert-renewal", nodeId, initialStateFactory);
         return new CertificateRenewalScheduler(ctxHolder.get(), fsm);
     }
 

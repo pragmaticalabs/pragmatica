@@ -68,7 +68,7 @@ import org.slf4j.LoggerFactory;
         var ctxHolder = new AtomicReference<Context>();
         Function<Fsm<SchedulerState, ClusterFsmEvent>, SchedulerState> initialStateFactory =
             f -> buildContextAndInitialState(ctxHolder, f, registry, invoker, self, stateWriter);
-        var fsm = Fsm.fsm("scheduled-task-manager-" + self.id(), initialStateFactory);
+        var fsm = Fsm.fsm("scheduled-task", self.id(), initialStateFactory);
         var ctx = ctxHolder.get();
         registry.setChangeListener(new RegistryListener(ctx, fsm)::onChange);
         return new scheduledTaskManagerImpl(ctx, fsm);

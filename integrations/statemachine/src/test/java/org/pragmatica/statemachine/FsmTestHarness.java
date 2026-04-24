@@ -106,17 +106,17 @@ public final class FsmTestHarness<S extends FsmState<S, E>, E> {
         private final List<Ignored<S, E>> ignored = new CopyOnWriteArrayList<>();
 
         @Override
-        public void onTransition(String fsmName, S from, S to) {
+        public void onTransition(FsmTags tags, S from, S to) {
             transitions.add(new Transition<>(from, to));
         }
 
         @Override
-        public void onCasLost(String fsmName, S expected, S actual) {
+        public void onCasLost(FsmTags tags, S expected, S actual) {
             casLosses.add(new CasLoss<>(expected, actual));
         }
 
         @Override
-        public void onEventIgnored(String fsmName, S state, E event) {
+        public void onEventIgnored(FsmTags tags, S state, E event) {
             ignored.add(new Ignored<>(state, event));
         }
 

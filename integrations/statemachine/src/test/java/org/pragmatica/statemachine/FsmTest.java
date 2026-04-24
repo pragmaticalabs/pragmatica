@@ -299,6 +299,53 @@ class FsmTest {
         assertThat(harness.transitions()).hasSize(3);
     }
 
+    // --- FsmTags (kind/instance split) ---
+
+    @Test
+    void fsmTags_twoArgFactory_setsBothFields() {
+        var fsm = Fsm.fsm("leader-election", "node-a", Simple.CLOSED);
+
+        assertThat(fsm.tags().kind()).isEqualTo("leader-election");
+        assertThat(fsm.tags().instance()).isEqualTo("node-a");
+        assertThat(fsm.name()).isEqualTo("leader-election-node-a");
+    }
+
+    @Test
+    void fsmTags_legacyNameFactory_splitsOnFirstDash() {
+        var fsm = Fsm.fsm("control-loop-node-a", Simple.CLOSED);
+
+        assertThat(fsm.tags().kind()).isEqualTo("control");
+        assertThat(fsm.tags().instance()).isEqualTo("loop-node-a");
+    }
+
+    @Test
+    void fsmTags_legacyNameFactory_noDash_treatsAsKind() {
+        var fsm = Fsm.fsm("singleton", Simple.CLOSED);
+
+        assertThat(fsm.tags().kind()).isEqualTo("singleton");
+        assertThat(fsm.tags().instance()).isEqualTo("");
+        assertThat(fsm.name()).isEqualTo("singleton");
+    }
+
+    @Test
+    void observerReceivesTags_notString() {
+        var captured = new java.util.concurrent.atomic.AtomicReference<FsmTags>();
+        FsmObserver<DoorState, DoorEvent> observer = new FsmObserver<>() {
+            @Override public void onTransition(FsmTags tags, DoorState from, DoorState to) {
+                captured.set(tags);
+            }
+            @Override public void onCasLost(FsmTags tags, DoorState expected, DoorState actual) {}
+            @Override public void onEventIgnored(FsmTags tags, DoorState state, DoorEvent event) {}
+        };
+
+        var fsm = Fsm.fsm("leader-election", "node-a", Simple.CLOSED, observer);
+        fsm.dispatch(new DoorEvent.Open());
+
+        assertThat(captured.get()).isNotNull();
+        assertThat(captured.get().kind()).isEqualTo("leader-election");
+        assertThat(captured.get().instance()).isEqualTo("node-a");
+    }
+
     @Test
     void forwardOnCasLoss_reachesNewState() {
         // Two states where A→B on X, and B explicitly ignores X. Dispatching X twice from two

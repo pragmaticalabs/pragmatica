@@ -290,7 +290,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                                snapshotSupplier);
         // Fsm constructor publishes itself into ctxHolder via initialStateFactory —
         // we only need the context here; the FSM reference lives on ctx.fsm().
-        var _fsm = Fsm.fsm("cluster-deployment-" + self.id(), initialStateFactory);
+        var _fsm = Fsm.fsm("cluster-deployment", self.id(), initialStateFactory);
         return ctxHolder.get();
     }
 
