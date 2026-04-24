@@ -79,6 +79,9 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.statemachine.Fsm;
+import org.pragmatica.statemachine.FsmState;
+import org.pragmatica.statemachine.TransitionRequest;
 import org.pragmatica.lang.concurrent.CancellableTask;
 
 import java.util.ArrayList;
@@ -156,6 +159,36 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                 default -> ALL_OR_NOTHING;
             };
         }
+    }
+
+    /// Lifecycle states mirrored by an internal Fsm for consistency with the cluster-wide
+    /// FSM pattern. The existing sealed `ClusterDeploymentState` hierarchy continues to own
+    /// domain behaviour; this Fsm is a parallel dormant/active marker for observability.
+    sealed interface LifecycleState extends FsmState<LifecycleState, LifecycleEvent>
+            permits LifecycleState.Dormant, LifecycleState.Active {
+        record Dormant() implements LifecycleState {
+            public static final Dormant INSTANCE = new Dormant();
+            @Override public void handle(LifecycleEvent event, TransitionRequest<LifecycleState, LifecycleEvent> tx) {
+                switch (event) {
+                    case LifecycleEvent.Activate _ -> tx.transitionTo(Active.INSTANCE);
+                    default -> tx.ignore();
+                }
+            }
+        }
+        record Active() implements LifecycleState {
+            public static final Active INSTANCE = new Active();
+            @Override public void handle(LifecycleEvent event, TransitionRequest<LifecycleState, LifecycleEvent> tx) {
+                switch (event) {
+                    case LifecycleEvent.Deactivate _ -> tx.transitionTo(Dormant.INSTANCE);
+                    default -> tx.ignore();
+                }
+            }
+        }
+    }
+
+    sealed interface LifecycleEvent {
+        record Activate() implements LifecycleEvent {}
+        record Deactivate() implements LifecycleEvent {}
     }
 
     sealed interface ClusterDeploymentState {
@@ -1847,7 +1880,8 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                         HealthSignalSink healthSignalSink,
                                         Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
                                         Set<NodeId> seedNodes,
-                                        AtomicReference<ClusterDeploymentState> state) implements ClusterDeploymentManager {
+                                        AtomicReference<ClusterDeploymentState> state,
+                                        Fsm<LifecycleState, LifecycleEvent> lifecycle) implements ClusterDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(clusterDeploymentManager.class);
 
             @Override public Promise<Unit> activate() {
@@ -1878,6 +1912,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                                                     reconcileInterval,
                                                                     CancellableTask.cancellableTask());
                 state.set(activeState);
+                lifecycle.dispatch(new LifecycleEvent.Activate());
                 log.info("Node {} became leader, activating cluster deployment manager with {} known nodes",
                          self,
                          activeState.activeNodes().size());
@@ -1892,6 +1927,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                 log.info("Node {} is not leader, deactivating cluster deployment manager", self);
                 deactivateCurrentState();
                 state.set(new ClusterDeploymentState.Dormant());
+                lifecycle.dispatch(new LifecycleEvent.Deactivate());
                 return Promise.unitPromise();
             }
 
@@ -1979,6 +2015,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                             healthSignalSink,
                                             snapshotSupplier,
                                             Set.copyOf(initialTopology),
-                                            new AtomicReference<>(new ClusterDeploymentState.Dormant()));
+                                            new AtomicReference<>(new ClusterDeploymentState.Dormant()),
+                                            Fsm.fsm("cluster-deployment-" + self.id(), LifecycleState.Dormant.INSTANCE));
     }
 }
