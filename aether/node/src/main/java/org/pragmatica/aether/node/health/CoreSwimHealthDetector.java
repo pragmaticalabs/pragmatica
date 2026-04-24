@@ -20,6 +20,9 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.statemachine.Fsm;
+import org.pragmatica.statemachine.FsmState;
+import org.pragmatica.statemachine.TransitionRequest;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.swim.GossipEncryptor;
@@ -84,6 +87,55 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
 
     private volatile long faultyWindowStart;
     private volatile boolean locallyDisconnected;
+
+    /// Lifecycle state machine — parallel to the existing `swimProtocol`/`swimTransport` atomic
+    /// references. Transitions are driven by `start()` / `stop()` / internal protocol lifecycle
+    /// callbacks. States:
+    /// - `Stopped` (initial, after explicit stop)
+    /// - `Starting` (start() invoked, transport/protocol being created)
+    /// - `Running` (transport + protocol live, health detection active)
+    private final Fsm<SwimDetectorState, SwimDetectorEvent> lifecycle =
+        Fsm.fsm("core-swim-health-detector", SwimDetectorState.Stopped.INSTANCE);
+
+    public sealed interface SwimDetectorState extends FsmState<SwimDetectorState, SwimDetectorEvent>
+            permits SwimDetectorState.Stopped, SwimDetectorState.Starting, SwimDetectorState.Running {
+        record Stopped() implements SwimDetectorState {
+            public static final Stopped INSTANCE = new Stopped();
+            @Override public void handle(SwimDetectorEvent event, TransitionRequest<SwimDetectorState, SwimDetectorEvent> tx) {
+                switch (event) {
+                    case SwimDetectorEvent.StartRequested _ -> tx.transitionTo(Starting.INSTANCE);
+                    default -> tx.ignore();
+                }
+            }
+        }
+        record Starting() implements SwimDetectorState {
+            public static final Starting INSTANCE = new Starting();
+            @Override public void handle(SwimDetectorEvent event, TransitionRequest<SwimDetectorState, SwimDetectorEvent> tx) {
+                switch (event) {
+                    case SwimDetectorEvent.StartCompleted _ -> tx.transitionTo(Running.INSTANCE);
+                    case SwimDetectorEvent.StartFailed _ -> tx.transitionTo(Stopped.INSTANCE);
+                    case SwimDetectorEvent.StopRequested _ -> tx.transitionTo(Stopped.INSTANCE);
+                    default -> tx.ignore();
+                }
+            }
+        }
+        record Running() implements SwimDetectorState {
+            public static final Running INSTANCE = new Running();
+            @Override public void handle(SwimDetectorEvent event, TransitionRequest<SwimDetectorState, SwimDetectorEvent> tx) {
+                switch (event) {
+                    case SwimDetectorEvent.StopRequested _ -> tx.transitionTo(Stopped.INSTANCE);
+                    default -> tx.ignore();
+                }
+            }
+        }
+    }
+
+    public sealed interface SwimDetectorEvent {
+        record StartRequested() implements SwimDetectorEvent {}
+        record StartCompleted() implements SwimDetectorEvent {}
+        record StartFailed() implements SwimDetectorEvent {}
+        record StopRequested() implements SwimDetectorEvent {}
+    }
 
     /// Supplier for the current leader's NodeId (present when a leader is known, empty otherwise).
     /// Used by the follower FAULTY path to detect the special case where the faulty peer IS the
@@ -179,6 +231,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
             log.debug("SWIM already running, skipping start");
             return Promise.success(Unit.unit());
         }
+        lifecycle.dispatch(new SwimDetectorEvent.StartRequested());
         var selfPort = findSelfPort();
         var swimPort = selfPort + SWIM_PORT_OFFSET;
         var selfHost = findSelfHost();
@@ -187,13 +240,22 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                                                  selfAddress,
                                                                                                  swimPort))
                               .async()
-                              .onFailure(_ -> starting.set(false))
+                              .onSuccess(_ -> lifecycle.dispatch(new SwimDetectorEvent.StartCompleted()))
+                              .onFailure(_ -> {
+                                  starting.set(false);
+                                  lifecycle.dispatch(new SwimDetectorEvent.StartFailed());
+                              })
                               .mapToUnit();
     }
 
     @SuppressWarnings("JBCT-RET-01") public void stop() {
+        lifecycle.dispatch(new SwimDetectorEvent.StopRequested());
         swimProtocol.getAndSet(none()).onPresent(SwimProtocol::stop);
         swimTransport.getAndSet(none()).onPresent(SwimTransport::stop);
+    }
+
+    public SwimDetectorState lifecycleState() {
+        return lifecycle.current();
     }
 
     @SuppressWarnings("JBCT-RET-01") public void onNodeConnected(NodeId nodeId) {
