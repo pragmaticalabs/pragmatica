@@ -33,6 +33,9 @@ import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.statemachine.Fsm;
+import org.pragmatica.statemachine.FsmState;
+import org.pragmatica.statemachine.TransitionRequest;
 
 import java.util.function.UnaryOperator;
 import java.util.ArrayList;
@@ -106,6 +109,36 @@ public interface HealthReconciler extends HealthSignalSink {
         onSignal(signal);
     }
 
+    /// Lifecycle states tracked by internal Fsm, parallel to the `started` AtomicBoolean.
+    /// Stopped: start() not called, or stop() just invoked. Active: reconciler is consuming
+    /// health signals and writing to KV-store.
+    sealed interface ReconcilerState extends FsmState<ReconcilerState, ReconcilerEvent>
+            permits ReconcilerState.Stopped, ReconcilerState.Active {
+        record Stopped() implements ReconcilerState {
+            public static final Stopped INSTANCE = new Stopped();
+            @Override public void handle(ReconcilerEvent event, TransitionRequest<ReconcilerState, ReconcilerEvent> tx) {
+                switch (event) {
+                    case ReconcilerEvent.Start _ -> tx.transitionTo(Active.INSTANCE);
+                    default -> tx.ignore();
+                }
+            }
+        }
+        record Active() implements ReconcilerState {
+            public static final Active INSTANCE = new Active();
+            @Override public void handle(ReconcilerEvent event, TransitionRequest<ReconcilerState, ReconcilerEvent> tx) {
+                switch (event) {
+                    case ReconcilerEvent.Stop _ -> tx.transitionTo(Stopped.INSTANCE);
+                    default -> tx.ignore();
+                }
+            }
+        }
+    }
+
+    sealed interface ReconcilerEvent {
+        record Start() implements ReconcilerEvent {}
+        record Stop() implements ReconcilerEvent {}
+    }
+
     static HealthReconciler healthReconciler(NodeId self,
                                              ClusterNode<KVCommand<AetherKey>> cluster,
                                              ClusterGenerationProjector projector,
@@ -149,7 +182,8 @@ public interface HealthReconciler extends HealthSignalSink {
                                           PeerObservationReducer.peerObservationReducer(),
                                           new AtomicReference<>(),
                                           new AtomicBoolean(false),
-                                          new AtomicReference<>(Option.<Supplier<ClusterGenerationSnapshot>>none()));
+                                          new AtomicReference<>(Option.<Supplier<ClusterGenerationSnapshot>>none()),
+                                          Fsm.fsm("health-reconciler-" + self.id(), ReconcilerState.Stopped.INSTANCE));
     }
 }
 
@@ -173,7 +207,8 @@ record HealthReconcilerRecord(NodeId self,
                               PeerObservationReducer peerObservationReducer,
                               AtomicReference<ExecutorService> reprojectionExecutorRef,
                               AtomicBoolean reprojectionDirty,
-                              AtomicReference<Option<Supplier<ClusterGenerationSnapshot>>> reprojectionSupplierRef) implements HealthReconciler {
+                              AtomicReference<Option<Supplier<ClusterGenerationSnapshot>>> reprojectionSupplierRef,
+                              Fsm<ReconcilerState, ReconcilerEvent> lifecycle) implements HealthReconciler {
     private static final Logger log = LoggerFactory.getLogger(HealthReconcilerRecord.class);
 
     private static final String CORE_COMMUNITY_ID = "core";
@@ -181,12 +216,14 @@ record HealthReconcilerRecord(NodeId self,
     @Contract@Override public void start(Epoch leaderEpoch) {
         startEpoch.set(leaderEpoch);
         started.set(true);
+        lifecycle.dispatch(new ReconcilerEvent.Start());
         ensureReprojectionExecutor();
         log.debug("HealthReconciler started at epoch {}", leaderEpoch);
     }
 
     @Contract@Override public void stop(StopReason reason) {
         started.set(false);
+        lifecycle.dispatch(new ReconcilerEvent.Stop());
         startEpoch.set(Epoch.ZERO);
         consecutivePingMisses.clear();
         swimHints.clear();
