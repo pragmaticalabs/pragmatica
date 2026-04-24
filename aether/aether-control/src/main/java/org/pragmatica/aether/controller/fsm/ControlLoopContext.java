@@ -33,10 +33,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
-import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.statemachine.Fsm;
 import org.slf4j.Logger;
@@ -236,19 +233,13 @@ public final class ControlLoopContext {
 
     @Contract
     public void runEvaluationCycle() {
-        Result.lift(Causes::fromThrowable, this::runEvaluationCycleUnsafe)
-              .onFailure(cause -> log.error("Control loop error: {}", cause.message()));
-    }
-
-    private Unit runEvaluationCycleUnsafe() {
         if (blueprints.isEmpty()) {
             log.trace("No blueprints registered, skipping evaluation");
-            return Unit.unit();
+            return;
         }
         var metrics = sampleCurrentMetrics();
         metrics.forEach(compositeLoadFactor::recordSample);
         evaluateScalingDecisions(metrics);
-        return Unit.unit();
     }
 
     public void handleCommunityScalingRequest(CommunityScalingRequest request) {
