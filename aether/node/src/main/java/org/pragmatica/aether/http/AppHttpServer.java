@@ -63,6 +63,9 @@ import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.statemachine.Fsm;
+import org.pragmatica.statemachine.FsmState;
+import org.pragmatica.statemachine.TransitionRequest;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -92,6 +95,60 @@ import static org.pragmatica.lang.Unit.unit;
 /// Separate from ManagementServer for security isolation.
 @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) public interface AppHttpServer {
     Promise<Unit> start();
+
+    /// Lifecycle states tracked by internal Fsm. Flattens the multi-dimensional state
+    /// (H1 running, H3 running, route sync received, cert rotating) into a single enum for
+    /// observability and consistency with other FSM-backed components.
+    sealed interface AppHttpServerState extends FsmState<AppHttpServerState, AppHttpServerEvent>
+            permits AppHttpServerState.Stopped, AppHttpServerState.Starting, AppHttpServerState.Running, AppHttpServerState.CertRotating {
+        record Stopped() implements AppHttpServerState {
+            public static final Stopped INSTANCE = new Stopped();
+            @Override public void handle(AppHttpServerEvent event, TransitionRequest<AppHttpServerState, AppHttpServerEvent> tx) {
+                switch (event) {
+                    case AppHttpServerEvent.StartRequested _ -> tx.transitionTo(Starting.INSTANCE);
+                    default -> tx.ignore();
+                }
+            }
+        }
+        record Starting() implements AppHttpServerState {
+            public static final Starting INSTANCE = new Starting();
+            @Override public void handle(AppHttpServerEvent event, TransitionRequest<AppHttpServerState, AppHttpServerEvent> tx) {
+                switch (event) {
+                    case AppHttpServerEvent.StartCompleted _ -> tx.transitionTo(Running.INSTANCE);
+                    case AppHttpServerEvent.StopRequested _ -> tx.transitionTo(Stopped.INSTANCE);
+                    default -> tx.ignore();
+                }
+            }
+        }
+        record Running() implements AppHttpServerState {
+            public static final Running INSTANCE = new Running();
+            @Override public void handle(AppHttpServerEvent event, TransitionRequest<AppHttpServerState, AppHttpServerEvent> tx) {
+                switch (event) {
+                    case AppHttpServerEvent.RotateStarted _ -> tx.transitionTo(CertRotating.INSTANCE);
+                    case AppHttpServerEvent.StopRequested _ -> tx.transitionTo(Stopped.INSTANCE);
+                    default -> tx.ignore();
+                }
+            }
+        }
+        record CertRotating() implements AppHttpServerState {
+            public static final CertRotating INSTANCE = new CertRotating();
+            @Override public void handle(AppHttpServerEvent event, TransitionRequest<AppHttpServerState, AppHttpServerEvent> tx) {
+                switch (event) {
+                    case AppHttpServerEvent.RotateCompleted _ -> tx.transitionTo(Running.INSTANCE);
+                    case AppHttpServerEvent.StopRequested _ -> tx.transitionTo(Stopped.INSTANCE);
+                    default -> tx.ignore();
+                }
+            }
+        }
+    }
+
+    sealed interface AppHttpServerEvent {
+        record StartRequested() implements AppHttpServerEvent {}
+        record StartCompleted() implements AppHttpServerEvent {}
+        record StopRequested() implements AppHttpServerEvent {}
+        record RotateStarted() implements AppHttpServerEvent {}
+        record RotateCompleted() implements AppHttpServerEvent {}
+    }
     Promise<Unit> stop();
     Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle);
     Option<Integer> boundPort();
@@ -235,6 +292,9 @@ import static org.pragmatica.lang.Unit.unit;
     private final Option<HttpRequestObserver> requestObserver;
     private final Option<HttpForwarder> httpForwarder;
 
+    private final Fsm<AppHttpServerState, AppHttpServerEvent> lifecycle =
+        Fsm.fsm("app-http-server", AppHttpServerState.Stopped.INSTANCE);
+
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
 
     private final AtomicReference<HttpServer> h3ServerRef = new AtomicReference<>();
@@ -325,12 +385,15 @@ import static org.pragmatica.lang.Unit.unit;
             return Promise.success(unit());
         }
         log.info("Starting App HTTP server on port {} (protocol: {})", config.port(), config.httpProtocol());
+        lifecycle.dispatch(new AppHttpServerEvent.StartRequested());
         rebuildRouter();
         var protocol = config.httpProtocol();
-        if (protocol.includesH1()) {return startH1Server().flatMap(_ -> protocol.includesH3()
-                                                                       ? startH3Server()
-                                                                       : Promise.success(unit()));}
-        return startH3Server();
+        var startPromise = protocol.includesH1()
+                          ? startH1Server().flatMap(_ -> protocol.includesH3()
+                                                         ? startH3Server()
+                                                         : Promise.success(unit()))
+                          : startH3Server();
+        return startPromise.onSuccess(_ -> lifecycle.dispatch(new AppHttpServerEvent.StartCompleted()));
     }
 
     private Promise<Unit> startH1Server() {
@@ -397,6 +460,7 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     @Override public Promise<Unit> stop() {
+        lifecycle.dispatch(new AppHttpServerEvent.StopRequested());
         var h1Stop = Option.option(serverRef.get()).map(server -> server.stop()
                                                                              .onSuccessRun(() -> log.info("App HTTP/1.1 server stopped")))
                                   .or(Promise.success(unit()));
@@ -409,7 +473,9 @@ import static org.pragmatica.lang.Unit.unit;
     @Override public Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
         if (!config.enabled()) {return Promise.success(unit());}
         log.info("Rotating app HTTP server TLS certificate");
-        return stopHttpServers().flatMap(_ -> restartWithNewBundle(newBundle));
+        lifecycle.dispatch(new AppHttpServerEvent.RotateStarted());
+        return stopHttpServers().flatMap(_ -> restartWithNewBundle(newBundle))
+                                .onSuccess(_ -> lifecycle.dispatch(new AppHttpServerEvent.RotateCompleted()));
     }
 
     private Promise<Unit> stopHttpServers() {
