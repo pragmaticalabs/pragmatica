@@ -79,7 +79,7 @@ class HealthReconcilerFsmTest {
                                                     cluster,
                                                     hlcClock,
                                                     rabiaTerm::get,
-                                                    externalLeaderGate,
+                                                    externalLeaderGate::get,
                                                     AutoHealConfig.DEFAULT,
                                                     GenerationChangedSink.noop(),
                                                     PeerObservationReducer.peerObservationReducer());

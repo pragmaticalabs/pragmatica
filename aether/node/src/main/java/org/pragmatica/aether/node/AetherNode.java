@@ -197,9 +197,9 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -780,9 +780,9 @@ public interface AetherNode extends ManageableNode {
         metricsCollector.setInvocationMetricsProvider(invocationMetrics);
         metricsCollector.recordCustom("mgmt.port", config.managementPort());
         var leaderTerm = new AtomicLong(0L);
-        var isLeaderGate = new AtomicBoolean(false);
+        BooleanSupplier isLeaderSupplier = clusterNode.leaderManager()::isLeader;
         metricsCollector.setPongSignalFan(ClusterSyncPongSignalFan.clusterSyncPongSignalFan(stableHealthSink,
-                                                                                            isLeaderGate::get));
+                                                                                            isLeaderSupplier));
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
         Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.get(), 0L);
         var hlcClockEarly = HlcClock.hlcClock(config.self().id()).unwrap();
@@ -793,7 +793,7 @@ public interface AetherNode extends ManageableNode {
                                                                  projectorEarly,
                                                                  hlcClockEarly,
                                                                  rabiaTermSupplier,
-                                                                 isLeaderGate,
+                                                                 isLeaderSupplier,
                                                                  config.autoHeal(),
                                                                  generationChangedSink);
         java.util.function.Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder = serializer::encode;
@@ -806,7 +806,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                      .isEmpty()) {clusterNode.leaderManager()
                                                                                                                                            .onLeaderCommitted(leader);}
                                                                     });
-        Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier = () -> isLeaderGate.get()
+        Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier = () -> isLeaderSupplier.getAsBoolean()
                                                                             ? Option.some(healthReconciler.currentSnapshot())
                                                                             : nodeSnapshotCache.current();
         cdmSnapshotSupplierRef.set(snapshotSupplier);
@@ -826,8 +826,8 @@ public interface AetherNode extends ManageableNode {
         Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT).filter(v -> v instanceof AetherValue.ClusterConfigValue)
                                                                                                 .map(v -> (AetherValue.ClusterConfigValue) v);
         java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> clusterCommandApplier = commands -> clusterNode.apply(commands);
-        var leaderAwareSnapshotSource = org.pragmatica.aether.node.generation.LeaderAwareSnapshotSource.leaderAwareSnapshotSource(isLeaderGate::get,
-                                                                                                                                  () -> isLeaderGate.get()
+        var leaderAwareSnapshotSource = org.pragmatica.aether.node.generation.LeaderAwareSnapshotSource.leaderAwareSnapshotSource(isLeaderSupplier,
+                                                                                                                                  () -> isLeaderSupplier.getAsBoolean()
                                                                                                                                        ? Option.some(healthReconciler.currentSnapshot())
                                                                                                                                        : Option.none(),
                                                                                                                                   nodeSnapshotCache);
@@ -1071,7 +1071,7 @@ public interface AetherNode extends ManageableNode {
                                                                                deserializer,
                                                                                stableHealthSink,
                                                                                leaderEpochSupplier,
-                                                                               isLeaderGate::get,
+                                                                               isLeaderSupplier,
                                                                                metricsScheduler);
         // Let the SWIM detector recognise "the faulty peer IS the current leader" on follower
         // nodes and bypass the buffer-upstream single-writer rule by routing DisconnectNode
@@ -1095,7 +1095,7 @@ public interface AetherNode extends ManageableNode {
         Supplier<Integer> initialCoreSizeSupplier = () -> config.topology().coreNodes()
                                                                          .size();
         var healthReconcilerActivator = HealthReconcilerActivator.healthReconcilerActivator(healthReconciler,
-                                                                                            isLeaderGate,
+                                                                                            isLeaderSupplier,
                                                                                             projectorEarly,
                                                                                             kvStore::snapshot,
                                                                                             rabiaTermSupplier,
@@ -1105,7 +1105,7 @@ public interface AetherNode extends ManageableNode {
                                                                                             initialCoreSizeSupplier);
         healthSinkRef.set(healthReconcilerActivator.sink());
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
-        attachQuicFollowerWiring(clusterNode.network(), isLeaderGate::get, metricsScheduler, leaderEpochSupplier);
+        attachQuicFollowerWiring(clusterNode.network(), isLeaderSupplier, metricsScheduler, leaderEpochSupplier);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForReconciler(change,
                                                                                        leaderTerm,
@@ -1123,7 +1123,7 @@ public interface AetherNode extends ManageableNode {
                                                         healthReconcilerActivator::onClusterConfigPut)
                                                  .build();
         allEntries.addAll(healthKvRouter.asRouteEntries());
-        Supplier<Option<ClusterGenerationSnapshot>> spokesmanSnapshotSupplier = () -> isLeaderGate.get()
+        Supplier<Option<ClusterGenerationSnapshot>> spokesmanSnapshotSupplier = () -> isLeaderSupplier.getAsBoolean()
                                                                                      ? Option.some(healthReconciler.currentSnapshot())
                                                                                      : nodeSnapshotCache.current();
         var spokesmanPingLoop = org.pragmatica.aether.worker.metrics.SpokesmanPingLoop.spokesmanPingLoop(config.self(),
@@ -1396,7 +1396,7 @@ public interface AetherNode extends ManageableNode {
     }
 
     private static void attachQuicFollowerWiring(ClusterNetwork network,
-                                                 java.util.function.BooleanSupplier isLeaderSupplier,
+                                                 BooleanSupplier isLeaderSupplier,
                                                  org.pragmatica.cluster.metrics.PeerObservationBuffer buffer,
                                                  Supplier<Epoch> epochSupplier) {
         if (! (network instanceof QuicClusterNetwork quicNetwork)) {return;}

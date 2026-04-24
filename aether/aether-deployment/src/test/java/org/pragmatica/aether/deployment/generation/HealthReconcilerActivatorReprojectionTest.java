@@ -61,7 +61,7 @@ class HealthReconcilerActivatorReprojectionTest {
     void setUp() {
         cluster = new RecordingClusterNode();
         hlcClock = HlcClock.hlcClock(SELF.id()).unwrap();
-        isLeader = new AtomicBoolean(false);
+        isLeader = new AtomicBoolean(true);
         rabiaTerm = new AtomicLong(1L);
         kvSnapshotRef.set(Map.of());
         var delegate = HealthReconciler.healthReconciler(SELF,
@@ -69,11 +69,11 @@ class HealthReconcilerActivatorReprojectionTest {
                                                           ClusterGenerationProjector.clusterGenerationProjector(),
                                                           hlcClock,
                                                           rabiaTerm::get,
-                                                          isLeader,
+                                                          isLeader::get,
                                                           AutoHealConfig.DEFAULT);
         reconciler = new CountingReconciler(delegate);
         activator = HealthReconcilerActivator.healthReconcilerActivator(reconciler,
-                                                                         isLeader,
+                                                                         isLeader::get,
                                                                          ClusterGenerationProjector.clusterGenerationProjector(),
                                                                          kvSnapshotRef::get,
                                                                          rabiaTerm::get,

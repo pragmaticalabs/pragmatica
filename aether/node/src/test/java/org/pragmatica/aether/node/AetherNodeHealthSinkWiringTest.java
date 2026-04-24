@@ -115,9 +115,9 @@ class AetherNodeHealthSinkWiringTest {
                                                             ClusterGenerationProjector.clusterGenerationProjector(),
                                                             hlcClock,
                                                             rabiaTerm::get,
-                                                            isLeader,
+                                                            isLeader::get,
                                                             AutoHealConfig.DEFAULT);
-        var activator = HealthReconcilerActivator.healthReconcilerActivator(reconciler, isLeader).unwrap();
+        var activator = HealthReconcilerActivator.healthReconcilerActivator(reconciler, isLeader::get).unwrap();
         activator.onLeaderChange(new LeaderChange(Option.some(SELF), true));
         seedOneCoreNode(reconciler);
         ref.set(activator.sink());

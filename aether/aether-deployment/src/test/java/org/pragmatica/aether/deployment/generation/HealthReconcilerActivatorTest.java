@@ -63,7 +63,7 @@ class HealthReconcilerActivatorTest {
     void setUp() {
         cluster = new RecordingClusterNode();
         hlcClock = HlcClock.hlcClock(SELF.id()).unwrap();
-        isLeader = new AtomicBoolean(false);
+        isLeader = new AtomicBoolean(true);
         rabiaTerm = new AtomicLong(1L);
         kvSnapshotRef.set(Map.of());
         reconciler = HealthReconciler.healthReconciler(SELF,
@@ -71,10 +71,10 @@ class HealthReconcilerActivatorTest {
                                                         ClusterGenerationProjector.clusterGenerationProjector(),
                                                         hlcClock,
                                                         rabiaTerm::get,
-                                                        isLeader,
+                                                        isLeader::get,
                                                         AutoHealConfig.DEFAULT);
         activator = HealthReconcilerActivator.healthReconcilerActivator(reconciler,
-                                                                         isLeader,
+                                                                         isLeader::get,
                                                                          ClusterGenerationProjector.clusterGenerationProjector(),
                                                                          kvSnapshotRef::get,
                                                                          rabiaTerm::get,
@@ -97,7 +97,7 @@ class HealthReconcilerActivatorTest {
     void onLeaderChange_becomingLeader_startsReconciler() {
         activator.onLeaderChange(new LeaderChange(Option.some(SELF), true));
 
-        assertThat(isLeader.get()).isTrue();
+        assertThat(reconciler.isActive()).isTrue();
     }
 
     @Test
@@ -105,9 +105,10 @@ class HealthReconcilerActivatorTest {
         activator.onLeaderChange(new LeaderChange(Option.some(SELF), true));
         seedWithTwoCoreNodes();
 
+        isLeader.set(false);
         activator.onLeaderChange(new LeaderChange(Option.some(NODE_A), false));
 
-        assertThat(isLeader.get()).isFalse();
+        assertThat(reconciler.isActive()).isFalse();
         assertThat(reconciler.currentSnapshot().coreMembers()).isEmpty();
     }
 

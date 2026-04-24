@@ -64,7 +64,6 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
 
     record Dormant(HealthReconcilerContext ctx) implements HealthReconcilerState {
         @Override public void onEntry() {
-            ctx.markNotActive();
             ctx.clearLeaderData();
         }
 
@@ -111,7 +110,6 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
 
     record Following(HealthReconcilerContext ctx) implements HealthReconcilerState {
         @Override public void onEntry() {
-            ctx.markNotActive();
             ctx.clearLeaderData();
         }
 
@@ -137,7 +135,6 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
 
     record LeadingSteady(HealthReconcilerContext ctx, Epoch startEpoch, ClusterGenerationSnapshot snapshot) implements HealthReconcilerState {
         @Override public void onEntry() {
-            ctx.markActive();
             ctx.ensureReprojectionExecutor();
             ctx.publishLeadingSnapshot(snapshot);
         }
@@ -179,7 +176,6 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
                                ClusterGenerationSnapshot snapshot,
                                Supplier<ClusterGenerationSnapshot> supplier) implements HealthReconcilerState {
         @Override public void onEntry() {
-            ctx.markActive();
             ctx.publishLeadingSnapshot(snapshot);
             ctx.submitReprojection(startEpoch, supplier);
         }
@@ -240,7 +236,6 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
     record Stopped(HealthReconcilerContext ctx) implements HealthReconcilerState {
         @Override public void onEntry() {
             LOG.debug("HealthReconciler stopped");
-            ctx.markNotActive();
             ctx.clearLeaderData();
             ctx.shutdownReprojectionExecutor();
         }

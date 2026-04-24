@@ -83,10 +83,10 @@ class HealthReconcilerActivatorMixedKeyProjectionTest {
                                                            ClusterGenerationProjector.clusterGenerationProjector(),
                                                            hlcClock,
                                                            rabiaTerm::get,
-                                                           isLeader,
+                                                           isLeader::get,
                                                            AutoHealConfig.DEFAULT);
         var activator = HealthReconcilerActivator.healthReconcilerActivator(reconciler,
-                                                                            isLeader,
+                                                                            isLeader::get,
                                                                             ClusterGenerationProjector.clusterGenerationProjector(),
                                                                             () -> kv,
                                                                             rabiaTerm::get,

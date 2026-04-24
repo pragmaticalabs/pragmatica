@@ -26,8 +26,8 @@ import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.statemachine.Fsm;
 
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -84,14 +84,14 @@ public interface HealthReconciler extends HealthSignalSink {
                                              ClusterGenerationProjector projector,
                                              HlcClock hlcClock,
                                              Supplier<Long> rabiaTermSupplier,
-                                             AtomicBoolean isLeader,
+                                             BooleanSupplier isLeaderSupplier,
                                              AutoHealConfig autoHealConfig) {
         return healthReconciler(self,
                                 cluster,
                                 projector,
                                 hlcClock,
                                 rabiaTermSupplier,
-                                isLeader,
+                                isLeaderSupplier,
                                 autoHealConfig,
                                 GenerationChangedSink.noop());
     }
@@ -101,7 +101,7 @@ public interface HealthReconciler extends HealthSignalSink {
                                              ClusterGenerationProjector projector,
                                              HlcClock hlcClock,
                                              Supplier<Long> rabiaTermSupplier,
-                                             AtomicBoolean isLeader,
+                                             BooleanSupplier isLeaderSupplier,
                                              AutoHealConfig autoHealConfig,
                                              GenerationChangedSink generationChangedSink) {
         var ctxHolder = new AtomicReference<HealthReconcilerContext>();
@@ -111,7 +111,7 @@ public interface HealthReconciler extends HealthSignalSink {
                                                                                                                                          cluster,
                                                                                                                                          hlcClock,
                                                                                                                                          rabiaTermSupplier,
-                                                                                                                                         isLeader,
+                                                                                                                                         isLeaderSupplier,
                                                                                                                                          autoHealConfig,
                                                                                                                                          generationChangedSink);
         Fsm.fsm("health-reconciler-" + self.id(), initialStateFactory);
@@ -124,7 +124,7 @@ public interface HealthReconciler extends HealthSignalSink {
                                                                 ClusterNode<KVCommand<AetherKey>> cluster,
                                                                 HlcClock hlcClock,
                                                                 Supplier<Long> rabiaTermSupplier,
-                                                                AtomicBoolean isLeader,
+                                                                BooleanSupplier isLeaderSupplier,
                                                                 AutoHealConfig autoHealConfig,
                                                                 GenerationChangedSink generationChangedSink) {
         var ctx = new HealthReconcilerContext(fsm,
@@ -132,7 +132,7 @@ public interface HealthReconciler extends HealthSignalSink {
                                               cluster,
                                               hlcClock,
                                               rabiaTermSupplier,
-                                              isLeader,
+                                              isLeaderSupplier,
                                               autoHealConfig,
                                               generationChangedSink,
                                               PeerObservationReducer.peerObservationReducer());

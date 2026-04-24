@@ -57,9 +57,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 
@@ -72,7 +72,7 @@ import static org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot.e
 /// Shared context for the HealthReconciler FSM. Holds every long-lived artifact that is
 /// intentionally NOT on a state record:
 ///
-/// - Collaborators and config (cluster, projector, clock, suppliers, external leader gate,
+/// - Collaborators and config (cluster, projector, clock, suppliers, external leader supplier,
 ///   generation-changed sink, self id, auto-heal config).
 /// - Per-leadership mutable bookkeeping that is NOT guard-visible by state transitions —
 ///   `consecutivePingMisses`, `swimHints`, `pendingRemovals`, `peerObservationReducer`, and the
@@ -98,7 +98,7 @@ public final class HealthReconcilerContext {
     private final ClusterNode<KVCommand<AetherKey>> cluster;
     private final HlcClock hlcClock;
     private final Supplier<Long> rabiaTermSupplier;
-    private final AtomicBoolean externalLeaderGate;
+    private final BooleanSupplier externalLeaderSupplier;
     private final AutoHealConfig autoHealConfig;
     private final GenerationChangedSink generationChangedSink;
     private final PeerObservationReducer peerObservationReducer;
@@ -126,7 +126,7 @@ public final class HealthReconcilerContext {
                                    ClusterNode<KVCommand<AetherKey>> cluster,
                                    HlcClock hlcClock,
                                    Supplier<Long> rabiaTermSupplier,
-                                   AtomicBoolean externalLeaderGate,
+                                   BooleanSupplier externalLeaderSupplier,
                                    AutoHealConfig autoHealConfig,
                                    GenerationChangedSink generationChangedSink,
                                    PeerObservationReducer peerObservationReducer) {
@@ -135,7 +135,7 @@ public final class HealthReconcilerContext {
         this.cluster = cluster;
         this.hlcClock = hlcClock;
         this.rabiaTermSupplier = rabiaTermSupplier;
-        this.externalLeaderGate = externalLeaderGate;
+        this.externalLeaderSupplier = externalLeaderSupplier;
         this.autoHealConfig = autoHealConfig;
         this.generationChangedSink = generationChangedSink;
         this.peerObservationReducer = peerObservationReducer;
@@ -199,7 +199,7 @@ public final class HealthReconcilerContext {
     }
 
     public boolean gateAllowsLeaderWork() {
-        return externalLeaderGate.get();
+        return externalLeaderSupplier.getAsBoolean();
     }
 
     public ClusterGenerationSnapshot ambientSnapshot() {
@@ -212,14 +212,6 @@ public final class HealthReconcilerContext {
 
     @Contract public void publishLeadingSnapshot(ClusterGenerationSnapshot snapshot) {
         ambientSnapshot.set(snapshot);
-    }
-
-    @Contract public void markActive() {
-        externalLeaderGate.set(true);
-    }
-
-    @Contract public void markNotActive() {
-        externalLeaderGate.set(false);
     }
 
     @Contract public void clearLeaderData() {
@@ -477,7 +469,7 @@ public final class HealthReconcilerContext {
     }
 
     private SignalOutcome processSignal(Epoch startEpoch, ClusterGenerationSnapshot snapshot, HealthSignal signal) {
-        if (!externalLeaderGate.get()) {return SignalOutcome.unchanged(snapshot);}
+        if (!externalLeaderSupplier.getAsBoolean()) {return SignalOutcome.unchanged(snapshot);}
         if (isFencedOut(startEpoch, snapshot, signal)) {return SignalOutcome.unchanged(snapshot);}
         var afterTerm = reconcileLeaderTermIfChanged(snapshot);
         return switch (signal){

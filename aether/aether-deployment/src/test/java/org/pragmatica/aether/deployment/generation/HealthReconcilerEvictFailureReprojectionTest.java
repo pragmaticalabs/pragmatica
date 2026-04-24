@@ -60,7 +60,7 @@ class HealthReconcilerEvictFailureReprojectionTest {
                                                         ClusterGenerationProjector.clusterGenerationProjector(),
                                                         hlcClock,
                                                         rabiaTerm::get,
-                                                        isLeader,
+                                                        isLeader::get,
                                                         AutoHealConfig.DEFAULT);
         reconciler.start(Epoch.epoch(1L, 0L));
         reconciler.seedSnapshot(snapshotForNodes(NODE_A, NODE_B));

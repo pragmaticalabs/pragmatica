@@ -41,6 +41,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -51,7 +52,7 @@ import org.slf4j.LoggerFactory;
 /// Wires the leader-only `HealthReconciler` into the message bus for Commit 3 activation.
 ///
 /// Subscribes to:
-///   - `LeaderChange` — toggles the `isLeader` gate and starts/stops the reconciler
+///   - `LeaderChange` — starts/stops the reconciler based on the leader supplier
 ///   - `GovernorAnnouncementKey` PUT — emits `GovernorAnnounced` or
 ///     `CommunityDissolved` depending on the dissolved flag
 ///   - `GovernorAnnouncementKey` REMOVE — emits `CommunityDissolved`
@@ -83,10 +84,10 @@ public interface HealthReconcilerActivator {
     HealthSignalSink sink();
 
     static Result<HealthReconcilerActivator> healthReconcilerActivator(HealthReconciler reconciler,
-                                                                       AtomicBoolean isLeaderGate) {
+                                                                       BooleanSupplier isLeaderSupplier) {
         return HlcClock.hlcClock("activator-default")
                                 .map(clock -> new HealthReconcilerActivatorRecord(reconciler,
-                                                                                  isLeaderGate,
+                                                                                  isLeaderSupplier,
                                                                                   ClusterGenerationProjector.clusterGenerationProjector(),
                                                                                   Map::of,
                                                                                   () -> 0L,
@@ -99,13 +100,13 @@ public interface HealthReconcilerActivator {
     }
 
     static HealthReconcilerActivator healthReconcilerActivator(HealthReconciler reconciler,
-                                                               AtomicBoolean isLeaderGate,
+                                                               BooleanSupplier isLeaderSupplier,
                                                                ClusterGenerationProjector projector,
                                                                Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier,
                                                                Supplier<Long> rabiaTermSupplier,
                                                                HlcClock hlcClock) {
         return new HealthReconcilerActivatorRecord(reconciler,
-                                                   isLeaderGate,
+                                                   isLeaderSupplier,
                                                    projector,
                                                    kvSnapshotSupplier,
                                                    rabiaTermSupplier,
@@ -118,7 +119,7 @@ public interface HealthReconcilerActivator {
     }
 
     static HealthReconcilerActivator healthReconcilerActivator(HealthReconciler reconciler,
-                                                               AtomicBoolean isLeaderGate,
+                                                               BooleanSupplier isLeaderSupplier,
                                                                ClusterGenerationProjector projector,
                                                                Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier,
                                                                Supplier<Long> rabiaTermSupplier,
@@ -126,7 +127,7 @@ public interface HealthReconcilerActivator {
                                                                ClusterNode<KVCommand<AetherKey>> cluster,
                                                                Supplier<NodeId> selfSupplier) {
         return new HealthReconcilerActivatorRecord(reconciler,
-                                                   isLeaderGate,
+                                                   isLeaderSupplier,
                                                    projector,
                                                    kvSnapshotSupplier,
                                                    rabiaTermSupplier,
@@ -139,7 +140,7 @@ public interface HealthReconcilerActivator {
     }
 
     static HealthReconcilerActivator healthReconcilerActivator(HealthReconciler reconciler,
-                                                               AtomicBoolean isLeaderGate,
+                                                               BooleanSupplier isLeaderSupplier,
                                                                ClusterGenerationProjector projector,
                                                                Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier,
                                                                Supplier<Long> rabiaTermSupplier,
@@ -148,7 +149,7 @@ public interface HealthReconcilerActivator {
                                                                Supplier<NodeId> selfSupplier,
                                                                Supplier<Integer> initialCoreSizeSupplier) {
         return new HealthReconcilerActivatorRecord(reconciler,
-                                                   isLeaderGate,
+                                                   isLeaderSupplier,
                                                    projector,
                                                    kvSnapshotSupplier,
                                                    rabiaTermSupplier,
@@ -162,7 +163,7 @@ public interface HealthReconcilerActivator {
 }
 
 record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
-                                       AtomicBoolean isLeaderGate,
+                                       BooleanSupplier isLeaderSupplier,
                                        ClusterGenerationProjector projector,
                                        Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier,
                                        Supplier<Long> rabiaTermSupplier,
@@ -178,7 +179,6 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
         if (change.localNodeIsLeader()) {
             log.info("HealthReconciler becoming leader — projecting from committed atoms, then starting reconciler");
             reconciler.stop(StopReason.LEADER_LOST);
-            isLeaderGate.set(true);
             bootstrapComplete.set(false);
             bootstrapAttempts.set(0);
             var seeded = projectFromCommittedAtoms();
@@ -188,7 +188,6 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
             seedClusterConfigIfMissing();
         } else {
             log.info("HealthReconciler stepping down — stopping reconciler");
-            isLeaderGate.set(false);
             reconciler.stop(StopReason.LEADER_LOST);
             reconciler.seedSnapshot(ClusterGenerationSnapshot.empty(reconciler.currentEpoch().rabiaTerm()));
             bootstrapComplete.set(false);
@@ -238,7 +237,7 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
     private static final int SEED_CORE_MAX = 15;
 
     @Contract private void retryBootstrapIfNeeded() {
-        if (bootstrapComplete.get() || !isLeaderGate.get()) {return;}
+        if (bootstrapComplete.get() || !isLeaderSupplier.getAsBoolean()) {return;}
         if (bootstrapAttempts.get() >= HealthReconcilerActivator.BOOTSTRAP_MAX_ATTEMPTS) {return;}
         attemptBootstrap(reconciler.currentSnapshot());
     }
@@ -383,7 +382,7 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
     }
 
     @Contract@Override public void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> notification) {
-        if (!isLeaderGate.get()) {return;}
+        if (!isLeaderSupplier.getAsBoolean()) {return;}
         retryBootstrapIfNeeded();
         var communityId = notification.cause().key()
                                             .communityId();
@@ -398,13 +397,13 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
     }
 
     @Contract@Override public void onGovernorAnnouncementRemove(ValueRemove<GovernorAnnouncementKey, GovernorAnnouncementValue> notification) {
-        if (!isLeaderGate.get()) {return;}
+        if (!isLeaderSupplier.getAsBoolean()) {return;}
         reconciler.onSignal(new HealthSignal.CommunityDissolved(notification.cause().key()
                                                                                   .communityId()));
     }
 
     @Contract@Override public void onSpokesmanPut(ValuePut<SpokesmanKey, SpokesmanValue> notification) {
-        if (!isLeaderGate.get()) {return;}
+        if (!isLeaderSupplier.getAsBoolean()) {return;}
         retryBootstrapIfNeeded();
         var value = notification.cause().value();
         if (value.status() != SpokesmanStatus.FAILED) {return;}
@@ -420,13 +419,13 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
     }
 
     @Contract@Override public void onClusterConfigPut(ValuePut<ClusterConfigKey, AetherValue.ClusterConfigValue> notification) {
-        if (!isLeaderGate.get()) {return;}
+        if (!isLeaderSupplier.getAsBoolean()) {return;}
         retryBootstrapIfNeeded();
         reconciler.requestReprojection(this::projectFromCommittedAtoms, "cluster-config-put");
     }
 
     @Contract@Override public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> notification) {
-        if (!isLeaderGate.get()) {return;}
+        if (!isLeaderSupplier.getAsBoolean()) {return;}
         retryBootstrapIfNeeded();
         reconciler.requestReprojection(this::projectFromCommittedAtoms, "node-lifecycle-put");
         var state = notification.cause().value()

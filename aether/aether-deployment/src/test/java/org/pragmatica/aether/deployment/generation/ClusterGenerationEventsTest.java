@@ -24,7 +24,6 @@ import org.pragmatica.lang.Promise;
 import java.lang.reflect.Proxy;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -48,7 +47,7 @@ class ClusterGenerationEventsTest {
                                                        ClusterGenerationProjector.clusterGenerationProjector(),
                                                        HlcClock.hlcClock("evt-test").unwrap(),
                                                        () -> 7L,
-                                                       new AtomicBoolean(true),
+                                                       () -> true,
                                                        AutoHealConfig.DEFAULT,
                                                        sink);
         reconciler.start(Epoch.epoch(7L, 0L));
@@ -88,7 +87,7 @@ class ClusterGenerationEventsTest {
                                                                   ClusterGenerationProjector.clusterGenerationProjector(),
                                                                   HlcClock.hlcClock("noop-test").unwrap(),
                                                                   () -> 1L,
-                                                                  new AtomicBoolean(true),
+                                                                  () -> true,
                                                                   AutoHealConfig.DEFAULT);
         legacyReconciler.start(Epoch.epoch(1L, 0L));
         legacyReconciler.onSignal(new HealthSignal.OperatorAction(new SetDesiredSize(3)));

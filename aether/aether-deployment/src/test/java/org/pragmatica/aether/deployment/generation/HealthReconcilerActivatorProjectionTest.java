@@ -63,7 +63,7 @@ class HealthReconcilerActivatorProjectionTest {
                                                         ClusterGenerationProjector.clusterGenerationProjector(),
                                                         hlcClock,
                                                         rabiaTerm::get,
-                                                        isLeader,
+                                                        isLeader::get,
                                                         AutoHealConfig.DEFAULT);
         kv = new LinkedHashMap<>();
     }
@@ -123,7 +123,7 @@ class HealthReconcilerActivatorProjectionTest {
 
     private HealthReconcilerActivator buildActivator() {
         return HealthReconcilerActivator.healthReconcilerActivator(reconciler,
-                                                                    isLeader,
+                                                                    isLeader::get,
                                                                     ClusterGenerationProjector.clusterGenerationProjector(),
                                                                     () -> Map.copyOf(kv),
                                                                     rabiaTerm::get,

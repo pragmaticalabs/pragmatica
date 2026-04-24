@@ -59,7 +59,7 @@ class HealthReconcilerLifecycleTest {
                                                        ClusterGenerationProjector.clusterGenerationProjector(),
                                                        hlcClock,
                                                        rabiaTerm::get,
-                                                       isLeader,
+                                                       isLeader::get,
                                                        AutoHealConfig.DEFAULT);
     }
 
