@@ -10,14 +10,15 @@ import org.pragmatica.aether.controller.fsm.ControlLoopEvents.CooldownExpired;
 import org.pragmatica.aether.controller.fsm.ControlLoopEvents.CooldownRequested;
 import org.pragmatica.aether.controller.fsm.ControlLoopEvents.Deactivate;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicReference;
 
 /// Sealed state hierarchy for the [`ControlLoop`] FSM.
 ///
@@ -50,40 +51,54 @@ public sealed interface ControlLoopState extends FsmState<ControlLoopState, Clus
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<ControlLoopState, ClusterFsmEvent> tx) {
             switch (event) {
-                case Activate _ -> tx.transitionTo(newWarmup(ctx));
+                case Activate _ -> tx.transitionTo(Warmup.warmup(ctx, System.currentTimeMillis()));
                 case ClusterFsmEvent.QuorumEstablished _ -> tx.ignore();
-                case ClusterFsmEvent.LeaderChange lc when lc.localIsLeader() -> tx.transitionTo(newWarmup(ctx));
+                case ClusterFsmEvent.LeaderChange lc when lc.localIsLeader() ->
+                        tx.transitionTo(Warmup.warmup(ctx, System.currentTimeMillis()));
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 default -> tx.ignore();
             }
         }
     }
 
-    /// Post-activation protection window. Scheduling happens inside Warmup so the full warm-up
-    /// period is honoured before the first evaluation tick fires.
+    /// Post-activation protection window. The warm-up timer is scheduled eagerly in the static
+    /// factory — see [`#warmup`] — so the full warm-up period is honoured before the first
+    /// evaluation tick fires. If the CAS that would make this record current loses to another
+    /// thread, [`#onCasLost`] cancels the eagerly scheduled timer.
     record Warmup(ControlLoopContext ctx,
                   long activationTimeMs,
-                  CancellableTask warmupTimer) implements ControlLoopState {
+                  ScheduledFuture<?> warmupTimer) implements ControlLoopState {
+
+        static Warmup warmup(ControlLoopContext ctx, long activationTimeMs) {
+            var warmUpMs = ctx.config().warmUpPeriodMs();
+            return new Warmup(ctx,
+                              activationTimeMs,
+                              SharedScheduler.schedule(() -> ctx.dispatch(new ActivationTimeReached()),
+                                                       TimeSpan.timeSpan(warmUpMs).millis()));
+        }
 
         @Override
         public void onEntry() {
             ctx.resetSliceProtectionState();
             ctx.restoreCooldownsFromKvStore();
-            var warmUpMs = ctx.config().warmUpPeriodMs();
-            log.info("Control loop Warmup: activation={}, warmup-period={}ms", activationTimeMs, warmUpMs);
-            warmupTimer.set(SharedScheduler.schedule(this::fireActivationReached,
-                                                      TimeSpan.timeSpan(warmUpMs).millis()));
+            log.info("Control loop Warmup: activation={}, warmup-period={}ms",
+                     activationTimeMs, ctx.config().warmUpPeriodMs());
         }
 
         @Override
         public void onExit() {
-            warmupTimer.cancel();
+            warmupTimer.cancel(false);
+        }
+
+        @Override
+        public void onCasLost() {
+            warmupTimer.cancel(false);
         }
 
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<ControlLoopState, ClusterFsmEvent> tx) {
             switch (event) {
-                case ActivationTimeReached _ -> tx.transitionToOrDrop(newEvaluating(ctx));
+                case ActivationTimeReached _ -> tx.transitionToOrDrop(Evaluating.evaluating(ctx));
                 case Deactivate _ -> tx.transitionTo(ctx.dormant());
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.dormant());
                 case ClusterFsmEvent.LeaderChange lc when !lc.localIsLeader() -> tx.transitionTo(ctx.dormant());
@@ -92,32 +107,37 @@ public sealed interface ControlLoopState extends FsmState<ControlLoopState, Clus
                 default -> tx.ignore();
             }
         }
-
-        @Contract
-        private void fireActivationReached() {
-            ctx.dispatch(new ActivationTimeReached());
-        }
     }
 
-    /// Normal operation. Owns the periodic evaluation timer.
+    /// Normal operation. Owns the periodic evaluation timer, scheduled eagerly in the static
+    /// factory — see [`#evaluating`].
     record Evaluating(ControlLoopContext ctx,
-                      CancellableTask evaluationTimer) implements ControlLoopState {
+                      ScheduledFuture<?> evaluationTimer) implements ControlLoopState {
+
+        static Evaluating evaluating(ControlLoopContext ctx) {
+            return new Evaluating(ctx,
+                                  SharedScheduler.scheduleAtFixedRate(ctx::runEvaluationCycle, ctx.interval()));
+        }
 
         @Override
         public void onEntry() {
             log.info("Control loop Evaluating (interval={}ms)", ctx.interval().millis());
-            evaluationTimer.set(SharedScheduler.scheduleAtFixedRate(ctx::runEvaluationCycle, ctx.interval()));
         }
 
         @Override
         public void onExit() {
-            evaluationTimer.cancel();
+            evaluationTimer.cancel(false);
+        }
+
+        @Override
+        public void onCasLost() {
+            evaluationTimer.cancel(false);
         }
 
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<ControlLoopState, ClusterFsmEvent> tx) {
             switch (event) {
-                case CooldownRequested cr -> tx.transitionTo(newCooldown(ctx, cr.cooldownStartMs()));
+                case CooldownRequested cr -> tx.transitionTo(Cooldown.cooldown(ctx, cr.cooldownStartMs()));
                 case Deactivate _ -> tx.transitionTo(ctx.dormant());
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.dormant());
                 case ClusterFsmEvent.LeaderChange lc when !lc.localIsLeader() -> tx.transitionTo(ctx.dormant());
@@ -132,29 +152,46 @@ public sealed interface ControlLoopState extends FsmState<ControlLoopState, Clus
     /// slice cooldown is in flight. Entry timestamp identifies the most recent cooldown trigger;
     /// the expiry tick re-reads [`ControlLoopContext`] cooldowns (other slices may have started or
     /// finished since this entry).
+    ///
+    /// Both timers (evaluation, cooldown ticker) are scheduled eagerly in the static factory —
+    /// see [`#cooldown`]. The cooldown ticker is replaced in-flight on `CooldownRequested` /
+    /// post-`CooldownExpired` re-arm via the [`AtomicReference`]; that holder is the canonical
+    /// active future at any moment.
     record Cooldown(ControlLoopContext ctx,
                     long lastCooldownStartMs,
-                    CancellableTask evaluationTimer,
-                    CancellableTask cooldownTicker) implements ControlLoopState {
+                    ScheduledFuture<?> evaluationTimer,
+                    AtomicReference<ScheduledFuture<?>> cooldownTicker)
+            implements ControlLoopState {
+
+        static Cooldown cooldown(ControlLoopContext ctx, long cooldownStartMs) {
+            var evaluationTimer = SharedScheduler.scheduleAtFixedRate(ctx::runEvaluationCycle, ctx.interval());
+            var cooldownTicker = new AtomicReference<ScheduledFuture<?>>(
+                    scheduleExpiryTick(ctx, () -> ctx.dispatch(new CooldownExpired())));
+            return new Cooldown(ctx, cooldownStartMs, evaluationTimer, cooldownTicker);
+        }
 
         @Override
         public void onEntry() {
             log.info("Control loop Cooldown started (lastCooldownStart={})", lastCooldownStartMs);
-            evaluationTimer.set(SharedScheduler.scheduleAtFixedRate(ctx::runEvaluationCycle, ctx.interval()));
-            scheduleNextExpiryTick();
         }
 
         @Override
         public void onExit() {
-            evaluationTimer.cancel();
-            cooldownTicker.cancel();
+            evaluationTimer.cancel(false);
+            cooldownTicker.get().cancel(false);
+        }
+
+        @Override
+        public void onCasLost() {
+            evaluationTimer.cancel(false);
+            cooldownTicker.get().cancel(false);
         }
 
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<ControlLoopState, ClusterFsmEvent> tx) {
             switch (event) {
                 case CooldownExpired _ -> handleCooldownExpired(tx);
-                case CooldownRequested _ -> scheduleNextExpiryTick();
+                case CooldownRequested _ -> rearmExpiryTick();
                 case Deactivate _ -> tx.transitionTo(ctx.dormant());
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.dormant());
                 case ClusterFsmEvent.LeaderChange lc when !lc.localIsLeader() -> tx.transitionTo(ctx.dormant());
@@ -167,21 +204,20 @@ public sealed interface ControlLoopState extends FsmState<ControlLoopState, Clus
             var now = System.currentTimeMillis();
             ctx.cleanupExpiredCooldowns(now);
             if (ctx.allCooldownsExpired(now)) {
-                tx.transitionToOrDrop(newEvaluating(ctx));
+                tx.transitionToOrDrop(Evaluating.evaluating(ctx));
                 return;
             }
-            scheduleNextExpiryTick();
+            rearmExpiryTick();
         }
 
-        private void scheduleNextExpiryTick() {
+        private void rearmExpiryTick() {
+            var previous = cooldownTicker.getAndSet(scheduleExpiryTick(ctx, () -> ctx.dispatch(new CooldownExpired())));
+            previous.cancel(false);
+        }
+
+        private static ScheduledFuture<?> scheduleExpiryTick(ControlLoopContext ctx, Runnable task) {
             var pollIntervalMs = Math.max(ctx.config().sliceCooldownMs() / 4L, 100L);
-            cooldownTicker.set(SharedScheduler.schedule(this::fireCooldownExpired,
-                                                         TimeSpan.timeSpan(pollIntervalMs).millis()));
-        }
-
-        @Contract
-        private void fireCooldownExpired() {
-            ctx.dispatch(new CooldownExpired());
+            return SharedScheduler.schedule(task, TimeSpan.timeSpan(pollIntervalMs).millis());
         }
     }
 
@@ -195,22 +231,5 @@ public sealed interface ControlLoopState extends FsmState<ControlLoopState, Clus
         public void handle(ClusterFsmEvent event, TransitionRequest<ControlLoopState, ClusterFsmEvent> tx) {
             tx.ignore();
         }
-    }
-
-    // --- Factory helpers for data-carrying states ---
-
-    private static Warmup newWarmup(ControlLoopContext ctx) {
-        return new Warmup(ctx, System.currentTimeMillis(), CancellableTask.cancellableTask());
-    }
-
-    private static Evaluating newEvaluating(ControlLoopContext ctx) {
-        return new Evaluating(ctx, CancellableTask.cancellableTask());
-    }
-
-    private static Cooldown newCooldown(ControlLoopContext ctx, long cooldownStartMs) {
-        return new Cooldown(ctx,
-                            cooldownStartMs,
-                            CancellableTask.cancellableTask(),
-                            CancellableTask.cancellableTask());
     }
 }

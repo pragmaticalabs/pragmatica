@@ -139,6 +139,7 @@ public final class Fsm<S extends FsmState<S, E>, E> {
     boolean tryAdvance(S expected, S target, Runnable transitionAction) {
         if (!currentState.compareAndSet(expected, target)) {
             observer.onCasLost(tags, expected, currentState.get());
+            target.onCasLost();
             return false;
         }
         expected.onExit();

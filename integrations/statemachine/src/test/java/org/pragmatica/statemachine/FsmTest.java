@@ -10,6 +10,10 @@ package org.pragmatica.statemachine;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.BrokenBarrierException;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -344,6 +348,111 @@ class FsmTest {
         assertThat(captured.get()).isNotNull();
         assertThat(captured.get().kind()).isEqualTo("leader-election");
         assertThat(captured.get().instance()).isEqualTo("node-a");
+    }
+
+    // --- onCasLost hook on target ---
+
+    /// Target state that records onEntry/onCasLost invocations on shared counters. Distinct from
+    /// `InstrumentedState` above because each instance must share the same counters across
+    /// different `TrackingTarget` records (one per CAS attempt).
+    static final class TrackingTarget implements DoorState {
+        final AtomicInteger entryCounter;
+        final AtomicInteger casLostCounter;
+
+        TrackingTarget(AtomicInteger entryCounter, AtomicInteger casLostCounter) {
+            this.entryCounter = entryCounter;
+            this.casLostCounter = casLostCounter;
+        }
+
+        @Override public void onEntry() { entryCounter.incrementAndGet(); }
+        @Override public void onCasLost() { casLostCounter.incrementAndGet(); }
+
+        @Override
+        public void handle(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
+            tx.ignore();
+        }
+    }
+
+    /// Starting state whose handler constructs a fresh `TrackingTarget` per dispatch — gated on
+    /// a barrier so all dispatching threads commit their `transitionToOrDrop` calls
+    /// simultaneously, guaranteeing N-1 deterministic CAS-loss outcomes for N threads. Uses
+    /// `transitionToOrDrop` so CAS-losers never forward events (idempotent).
+    static final class FreshTargetSource implements DoorState {
+        final AtomicInteger entryCounter;
+        final AtomicInteger casLostCounter;
+        final CyclicBarrier barrier;
+
+        FreshTargetSource(AtomicInteger entryCounter,
+                          AtomicInteger casLostCounter,
+                          CyclicBarrier barrier) {
+            this.entryCounter = entryCounter;
+            this.casLostCounter = casLostCounter;
+            this.barrier = barrier;
+        }
+
+        @Override
+        public void handle(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
+            var target = new TrackingTarget(entryCounter, casLostCounter);
+            awaitBarrier();
+            tx.transitionToOrDrop(target);
+        }
+
+        private void awaitBarrier() {
+            try {
+                barrier.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            } catch (BrokenBarrierException | TimeoutException e) {
+                throw new AssertionError("barrier wait failed", e);
+            }
+        }
+    }
+
+    @Test
+    void casLost_firesTargetOnCasLost_exactlyOnce() throws InterruptedException {
+        var entryCounter = new AtomicInteger();
+        var casLostCounter = new AtomicInteger();
+        var barrier = new CyclicBarrier(4);
+        var source = new FreshTargetSource(entryCounter, casLostCounter, barrier);
+        var harness = FsmTestHarness.<DoorState, DoorEvent>harness("door", source);
+
+        // 4 threads, 4 fresh TrackingTarget instances constructed in the source's handler before
+        // any CAS runs (barrier ensures all four reach transitionToOrDrop after constructing
+        // their target). Exactly one CAS wins (entry +1); the other three lose (onCasLost +1
+        // each).
+        harness.dispatchConcurrently(List.of(
+            new DoorEvent.Open(), new DoorEvent.Open(),
+            new DoorEvent.Open(), new DoorEvent.Open()));
+
+        assertThat(harness.state()).isInstanceOf(TrackingTarget.class);
+        assertThat(harness.transitions()).hasSize(1);
+        assertThat(entryCounter.get()).isEqualTo(1);
+        assertThat(casLostCounter.get()).isEqualTo(3);
+    }
+
+    @Test
+    void casLost_noChangeToCurrentState() throws InterruptedException {
+        // After a barrier-gated concurrent burst, exactly one CAS-winning TrackingTarget is
+        // `current()`. The three losers had `onCasLost` invoked but did NOT replace the current
+        // state.
+        var entryCounter = new AtomicInteger();
+        var casLostCounter = new AtomicInteger();
+        var barrier = new CyclicBarrier(4);
+        var source = new FreshTargetSource(entryCounter, casLostCounter, barrier);
+        var harness = FsmTestHarness.<DoorState, DoorEvent>harness("door", source);
+
+        harness.dispatchConcurrently(List.of(
+            new DoorEvent.Open(), new DoorEvent.Open(),
+            new DoorEvent.Open(), new DoorEvent.Open()));
+
+        var winner = harness.state();
+        assertThat(winner).isInstanceOf(TrackingTarget.class);
+        // Exactly one TrackingTarget became current — entry fired exactly once.
+        assertThat(entryCounter.get()).isEqualTo(1);
+        // The fsm's current state remains the winner — losers never replaced it.
+        assertThat(harness.state()).isSameAs(winner);
+        // Three losers, three onCasLost invocations.
+        assertThat(casLostCounter.get()).isEqualTo(3);
     }
 
     @Test

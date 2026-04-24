@@ -18,7 +18,6 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.Fsm;
@@ -29,6 +28,7 @@ import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -49,11 +49,11 @@ import java.util.function.Supplier;
 /// - `healthBuffer` / `connectivityBuffer` — follower-facing observation buffers. Followers push
 ///   regardless of whether this scheduler is pinging, so the buffers outlive individual state
 ///   entries.
-/// - `pingTask` — the `SharedScheduler` handle. Pinging.onEntry schedules it; Pinging.onExit and
-///   Stopped.onEntry cancel it. A single `CancellableTask` is cheaper than swapping one per state
-///   record and is thread-safe via VarHandle.
+/// - The ping timer is now owned by the [`Pinging`] record (eagerly scheduled in
+///   [`#schedulePingTimer`] called from `Pinging.fresh` / `Pinging.with`). Pinging.onExit /
+///   Pinging.onCasLost cancel the timer; Stopped.onEntry only clears observation buffers.
 ///
-/// Thread safety: the atomic fields (`topology`, `quorumSequence`, `pingTask`) and concurrent maps
+/// Thread safety: the atomic fields (`topology`, `quorumSequence`) and concurrent maps
 /// (`observedEpoch`) are thread-safe on their own. Buffer mutation uses explicit lock objects. The
 /// FSM reference is `final` and safe for publication once the initial-state factory returns.
 public final class ClusterSyncContext {
@@ -79,7 +79,6 @@ public final class ClusterSyncContext {
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
     private final AtomicLong quorumSequence = new AtomicLong();
     private final Map<NodeId, Epoch> observedEpoch = new ConcurrentHashMap<>();
-    private final CancellableTask pingTask = CancellableTask.cancellableTask();
 
     // Follower observation buffers.
     private final Object healthBufferLock = new Object();
@@ -161,12 +160,15 @@ public final class ClusterSyncContext {
 
     // --- Ping scheduling lifecycle ---
 
-    @Contract public void startPinging(Runnable tick) {
-        pingTask.set(SharedScheduler.scheduleAtFixedRate(tick, interval));
+    /// Schedule the periodic ping tick. Called eagerly from `Pinging.fresh` / `Pinging.with`; the
+    /// returned future is owned by the `Pinging` record (cancelled in `onExit` / `onCasLost`).
+    public ScheduledFuture<?> schedulePingTimer(Runnable tick) {
+        return SharedScheduler.scheduleAtFixedRate(tick, interval);
     }
 
-    @Contract public void stopPinging() {
-        pingTask.cancel();
+    /// Drop both follower observation buffers. Called from `Stopped.onEntry` so the terminal
+    /// state does not retain dangling buffered observations.
+    @Contract public void clearObservationBuffers() {
         clearBuffers();
     }
 

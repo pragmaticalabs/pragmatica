@@ -23,6 +23,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ScheduledFuture;
 
 /// Sealed state hierarchy for the cluster-sync scheduler FSM.
 ///
@@ -56,12 +57,13 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
     }
 
     /// Terminal state: the scheduler has been stopped. No further transitions. Idempotent: a
-    /// second `Shutdown` is recorded as ignored.
+    /// second `Shutdown` is recorded as ignored. Buffer cleanup runs on entry; the ping timer (if
+    /// any) was already cancelled by the prior `Pinging.onExit` / `Pinging.onCasLost`.
     record Stopped(ClusterSyncContext ctx) implements ClusterSyncState {
         @Contract
         @Override
         public void onEntry() {
-            ctx.stopPinging();
+            ctx.clearObservationBuffers();
         }
 
         @Contract
@@ -92,25 +94,41 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
     ///   `ClusterSyncContext.sendOnePing` to decide full-snapshot vs heartbeat-only payloads.
     /// - `missedPings` — consecutive tick count without a pong per peer. Reset to 0 on
     ///   `PongReceived`; increments on `PingTick`; emits `HealthSignal.PingTimeout` on threshold.
+    /// - `pingTimer` — scheduled at fixed-rate, eagerly in [`#fresh`] / [`#with`]. Owned by this
+    ///   record: `onExit` cancels on transition out of Pinging; `onCasLost` cancels if the CAS
+    ///   that would make this record current loses to another thread.
     record Pinging(ClusterSyncContext ctx,
                    Map<NodeId, Epoch> lastSentEpoch,
-                   Map<NodeId, Integer> missedPings) implements ClusterSyncState {
+                   Map<NodeId, Integer> missedPings,
+                   ScheduledFuture<?> pingTimer) implements ClusterSyncState {
 
         public static Pinging fresh(ClusterSyncContext ctx) {
-            return new Pinging(ctx, Map.of(), Map.of());
+            return with(ctx, Map.of(), Map.of());
+        }
+
+        private static Pinging with(ClusterSyncContext ctx,
+                                    Map<NodeId, Epoch> lastSentEpoch,
+                                    Map<NodeId, Integer> missedPings) {
+            return new Pinging(ctx, lastSentEpoch, missedPings,
+                               ctx.schedulePingTimer(() -> ctx.dispatch(new PingTick(ctx.epochSupplier().get()))));
         }
 
         @Contract
         @Override
         public void onEntry() {
             LOG.debug("ClusterSyncScheduler pinging started for node {}", ctx.self());
-            ctx.startPinging(() -> ctx.dispatch(new PingTick(ctx.epochSupplier().get())));
         }
 
         @Contract
         @Override
         public void onExit() {
-            ctx.stopPinging();
+            pingTimer.cancel(false);
+        }
+
+        @Contract
+        @Override
+        public void onCasLost() {
+            pingTimer.cancel(false);
         }
 
         @Contract
@@ -139,7 +157,7 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
             }
             var nextLastSent = withoutKey(lastSentEpoch, event.node());
             var nextMissed = withoutKey(missedPings, event.node());
-            tx.transitionToOrDrop(new Pinging(ctx, nextLastSent, nextMissed));
+            tx.transitionToOrDrop(with(ctx, nextLastSent, nextMissed));
         }
 
         private void handlePongReceived(PongReceived event,
@@ -149,7 +167,7 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
                 return;
             }
             var nextMissed = withoutKey(missedPings, event.peer());
-            tx.transitionToOrDrop(new Pinging(ctx, lastSentEpoch, nextMissed));
+            tx.transitionToOrDrop(with(ctx, lastSentEpoch, nextMissed));
         }
 
         private void handlePingTick(PingTick event,
@@ -168,7 +186,7 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
                 if (peer.equals(ctx.self())) { continue; }
                 sendAndAccount(peer, currentEpoch, maybeSnapshot, rabiaTerm, nextLastSent, nextMissed);
             }
-            tx.transitionToOrDrop(new Pinging(ctx, Map.copyOf(nextLastSent), Map.copyOf(nextMissed)));
+            tx.transitionToOrDrop(with(ctx, Map.copyOf(nextLastSent), Map.copyOf(nextMissed)));
         }
 
         private void sendAndAccount(NodeId peer,

@@ -36,4 +36,12 @@ public interface FsmState<S extends FsmState<S, E>, E> {
     /// Invariant setup for this state. Runs once on any transition *into* this state, after the
     /// transition action and before the observer callback.
     default void onEntry() {}
+
+    /// Invoked on `target` when its CAS attempt loses to another thread. The state was constructed
+    /// with any eager resources it declared (e.g. scheduled futures in factory methods) but never
+    /// became current — CAS lost. Use this hook to release those resources.
+    ///
+    /// MUST NOT dispatch events (same reentrancy constraint as `onEntry` / `onExit`).
+    /// MUST NOT throw (JBCT).
+    default void onCasLost() {}
 }
