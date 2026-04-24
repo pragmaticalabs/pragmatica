@@ -29,6 +29,9 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.lang.concurrent.CancellableTask;
+import org.pragmatica.statemachine.Fsm;
+import org.pragmatica.statemachine.FsmState;
+import org.pragmatica.statemachine.TransitionRequest;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -71,6 +74,34 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
     @Contract@Override void pushConnectivity(PeerConnectivityObservation observation);
     @Override List<PeerHealthObservation> drainHealth();
     @Override List<PeerConnectivityObservation> drainConnectivity();
+
+    /// Lifecycle states tracked by internal Fsm alongside the existing `active` AtomicBoolean.
+    sealed interface SchedulerState extends FsmState<SchedulerState, LifecycleEvent>
+            permits SchedulerState.Inactive, SchedulerState.Pinging {
+        record Inactive() implements SchedulerState {
+            public static final Inactive INSTANCE = new Inactive();
+            @Override public void handle(LifecycleEvent event, TransitionRequest<SchedulerState, LifecycleEvent> tx) {
+                switch (event) {
+                    case LifecycleEvent.Activate _ -> tx.transitionTo(Pinging.INSTANCE);
+                    default -> tx.ignore();
+                }
+            }
+        }
+        record Pinging() implements SchedulerState {
+            public static final Pinging INSTANCE = new Pinging();
+            @Override public void handle(LifecycleEvent event, TransitionRequest<SchedulerState, LifecycleEvent> tx) {
+                switch (event) {
+                    case LifecycleEvent.Deactivate _ -> tx.transitionTo(Inactive.INSTANCE);
+                    default -> tx.ignore();
+                }
+            }
+        }
+    }
+
+    sealed interface LifecycleEvent {
+        record Activate() implements LifecycleEvent {}
+        record Deactivate() implements LifecycleEvent {}
+    }
 
     static ClusterSyncScheduler clusterSyncScheduler(NodeId self,
                                                      ClusterNetwork network,
@@ -165,6 +196,9 @@ class ClusterSyncSchedulerImpl implements ClusterSyncScheduler {
 
     private final AtomicBoolean active = new AtomicBoolean(false);
 
+    private final Fsm<SchedulerState, LifecycleEvent> lifecycle =
+        Fsm.fsm("cluster-sync-scheduler", SchedulerState.Inactive.INSTANCE);
+
     private final Map<NodeId, Epoch> lastSentEpoch = new ConcurrentHashMap<>();
 
     private final Map<NodeId, Epoch> observedEpoch = new ConcurrentHashMap<>();
@@ -203,6 +237,7 @@ class ClusterSyncSchedulerImpl implements ClusterSyncScheduler {
 
     @Override public Promise<Unit> activate() {
         log.debug("Node {} activating cluster-sync scheduler", self);
+        lifecycle.dispatch(new LifecycleEvent.Activate());
         active.set(true);
         startPinging();
         return Promise.unitPromise();
@@ -210,6 +245,7 @@ class ClusterSyncSchedulerImpl implements ClusterSyncScheduler {
 
     @Override public Promise<Unit> deactivate() {
         log.info("Node {} deactivating cluster-sync scheduler", self);
+        lifecycle.dispatch(new LifecycleEvent.Deactivate());
         active.set(false);
         stopPinging();
         return Promise.unitPromise();
