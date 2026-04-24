@@ -99,7 +99,7 @@ public sealed interface TaskAssignmentCoordinator {
             f -> buildContextAndInitialState(ctxHolder, f, self, clusterNode, kvStore,
                                              topologyManager, reconcileInterval);
         var fsm = Fsm.fsm("task-assignment", self.id(), initialStateFactory);
-        return new taskAssignmentCoordinator(ctxHolder.get(), fsm);
+        return new TaskAssignmentCoordinatorAdapter(ctxHolder.get(), fsm);
     }
 
     private static CoordinatorState buildContextAndInitialState(AtomicReference<Context> ctxHolder,
@@ -329,7 +329,7 @@ public sealed interface TaskAssignmentCoordinator {
         }
     }
 
-    record taskAssignmentCoordinator(Context ctx, Fsm<CoordinatorState, ClusterFsmEvent> fsm) implements TaskAssignmentCoordinator {
+    record TaskAssignmentCoordinatorAdapter(Context ctx, Fsm<CoordinatorState, ClusterFsmEvent> fsm) implements TaskAssignmentCoordinator {
         @Override
         public void onLeaderChange(LeaderChange leaderChange) {
             fsm.dispatch(new ClusterFsmEvent.LeaderChange(leaderChange.leaderId(), leaderChange.localNodeIsLeader()));

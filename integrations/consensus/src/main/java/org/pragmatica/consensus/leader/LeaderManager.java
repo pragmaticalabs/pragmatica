@@ -117,12 +117,12 @@ public interface LeaderManager {
         var built = LeaderElectionFsm.leaderElectionFsm(self, proposalHandler, expectedCluster,
                                                         router, proposalRetryDelay,
                                                         baseElectionDelay, perRankDelay);
-        return new fsmBackedLeaderManager(built.fsm(), built.context(), proposalHandler.isEmpty());
+        return new FsmBackedLeaderManager(built.fsm(), built.context(), proposalHandler.isEmpty());
     }
 
     /// FSM-backed implementation. `localMode=true` means no consensus; we synthesize
     /// `LeaderCommitted` events locally to drive the FSM.
-    record fsmBackedLeaderManager(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
+    record FsmBackedLeaderManager(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
                                   LeaderElectionContext context,
                                   boolean localMode) implements LeaderManager {
         @Override

@@ -71,7 +71,7 @@ import org.slf4j.LoggerFactory;
         var fsm = Fsm.fsm("scheduled-task", self.id(), initialStateFactory);
         var ctx = ctxHolder.get();
         registry.setChangeListener(new RegistryListener(ctx, fsm)::onChange);
-        return new scheduledTaskManagerImpl(ctx, fsm);
+        return new ScheduledTaskManagerAdapter(ctx, fsm);
     }
 
     private static SchedulerState buildContextAndInitialState(AtomicReference<Context> ctxHolder,
@@ -360,7 +360,7 @@ import org.slf4j.LoggerFactory;
         }
     }
 
-    record scheduledTaskManagerImpl(Context ctx, Fsm<SchedulerState, ClusterFsmEvent> fsm) implements ScheduledTaskManager {
+    record ScheduledTaskManagerAdapter(Context ctx, Fsm<SchedulerState, ClusterFsmEvent> fsm) implements ScheduledTaskManager {
         @Override
         public void onLeaderChange(LeaderChange leaderChange) {
             fsm.dispatch(new ClusterFsmEvent.LeaderChange(leaderChange.leaderId(), leaderChange.localNodeIsLeader()));

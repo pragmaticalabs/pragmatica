@@ -92,7 +92,7 @@ public interface ControlLoop extends DelegatedComponent {
                                 invocationMetricsCollector, cluster, kvStore, interval,
                                 config, eventPublisher);
         var fsm = Fsm.fsm("control-loop", self.id(), initialStateFactory);
-        return new controlLoop(ctxHolder.get(), fsm);
+        return new ControlLoopAdapter(ctxHolder.get(), fsm);
     }
 
     private static ControlLoopState buildContext(AtomicReference<ControlLoopContext> ctxHolder,
@@ -112,7 +112,7 @@ public interface ControlLoop extends DelegatedComponent {
         return ctx.dormant();
     }
 
-    record controlLoop(ControlLoopContext ctx, Fsm<ControlLoopState, ClusterFsmEvent> fsm) implements ControlLoop {
+    record ControlLoopAdapter(ControlLoopContext ctx, Fsm<ControlLoopState, ClusterFsmEvent> fsm) implements ControlLoop {
         private static final Logger log = LoggerFactory.getLogger(ControlLoop.class);
 
         @Override
