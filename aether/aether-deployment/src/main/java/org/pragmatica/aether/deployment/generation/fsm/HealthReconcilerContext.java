@@ -261,8 +261,7 @@ public final class HealthReconcilerContext {
     }
 
     @Contract private void dispatchReprojectionResult(Epoch startEpoch, ClusterGenerationSnapshot fresh) {
-        Option.option(fresh).onPresent(snapshot -> fsm.dispatch(new ReprojectionCompleted(startEpoch, snapshot)))
-                     .onEmpty(() -> fsm.dispatch(new ReprojectionFailed(startEpoch)));
+        fsm.dispatch(new ReprojectionCompleted(startEpoch, fresh));
     }
 
     @Contract private void dispatchReprojectionFailure(Epoch startEpoch, Cause cause) {
