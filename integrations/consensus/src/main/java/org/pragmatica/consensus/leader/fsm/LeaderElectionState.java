@@ -46,11 +46,11 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
     LeaderElectionContext ctx();
 
-    /// Dispatches an event to this FSM instance. Retrieves the per-context Fsm reference and
-    /// dispatches if present; silently drops if the Fsm has not yet been bound (possible only
-    /// during construction race, normally unreachable).
+    /// Dispatches an event to this FSM instance through the Fsm reference stored in the context.
+    /// The reference is bound at Context construction time via the constructor-driven initial-state
+    /// factory, so it is always present when this method runs.
     private static void dispatchSelf(LeaderElectionContext ctx, ClusterFsmEvent event) {
-        ctx.fsm().onPresent(fsm -> fsm.dispatch(event));
+        ctx.fsm().dispatch(event);
     }
 
     // --- State records ---

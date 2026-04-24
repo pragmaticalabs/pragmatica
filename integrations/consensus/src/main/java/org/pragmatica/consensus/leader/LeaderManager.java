@@ -114,11 +114,10 @@ public interface LeaderManager {
                                        TimeSpan proposalRetryDelay,
                                        TimeSpan baseElectionDelay,
                                        TimeSpan perRankDelay) {
-        var ctx = LeaderElectionContext.leaderElectionContext(self, proposalHandler, expectedCluster,
-                                                              router, proposalRetryDelay,
-                                                              baseElectionDelay, perRankDelay);
-        var fsm = LeaderElectionFsm.leaderElectionFsm(ctx);
-        return new fsmBackedLeaderManager(fsm, ctx, proposalHandler.isEmpty());
+        var built = LeaderElectionFsm.leaderElectionFsm(self, proposalHandler, expectedCluster,
+                                                        router, proposalRetryDelay,
+                                                        baseElectionDelay, perRankDelay);
+        return new fsmBackedLeaderManager(built.fsm(), built.context(), proposalHandler.isEmpty());
     }
 
     /// FSM-backed implementation. `localMode=true` means no consensus; we synthesize

@@ -52,19 +52,18 @@ public final class LeaderElectionContext {
     private final int stuckElectionThreshold;
 
     // Per-FSM "singletons" — one instance per state class, shared for the lifetime of this FSM.
-    // Set once during FSM construction via initStates(); the fields stay stable afterward so CAS
-    // comparisons against them return the same reference. Volatile to guarantee safe publication
-    // across the dispatcher threads that may call state accessors.
-    private volatile LeaderElectionState.Dormant dormant;
-    private volatile LeaderElectionState.QuorumWaiting quorumWaiting;
-    private volatile LeaderElectionState.Electing electing;
-    private volatile LeaderElectionState.ReElecting reElecting;
-    private volatile LeaderElectionState.QuorumLost quorumLost;
-    private volatile LeaderElectionState.Stopped stopped;
+    // Built in the constructor via the constructor-driven initial-state factory, so the fields
+    // are `final` and CAS comparisons against them return the same reference.
+    private final LeaderElectionState.Dormant dormant;
+    private final LeaderElectionState.QuorumWaiting quorumWaiting;
+    private final LeaderElectionState.Electing electing;
+    private final LeaderElectionState.ReElecting reElecting;
+    private final LeaderElectionState.QuorumLost quorumLost;
+    private final LeaderElectionState.Stopped stopped;
 
-    // Per-FSM Fsm reference — bound once after construction. Replaces the global static FSM_REF.
-    private final AtomicReference<Option<Fsm<LeaderElectionState, ClusterFsmEvent>>> fsmRef =
-        new AtomicReference<>(Option.none());
+    // Per-FSM Fsm reference — bound at construction time via the constructor-driven initial-state
+    // factory. Replaces the global static FSM_REF.
+    private final Fsm<LeaderElectionState, ClusterFsmEvent> fsm;
 
     private final AtomicReference<Option<NodeId>> currentLeader = new AtomicReference<>(Option.none());
     private final AtomicReference<Option<NodeId>> lastNotifiedLeader = new AtomicReference<>(Option.none());
@@ -78,15 +77,17 @@ public final class LeaderElectionContext {
     private final AtomicLong proposalEpoch = new AtomicLong(0);
     private final AtomicLong quorumSequence = new AtomicLong(0);
 
-    private LeaderElectionContext(NodeId self,
-                                  Option<LeaderProposalHandler> proposalHandler,
-                                  List<NodeId> expectedCluster,
-                                  MessageRouter router,
-                                  TimeSpan proposalRetryDelay,
-                                  TimeSpan baseElectionDelay,
-                                  TimeSpan perRankDelay,
-                                  TimeSpan proposalTimeout,
-                                  int stuckElectionThreshold) {
+    LeaderElectionContext(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
+                          NodeId self,
+                          Option<LeaderProposalHandler> proposalHandler,
+                          List<NodeId> expectedCluster,
+                          MessageRouter router,
+                          TimeSpan proposalRetryDelay,
+                          TimeSpan baseElectionDelay,
+                          TimeSpan perRankDelay,
+                          TimeSpan proposalTimeout,
+                          int stuckElectionThreshold) {
+        this.fsm = fsm;
         this.self = self;
         this.proposalHandler = proposalHandler;
         this.expectedCluster = List.copyOf(expectedCluster);
@@ -96,20 +97,17 @@ public final class LeaderElectionContext {
         this.perRankDelay = perRankDelay;
         this.proposalTimeout = proposalTimeout;
         this.stuckElectionThreshold = stuckElectionThreshold;
+        this.dormant = new LeaderElectionState.Dormant(this);
+        this.quorumWaiting = new LeaderElectionState.QuorumWaiting(this);
+        this.electing = new LeaderElectionState.Electing(this);
+        this.reElecting = new LeaderElectionState.ReElecting(this);
+        this.quorumLost = new LeaderElectionState.QuorumLost(this);
+        this.stopped = new LeaderElectionState.Stopped(this);
     }
 
-    public static LeaderElectionContext leaderElectionContext(NodeId self,
-                                                               Option<LeaderProposalHandler> proposalHandler,
-                                                               List<NodeId> expectedCluster,
-                                                               MessageRouter router,
-                                                               TimeSpan proposalRetryDelay,
-                                                               TimeSpan baseElectionDelay,
-                                                               TimeSpan perRankDelay) {
-        var timeout = TimeSpan.timeSpan(Math.max(proposalRetryDelay.millis() * 3L,
-                                                 DEFAULT_MIN_PROPOSAL_TIMEOUT.millis())).millis();
-        return new LeaderElectionContext(self, proposalHandler, expectedCluster, router,
-                                         proposalRetryDelay, baseElectionDelay, perRankDelay,
-                                         timeout, DEFAULT_STUCK_ELECTION_THRESHOLD);
+    static TimeSpan proposalTimeoutFor(TimeSpan proposalRetryDelay) {
+        return TimeSpan.timeSpan(Math.max(proposalRetryDelay.millis() * 3L,
+                                          DEFAULT_MIN_PROPOSAL_TIMEOUT.millis())).millis();
     }
 
     // --- Configuration accessors ---
@@ -171,15 +169,6 @@ public final class LeaderElectionContext {
 
     // --- Per-FSM state instances ---
 
-    void initStates() {
-        this.dormant = new LeaderElectionState.Dormant(this);
-        this.quorumWaiting = new LeaderElectionState.QuorumWaiting(this);
-        this.electing = new LeaderElectionState.Electing(this);
-        this.reElecting = new LeaderElectionState.ReElecting(this);
-        this.quorumLost = new LeaderElectionState.QuorumLost(this);
-        this.stopped = new LeaderElectionState.Stopped(this);
-    }
-
     public LeaderElectionState.Dormant dormant() { return dormant; }
     public LeaderElectionState.QuorumWaiting quorumWaiting() { return quorumWaiting; }
     public LeaderElectionState.Electing electing() { return electing; }
@@ -187,12 +176,8 @@ public final class LeaderElectionContext {
     public LeaderElectionState.QuorumLost quorumLost() { return quorumLost; }
     public LeaderElectionState.Stopped stopped() { return stopped; }
 
-    public void bindFsm(Fsm<LeaderElectionState, ClusterFsmEvent> fsm) {
-        fsmRef.set(Option.some(fsm));
-    }
-
-    public Option<Fsm<LeaderElectionState, ClusterFsmEvent>> fsm() {
-        return fsmRef.get();
+    public Fsm<LeaderElectionState, ClusterFsmEvent> fsm() {
+        return fsm;
     }
 
     // --- Derived helpers ---

@@ -36,7 +36,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,18 +65,28 @@ import org.slf4j.LoggerFactory;
                                                      SliceInvoker invoker,
                                                      NodeId self,
                                                      Consumer<KVCommand<AetherKey>> stateWriter) {
-        var ctx = new Context(registry, invoker, self, stateWriter);
-        var dormant = new Dormant(ctx);
-        ctx.bindStates(dormant,
-                       new Following(ctx),
-                       new Leading(ctx),
-                       new Stopped(ctx));
-        var fsm = Fsm.fsm("scheduled-task-manager-" + self.id(), dormant);
+        var ctxHolder = new AtomicReference<Context>();
+        Function<Fsm<SchedulerState, ClusterFsmEvent>, SchedulerState> initialStateFactory =
+            f -> buildContextAndInitialState(ctxHolder, f, registry, invoker, self, stateWriter);
+        var fsm = Fsm.fsm("scheduled-task-manager-" + self.id(), initialStateFactory);
+        var ctx = ctxHolder.get();
         registry.setChangeListener(new RegistryListener(ctx, fsm)::onChange);
         return new scheduledTaskManagerImpl(ctx, fsm);
     }
 
+    private static SchedulerState buildContextAndInitialState(AtomicReference<Context> ctxHolder,
+                                                              Fsm<SchedulerState, ClusterFsmEvent> fsm,
+                                                              ScheduledTaskRegistry registry,
+                                                              SliceInvoker invoker,
+                                                              NodeId self,
+                                                              Consumer<KVCommand<AetherKey>> stateWriter) {
+        var ctx = new Context(fsm, registry, invoker, self, stateWriter);
+        ctxHolder.set(ctx);
+        return ctx.dormant;
+    }
+
     final class Context {
+        final Fsm<SchedulerState, ClusterFsmEvent> fsm;
         final ScheduledTaskRegistry registry;
         final SliceInvoker invoker;
         final NodeId self;
@@ -82,26 +94,25 @@ import org.slf4j.LoggerFactory;
         final Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers = new ConcurrentHashMap<>();
         final AtomicBoolean lastKnownIsLeader = new AtomicBoolean(false);
         final AtomicLong quorumSequence = new AtomicLong(0);
-        Dormant dormant;
-        Following following;
-        Leading leading;
-        Stopped stopped;
+        final Dormant dormant;
+        final Following following;
+        final Leading leading;
+        final Stopped stopped;
 
-        Context(ScheduledTaskRegistry registry,
+        Context(Fsm<SchedulerState, ClusterFsmEvent> fsm,
+                ScheduledTaskRegistry registry,
                 SliceInvoker invoker,
                 NodeId self,
                 Consumer<KVCommand<AetherKey>> stateWriter) {
+            this.fsm = fsm;
             this.registry = registry;
             this.invoker = invoker;
             this.self = self;
             this.stateWriter = stateWriter;
-        }
-
-        void bindStates(Dormant dormant, Following following, Leading leading, Stopped stopped) {
-            this.dormant = dormant;
-            this.following = following;
-            this.leading = leading;
-            this.stopped = stopped;
+            this.dormant = new Dormant(this);
+            this.following = new Following(this);
+            this.leading = new Leading(this);
+            this.stopped = new Stopped(this);
         }
     }
 

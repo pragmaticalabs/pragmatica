@@ -40,6 +40,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -92,11 +94,24 @@ public sealed interface TaskAssignmentCoordinator {
                                                                KVStore<AetherKey, AetherValue> kvStore,
                                                                TopologyManager topologyManager,
                                                                TimeSpan reconcileInterval) {
-        var ctx = new Context(self, clusterNode, kvStore, topologyManager, reconcileInterval);
-        var dormant = new Dormant(ctx);
-        ctx.dormantHolder = dormant;
-        var fsm = Fsm.fsm("task-assignment-coordinator-" + self.id(), dormant);
-        return new taskAssignmentCoordinator(ctx, fsm);
+        var ctxHolder = new AtomicReference<Context>();
+        Function<Fsm<CoordinatorState, ClusterFsmEvent>, CoordinatorState> initialStateFactory =
+            f -> buildContextAndInitialState(ctxHolder, f, self, clusterNode, kvStore,
+                                             topologyManager, reconcileInterval);
+        var fsm = Fsm.fsm("task-assignment-coordinator-" + self.id(), initialStateFactory);
+        return new taskAssignmentCoordinator(ctxHolder.get(), fsm);
+    }
+
+    private static CoordinatorState buildContextAndInitialState(AtomicReference<Context> ctxHolder,
+                                                                Fsm<CoordinatorState, ClusterFsmEvent> fsm,
+                                                                NodeId self,
+                                                                ClusterNode<KVCommand<AetherKey>> clusterNode,
+                                                                KVStore<AetherKey, AetherValue> kvStore,
+                                                                TopologyManager topologyManager,
+                                                                TimeSpan reconcileInterval) {
+        var ctx = new Context(fsm, self, clusterNode, kvStore, topologyManager, reconcileInterval);
+        ctxHolder.set(ctx);
+        return ctx.dormant;
     }
 
     enum CoordinatorError implements Cause {
@@ -109,29 +124,32 @@ public sealed interface TaskAssignmentCoordinator {
         @Override public String message() { return message; }
     }
 
-    /// Shared runtime context. Immutable except for the Dormant singleton reference, which is
-    /// set exactly once during construction (chicken-and-egg with Dormant holding `Context`).
+    /// Shared runtime context. Fully immutable: the `Dormant` singleton and the `Fsm` reference
+    /// are built inside the constructor via the constructor-driven initial-state factory in
+    /// [`taskAssignmentCoordinator`].
     final class Context {
+        final Fsm<CoordinatorState, ClusterFsmEvent> fsm;
         final NodeId self;
         final ClusterNode<KVCommand<AetherKey>> clusterNode;
         final KVStore<AetherKey, AetherValue> kvStore;
         final TopologyManager topologyManager;
         final TimeSpan reconcileInterval;
-        Dormant dormantHolder;
+        final Dormant dormant;
 
-        Context(NodeId self,
+        Context(Fsm<CoordinatorState, ClusterFsmEvent> fsm,
+                NodeId self,
                 ClusterNode<KVCommand<AetherKey>> clusterNode,
                 KVStore<AetherKey, AetherValue> kvStore,
                 TopologyManager topologyManager,
                 TimeSpan reconcileInterval) {
+            this.fsm = fsm;
             this.self = self;
             this.clusterNode = clusterNode;
             this.kvStore = kvStore;
             this.topologyManager = topologyManager;
             this.reconcileInterval = reconcileInterval;
+            this.dormant = new Dormant(this);
         }
-
-        Dormant dormant() { return dormantHolder; }
     }
 
     sealed interface CoordinatorState extends FsmState<CoordinatorState, ClusterFsmEvent> permits Dormant, Active {}
@@ -175,7 +193,7 @@ public sealed interface TaskAssignmentCoordinator {
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<CoordinatorState, ClusterFsmEvent> tx) {
             switch (event) {
-                case ClusterFsmEvent.LeaderChange lc when !lc.localIsLeader() -> tx.transitionTo(ctx.dormant());
+                case ClusterFsmEvent.LeaderChange lc when !lc.localIsLeader() -> tx.transitionTo(ctx.dormant);
                 case ClusterFsmEvent.NodeGone _ -> handleNodeDeparture();
                 default -> tx.ignore();
             }

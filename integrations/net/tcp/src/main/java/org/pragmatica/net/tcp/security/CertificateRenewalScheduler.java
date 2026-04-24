@@ -22,6 +22,7 @@ import java.time.Instant;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /// Schedules certificate renewal at 40% of remaining validity (60% remaining). Built on an
 /// explicit FSM with four states:
@@ -60,7 +61,10 @@ public final class CertificateRenewalScheduler {
     }
 
     /// Shared runtime context. Holds configuration + the cross-transition mutable bookkeeping.
+    /// The `Fsm` reference and every data-free state singleton are built inside the constructor
+    /// via the constructor-driven initial-state factory in [`certificateRenewalScheduler`].
     static final class Context {
+        final Fsm<SchedulerState, RenewalEvent> fsm;
         final CertificateProvider provider;
         final String nodeId;
         final String hostname;
@@ -68,31 +72,29 @@ public final class CertificateRenewalScheduler {
         final AtomicReference<Instant> currentNotAfter;
         final AtomicReference<Instant> lastRenewalAt = new AtomicReference<>(Instant.now());
         final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
-        final AtomicReference<Option<Fsm<SchedulerState, RenewalEvent>>> fsmRef = new AtomicReference<>(Option.none());
 
-        volatile Idle idle;
-        volatile Healthy healthy;
-        volatile Renewing renewing;
-        volatile Stopped stopped;
+        final Idle idle;
+        final Healthy healthy;
+        final Renewing renewing;
+        final Stopped stopped;
         // RetryBackoff is data-carrying (retryCount) — fresh instance per failure.
 
-        Context(CertificateProvider provider,
+        Context(Fsm<SchedulerState, RenewalEvent> fsm,
+                CertificateProvider provider,
                 String nodeId,
                 String hostname,
                 Consumer<CertificateBundle> renewalCallback,
                 Instant initialNotAfter) {
+            this.fsm = fsm;
             this.provider = provider;
             this.nodeId = nodeId;
             this.hostname = hostname;
             this.renewalCallback = renewalCallback;
             this.currentNotAfter = new AtomicReference<>(initialNotAfter);
-        }
-
-        void bindSingletons(Idle idle, Healthy healthy, Renewing renewing, Stopped stopped) {
-            this.idle = idle;
-            this.healthy = healthy;
-            this.renewing = renewing;
-            this.stopped = stopped;
+            this.idle = new Idle(this);
+            this.healthy = new Healthy(this);
+            this.renewing = new Renewing(this);
+            this.stopped = new Stopped(this);
         }
 
         void cancelScheduledTask() {
@@ -100,12 +102,8 @@ public final class CertificateRenewalScheduler {
                          .onPresent(task -> task.cancel(false));
         }
 
-        void bindFsm(Fsm<SchedulerState, RenewalEvent> fsm) {
-            fsmRef.set(Option.some(fsm));
-        }
-
         void dispatch(RenewalEvent event) {
-            fsmRef.get().onPresent(fsm -> fsm.dispatch(event));
+            fsm.dispatch(event);
         }
     }
 
@@ -225,12 +223,24 @@ public final class CertificateRenewalScheduler {
                                                                           String hostname,
                                                                           Consumer<CertificateBundle> renewalCallback,
                                                                           Instant initialNotAfter) {
-        var ctx = new Context(provider, nodeId, hostname, renewalCallback, initialNotAfter);
-        var idle = new Idle(ctx);
-        ctx.bindSingletons(idle, new Healthy(ctx), new Renewing(ctx), new Stopped(ctx));
-        var fsm = Fsm.fsm("certificate-renewal-scheduler-" + nodeId, idle);
-        ctx.bindFsm(fsm);
-        return new CertificateRenewalScheduler(ctx, fsm);
+        var ctxHolder = new AtomicReference<Context>();
+        Function<Fsm<SchedulerState, RenewalEvent>, SchedulerState> initialStateFactory =
+            f -> buildContextAndInitialState(ctxHolder, f, provider, nodeId, hostname,
+                                             renewalCallback, initialNotAfter);
+        var fsm = Fsm.fsm("certificate-renewal-scheduler-" + nodeId, initialStateFactory);
+        return new CertificateRenewalScheduler(ctxHolder.get(), fsm);
+    }
+
+    private static SchedulerState buildContextAndInitialState(AtomicReference<Context> ctxHolder,
+                                                              Fsm<SchedulerState, RenewalEvent> fsm,
+                                                              CertificateProvider provider,
+                                                              String nodeId,
+                                                              String hostname,
+                                                              Consumer<CertificateBundle> renewalCallback,
+                                                              Instant initialNotAfter) {
+        var ctx = new Context(fsm, provider, nodeId, hostname, renewalCallback, initialNotAfter);
+        ctxHolder.set(ctx);
+        return ctx.idle;
     }
 
     public void start() {
