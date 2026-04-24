@@ -18,10 +18,12 @@ import org.pragmatica.statemachine.Fsm;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.DoubleSupplier;
 
 /// Shared context for the leader-election FSM. Holds:
 /// - Configuration that never changes during the FSM's lifetime (self, expectedCluster, router,
@@ -41,6 +43,11 @@ public final class LeaderElectionContext {
     public static final TimeSpan DEFAULT_MIN_PROPOSAL_TIMEOUT = TimeSpan.timeSpan(5).seconds();
     public static final int DEFAULT_STUCK_ELECTION_THRESHOLD = 10;
 
+    /// Default jitter source — uniform random in [0.0, 0.5). Captured once per FSM so tests can
+    /// inject a deterministic alternative via the full-arity constructor.
+    public static final DoubleSupplier DEFAULT_JITTER_SOURCE =
+            () -> ThreadLocalRandom.current().nextDouble(0.5);
+
     private final NodeId self;
     private final Option<LeaderProposalHandler> proposalHandler;
     private final List<NodeId> expectedCluster;
@@ -50,6 +57,7 @@ public final class LeaderElectionContext {
     private final TimeSpan perRankDelay;
     private final TimeSpan proposalTimeout;
     private final int stuckElectionThreshold;
+    private final DoubleSupplier jitterSource;
 
     // Per-FSM "singletons" — one instance per state class, shared for the lifetime of this FSM.
     // Built in the constructor via the constructor-driven initial-state factory, so the fields
@@ -87,6 +95,24 @@ public final class LeaderElectionContext {
                           TimeSpan perRankDelay,
                           TimeSpan proposalTimeout,
                           int stuckElectionThreshold) {
+        this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
+             baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
+             DEFAULT_JITTER_SOURCE);
+    }
+
+    /// Full-arity constructor that accepts an injectable [`DoubleSupplier`] jitter source — for
+    /// tests that need deterministic scheduling. Production code uses the default constructor.
+    LeaderElectionContext(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
+                          NodeId self,
+                          Option<LeaderProposalHandler> proposalHandler,
+                          List<NodeId> expectedCluster,
+                          MessageRouter router,
+                          TimeSpan proposalRetryDelay,
+                          TimeSpan baseElectionDelay,
+                          TimeSpan perRankDelay,
+                          TimeSpan proposalTimeout,
+                          int stuckElectionThreshold,
+                          DoubleSupplier jitterSource) {
         this.fsm = fsm;
         this.self = self;
         this.proposalHandler = proposalHandler;
@@ -97,12 +123,19 @@ public final class LeaderElectionContext {
         this.perRankDelay = perRankDelay;
         this.proposalTimeout = proposalTimeout;
         this.stuckElectionThreshold = stuckElectionThreshold;
+        this.jitterSource = jitterSource;
         this.dormant = new LeaderElectionState.Dormant(this);
         this.quorumWaiting = new LeaderElectionState.QuorumWaiting(this);
         this.electing = new LeaderElectionState.Electing(this);
         this.reElecting = new LeaderElectionState.ReElecting(this);
         this.quorumLost = new LeaderElectionState.QuorumLost(this);
         this.stopped = new LeaderElectionState.Stopped(this);
+    }
+
+    /// Returns the jitter source used by [`LeaderElectionState#scheduleElectionTick`]. Emits a
+    /// `double` in the range [0.0, 0.5) scaled over the retry delay.
+    public DoubleSupplier jitterSource() {
+        return jitterSource;
     }
 
     static TimeSpan proposalTimeoutFor(TimeSpan proposalRetryDelay) {

@@ -140,17 +140,10 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
     public Promise<Unit> start(Option<EventLoopGroup> sharedEventLoopGroup,
                                GossipEncryptor gossipEncryptor) {
-        if (!(context.fsm().current() instanceof SwimHealthState.Stopped)) {
-            log.debug("SWIM start skipped — current state is {}",
-                      context.fsm().current().getClass().getSimpleName());
-            return Promise.success(Unit.unit());
-        }
+        // Always dispatch — the FSM's Stopped.handle(StartRequested) decides whether to transition
+        // to Starting; any other state ignores the event. Removing the external TOCTOU guards
+        // keeps the FSM as the single source of truth.
         context.dispatch(new SwimHealthEvents.StartRequested());
-        if (!(context.fsm().current() instanceof SwimHealthState.Starting)) {
-            log.debug("SWIM start lost CAS race — state is now {}",
-                      context.fsm().current().getClass().getSimpleName());
-            return Promise.success(Unit.unit());
-        }
         var selfPort = findSelfPort();
         var swimPort = selfPort + SWIM_PORT_OFFSET;
         var selfHost = findSelfHost();

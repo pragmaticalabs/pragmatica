@@ -26,6 +26,7 @@ import java.net.InetSocketAddress;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 /// Shared context for the SWIM health-detector FSM. Holds:
@@ -53,6 +54,7 @@ public final class SwimHealthContext {
     private final BooleanSupplier isLeaderSupplier;
     private final PeerObservationBuffer observationBuffer;
     private final SwimConfig swimConfig;
+    private final LongSupplier clock;
 
     // Global rolling-window faulty counter + window-start timestamp. Kept on Context (not on
     // the state record) so that counts survive Running → LocalDisconnect → Running cycles.
@@ -75,6 +77,22 @@ public final class SwimHealthContext {
                              BooleanSupplier isLeaderSupplier,
                              PeerObservationBuffer observationBuffer,
                              SwimConfig swimConfig) {
+        this(fsm, router, topologyConfig, serializer, deserializer, signalSink, epochSupplier,
+             isLeaderSupplier, observationBuffer, swimConfig, System::currentTimeMillis);
+    }
+
+    /// Full constructor with injectable clock — for tests that need deterministic time.
+    public SwimHealthContext(Fsm<SwimHealthState, SwimHealthEvents> fsm,
+                             MessageRouter router,
+                             TopologyConfig topologyConfig,
+                             Serializer serializer,
+                             Deserializer deserializer,
+                             HealthSignalSink signalSink,
+                             Supplier<Epoch> epochSupplier,
+                             BooleanSupplier isLeaderSupplier,
+                             PeerObservationBuffer observationBuffer,
+                             SwimConfig swimConfig,
+                             LongSupplier clock) {
         this.fsm = fsm;
         this.router = router;
         this.topologyConfig = topologyConfig;
@@ -85,8 +103,15 @@ public final class SwimHealthContext {
         this.isLeaderSupplier = isLeaderSupplier;
         this.observationBuffer = observationBuffer;
         this.swimConfig = swimConfig;
+        this.clock = clock;
         this.stopped = new SwimHealthState.Stopped(this);
         this.starting = new SwimHealthState.Starting(this);
+    }
+
+    /// Current time in milliseconds. Reads from the injected clock so tests can make FSM
+    /// transitions deterministic. Equivalent to `System.currentTimeMillis()` in production.
+    public long nowMs() {
+        return clock.getAsLong();
     }
 
     // --- FSM / state access ---

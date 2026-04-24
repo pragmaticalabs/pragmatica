@@ -9,6 +9,7 @@ package org.pragmatica.consensus.leader.fsm;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
+import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ElectionTick;
@@ -22,7 +23,7 @@ import org.pragmatica.statemachine.TransitionRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.List;
 
 /// Sealed state hierarchy for the leader-election FSM. Each state is a record bound to the
 /// shared [`LeaderElectionContext`]. Data-free states (Dormant, QuorumWaiting, Electing,
@@ -125,14 +126,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case LeaderCommitted lc -> adoptLeaderIfInTopology(ctx, lc, tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
-                case ClusterFsmEvent.NodeAdded na -> {
-                    ctx.setCurrentTopology(na.topology());
-                    scheduleElectionTick(ctx);
-                }
-                case ClusterFsmEvent.NodeGone ng -> {
-                    ctx.setCurrentTopology(ng.topology());
-                    scheduleElectionTick(ctx);
-                }
+                case ClusterFsmEvent.NodeAdded na -> handleTopologyChange(ctx, na.topology());
+                case ClusterFsmEvent.NodeGone ng -> handleTopologyChange(ctx, ng.topology());
                 default -> tx.ignore();
             }
         }
@@ -160,13 +155,10 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case LeaderCommitted lc -> handleLeaderCommittedInLed(ctx, leader, lc, tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
-                case ClusterFsmEvent.LeaderChange _ -> {
-                    // External LeaderChange notification — informational; canonical leader
-                    // lives in our Led state.
-                }
-                case ElectionTick _, ProposalSettled _ -> {
-                    // Stale tick / settle from a prior Electing entry. Harmless.
-                }
+                // External LeaderChange is informational — canonical leader lives in our Led
+                // state. Stale ElectionTick / ProposalSettled arrive from prior Electing entries
+                // (harmless). All three are explicit no-ops via tx.ignore().
+                case ClusterFsmEvent.LeaderChange _, ElectionTick _, ProposalSettled _ -> tx.ignore();
                 default -> tx.ignore();
             }
         }
@@ -214,14 +206,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case LeaderCommitted lc -> adoptLeaderIfInTopology(ctx, lc, tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
-                case ClusterFsmEvent.NodeAdded na -> {
-                    ctx.setCurrentTopology(na.topology());
-                    scheduleElectionTick(ctx);
-                }
-                case ClusterFsmEvent.NodeGone ng -> {
-                    ctx.setCurrentTopology(ng.topology());
-                    scheduleElectionTick(ctx);
-                }
+                case ClusterFsmEvent.NodeAdded na -> handleTopologyChange(ctx, na.topology());
+                case ClusterFsmEvent.NodeGone ng -> handleTopologyChange(ctx, ng.topology());
                 default -> tx.ignore();
             }
         }
@@ -298,48 +284,61 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         notifyLeaderChange(ctx);
     }
 
+    private static void handleTopologyChange(LeaderElectionContext ctx, List<NodeId> topology) {
+        ctx.setCurrentTopology(topology);
+        scheduleElectionTick(ctx);
+    }
+
     private static void scheduleElectionTick(LeaderElectionContext ctx) {
         var retry = ctx.incrementElectionRetryCount();
-        var jitterMs = (long) (ctx.proposalRetryDelay().millis() * (1.0 + ThreadLocalRandom.current().nextDouble(0.5)));
+        var jitterMs = (long) (ctx.proposalRetryDelay().millis() * (1.0 + ctx.jitterSource().getAsDouble()));
         log.debug("Scheduling election tick #{} in {}ms", retry, jitterMs);
         SharedScheduler.schedule(() -> dispatchSelf(ctx, new ElectionTick()),
                                  TimeSpan.timeSpan(jitterMs).millis());
     }
 
     private static void trySubmitProposal(LeaderElectionContext ctx) {
-        ctx.proposalHandler().onPresent(handler -> {
-            if (ctx.currentTopology().isEmpty()) {
-                log.debug("Topology empty — skipping proposal");
-                return;
-            }
-            var pool = ctx.candidatePool().stream().sorted().toList();
-            if (pool.isEmpty()) {
-                log.debug("Candidate pool empty — skipping proposal");
-                return;
-            }
-            var candidate = pool.getFirst();
-            if (!ctx.hasEverHadLeader() && !ctx.self().equals(candidate)) {
-                log.debug("Not initial-election candidate (self={}, candidate={})",
-                          ctx.self(), candidate);
-                return;
-            }
-            if (!ctx.tryStartProposal()) {
-                log.debug("Proposal already in flight — skipping");
-                return;
-            }
-            var epoch = ctx.nextProposalEpoch();
-            var viewSeq = ctx.nextViewSequence();
-            log.info("Submitting leader proposal: candidate={}, viewSequence={}, epoch={}",
-                     candidate, viewSeq, epoch);
-            SharedScheduler.schedule(() -> dispatchSelf(ctx, new ProposalSettled(candidate, false,
-                                                                                 "timeout@epoch=" + epoch)),
-                                     ctx.proposalTimeout());
-            handler.propose(candidate, viewSeq)
-                   .onSuccess(_ -> dispatchSelf(ctx, new ProposalSettled(candidate, true,
-                                                                         "submitted@epoch=" + epoch)))
-                   .onFailure(cause -> dispatchSelf(ctx, new ProposalSettled(candidate, false,
-                                                                             cause.message() + "@epoch=" + epoch)));
-        });
+        ctx.proposalHandler().onPresent(handler -> submitProposalWith(ctx, handler));
+    }
+
+    private static void submitProposalWith(LeaderElectionContext ctx, LeaderProposalHandler handler) {
+        if (ctx.currentTopology().isEmpty()) {
+            log.debug("Topology empty — skipping proposal");
+            return;
+        }
+        var pool = ctx.candidatePool().stream().sorted().toList();
+        if (pool.isEmpty()) {
+            log.debug("Candidate pool empty — skipping proposal");
+            return;
+        }
+        var candidate = pool.getFirst();
+        if (!ctx.hasEverHadLeader() && !ctx.self().equals(candidate)) {
+            log.debug("Not initial-election candidate (self={}, candidate={})",
+                      ctx.self(), candidate);
+            return;
+        }
+        if (!ctx.tryStartProposal()) {
+            log.debug("Proposal already in flight — skipping");
+            return;
+        }
+        sendProposal(ctx, handler, candidate);
+    }
+
+    private static void sendProposal(LeaderElectionContext ctx,
+                                     LeaderProposalHandler handler,
+                                     NodeId candidate) {
+        var epoch = ctx.nextProposalEpoch();
+        var viewSeq = ctx.nextViewSequence();
+        log.info("Submitting leader proposal: candidate={}, viewSequence={}, epoch={}",
+                 candidate, viewSeq, epoch);
+        SharedScheduler.schedule(() -> dispatchSelf(ctx, new ProposalSettled(candidate, false,
+                                                                             "timeout@epoch=" + epoch)),
+                                 ctx.proposalTimeout());
+        handler.propose(candidate, viewSeq)
+               .onSuccess(_ -> dispatchSelf(ctx, new ProposalSettled(candidate, true,
+                                                                     "submitted@epoch=" + epoch)))
+               .onFailure(cause -> dispatchSelf(ctx, new ProposalSettled(candidate, false,
+                                                                         cause.message() + "@epoch=" + epoch)));
     }
 
     private static void handleProposalSettled(LeaderElectionContext ctx, ProposalSettled event) {

@@ -7,6 +7,7 @@ package org.pragmatica.aether.http.fsm;
 import org.pragmatica.aether.http.RouteTable;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.http.server.HttpServer;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -58,7 +59,7 @@ public final class AppHttpContext {
     /// action for `StopRequested`/`Shutdown`. Fire-and-forget because the FSM guarantees a single
     /// CAS winner invokes this, and the adapter's public `stop()` awaits completion separately
     /// via [`#stopServersAsync`].
-    @SuppressWarnings("JBCT-RET-01")
+    @Contract
     public void stopServers(Option<HttpServer> server, Option<HttpServer> h3) {
         server.onPresent(HttpServer::stop);
         h3.onPresent(HttpServer::stop);
@@ -74,6 +75,8 @@ public final class AppHttpContext {
 
     /// Current route table carried by the FSM — `RouteReady.routes` / `CertRotating.routes`, or
     /// [`RouteTable#empty`] in any other state. Single source of truth for the request handler.
+    /// Returns a point-in-time snapshot: the FSM may transition concurrently and the returned
+    /// value will not reflect subsequent changes.
     public RouteTable currentRoutes() {
         return switch (fsm.current()) {
             case AppHttpState.RouteReady(_, _, _, RouteTable routes) -> routes;
@@ -83,7 +86,8 @@ public final class AppHttpContext {
     }
 
     /// Primary bound port, preferring the HTTP/1.1 server, falling back to HTTP/3. Returns
-    /// [`Option#none`] when no server is bound (Stopped / Starting).
+    /// [`Option#none`] when no server is bound (Stopped / Starting). Point-in-time snapshot:
+    /// subsequent FSM transitions can invalidate the observation.
     public Option<Integer> boundPort() {
         return switch (fsm.current()) {
             case AppHttpState.H1Only(_, HttpServer server) -> Option.some(server.port());
@@ -107,6 +111,9 @@ public final class AppHttpContext {
     /// previous servers before binding the replacements.
     public record ServerPair(Option<HttpServer> server, Option<HttpServer> h3) {}
 
+    /// Returns a point-in-time snapshot of the H1/H3 [`HttpServer`] pair. The FSM may transition
+    /// concurrently; callers must treat the returned value as immutable and not re-query for
+    /// consistency within a single rotation/stop operation.
     public ServerPair currentServers() {
         return switch (fsm.current()) {
             case AppHttpState.H1Only(_, HttpServer server) -> new ServerPair(Option.some(server), Option.none());

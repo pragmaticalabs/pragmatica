@@ -171,6 +171,8 @@ public interface LeaderManager {
 
         @Override
         public void nodeDown(NodeDown nodeDown) {
+            // Always dispatch; states decide. Empty topology → QuorumDisappeared; non-empty →
+            // (optional) local-mode adoption + NodeGone. No external FSM-state reads here.
             if (nodeDown.topology().isEmpty()) {
                 fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
                 return;
@@ -195,24 +197,25 @@ public interface LeaderManager {
                 return;
             }
             switch (quorumState.state()) {
-                case ESTABLISHED -> {
-                    fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());
-                    if (localMode) {
-                        fsm.dispatch(new LeaderElectionEvents.ConsensusReady());
-                        electLocallyIfPossible();
-                    }
-                }
+                case ESTABLISHED -> onQuorumEstablished();
                 case DISAPPEARED -> fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
             }
         }
 
-        private void electLocallyIfPossible() {
-            var state = fsm.current();
-            if (state instanceof LeaderElectionState.Stopped
-                    || state instanceof LeaderElectionState.Dormant
-                    || state instanceof LeaderElectionState.QuorumLost) {
-                return;
+        private void onQuorumEstablished() {
+            fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());
+            if (localMode) {
+                fsm.dispatch(new LeaderElectionEvents.ConsensusReady());
+                electLocallyIfPossible();
             }
+        }
+
+        private void electLocallyIfPossible() {
+            // No external FSM-state read here — per state's handler, a LeaderCommitted that does
+            // not match the current topology / active state is ignored or logged. We still need
+            // to read topology to *construct* the LeaderCommitted event (it requires a concrete
+            // NodeId), so an empty topology short-circuits before event construction — this is
+            // a data-validity check, not a TOCTOU guard on FSM state.
             var topology = context.currentTopology();
             if (topology.isEmpty()) {
                 return;

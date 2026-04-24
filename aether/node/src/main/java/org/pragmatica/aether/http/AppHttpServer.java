@@ -100,7 +100,7 @@ import static org.pragmatica.lang.Unit.unit;
 /// `Stopped → Starting → (H1Only | H3Only | Dual) → RouteReady ↔ CertRotating → Stopped`. The FSM
 /// is the single source of truth; server refs, the current [`RouteTable`], and the "routes
 /// published" boolean are all carried as fields on state records (no parallel atomic holders).
-@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) public interface AppHttpServer {
+public interface AppHttpServer {
     Promise<Unit> start();
 
     Promise<Unit> stop();
@@ -108,13 +108,13 @@ import static org.pragmatica.lang.Unit.unit;
     Option<Integer> boundPort();
     @MessageReceiver void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut);
     @MessageReceiver void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove);
-    @SuppressWarnings("JBCT-RET-01") void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
-    @SuppressWarnings("JBCT-RET-01") void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
+    @Contract void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
+    @Contract void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
     @MessageReceiver void onHttpForwardRequest(HttpForwardRequest request);
     @MessageReceiver void onHttpForwardResponse(HttpForwardResponse response);
-    void rebuildRouter();
+    @Contract void rebuildRouter();
     boolean isRouteReady();
-    @SuppressWarnings("JBCT-RET-01") void onQuorumStateChange(QuorumStateNotification notification);
+    @Contract void onQuorumStateChange(QuorumStateNotification notification);
     @MessageReceiver void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved);
     @MessageReceiver void onNodeDown(TopologyChangeNotification.NodeDown nodeDown);
     Option<HttpForwarder> httpForwarder();
@@ -122,12 +122,12 @@ import static org.pragmatica.lang.Unit.unit;
 
     default MapSubscription<HttpNodeRouteKey, HttpNodeRouteValue> asHttpRouteSubscription() {
         return new MapSubscription<>() {
-            @Override@SuppressWarnings("JBCT-RET-01") public void onPut(HttpNodeRouteKey key,
-                                                                        HttpNodeRouteValue value) {
+            @Override@Contract public void onPut(HttpNodeRouteKey key,
+                                                 HttpNodeRouteValue value) {
                 onRoutePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
             }
 
-            @Override@SuppressWarnings("JBCT-RET-01") public void onRemove(HttpNodeRouteKey key) {
+            @Override@Contract public void onRemove(HttpNodeRouteKey key) {
                 onRouteRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
             }
         };
@@ -209,26 +209,26 @@ import static org.pragmatica.lang.Unit.unit;
                                        Option<DeploymentManager> strategyCoordinator,
                                        Option<HttpRequestObserver> requestObserver,
                                        Option<Fn1<Result<NodeId>, TaskGroup>> taskGroupOwnerResolver) {
-        return new AppHttpServerImpl(config,
-                                     forwardingTimeouts,
-                                     selfNodeId,
-                                     routeRegistry,
-                                     httpRoutePublisher,
-                                     clusterNetwork,
-                                     serializer,
-                                     deserializer,
-                                     tls,
-                                     metricsCollector,
-                                     bossGroup,
-                                     workerGroup,
-                                     strategyCoordinator,
-                                     requestObserver,
-                                     taskGroupOwnerResolver);
+        return new AppHttpServerAdapter(config,
+                                        forwardingTimeouts,
+                                        selfNodeId,
+                                        routeRegistry,
+                                        httpRoutePublisher,
+                                        clusterNetwork,
+                                        serializer,
+                                        deserializer,
+                                        tls,
+                                        metricsCollector,
+                                        bossGroup,
+                                        workerGroup,
+                                        strategyCoordinator,
+                                        requestObserver,
+                                        taskGroupOwnerResolver);
     }
 }
 
-@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) class AppHttpServerImpl implements AppHttpServer {
-    private static final Logger log = LoggerFactory.getLogger(AppHttpServerImpl.class);
+class AppHttpServerAdapter implements AppHttpServer {
+    private static final Logger log = LoggerFactory.getLogger(AppHttpServerAdapter.class);
 
     private final AppHttpConfig config;
     private final NodeId selfNodeId;
@@ -248,7 +248,7 @@ import static org.pragmatica.lang.Unit.unit;
 
     private final AppHttpContext context;
 
-    AppHttpServerImpl(AppHttpConfig config,
+    AppHttpServerAdapter(AppHttpConfig config,
                       ForwardingTimeouts forwardingTimeouts,
                       NodeId selfNodeId,
                       HttpRouteRegistry routeRegistry,
@@ -287,12 +287,22 @@ import static org.pragmatica.lang.Unit.unit;
         this.context = buildContext(selfNodeId);
     }
 
+    /// Pair of the built Fsm and its context. The Fsm reference is also captured inside
+    /// [`AppHttpContext`]; returning both here keeps the `Fsm.fsm(...)` return value consumed
+    /// instead of silently discarded, and mirrors the [`FsmWithContext`] pattern used by the
+    /// leader-election FSM.
+    private record FsmAndContext(Fsm<AppHttpState, ClusterFsmEvent> fsm, AppHttpContext context) {}
+
     private static AppHttpContext buildContext(NodeId selfNodeId) {
+        return buildFsmAndContext(selfNodeId).context();
+    }
+
+    private static FsmAndContext buildFsmAndContext(NodeId selfNodeId) {
         var ctxHolder = new AtomicReference<AppHttpContext>();
         Function<Fsm<AppHttpState, ClusterFsmEvent>, AppHttpState> initialStateFactory =
                 fsm -> buildContextAndStopped(fsm, ctxHolder);
-        Fsm.fsm("app-http-server-" + selfNodeId.id(), initialStateFactory);
-        return ctxHolder.get();
+        var fsm = Fsm.fsm("app-http-server-" + selfNodeId.id(), initialStateFactory);
+        return new FsmAndContext(fsm, ctxHolder.get());
     }
 
     private static AppHttpState buildContextAndStopped(Fsm<AppHttpState, ClusterFsmEvent> fsm,
@@ -382,9 +392,15 @@ import static org.pragmatica.lang.Unit.unit;
 
     private Promise<Unit> startH3Server() {
         var quicTls = tls.map(QuicSslContextFactory::createServer).or(QuicSslContextFactory.createSelfSignedServer());
-        return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context: {}",
-                                                    cause.message())).map(this::startH3WithSslContext)
-                                .or(Promise.success(unit()));
+        return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context: {}", cause.message()))
+                      .map(this::startH3WithSslContext)
+                      .or(Promise::unitPromise)
+                      .recover(AppHttpServerAdapter::logH3DisabledAndReturnUnit);
+    }
+
+    private static Unit logH3DisabledAndReturnUnit(Cause cause) {
+        log.warn("H3 disabled after start failure, continuing H1-only: {}", cause.message());
+        return unit();
     }
 
     private Promise<Unit> startH3WithSslContext(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
@@ -412,7 +428,7 @@ import static org.pragmatica.lang.Unit.unit;
         var serverConfig = HttpServerConfig.httpServerConfig("app-http",
                                                              config.port())
         .withMaxContentLength(config.maxRequestSize());
-        return tls.fold(() -> serverConfig, serverConfig::withTls);
+        return tls.map(serverConfig::withTls).or(serverConfig);
     }
 
     private Unit registerStartedH1Server(HttpServer server) {
@@ -448,16 +464,33 @@ import static org.pragmatica.lang.Unit.unit;
                       .mapToUnit();
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
     private Promise<AppHttpContext.ServerPair> restartWithNewBundle(CertificateBundle newBundle) {
-        var newTlsConfig = buildTlsFromBundle(newBundle);
         var protocol = config.httpProtocol();
-        if (protocol.includesH1()) {
-            return restartH1WithTls(newTlsConfig).flatMap(serverOpt -> protocol.includesH3()
-                                                                       ? restartH3WithBundle(newBundle).map(h3Opt -> new AppHttpContext.ServerPair(serverOpt, h3Opt))
-                                                                       : Promise.success(new AppHttpContext.ServerPair(serverOpt, Option.<HttpServer>none())));
+        if (protocol.includesH1() && protocol.includesH3()) {
+            return restartDualWithBundle(newBundle);
         }
-        return restartH3WithBundle(newBundle).map(h3Opt -> new AppHttpContext.ServerPair(Option.<HttpServer>none(), h3Opt));
+        if (protocol.includesH1()) {
+            return restartH1OnlyWithBundle(newBundle);
+        }
+        return restartH3OnlyWithBundle(newBundle);
+    }
+
+    private Promise<AppHttpContext.ServerPair> restartDualWithBundle(CertificateBundle newBundle) {
+        var newTlsConfig = buildTlsFromBundle(newBundle);
+        return restartH1WithTls(newTlsConfig)
+                .flatMap(serverOpt -> restartH3WithBundle(newBundle)
+                        .map(h3Opt -> new AppHttpContext.ServerPair(serverOpt, h3Opt)));
+    }
+
+    private Promise<AppHttpContext.ServerPair> restartH1OnlyWithBundle(CertificateBundle newBundle) {
+        var newTlsConfig = buildTlsFromBundle(newBundle);
+        return restartH1WithTls(newTlsConfig)
+                .map(serverOpt -> new AppHttpContext.ServerPair(serverOpt, Option.<HttpServer>none()));
+    }
+
+    private Promise<AppHttpContext.ServerPair> restartH3OnlyWithBundle(CertificateBundle newBundle) {
+        return restartH3WithBundle(newBundle)
+                .map(h3Opt -> new AppHttpContext.ServerPair(Option.<HttpServer>none(), h3Opt));
     }
 
     private Promise<Option<HttpServer>> restartH1WithTls(Option<TlsConfig> newTls) {
@@ -481,10 +514,16 @@ import static org.pragmatica.lang.Unit.unit;
 
     private Promise<Option<HttpServer>> restartH3WithBundle(CertificateBundle newBundle) {
         var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle);
-        return quicTls.map(this::startH3WithSslContextReturningServer)
-                      .onFailure(cause -> log.error("Failed to create QUIC SSL context for app server rotation: {}",
+        return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context for app server rotation: {}",
                                                     cause.message()))
-                      .or(Promise.success(Option.<HttpServer>none()));
+                      .map(this::startH3WithSslContextReturningServer)
+                      .or(() -> Promise.success(Option.<HttpServer>none()))
+                      .recover(AppHttpServerAdapter::logH3RotationDisabledAndReturnNone);
+    }
+
+    private static Option<HttpServer> logH3RotationDisabledAndReturnNone(Cause cause) {
+        log.warn("H3 rotation disabled after bind failure, keeping previous state: {}", cause.message());
+        return Option.none();
     }
 
     private Promise<Option<HttpServer>> startH3WithSslContextReturningServer(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
@@ -607,12 +646,12 @@ import static org.pragmatica.lang.Unit.unit;
                                                            String normalizedPath,
                                                            RouteTable routeTable) {
         var localPolicy = httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method, normalizedPath)).map(LocalRouteInfo::security)
-                                                    .filter(AppHttpServerImpl::isExplicitPolicy);
+                                                    .filter(AppHttpServerAdapter::isExplicitPolicy);
         if (localPolicy.isPresent()) {return localPolicy;}
         return findMatchingRemoteRoute(routeTable.remoteRoutes(),
                                        method,
                                        normalizedPath).map(route -> SecurityPolicy.fromString(route.security()))
-                                      .filter(AppHttpServerImpl::isExplicitPolicy);
+                                      .filter(AppHttpServerAdapter::isExplicitPolicy);
     }
 
     private static boolean isExplicitPolicy(SecurityPolicy policy) {
@@ -638,11 +677,11 @@ import static org.pragmatica.lang.Unit.unit;
         return Result.success(context);
     }
 
-    @SuppressWarnings("JBCT-RET-01") private void dispatchAuthenticated(RequestContext request,
-                                                                        ResponseWriter response,
-                                                                        RouteTable routeTable,
-                                                                        SecurityContext securityContext,
-                                                                        String method,
+    @Contract private void dispatchAuthenticated(RequestContext request,
+                                                 ResponseWriter response,
+                                                 RouteTable routeTable,
+                                                 SecurityContext securityContext,
+                                                 String method,
                                                                         String normalizedPath,
                                                                         String path,
                                                                         String requestId) {
@@ -663,68 +702,100 @@ import static org.pragmatica.lang.Unit.unit;
                                                                           requestId)));
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private void dispatchToRoute(RequestContext request,
-                                                                  ResponseWriter response,
-                                                                  RouteTable routeTable,
-                                                                  String method,
-                                                                  String normalizedPath,
-                                                                  String requestId) {
+    private void dispatchToRoute(RequestContext request,
+                                 ResponseWriter response,
+                                 RouteTable routeTable,
+                                 String method,
+                                 String normalizedPath,
+                                 String requestId) {
         if (httpRoutePublisher.isPresent()) {
             var localRouteOpt = findMatchingLocalRoute(routeTable.localRoutes(), method, normalizedPath);
             if (localRouteOpt.isPresent()) {
-                if (shouldForwardForStrategy(localRouteOpt.unwrap(), method, normalizedPath, routeTable)) {
-                    var remoteRouteOpt = findMatchingRemoteRoute(routeTable.remoteRoutes(), method, normalizedPath);
-                    if (remoteRouteOpt.isPresent()) {
-                        log.debug("Deployment strategy routing — forwarding {} {} to remote [{}]",
-                                  method,
-                                  normalizedPath,
-                                  requestId);
-                        handleRemoteRoute(request, response, remoteRouteOpt.unwrap(), requestId);
-                        return;
-                    }
-                }
-                handleLocalRoute(request, response, localRouteOpt.unwrap(), requestId);
+                dispatchLocalRoute(request, response, routeTable, method, normalizedPath,
+                                   localRouteOpt.unwrap(), requestId);
                 return;
             }
         }
         var remoteRouteOpt = findMatchingRemoteRoute(routeTable.remoteRoutes(), method, normalizedPath);
         if (remoteRouteOpt.isPresent()) {
-            handleRemoteRoute(request, response, remoteRouteOpt.unwrap(), requestId);
+            dispatchRemoteRoute(request, response, remoteRouteOpt.unwrap(), requestId);
             return;
         }
+        sendNoRouteFound(response, request, method, requestId);
+    }
+
+    private void dispatchLocalRoute(RequestContext request,
+                                    ResponseWriter response,
+                                    RouteTable routeTable,
+                                    String method,
+                                    String normalizedPath,
+                                    HttpNodeRouteKey localRouteKey,
+                                    String requestId) {
+        if (shouldForwardForStrategy(localRouteKey, method, normalizedPath, routeTable)) {
+            var remoteRouteOpt = findMatchingRemoteRoute(routeTable.remoteRoutes(), method, normalizedPath);
+            if (remoteRouteOpt.isPresent()) {
+                log.debug("Deployment strategy routing — forwarding {} {} to remote [{}]",
+                          method, normalizedPath, requestId);
+                dispatchRemoteRoute(request, response, remoteRouteOpt.unwrap(), requestId);
+                return;
+            }
+        }
+        handleLocalRoute(request, response, localRouteKey, requestId);
+    }
+
+    private void dispatchRemoteRoute(RequestContext request,
+                                     ResponseWriter response,
+                                     HttpRouteRegistry.RouteInfo route,
+                                     String requestId) {
+        handleRemoteRoute(request, response, route, requestId);
+    }
+
+    private void sendNoRouteFound(ResponseWriter response,
+                                  RequestContext request,
+                                  String method,
+                                  String requestId) {
         if (!isRouteReady() && httpRoutePublisher.isPresent()) {
             log.debug("Route not yet available for {} {} [{}] — node starting, routes not synchronized",
-                      method,
-                      request.path(),
-                      requestId);
+                      method, request.path(), requestId);
             sendProblem(response,
                         HttpStatus.SERVICE_UNAVAILABLE,
                         "Node starting, routes not yet synchronized",
                         request.path(),
                         requestId);
-        } else {
-            log.warn("No route found for {} {} [{}]", method, request.path(), requestId);
-            sendProblem(response,
-                        HttpStatus.NOT_FOUND,
-                        "No route found for " + method + " " + request.path(),
-                        request.path(),
-                        requestId);
+            return;
         }
+        log.warn("No route found for {} {} [{}]", method, request.path(), requestId);
+        sendProblem(response,
+                    HttpStatus.NOT_FOUND,
+                    "No route found for " + method + " " + request.path(),
+                    request.path(),
+                    requestId);
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private boolean shouldForwardForStrategy(HttpNodeRouteKey localRouteKey,
-                                                                              String method,
-                                                                              String normalizedPath,
-                                                                              RouteTable routeTable) {
-        if (strategyCoordinator.isEmpty()) {return false;}
-        var localRouteInfo = httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method, normalizedPath));
-        if (localRouteInfo.isEmpty()) {return false;}
-        var artifactResult = Artifact.artifact(localRouteInfo.unwrap().artifactCoord());
-        if (artifactResult.isFailure()) {return false;}
-        var artifact = artifactResult.unwrap();
-        var routingOpt = strategyCoordinator.unwrap().activeRouting(artifact.base());
-        if (routingOpt.isEmpty()) {return false;}
-        return evaluateRoutingDecision(artifact, routingOpt.unwrap(), method, normalizedPath, routeTable);
+    /// Accumulated routing context built up by [`#shouldForwardForStrategy`]. Each stage resolves
+    /// an additional piece (local route info → artifact → active routing) so the evaluator only
+    /// runs when all pieces are present.
+    private record RoutingDecision(Artifact artifact, ActiveRouting activeRouting) {}
+
+    private boolean shouldForwardForStrategy(HttpNodeRouteKey localRouteKey,
+                                             String method,
+                                             String normalizedPath,
+                                             RouteTable routeTable) {
+        return resolveRoutingDecision(method, normalizedPath)
+                .map(decision -> evaluateRoutingDecision(decision.artifact(),
+                                                         decision.activeRouting(),
+                                                         method,
+                                                         normalizedPath,
+                                                         routeTable))
+                .or(false);
+    }
+
+    private Option<RoutingDecision> resolveRoutingDecision(String method, String normalizedPath) {
+        return strategyCoordinator.flatMap(coordinator ->
+                httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method, normalizedPath))
+                                  .flatMap(info -> Artifact.artifact(info.artifactCoord()).option())
+                                  .flatMap(artifact -> coordinator.activeRouting(artifact.base())
+                                                                  .map(routing -> new RoutingDecision(artifact, routing))));
     }
 
     private boolean evaluateRoutingDecision(Artifact artifact,
@@ -764,16 +835,28 @@ import static org.pragmatica.lang.Unit.unit;
         return findMatchingRemoteRoute(remoteRoutes, method, normalizedPath).isPresent();
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private void handleSecurityFailure(ResponseWriter response,
-                                                                        Cause cause,
-                                                                        String path,
-                                                                        String requestId,
-                                                                        String method) {
+    private void handleSecurityFailure(ResponseWriter response,
+                                       Cause cause,
+                                       String path,
+                                       String requestId,
+                                       String method) {
         var statusAndMessage = mapSecurityError(cause);
+        recordSecurityDenial(cause, path, requestId, method);
+        maybeAddAuthenticateHeader(response, statusAndMessage.status());
+        sendProblem(response, statusAndMessage.status(), statusAndMessage.clientMessage(), path, requestId);
+    }
+
+    @Contract
+    private void recordSecurityDenial(Cause cause, String path, String requestId, String method) {
         AuditLog.authFailure(requestId, cause.message(), method, path);
         requestObserver.onPresent(obs -> obs.recordSecurityDenial(classifyDenialType(cause), method, path));
-        if (statusAndMessage.status() == HttpStatus.UNAUTHORIZED) {addAuthenticateHeader(response);}
-        sendProblem(response, statusAndMessage.status(), statusAndMessage.clientMessage(), path, requestId);
+    }
+
+    @Contract
+    private void maybeAddAuthenticateHeader(ResponseWriter response, HttpStatus status) {
+        if (status == HttpStatus.UNAUTHORIZED) {
+            addAuthenticateHeader(response);
+        }
     }
 
     private static String classifyDenialType(Cause cause) {
@@ -833,12 +916,17 @@ import static org.pragmatica.lang.Unit.unit;
         return normalizedPath.equals(normalizedPrefix) || (normalizedPath.length() > normalizedPrefix.length() && normalizedPath.startsWith(normalizedPrefix));
     }
 
-    @SuppressWarnings("JBCT-NULL-01") private String normalizePath(String path) {
-        if (path == null || path.isBlank()) {return "/";}
-        var normalized = path.strip();
-        if (!normalized.startsWith("/")) {normalized = "/" + normalized;}
-        if (!normalized.endsWith("/")) {normalized = normalized + "/";}
-        return normalized;
+    private String normalizePath(String path) {
+        return Option.option(path)
+                     .map(String::strip)
+                     .filter(s -> !s.isEmpty())
+                     .map(AppHttpServerAdapter::ensureLeadingAndTrailingSlash)
+                     .or("/");
+    }
+
+    private static String ensureLeadingAndTrailingSlash(String path) {
+        var withLeading = path.startsWith("/") ? path : "/" + path;
+        return withLeading.endsWith("/") ? withLeading : withLeading + "/";
     }
 
     private static boolean isHealthEndpoint(String normalizedPath) {
@@ -1016,10 +1104,10 @@ import static org.pragmatica.lang.Unit.unit;
         sendForwardError(network, request, prefix + ": " + cause.message());
     }
 
-    @SuppressWarnings("JBCT-RET-01") private void dispatchForwardedRequest(HttpRequestContext httpCtx,
-                                                                           HttpForwardRequest request,
-                                                                           ClusterNetwork network,
-                                                                           Serializer ser) {
+    @Contract private void dispatchForwardedRequest(HttpRequestContext httpCtx,
+                                                    HttpForwardRequest request,
+                                                    ClusterNetwork network,
+                                                    Serializer ser) {
         var method = httpCtx.method();
         var path = httpCtx.path();
         var normalizedPath = normalizePath(path);

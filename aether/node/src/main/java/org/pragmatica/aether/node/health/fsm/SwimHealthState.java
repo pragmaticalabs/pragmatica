@@ -134,7 +134,7 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
 
         private void handlePeerJoined(SwimMember member) {
             LOG.info("SWIM member joined: {}", member.nodeId());
-            ctx.resetFaultyWindow(System.currentTimeMillis());
+            ctx.resetFaultyWindow(ctx.nowMs());
             ctx.reportHint(member.nodeId(), HealthHint.HEALTHY);
         }
 
@@ -160,7 +160,7 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
             var peer = event.peer();
             event.info().onPresent(info -> readdOrMarkAlive(peer, addressOf(info)))
                  .onEmpty(() -> readdOrMarkAliveFromTopology(peer));
-            ctx.resetFaultyWindow(System.currentTimeMillis());
+            ctx.resetFaultyWindow(ctx.nowMs());
             ctx.reportHint(peer, HealthHint.HEALTHY);
         }
 
@@ -191,7 +191,7 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         }
 
         private boolean isLocalDisconnect(SwimMember member) {
-            var now = System.currentTimeMillis();
+            var now = ctx.nowMs();
             var count = ctx.incrementAndGetFaulty(now);
             var totalMembers = swim.members().size();
             if (totalMembers > 0 && count > totalMembers / 2) {
@@ -250,12 +250,12 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
             var peer = event.peer();
             event.info().onPresent(info -> readdOrMarkAlive(peer, SwimHealthContext.toSwimAddress(info, SWIM_PORT_OFFSET)))
                  .onEmpty(() -> readdOrMarkAliveFromTopology(peer));
-            ctx.resetFaultyWindow(System.currentTimeMillis());
+            ctx.resetFaultyWindow(ctx.nowMs());
             ctx.reportHint(peer, HealthHint.HEALTHY);
         }
 
         private void applyPeerJoinedRecovery(PeerJoined event) {
-            ctx.resetFaultyWindow(System.currentTimeMillis());
+            ctx.resetFaultyWindow(ctx.nowMs());
             ctx.reportHint(event.member().nodeId(), HealthHint.HEALTHY);
         }
 
