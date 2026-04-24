@@ -35,6 +35,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.statemachine.Fsm;
@@ -569,17 +570,7 @@ public final class ControlLoopContext {
 
     private static long parseCooldownTimestamp(String value) {
         return Option.option(value)
-                     .flatMap(ControlLoopContext::tryParseLong)
+                     .flatMap(v -> Number.parseLong(v).option())
                      .or(-1L);
     }
-
-    private static Option<Long> tryParseLong(String value) {
-        var matcher = LONG_PATTERN.matcher(value);
-        if (!matcher.matches()) {
-            return Option.none();
-        }
-        return Option.some(Long.parseLong(value));
-    }
-
-    private static final java.util.regex.Pattern LONG_PATTERN = java.util.regex.Pattern.compile("-?\\d+");
 }

@@ -53,6 +53,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -96,22 +97,21 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///     [`org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState`] FSM; this interface
 ///     is a thin adapter translating legacy `@MessageReceiver` entry points into FSM events.
 ///
-@SuppressWarnings("JBCT-RET-01")
-// MessageReceiver callbacks — void required by messaging framework
 public interface ClusterDeploymentManager extends DelegatedComponent {
-    @MessageReceiver void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut);
-    @MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
-    @MessageReceiver void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut);
-    @MessageReceiver void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove);
-    @MessageReceiver void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
-    @MessageReceiver void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove);
-    @MessageReceiver void onTopologyChange(TopologyChangeNotification topologyChange);
-    @MessageReceiver void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
-    @MessageReceiver void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut);
-    @MessageReceiver void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove);
-    @MessageReceiver void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
-    @MessageReceiver void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
-    @MessageReceiver void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut);
+    // MessageReceiver callbacks — void required by messaging framework.
+    @Contract @MessageReceiver void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut);
+    @Contract @MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
+    @Contract @MessageReceiver void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut);
+    @Contract @MessageReceiver void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove);
+    @Contract @MessageReceiver void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
+    @Contract @MessageReceiver void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove);
+    @Contract @MessageReceiver void onTopologyChange(TopologyChangeNotification topologyChange);
+    @Contract @MessageReceiver void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
+    @Contract @MessageReceiver void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut);
+    @Contract @MessageReceiver void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove);
+    @Contract @MessageReceiver void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
+    @Contract @MessageReceiver void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
+    @Contract @MessageReceiver void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut);
 
     record ReconciliationAdjustment(Artifact artifact, int currentInstances, int desiredInstances) implements Message.Local {
         public static ReconciliationAdjustment reconciliationAdjustment(Artifact artifact,
@@ -288,7 +288,9 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                                schemaOrchestrator,
                                                healthSignalSink,
                                                snapshotSupplier);
-        Fsm.fsm("cluster-deployment-" + self.id(), initialStateFactory);
+        // Fsm constructor publishes itself into ctxHolder via initialStateFactory —
+        // we only need the context here; the FSM reference lives on ctx.fsm().
+        var _fsm = Fsm.fsm("cluster-deployment-" + self.id(), initialStateFactory);
         return ctxHolder.get();
     }
 
@@ -360,55 +362,55 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             return ctx.isActive();
         }
 
-        @Override public void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut) {
+        @Contract @Override public void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut) {
             ctx.dispatch(new AppBlueprintPutReceived(valuePut));
         }
 
-        @Override public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
+        @Contract @Override public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
             ctx.dispatch(new SliceTargetPutReceived(valuePut));
         }
 
-        @Override public void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) {
+        @Contract @Override public void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) {
             ctx.dispatch(new VersionRoutingPutReceived(valuePut));
         }
 
-        @Override public void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove) {
+        @Contract @Override public void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove) {
             ctx.dispatch(new AppBlueprintRemoveReceived(valueRemove));
         }
 
-        @Override public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
+        @Contract @Override public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
             ctx.dispatch(new SliceTargetRemoveReceived(valueRemove));
         }
 
-        @Override public void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) {
+        @Contract @Override public void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) {
             ctx.dispatch(new VersionRoutingRemoveReceived(valueRemove));
         }
 
-        @Override public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {
+        @Contract @Override public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {
             ctx.dispatch(new NodeLifecyclePutReceived(valuePut));
         }
 
-        @Override public void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) {
+        @Contract @Override public void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) {
             ctx.dispatch(new ActivationDirectivePutReceived(valuePut));
         }
 
-        @Override public void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) {
+        @Contract @Override public void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) {
             ctx.dispatch(new ActivationDirectiveRemoveReceived(valueRemove));
         }
 
-        @Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+        @Contract @Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
             ctx.dispatch(new NodeArtifactPutReceived(valuePut));
         }
 
-        @Override public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+        @Contract @Override public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
             ctx.dispatch(new NodeArtifactRemoveReceived(valueRemove));
         }
 
-        @Override public void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) {
+        @Contract @Override public void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) {
             ctx.dispatch(new SchemaVersionPutReceived(valuePut));
         }
 
-        @Override public void onTopologyChange(TopologyChangeNotification topologyChange) {
+        @Contract @Override public void onTopologyChange(TopologyChangeNotification topologyChange) {
             ctx.dispatch(new TopologyChangeReceived(topologyChange));
         }
     }

@@ -114,7 +114,9 @@ public interface HealthReconciler extends HealthSignalSink {
                                                                                                                                          isLeaderSupplier,
                                                                                                                                          autoHealConfig,
                                                                                                                                          generationChangedSink);
-        Fsm.fsm("health-reconciler-" + self.id(), initialStateFactory);
+        // Fsm constructor publishes itself into ctxHolder via initialStateFactory —
+        // we only need the context here; the FSM reference lives on ctx.fsm().
+        var _fsm = Fsm.fsm("health-reconciler-" + self.id(), initialStateFactory);
         return new HealthReconcilerRecord(ctxHolder.get());
     }
 

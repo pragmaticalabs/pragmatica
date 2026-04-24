@@ -125,9 +125,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///   slice-state maps, retry counters, in-flight blueprints, reconcile timer, and allocation
 ///   round-robin index.
 /// - [`Stopped`] is a per-context singleton — terminal; all events are ignored.
-@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-07"})
 // Cluster-wide orchestration discards Promise results by design — the pipelines own their own
 // completion/failure handlers via .onSuccess/.onFailure; the return value is not usable by callers.
+// Individual methods carry @Contract where that applies.
 public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymentState, ClusterFsmEvent>
         permits ClusterDeploymentState.Dormant, ClusterDeploymentState.Active, ClusterDeploymentState.Stopped {
 
@@ -139,6 +139,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
     /// `Shutdown` drive a transition.
     record Dormant(ClusterDeploymentContext ctx) implements ClusterDeploymentState {
 
+        @Contract
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
             switch (event) {
@@ -152,11 +153,13 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
     /// Stopped: terminal. Reached by a `Shutdown` event from any non-terminal state.
     record Stopped(ClusterDeploymentContext ctx) implements ClusterDeploymentState {
 
+        @Contract
         @Override
         public void onEntry() {
             LOG.debug("ClusterDeploymentManager stopped");
         }
 
+        @Contract
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
             tx.ignore();
@@ -191,6 +194,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private static final int STUCK_TIMEOUT_MULTIPLIER = 3;
 
+        @Contract
         @Override
         public void onEntry() {
             log.info("Node {} became leader, activating cluster deployment manager with {} known nodes",
@@ -199,9 +203,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             rebuildStateFromKVStore();
             reconcile();
             startReconcileTimer();
+            // Deferred by 2s so that late-arriving KV-Store notifications that settle topology
+            // after leadership transfer are applied before we re-run cleanup + reconcile.
             SharedScheduler.schedule(this::deferredTopologyRecheck, timeSpan(2).seconds());
         }
 
+        @Contract
         @Override
         public void onExit() {
             deactivated.set(true);
@@ -209,6 +216,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             log.trace("Active state deactivated, stale callbacks will be suppressed");
         }
 
+        @Contract
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
             switch (event) {

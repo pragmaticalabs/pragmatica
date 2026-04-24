@@ -7,6 +7,7 @@ package org.pragmatica.aether.metrics.fsm;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.statemachine.FsmObserver;
 
 /// [`FsmObserver`] implementation that emits per-FSM metrics to a Micrometer `MeterRegistry`.
@@ -30,6 +31,7 @@ public final class MicrometerFsmObserver<S, E> implements FsmObserver<S, E> {
         return new MicrometerFsmObserver<>(registry);
     }
 
+    @Contract
     @Override
     public void onTransition(String fsmName, S from, S to) {
         Counter.builder("fsm_transitions_total")
@@ -40,6 +42,7 @@ public final class MicrometerFsmObserver<S, E> implements FsmObserver<S, E> {
                .increment();
     }
 
+    @Contract
     @Override
     public void onCasLost(String fsmName, S expected, S actual) {
         Counter.builder("fsm_cas_lost_total")
@@ -50,6 +53,7 @@ public final class MicrometerFsmObserver<S, E> implements FsmObserver<S, E> {
                .increment();
     }
 
+    @Contract
     @Override
     public void onEventIgnored(String fsmName, S state, E event) {
         Counter.builder("fsm_events_ignored_total")

@@ -427,12 +427,14 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private void handleActivationFailure(SliceNodeKey sliceKey, Cause cause) {
             log.error("Activation failed for {}: {}", sliceKey.artifact(), cause.message());
             unregisterSliceFromInvocation(sliceKey);
-            unpublishEndpoints(sliceKey);
-            unpublishHttpRoutes(sliceKey);
-            unpublishTopicSubscriptions(sliceKey);
-            unpublishStreamSubscriptions(sliceKey);
-            unpublishScheduledTasks(sliceKey);
-            transitionToFailed(sliceKey, cause);
+            unpublishEndpoints(sliceKey).flatMap(this::unpublishHttpRoutes)
+                                        .flatMap(this::unpublishTopicSubscriptions)
+                                        .flatMap(this::unpublishStreamSubscriptions)
+                                        .flatMap(this::unpublishScheduledTasks)
+                                        .withFailure(partialCause -> log.warn("Partial unpublish during activation-failure cleanup for {}: {}",
+                                                                              sliceKey.artifact(),
+                                                                              partialCause.message()))
+                                        .withResult(_ -> transitionToFailed(sliceKey, cause));
         }
 
         private void handleActive(SliceNodeKey sliceKey) {

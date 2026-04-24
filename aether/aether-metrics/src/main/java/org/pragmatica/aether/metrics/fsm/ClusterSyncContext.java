@@ -16,6 +16,7 @@ import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.lang.io.TimeSpan;
@@ -120,7 +121,7 @@ public final class ClusterSyncContext {
 
     public Fsm<ClusterSyncState, ClusterFsmEvent> fsm() { return fsm; }
 
-    public void dispatch(ClusterFsmEvent event) { fsm.dispatch(event); }
+    @Contract public void dispatch(ClusterFsmEvent event) { fsm.dispatch(event); }
 
     public ClusterSyncState dormant() { return dormant; }
 
@@ -142,11 +143,11 @@ public final class ClusterSyncContext {
 
     public List<NodeId> topology() { return topology.get(); }
 
-    public void setTopology(List<NodeId> newTopology) { topology.set(newTopology); }
+    @Contract public void setTopology(List<NodeId> newTopology) { topology.set(newTopology); }
 
     // --- Observed-epoch accessor (public surface) ---
 
-    public void recordObservedEpoch(NodeId nodeId, Epoch epoch) {
+    @Contract public void recordObservedEpoch(NodeId nodeId, Epoch epoch) {
         observedEpoch.merge(nodeId, epoch, ClusterSyncContext::pickLater);
     }
 
@@ -156,15 +157,15 @@ public final class ClusterSyncContext {
 
     public Map<NodeId, Epoch> observedEpochs() { return Map.copyOf(observedEpoch); }
 
-    public void forgetPeer(NodeId peer) { observedEpoch.remove(peer); }
+    @Contract public void forgetPeer(NodeId peer) { observedEpoch.remove(peer); }
 
     // --- Ping scheduling lifecycle ---
 
-    public void startPinging(Runnable tick) {
+    @Contract public void startPinging(Runnable tick) {
         pingTask.set(SharedScheduler.scheduleAtFixedRate(tick, interval));
     }
 
-    public void stopPinging() {
+    @Contract public void stopPinging() {
         pingTask.cancel();
         clearBuffers();
     }
@@ -192,7 +193,8 @@ public final class ClusterSyncContext {
     private Option<SnapshotPayload> buildPayloadForTarget(Epoch currentEpoch,
                                                           Option<Epoch> lastSentToPeer,
                                                           Option<ClusterGenerationSnapshot> maybeSnapshot) {
-        if (lastSentToPeer.filter(last -> !currentEpoch.isStrictlyAfter(last)).isPresent()) {
+        var alreadyUpToDate = lastSentToPeer.filter(last -> !currentEpoch.isStrictlyAfter(last)).isPresent();
+        if (alreadyUpToDate) {
             return Option.none();
         }
         return maybeSnapshot.map(snapshotEncoder::apply).map(SnapshotPayload::snapshotPayload);
@@ -202,7 +204,7 @@ public final class ClusterSyncContext {
 
     public Option<ClusterGenerationSnapshot> currentSnapshot() { return snapshotSupplier.get(); }
 
-    public void emitPingTimeoutIfExceeded(NodeId peer, int missed) {
+    @Contract public void emitPingTimeoutIfExceeded(NodeId peer, int missed) {
         if (missed < pingTimeoutThreshold) { return; }
         signalSink.emit(new HealthSignal.PingTimeout(peer, missed, epochSupplier.get()));
     }
@@ -214,8 +216,7 @@ public final class ClusterSyncContext {
         return Math.max(peers * PER_PEER_BURST, MIN_BUFFER_CAP);
     }
 
-    public void pushHealth(PeerHealthObservation observation) {
-        if (observation == null) { return; }
+    @Contract public void pushHealth(PeerHealthObservation observation) {
         synchronized (healthBufferLock) {
             if (healthBuffer.size() >= bufferCap()) {
                 healthBuffer.pollFirst();
@@ -224,8 +225,7 @@ public final class ClusterSyncContext {
         }
     }
 
-    public void pushConnectivity(PeerConnectivityObservation observation) {
-        if (observation == null) { return; }
+    @Contract public void pushConnectivity(PeerConnectivityObservation observation) {
         synchronized (connectivityBufferLock) {
             if (connectivityBuffer.size() >= bufferCap()) {
                 connectivityBuffer.pollFirst();

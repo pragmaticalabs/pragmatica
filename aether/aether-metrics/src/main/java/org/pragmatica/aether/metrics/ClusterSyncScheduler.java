@@ -121,7 +121,9 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
                                               signalSink,
                                               pingTimeoutThreshold,
                                               epochSupplier);
-        Fsm.fsm(fsmName, initialStateFactory);
+        // Fsm constructor publishes itself into ctxHolder via initialStateFactory —
+        // we only need the context here; the FSM reference lives on ctx.fsm().
+        var _fsm = Fsm.fsm(fsmName, initialStateFactory);
         return new ClusterSyncSchedulerAdapter(ctxHolder.get());
     }
 

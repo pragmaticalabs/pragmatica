@@ -136,17 +136,18 @@ public interface ControlLoop extends DelegatedComponent {
 
         @Override
         public boolean isActive() {
-            return !(fsm.current() instanceof ControlLoopState.Dormant || fsm.current() instanceof ControlLoopState.Stopped);
+            var current = fsm.current();
+            return !(current instanceof ControlLoopState.Dormant || current instanceof ControlLoopState.Stopped);
         }
 
+        // NodeDown falls through to the default branch; it's handled via onQuorumStateChange
+        // when quorum disappears.
         @Override
         public void onTopologyChange(TopologyChangeNotification topologyChange) {
             switch (topologyChange) {
                 case NodeAdded(_, var newTopology) -> ctx.setTopology(newTopology);
                 case NodeRemoved(_, var newTopology) -> ctx.setTopology(newTopology);
-                default -> {
-                    // NodeDown is handled via onQuorumStateChange when quorum disappears.
-                }
+                default -> {}
             }
         }
 

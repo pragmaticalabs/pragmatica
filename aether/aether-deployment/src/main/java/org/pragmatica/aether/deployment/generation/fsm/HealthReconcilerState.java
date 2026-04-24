@@ -15,6 +15,7 @@ import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.Si
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.SnapshotSeeded;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.LeaderChange;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.QuorumDisappeared;
@@ -57,7 +58,13 @@ import org.slf4j.LoggerFactory;
 ///   are fresh records per entry. `dirty` is implicit in state identity: being in
 ///   `LeadingReprojecting` *is* "a reprojection is pending"; the explicit boolean from the legacy
 ///   implementation is redundant.
-public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerState, ClusterFsmEvent> permits HealthReconcilerState.Dormant, HealthReconcilerState.QuorumWaiting, HealthReconcilerState.Following, HealthReconcilerState.LeadingSteady, HealthReconcilerState.LeadingReprojecting, HealthReconcilerState.Stopped {
+public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerState, ClusterFsmEvent>
+        permits HealthReconcilerState.Dormant,
+                HealthReconcilerState.QuorumWaiting,
+                HealthReconcilerState.Following,
+                HealthReconcilerState.LeadingSteady,
+                HealthReconcilerState.LeadingReprojecting,
+                HealthReconcilerState.Stopped {
     Logger LOG = LoggerFactory.getLogger(HealthReconcilerState.class);
 
     HealthReconcilerContext ctx();
@@ -93,7 +100,7 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
                 case BecameLeader be -> tx.transitionTo(ctx.newLeadingSteady(be.startEpoch(), ctx.ambientSnapshot()));
                 case LeaderChange lc when lc.localIsLeader() -> tx.transitionTo(ctx.newLeadingSteady(ctx.defaultLeaderEpoch(),
                                                                                                      ctx.ambientSnapshot()));
-                case LeaderChange lc when!lc.localIsLeader() -> tx.transitionTo(ctx.following());
+                case LeaderChange lc when !lc.localIsLeader() -> tx.transitionTo(ctx.following());
                 case QuorumDisappeared _ -> tx.transitionTo(ctx.dormant());
                 case SnapshotSeeded seeded -> handleSnapshotSeededAmbient(seeded, tx);
                 case Shutdown _ -> tx.transitionTo(ctx.stopped());
@@ -146,17 +153,17 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
                 case ReprojectionRequested rr -> handleReprojectionRequested(rr, tx);
                 case MembershipReseeded mr -> ctx.handleMembershipReseedFromLeadingSteady(this, mr, tx);
                 case SnapshotSeeded seeded -> tx.transitionToOrDrop(ctx.newLeadingSteady(startEpoch,
-                                                                                         event_snapshot(seeded)));
+                                                                                         eventSnapshot(seeded)));
                 case CommandsApplied ca -> ctx.handleCommandsAppliedFromLeadingSteady(this, ca, tx);
                 case CommandsApplyFailed cf -> ctx.handleCommandsApplyFailedFromLeading(this, cf, tx);
                 case QuorumDisappeared _ -> tx.transitionTo(ctx.dormant());
-                case LeaderChange lc when!lc.localIsLeader() -> tx.transitionTo(ctx.dormant());
+                case LeaderChange lc when !lc.localIsLeader() -> tx.transitionTo(ctx.dormant());
                 case Shutdown _ -> tx.transitionTo(ctx.stopped());
                 default -> tx.ignore();
             }
         }
 
-        private static ClusterGenerationSnapshot event_snapshot(SnapshotSeeded seeded) {
+        private static ClusterGenerationSnapshot eventSnapshot(SnapshotSeeded seeded) {
             return seeded.snapshot();
         }
 
@@ -195,7 +202,7 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
                 case CommandsApplied ca -> ctx.handleCommandsAppliedFromLeadingReprojecting(this, ca, tx);
                 case CommandsApplyFailed cf -> ctx.handleCommandsApplyFailedFromLeading(this, cf, tx);
                 case QuorumDisappeared _ -> tx.transitionTo(ctx.dormant());
-                case LeaderChange lc when!lc.localIsLeader() -> tx.transitionTo(ctx.dormant());
+                case LeaderChange lc when !lc.localIsLeader() -> tx.transitionTo(ctx.dormant());
                 case Shutdown _ -> tx.transitionTo(ctx.stopped());
                 default -> tx.ignore();
             }
@@ -234,14 +241,14 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
     }
 
     record Stopped(HealthReconcilerContext ctx) implements HealthReconcilerState {
-        @Override public void onEntry() {
+        @Contract @Override public void onEntry() {
             LOG.debug("HealthReconciler stopped");
             ctx.clearLeaderData();
             ctx.shutdownReprojectionExecutor();
         }
 
-        @Override public void handle(ClusterFsmEvent event,
-                                     TransitionRequest<HealthReconcilerState, ClusterFsmEvent> tx) {
+        @Contract @Override public void handle(ClusterFsmEvent event,
+                                                TransitionRequest<HealthReconcilerState, ClusterFsmEvent> tx) {
             tx.ignore();
         }
     }

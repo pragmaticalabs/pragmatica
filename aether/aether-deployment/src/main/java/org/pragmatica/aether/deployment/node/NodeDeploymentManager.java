@@ -58,8 +58,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-@SuppressWarnings("JBCT-RET-01")
-// MessageReceiver callbacks — void required by messaging framework
 public interface NodeDeploymentManager {
     record SliceDeployment(SliceNodeKey key, SliceState state, long timestamp) {
         public static SliceDeployment sliceDeployment(SliceNodeKey key, SliceState state, long timestamp) {
@@ -73,13 +71,14 @@ public interface NodeDeploymentManager {
         }
     }
 
-    @MessageReceiver void onQuorumStateChange(QuorumStateNotification quorumStateNotification);
-    @MessageReceiver void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
-    @MessageReceiver void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
-    @MessageReceiver void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
-    @MessageReceiver void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove);
-    @MessageReceiver void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
-    void setShutdownCallback(Runnable callback);
+    // MessageReceiver callbacks — void required by messaging framework.
+    @Contract @MessageReceiver void onQuorumStateChange(QuorumStateNotification quorumStateNotification);
+    @Contract @MessageReceiver void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
+    @Contract @MessageReceiver void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
+    @Contract @MessageReceiver void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
+    @Contract @MessageReceiver void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove);
+    @Contract @MessageReceiver void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
+    @Contract void setShutdownCallback(Runnable callback);
     boolean isActive();
 
     ConfigFacade NO_OP_CONFIG = new NoOpDeploymentConfigFacade();
@@ -298,7 +297,9 @@ public interface NodeDeploymentManager {
                                               sliceInvokerFacade,
                                               activationChainTimeout,
                                               transitionRetryDelay);
-        Fsm.fsm("node-deployment-" + self.id(), initialStateFactory);
+        // Fsm constructor publishes itself into ctxHolder via initialStateFactory —
+        // we only need the context here; the FSM reference lives on ctx.fsm().
+        var _fsm = Fsm.fsm("node-deployment-" + self.id(), initialStateFactory);
         return ctxHolder.get();
     }
 
@@ -349,7 +350,7 @@ public interface NodeDeploymentManager {
             this.ctx = ctx;
         }
 
-        @Override public void onQuorumStateChange(QuorumStateNotification quorumStateNotification) {
+        @Contract @Override public void onQuorumStateChange(QuorumStateNotification quorumStateNotification) {
             if (!quorumStateNotification.advanceSequence(ctx.quorumSequence())) {
                 log.info("Node {} ignoring stale QuorumStateNotification: {}",
                          ctx.self().id(),
@@ -367,18 +368,21 @@ public interface NodeDeploymentManager {
 
         private void dispatchQuorumEstablished() {
             ctx.dispatch(new ClusterFsmEvent.QuorumEstablished());
-            if (ctx.fsm().current() instanceof NodeDeploymentState.Active) {registerLifecycleOnDuty();}
+            var current = ctx.fsm().current();
+            if (current instanceof NodeDeploymentState.Active) {
+                registerLifecycleOnDuty();
+            }
         }
 
-        @Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+        @Contract @Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
             ctx.dispatch(new NodeArtifactPutReceived(valuePut));
         }
 
-        @Override public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+        @Contract @Override public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
             ctx.dispatch(new NodeArtifactRemoveReceived(valueRemove));
         }
 
-        @Override public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
+        @Contract @Override public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
             ctx.dispatch(new NodeRoutesPutReceived(valuePut));
         }
 
@@ -386,7 +390,7 @@ public interface NodeDeploymentManager {
             return ctx.isActive();
         }
 
-        @Override public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {
+        @Contract @Override public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {
             var key = valuePut.cause().key();
             var value = valuePut.cause().value();
             if (key.nodeId().equals(ctx.self()) && value.state() == NodeLifecycleState.SHUTTING_DOWN) {
@@ -396,7 +400,7 @@ public interface NodeDeploymentManager {
             }
         }
 
-        @Override public void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove) {
+        @Contract @Override public void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove) {
             var key = valueRemove.cause().key();
             if (key.nodeId().equals(ctx.self()) && isActive()) {
                 log.warn("Node {} lifecycle key removed unexpectedly — re-registering ON_DUTY",
@@ -405,7 +409,7 @@ public interface NodeDeploymentManager {
             }
         }
 
-        @Override public void setShutdownCallback(Runnable callback) {
+        @Contract @Override public void setShutdownCallback(Runnable callback) {
             ctx.setShutdownCallback(callback);
         }
 

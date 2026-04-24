@@ -14,6 +14,7 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent.NodeGone;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.QuorumDisappeared;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.QuorumEstablished;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.Shutdown;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
@@ -43,6 +44,7 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
     /// is still observable (buffers, topology, observedEpochs, quorumSequence all live on the
     /// context), but there are no per-peer counters to maintain.
     record Dormant(ClusterSyncContext ctx) implements ClusterSyncState {
+        @Contract
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
             switch (event) {
@@ -56,11 +58,13 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
     /// Terminal state: the scheduler has been stopped. No further transitions. Idempotent: a
     /// second `Shutdown` is recorded as ignored.
     record Stopped(ClusterSyncContext ctx) implements ClusterSyncState {
+        @Contract
         @Override
         public void onEntry() {
             ctx.stopPinging();
         }
 
+        @Contract
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
             // Terminal state: every event is ignored, no matter which concrete `ClusterFsmEvent`
@@ -96,17 +100,20 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
             return new Pinging(ctx, Map.of(), Map.of());
         }
 
+        @Contract
         @Override
         public void onEntry() {
             LOG.debug("ClusterSyncScheduler pinging started for node {}", ctx.self());
             ctx.startPinging(() -> ctx.dispatch(new PingTick(ctx.epochSupplier().get())));
         }
 
+        @Contract
         @Override
         public void onExit() {
             ctx.stopPinging();
         }
 
+        @Contract
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
             switch (event) {

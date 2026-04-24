@@ -296,6 +296,11 @@ public final class HealthReconcilerContext {
         executor.shutdownNow();
     }
 
+    // The supplier is authoritative but may have computed off a snapshot that is now stale — other
+    // signals may have advanced `state.snapshot()` while the supplier executed on the reprojection
+    // executor thread. `computeReseedResult` diffs the supplier output against the CURRENT snapshot
+    // and returns `none()` if nothing actually moved, in which case we roll back to the current
+    // snapshot (no-op transition). Do NOT simplify to `projected` directly.
     @Contract public void handleReprojectionCompletedPayload(HealthReconcilerState.LeadingReprojecting state,
                                                              ClusterGenerationSnapshot projected,
                                                              TransitionRequest<HealthReconcilerState, ClusterFsmEvent> tx) {
@@ -329,17 +334,7 @@ public final class HealthReconcilerContext {
             tx.ignore();
             return;
         }
-        if (outcome.resetTerm()) {clearLeaderData();}
-        if (!outcome.commands().isEmpty()) {fireCommandsApply(state.startEpoch(),
-                                                              outcome.commands(),
-                                                              outcome.reason(),
-                                                              state.snapshot(),
-                                                              outcome.nextSnapshot(),
-                                                              outcome.attemptedNodeIds());} else if (outcome.emitNotice()) {generationChangedSink.emit(GenerationChangedNotice.generationChangedNotice(state.snapshot()
-                                                                                                                                                                                                                     .epoch(),
-                                                                                                                                                                                                       outcome.nextSnapshot()
-                                                                                                                                                                                                                           .epoch(),
-                                                                                                                                                                                                       outcome.reason()));}
+        applyOutcomeEffects(state.startEpoch(), state.snapshot(), outcome);
         tx.transitionToOrDrop(newLeadingSteady(state.startEpoch(), outcome.nextSnapshot()));
     }
 
@@ -351,21 +346,33 @@ public final class HealthReconcilerContext {
             tx.ignore();
             return;
         }
-        if (outcome.resetTerm()) {clearLeaderData();}
-        if (!outcome.commands().isEmpty()) {fireCommandsApply(state.startEpoch(),
-                                                              outcome.commands(),
-                                                              outcome.reason(),
-                                                              state.snapshot(),
-                                                              outcome.nextSnapshot(),
-                                                              outcome.attemptedNodeIds());} else if (outcome.emitNotice()) {generationChangedSink.emit(GenerationChangedNotice.generationChangedNotice(state.snapshot()
-                                                                                                                                                                                                                     .epoch(),
-                                                                                                                                                                                                       outcome.nextSnapshot()
-                                                                                                                                                                                                                           .epoch(),
-                                                                                                                                                                                                       outcome.reason()));}
+        applyOutcomeEffects(state.startEpoch(), state.snapshot(), outcome);
         tx.transitionToOrDrop(new HealthReconcilerState.LeadingReprojecting(this,
                                                                             state.startEpoch(),
                                                                             outcome.nextSnapshot(),
                                                                             state.supplier()));
+    }
+
+    @Contract private void applyOutcomeEffects(Epoch startEpoch,
+                                               ClusterGenerationSnapshot previous,
+                                               SignalOutcome outcome) {
+        if (outcome.resetTerm()) {
+            clearLeaderData();
+        }
+        if (!outcome.commands().isEmpty()) {
+            fireCommandsApply(startEpoch,
+                              outcome.commands(),
+                              outcome.reason(),
+                              previous,
+                              outcome.nextSnapshot(),
+                              outcome.attemptedNodeIds());
+            return;
+        }
+        if (outcome.emitNotice()) {
+            generationChangedSink.emit(GenerationChangedNotice.generationChangedNotice(previous.epoch(),
+                                                                                       outcome.nextSnapshot().epoch(),
+                                                                                       outcome.reason()));
+        }
     }
 
     @Contract public void handleMembershipReseedFromLeadingSteady(HealthReconcilerState.LeadingSteady state,
@@ -505,7 +512,7 @@ public final class HealthReconcilerContext {
     private boolean isFencedOut(Epoch startEpoch, ClusterGenerationSnapshot snapshot, HealthSignal signal) {
         var observedAt = signal.observedAt();
         if (observedAt.equals(Epoch.ZERO)) {return false;}
-        if (observedAt.rabiaTerm() <startEpoch.rabiaTerm()) {
+        if (observedAt.rabiaTerm() < startEpoch.rabiaTerm()) {
             log.trace("Dropping pre-leader-change signal {} observedAt={} startEpoch={}",
                       signal.getClass().getSimpleName(),
                       observedAt,
@@ -513,7 +520,7 @@ public final class HealthReconcilerContext {
             return true;
         }
         var current = snapshot.epoch();
-        if (observedAt.rabiaTerm() == current.rabiaTerm() && observedAt.localCounter() <current.localCounter() - LATE_SIGNAL_WINDOW) {
+        if (observedAt.rabiaTerm() == current.rabiaTerm() && observedAt.localCounter() < current.localCounter() - LATE_SIGNAL_WINDOW) {
             log.trace("Dropping stale-counter signal {} observedAt={} currentEpoch={}",
                       signal.getClass().getSimpleName(),
                       observedAt,
@@ -525,7 +532,7 @@ public final class HealthReconcilerContext {
 
     private TermReconciliation reconcileLeaderTermIfChanged(ClusterGenerationSnapshot snapshot) {
         var currentTerm = rabiaTermSupplier.get();
-        if (snapshot.rabiaTerm() <currentTerm) {
+        if (snapshot.rabiaTerm() < currentTerm) {
             log.info("HealthReconciler detected new Rabia term {} (was {}); resetting to (term,0)",
                      currentTerm,
                      snapshot.rabiaTerm());
@@ -1034,6 +1041,11 @@ public final class HealthReconcilerContext {
         return List.copyOf(copy);
     }
 
+    // TODO(rc2): SignalOutcome conflates cluster-generation change with leader-term reset. The
+    // `unchanged(snapshot, resetTerm)` factory currently folds `changed` / `emitNotice` / `resetTerm`
+    // into a single boolean, which is only correct because every caller that sets resetTerm=true also
+    // wants the downstream notice emitted. Split into explicit fields (`changed`, `emitNotice`,
+    // `resetTerm`) with named factories once RC2 review happens.
     private record SignalOutcome(ClusterGenerationSnapshot nextSnapshot,
                                  GenerationReason reason,
                                  List<KVCommand<AetherKey>> commands,
