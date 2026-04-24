@@ -23,7 +23,7 @@ import java.util.function.Supplier;
 
 
 /// Inert `ClusterSyncCollector` for tests that don't exercise metrics collection.
-final class NoopClusterSyncCollector implements ClusterSyncCollector {
+public class NoopClusterSyncCollector implements ClusterSyncCollector {
     @Override public Map<String, Double> collectLocal() {return Map.of();}
     @Override public void recordCall(MethodName method, long durationMs) {}
     @Override public void recordCustom(String name, double value) {}

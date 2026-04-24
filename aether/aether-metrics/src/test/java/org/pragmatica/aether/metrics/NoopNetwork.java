@@ -21,7 +21,7 @@ import java.util.Set;
 
 
 /// No-op `ClusterNetwork` for unit tests that don't care about wire traffic.
-final class NoopNetwork implements ClusterNetwork {
+public class NoopNetwork implements ClusterNetwork {
     @Override public <M extends ProtocolMessage> Unit broadcast(M message) {return Unit.unit();}
     @Override public void connect(ConnectNode connectNode) {}
     @Override public void disconnect(DisconnectNode disconnectNode) {}

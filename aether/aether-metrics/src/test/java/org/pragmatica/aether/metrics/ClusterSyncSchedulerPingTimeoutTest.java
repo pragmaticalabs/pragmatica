@@ -10,6 +10,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -44,6 +45,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
         scheduler.onTopologyChange(new TopologyChangeNotification.NodeAdded(PEER_A, List.of(SELF, PEER_A)));
+        scheduler.onQuorumStateChange(QuorumStateNotification.established());
 
         scheduler.sendPingsNow();
         scheduler.sendPingsNow();
@@ -74,6 +76,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
         scheduler.onTopologyChange(new TopologyChangeNotification.NodeAdded(PEER_A, List.of(SELF, PEER_A)));
+        scheduler.onQuorumStateChange(QuorumStateNotification.established());
 
         scheduler.sendPingsNow();
         scheduler.sendPingsNow();
@@ -96,6 +99,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
         scheduler.onTopologyChange(new TopologyChangeNotification.NodeAdded(PEER_A, List.of(SELF, PEER_A)));
+        scheduler.onQuorumStateChange(QuorumStateNotification.established());
 
         scheduler.sendPingsNow();
         scheduler.sendPingsNow();
@@ -121,6 +125,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
         scheduler.onTopologyChange(new TopologyChangeNotification.NodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B)));
+        scheduler.onQuorumStateChange(QuorumStateNotification.established());
 
         scheduler.sendPingsNow();
         scheduler.onPongReceived(PEER_B);
