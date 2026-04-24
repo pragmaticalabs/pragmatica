@@ -42,6 +42,9 @@ import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.worker.metrics.CommunityScalingRequest;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.lang.concurrent.CancellableTask;
+import org.pragmatica.statemachine.Fsm;
+import org.pragmatica.statemachine.FsmState;
+import org.pragmatica.statemachine.TransitionRequest;
 
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -82,6 +85,53 @@ import org.slf4j.LoggerFactory;
     void onCommunityMetricsSnapshot(CommunityMetricsSnapshot snapshot);
     Map<String, CommunityMetricsSnapshot> communitySnapshots();
 
+    /// Lifecycle states. Dormant / Active / Stopped singletons per-instance. The Fsm is the
+    /// canonical "am I running?" indicator; the internal `evaluationTask` / scheduling logic is
+    /// unchanged and remains the mechanism by which Active behaviour is realized.
+    sealed interface ControlLoopState extends FsmState<ControlLoopState, LifecycleEvent>
+            permits Dormant, Active, Stopped {}
+
+    sealed interface LifecycleEvent {
+        record Activate() implements LifecycleEvent {}
+        record Deactivate() implements LifecycleEvent {}
+        record StopRequested() implements LifecycleEvent {}
+    }
+
+    record Dormant() implements ControlLoopState {
+        public static final Dormant INSTANCE = new Dormant();
+
+        @Override
+        public void handle(LifecycleEvent event, TransitionRequest<ControlLoopState, LifecycleEvent> tx) {
+            switch (event) {
+                case LifecycleEvent.Activate _ -> tx.transitionTo(Active.INSTANCE);
+                case LifecycleEvent.StopRequested _ -> tx.transitionTo(Stopped.INSTANCE);
+                default -> tx.ignore();
+            }
+        }
+    }
+
+    record Active() implements ControlLoopState {
+        public static final Active INSTANCE = new Active();
+
+        @Override
+        public void handle(LifecycleEvent event, TransitionRequest<ControlLoopState, LifecycleEvent> tx) {
+            switch (event) {
+                case LifecycleEvent.Deactivate _ -> tx.transitionTo(Dormant.INSTANCE);
+                case LifecycleEvent.StopRequested _ -> tx.transitionTo(Stopped.INSTANCE);
+                default -> tx.ignore();
+            }
+        }
+    }
+
+    record Stopped() implements ControlLoopState {
+        public static final Stopped INSTANCE = new Stopped();
+
+        @Override
+        public void handle(LifecycleEvent event, TransitionRequest<ControlLoopState, LifecycleEvent> tx) {
+            tx.ignore();
+        }
+    }
+
     static ControlLoop controlLoop(NodeId self,
                                    ClusterController controller,
                                    ClusterSyncCollector metricsCollector,
@@ -109,13 +159,15 @@ import org.slf4j.LoggerFactory;
                            AtomicLong quorumSequence,
                            Consumer<ScalingEvent> eventPublisher,
                            ConcurrentHashMap<String, CommunityMetricsSnapshot> communitySnapshotStore,
-                           ConcurrentHashMap<String, Long> communityScalingCooldowns) implements ControlLoop {
+                           ConcurrentHashMap<String, Long> communityScalingCooldowns,
+                           Fsm<ControlLoopState, LifecycleEvent> lifecycle) implements ControlLoop {
             private static final Logger log = LoggerFactory.getLogger(ControlLoop.class);
 
             private static final String COOLDOWN_KEY_PREFIX = "scaling-cooldown/";
 
             @Override public Promise<Unit> activate() {
                 log.info("Node {} activating control loop", self);
+                lifecycle.dispatch(new LifecycleEvent.Activate());
                 resetProtectionState();
                 startEvaluation();
                 return Promise.unitPromise();
@@ -123,6 +175,7 @@ import org.slf4j.LoggerFactory;
 
             @Override public Promise<Unit> deactivate() {
                 log.info("Node {} deactivating control loop", self);
+                lifecycle.dispatch(new LifecycleEvent.Deactivate());
                 stopEvaluation();
                 clearProtectionState();
                 return Promise.unitPromise();
@@ -133,7 +186,7 @@ import org.slf4j.LoggerFactory;
             }
 
             @Override public boolean isActive() {
-                return evaluationTask.isScheduled();
+                return lifecycle.current() instanceof Active;
             }
 
             @Override public void onTopologyChange(TopologyChangeNotification topologyChange) {
@@ -206,11 +259,12 @@ import org.slf4j.LoggerFactory;
             }
 
             @Override public void stop() {
+                lifecycle.dispatch(new LifecycleEvent.StopRequested());
                 stopEvaluation();
             }
 
             @Override public void onCommunityScalingRequest(CommunityScalingRequest request) {
-                if (!evaluationTask.isScheduled()) {
+                if (!(lifecycle.current() instanceof Active)) {
                     log.debug("Ignoring community scaling request: not leader");
                     return;
                 }
@@ -641,6 +695,7 @@ import org.slf4j.LoggerFactory;
                                new AtomicLong(0),
                                eventPublisher,
                                new ConcurrentHashMap<>(),
-                               new ConcurrentHashMap<>());
+                               new ConcurrentHashMap<>(),
+                               Fsm.fsm("control-loop-" + self.id(), Dormant.INSTANCE));
     }
 }
