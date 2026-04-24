@@ -20,6 +20,14 @@ public final class CancellableTask {
 
     private volatile Object future;
 
+    private CancellableTask(ScheduledFuture<?> future) {
+        this.future = future;
+    }
+
+    public static CancellableTask cancellableTask(ScheduledFuture<?> future) {
+        return new CancellableTask(future);
+    }
+
     private CancellableTask() {}
 
     public static CancellableTask cancellableTask() {
