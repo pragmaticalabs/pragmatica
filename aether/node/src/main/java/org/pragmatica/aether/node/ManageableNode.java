@@ -32,6 +32,7 @@ import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
@@ -81,6 +82,11 @@ public interface ManageableNode {
     StreamReadRouter streamReadRouter();
     ConsumerGroupCoordinator consumerGroupCoordinator();
     ConsumerGroupRegistry consumerGroupRegistry();
+    /// Stream namespacing facade. Default returns a disabled service (no-op snapshot/lookup).
+    /// Implementations override when the `streamNamespacesEnabled` flag is on.
+    default StreamNamespacesService streamNamespacesService() {
+        return StreamNamespacesService.disabled();
+    }
     TaskAssignmentCoordinator taskAssignmentCoordinator();
     TaskGroupAssignmentRegistry taskGroupAssignmentRegistry();
     Map<String, StorageFactory.StorageSetup> storageSetups();

@@ -116,6 +116,8 @@ public enum ManagementRoute {
     CONSUMER_GROUP_JOIN(POST, "/api/streams/groups/join", List.of(), taskGroup(STREAMING)),
     CONSUMER_GROUP_LEAVE(POST, "/api/streams/groups/leave", List.of(), taskGroup(STREAMING)),
     CONSUMER_GROUP_STATUS(GET, "/api/streams/groups", List.of("groupId"), taskGroup(STREAMING)),
+    STREAM_NAMESPACES_LIST(GET, "/api/stream-namespaces", List.of(), LOCAL),
+    STREAM_NAMESPACES_GET(GET, "/api/stream-namespaces", List.of("namespace", "stream", "version"), LOCAL),
     SCHEDULED_TASKS_LIST(GET, "/api/scheduled-tasks", List.of(), ANY),
     SCHEDULED_TASKS_BY_SECTION(GET, "/api/scheduled-tasks", List.of("section"), ANY),
     SCHEDULED_TASK_STATE(GET, "/api/scheduled-tasks/state", List.of("section", "artifact", "methodName"), ANY),

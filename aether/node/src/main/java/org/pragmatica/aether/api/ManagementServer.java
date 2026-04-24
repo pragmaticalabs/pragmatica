@@ -40,6 +40,7 @@ import org.pragmatica.aether.api.routes.SchemaRoutes;
 import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.api.routes.StatusRoutes;
 import org.pragmatica.aether.api.routes.StorageRoutes;
+import org.pragmatica.aether.api.routes.StreamNamespacesRoutes;
 import org.pragmatica.aether.api.routes.StreamRoutes;
 import org.pragmatica.aether.api.routes.TaskRoutes;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
@@ -281,6 +282,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(StreamRoutes.streamRoutes(nodeSupplier,
                                                    nodeSupplier.get().consumerGroupCoordinator(),
                                                    nodeSupplier.get().consumerGroupRegistry()));
+        routeSources.add(StreamNamespacesRoutes.streamNamespacesRoutes(nodeSupplier.get().streamNamespacesService()));
         routeSources.add(StorageRoutes.storageRoutes(nodeSupplier));
         routeSources.add(ApiKeyRoutes.apiKeyRoutes(nodeSupplier));
         routeSources.add(TaskRoutes.taskRoutes(nodeSupplier));
