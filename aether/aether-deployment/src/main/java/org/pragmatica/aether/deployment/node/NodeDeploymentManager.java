@@ -58,6 +58,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.statemachine.Fsm;
+import org.pragmatica.statemachine.FsmState;
+import org.pragmatica.statemachine.TransitionRequest;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
@@ -100,6 +103,36 @@ public interface NodeDeploymentManager {
         static SuspendedSlice suspendedSlice(SliceNodeKey key, SliceDeployment deployment) {
             return new SuspendedSlice(key, deployment);
         }
+    }
+
+    /// Lifecycle states mirrored by an internal Fsm for consistency with the cluster-wide FSM
+    /// pattern. The existing sealed `NodeDeploymentState` hierarchy continues to own domain
+    /// behaviour (data-rich Active variant etc.); this Fsm is a parallel dormant/active marker.
+    sealed interface LifecycleState extends FsmState<LifecycleState, LifecycleEvent>
+            permits LifecycleState.Dormant, LifecycleState.Active {
+        record Dormant() implements LifecycleState {
+            public static final Dormant INSTANCE = new Dormant();
+            @Override public void handle(LifecycleEvent event, TransitionRequest<LifecycleState, LifecycleEvent> tx) {
+                switch (event) {
+                    case LifecycleEvent.Activate _ -> tx.transitionTo(Active.INSTANCE);
+                    default -> tx.ignore();
+                }
+            }
+        }
+        record Active() implements LifecycleState {
+            public static final Active INSTANCE = new Active();
+            @Override public void handle(LifecycleEvent event, TransitionRequest<LifecycleState, LifecycleEvent> tx) {
+                switch (event) {
+                    case LifecycleEvent.Deactivate _ -> tx.transitionTo(Dormant.INSTANCE);
+                    default -> tx.ignore();
+                }
+            }
+        }
+    }
+
+    sealed interface LifecycleEvent {
+        record Activate() implements LifecycleEvent {}
+        record Deactivate() implements LifecycleEvent {}
     }
 
     sealed interface NodeDeploymentState {
@@ -1329,7 +1362,8 @@ public interface NodeDeploymentManager {
                                  Option<SliceInvokerFacade> sliceInvokerFacade,
                                  TimeSpan activationChainTimeout,
                                  TimeSpan transitionRetryDelay,
-                                 AtomicReference<Runnable> shutdownCallback) implements NodeDeploymentManager {
+                                 AtomicReference<Runnable> shutdownCallback,
+                                 Fsm<LifecycleState, LifecycleEvent> lifecycle) implements NodeDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(NodeDeploymentManager.class);
 
             @Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
@@ -1375,6 +1409,7 @@ public interface NodeDeploymentManager {
                                                                                     ConfigNotificationManager.configNotificationManager(),
                                                                                     RoutingEpochAckTracker.routingEpochAckTracker());
                 state().set(activeState);
+                lifecycle().dispatch(new LifecycleEvent.Activate());
                 log.info("Node {} NodeDeploymentManager activated", self().id());
                 registerLifecycleOnDuty();
                 processPendingLoadCommands(activeState);
@@ -1389,6 +1424,7 @@ public interface NodeDeploymentManager {
                 if (state().get() instanceof NodeDeploymentState.ActiveNodeDeploymentState activeState) {suspended = activeState.suspendSlices();}
                 if (quorumSequence.get() == notification.sequence()) {
                     state().set(new NodeDeploymentState.DormantNodeDeploymentState(suspended));
+                    lifecycle().dispatch(new LifecycleEvent.Deactivate());
                     log.info("Node {} NodeDeploymentManager deactivated with {} suspended slices",
                              self().id(),
                              suspended.size());
@@ -1507,6 +1543,7 @@ public interface NodeDeploymentManager {
                                      sliceInvokerFacade,
                                      activationChainTimeout,
                                      transitionRetryDelay,
-                                     new AtomicReference<>());
+                                     new AtomicReference<>(),
+                                     Fsm.fsm("node-deployment-" + self.id(), LifecycleState.Dormant.INSTANCE));
     }
 }
