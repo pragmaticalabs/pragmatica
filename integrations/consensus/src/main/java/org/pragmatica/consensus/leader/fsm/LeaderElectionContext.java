@@ -8,10 +8,12 @@
 package org.pragmatica.consensus.leader.fsm;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.statemachine.Fsm;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -51,13 +53,18 @@ public final class LeaderElectionContext {
 
     // Per-FSM "singletons" — one instance per state class, shared for the lifetime of this FSM.
     // Set once during FSM construction via initStates(); the fields stay stable afterward so CAS
-    // comparisons against them return the same reference.
-    private LeaderElectionState.Dormant dormant;
-    private LeaderElectionState.QuorumWaiting quorumWaiting;
-    private LeaderElectionState.Electing electing;
-    private LeaderElectionState.ReElecting reElecting;
-    private LeaderElectionState.QuorumLost quorumLost;
-    private LeaderElectionState.Stopped stopped;
+    // comparisons against them return the same reference. Volatile to guarantee safe publication
+    // across the dispatcher threads that may call state accessors.
+    private volatile LeaderElectionState.Dormant dormant;
+    private volatile LeaderElectionState.QuorumWaiting quorumWaiting;
+    private volatile LeaderElectionState.Electing electing;
+    private volatile LeaderElectionState.ReElecting reElecting;
+    private volatile LeaderElectionState.QuorumLost quorumLost;
+    private volatile LeaderElectionState.Stopped stopped;
+
+    // Per-FSM Fsm reference — bound once after construction. Replaces the global static FSM_REF.
+    private final AtomicReference<Option<Fsm<LeaderElectionState, ClusterFsmEvent>>> fsmRef =
+        new AtomicReference<>(Option.none());
 
     private final AtomicReference<Option<NodeId>> currentLeader = new AtomicReference<>(Option.none());
     private final AtomicReference<Option<NodeId>> lastNotifiedLeader = new AtomicReference<>(Option.none());
@@ -179,6 +186,14 @@ public final class LeaderElectionContext {
     public LeaderElectionState.ReElecting reElecting() { return reElecting; }
     public LeaderElectionState.QuorumLost quorumLost() { return quorumLost; }
     public LeaderElectionState.Stopped stopped() { return stopped; }
+
+    public void bindFsm(Fsm<LeaderElectionState, ClusterFsmEvent> fsm) {
+        fsmRef.set(Option.some(fsm));
+    }
+
+    public Option<Fsm<LeaderElectionState, ClusterFsmEvent>> fsm() {
+        return fsmRef.get();
+    }
 
     // --- Derived helpers ---
 

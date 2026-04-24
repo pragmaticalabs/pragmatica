@@ -68,11 +68,12 @@ public final class CertificateRenewalScheduler {
         final AtomicReference<Instant> currentNotAfter;
         final AtomicReference<Instant> lastRenewalAt = new AtomicReference<>(Instant.now());
         final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
+        final AtomicReference<Option<Fsm<SchedulerState, RenewalEvent>>> fsmRef = new AtomicReference<>(Option.none());
 
-        Idle idle;
-        Healthy healthy;
-        Renewing renewing;
-        Stopped stopped;
+        volatile Idle idle;
+        volatile Healthy healthy;
+        volatile Renewing renewing;
+        volatile Stopped stopped;
         // RetryBackoff is data-carrying (retryCount) — fresh instance per failure.
 
         Context(CertificateProvider provider,
@@ -98,6 +99,14 @@ public final class CertificateRenewalScheduler {
             scheduledTask.getAndSet(Option.none())
                          .onPresent(task -> task.cancel(false));
         }
+
+        void bindFsm(Fsm<SchedulerState, RenewalEvent> fsm) {
+            fsmRef.set(Option.some(fsm));
+        }
+
+        void dispatch(RenewalEvent event) {
+            fsmRef.get().onPresent(fsm -> fsm.dispatch(event));
+        }
     }
 
     public sealed interface SchedulerState extends FsmState<SchedulerState, RenewalEvent>
@@ -120,11 +129,11 @@ public final class CertificateRenewalScheduler {
             var delay = calculateRenewalDelay(ctx.currentNotAfter.get());
             if (delay.isNegative() || delay.isZero()) {
                 log.info("Certificate validity window passed — renewing immediately");
-                SharedScheduler.schedule(() -> dispatch(new RenewalEvent.Tick()),
+                SharedScheduler.schedule(() -> ctx.dispatch(new RenewalEvent.Tick()),
                                          TimeSpan.timeSpan(0).millis());
                 return;
             }
-            var task = SharedScheduler.schedule(() -> dispatch(new RenewalEvent.Tick()),
+            var task = SharedScheduler.schedule(() -> ctx.dispatch(new RenewalEvent.Tick()),
                                                 TimeSpan.timeSpan(delay.toMillis()).millis());
             ctx.scheduledTask.set(Option.some(task));
             log.info("Next certificate renewal in {}", formatDuration(delay));
@@ -143,10 +152,6 @@ public final class CertificateRenewalScheduler {
                 default -> tx.ignore();
             }
         }
-
-        private static void dispatch(RenewalEvent event) {
-            FsmHolder.dispatch(event);
-        }
     }
 
     record Renewing(Context ctx) implements SchedulerState {
@@ -154,8 +159,8 @@ public final class CertificateRenewalScheduler {
         public void onEntry() {
             log.info("Renewing certificate for node {}", ctx.nodeId);
             ctx.provider.issueCertificate(ctx.nodeId, ctx.hostname)
-                        .onSuccess(bundle -> FsmHolder.dispatch(new RenewalEvent.RenewalSucceeded(bundle)))
-                        .onFailure(cause -> FsmHolder.dispatch(new RenewalEvent.RenewalFailed(cause.message())));
+                        .onSuccess(bundle -> ctx.dispatch(new RenewalEvent.RenewalSucceeded(bundle)))
+                        .onFailure(cause -> ctx.dispatch(new RenewalEvent.RenewalFailed(cause.message())));
         }
 
         @Override
@@ -174,7 +179,7 @@ public final class CertificateRenewalScheduler {
         public void onEntry() {
             var delayMinutes = calculateRetryDelay(retryCount);
             log.error("Scheduling certificate renewal retry #{} in {} minutes", retryCount, delayMinutes);
-            var task = SharedScheduler.schedule(() -> FsmHolder.dispatch(new RenewalEvent.Tick()),
+            var task = SharedScheduler.schedule(() -> ctx.dispatch(new RenewalEvent.Tick()),
                                                 TimeSpan.timeSpan(delayMinutes).minutes());
             ctx.scheduledTask.set(Option.some(task));
         }
@@ -207,26 +212,6 @@ public final class CertificateRenewalScheduler {
         }
     }
 
-    /// Holder for the Fsm reference — set during factory construction, used by state actions for
-    /// self-dispatch (timer callbacks, async issueCertificate continuations). One per FSM
-    /// instance: since CertificateRenewalScheduler is typically a singleton per node, a shared
-    /// static holder is acceptable. If multiple schedulers coexist per JVM, use a per-instance
-    /// holder instead.
-    private static final class FsmHolder {
-        private static final AtomicReference<Fsm<SchedulerState, RenewalEvent>> FSM = new AtomicReference<>();
-
-        static void bind(Fsm<SchedulerState, RenewalEvent> fsm) {
-            FSM.set(fsm);
-        }
-
-        static void dispatch(RenewalEvent event) {
-            var fsm = FSM.get();
-            if (fsm != null) {
-                fsm.dispatch(event);
-            }
-        }
-    }
-
     private final Context ctx;
     private final Fsm<SchedulerState, RenewalEvent> fsm;
 
@@ -244,7 +229,7 @@ public final class CertificateRenewalScheduler {
         var idle = new Idle(ctx);
         ctx.bindSingletons(idle, new Healthy(ctx), new Renewing(ctx), new Stopped(ctx));
         var fsm = Fsm.fsm("certificate-renewal-scheduler-" + nodeId, idle);
-        FsmHolder.bind(fsm);
+        ctx.bindFsm(fsm);
         return new CertificateRenewalScheduler(ctx, fsm);
     }
 

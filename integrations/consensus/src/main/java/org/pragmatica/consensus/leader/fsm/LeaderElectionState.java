@@ -17,13 +17,12 @@ import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ProposalSettled;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
-import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.ThreadLocalRandom;
 
 /// Sealed state hierarchy for the leader-election FSM. Each state is a record bound to the
 /// shared [`LeaderElectionContext`]. Data-free states (Dormant, QuorumWaiting, Electing,
@@ -47,18 +46,11 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
     LeaderElectionContext ctx();
 
-    /// Holder for the Fsm reference — set once after the FSM is constructed. States use it to
-    /// self-dispatch events (e.g. replay of buffered ConsensusReady, or proposal-callback
-    /// events from async Promise completions).
-    AtomicReference<Fsm<LeaderElectionState, ClusterFsmEvent>> FSM_REF = new AtomicReference<>();
-
-    /// Called once from [`LeaderElectionFsm`] after the Fsm is created.
-    static void bindFsm(Fsm<LeaderElectionState, ClusterFsmEvent> fsm) {
-        FSM_REF.set(fsm);
-    }
-
-    static Fsm<LeaderElectionState, ClusterFsmEvent> fsm() {
-        return FSM_REF.get();
+    /// Dispatches an event to this FSM instance. Retrieves the per-context Fsm reference and
+    /// dispatches if present; silently drops if the Fsm has not yet been bound (possible only
+    /// during construction race, normally unreachable).
+    private static void dispatchSelf(LeaderElectionContext ctx, ClusterFsmEvent event) {
+        ctx.fsm().onPresent(fsm -> fsm.dispatch(event));
     }
 
     // --- State records ---
@@ -82,7 +74,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         public void onEntry() {
             if (ctx.consumeConsensusReadyPending()) {
                 log.info("Replaying buffered ConsensusReady on entry to QuorumWaiting");
-                SharedScheduler.schedule(() -> fsm().dispatch(new ConsensusReady()),
+                SharedScheduler.schedule(() -> dispatchSelf(ctx, new ConsensusReady()),
                                          TimeSpan.timeSpan(0).millis());
             }
         }
@@ -115,7 +107,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             var rank = ctx.rankOfSelf();
             var delay = ctx.baseElectionDelay().millis() + rank * ctx.perRankDelay().millis();
             log.info("Entering Electing: rank={}, first-tick delay={}ms", rank, delay);
-            SharedScheduler.schedule(() -> fsm().dispatch(new ElectionTick()),
+            SharedScheduler.schedule(() -> dispatchSelf(ctx, new ElectionTick()),
                                      TimeSpan.timeSpan(delay).millis());
         }
 
@@ -308,9 +300,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
     private static void scheduleElectionTick(LeaderElectionContext ctx) {
         var retry = ctx.incrementElectionRetryCount();
-        var jitterMs = (long) (ctx.proposalRetryDelay().millis() * (1.0 + Math.random() * 0.5));
+        var jitterMs = (long) (ctx.proposalRetryDelay().millis() * (1.0 + ThreadLocalRandom.current().nextDouble(0.5)));
         log.debug("Scheduling election tick #{} in {}ms", retry, jitterMs);
-        SharedScheduler.schedule(() -> fsm().dispatch(new ElectionTick()),
+        SharedScheduler.schedule(() -> dispatchSelf(ctx, new ElectionTick()),
                                  TimeSpan.timeSpan(jitterMs).millis());
     }
 
@@ -339,14 +331,14 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             var viewSeq = ctx.nextViewSequence();
             log.info("Submitting leader proposal: candidate={}, viewSequence={}, epoch={}",
                      candidate, viewSeq, epoch);
-            SharedScheduler.schedule(() -> fsm().dispatch(new ProposalSettled(candidate, false,
-                                                                              "timeout@epoch=" + epoch)),
+            SharedScheduler.schedule(() -> dispatchSelf(ctx, new ProposalSettled(candidate, false,
+                                                                                 "timeout@epoch=" + epoch)),
                                      ctx.proposalTimeout());
             handler.propose(candidate, viewSeq)
-                   .onSuccess(_ -> fsm().dispatch(new ProposalSettled(candidate, true,
-                                                                     "submitted@epoch=" + epoch)))
-                   .onFailure(cause -> fsm().dispatch(new ProposalSettled(candidate, false,
-                                                                          cause.message() + "@epoch=" + epoch)));
+                   .onSuccess(_ -> dispatchSelf(ctx, new ProposalSettled(candidate, true,
+                                                                         "submitted@epoch=" + epoch)))
+                   .onFailure(cause -> dispatchSelf(ctx, new ProposalSettled(candidate, false,
+                                                                             cause.message() + "@epoch=" + epoch)));
         });
     }
 

@@ -235,9 +235,11 @@ record HealthReconcilerRecord(NodeId self,
     }
 
     private void ensureReprojectionExecutor() {
-        if (reprojectionExecutorRef.get() != null) {return;}
-        var executor = Executors.newSingleThreadExecutor(reprojectionThreadFactory(self));
-        if (!reprojectionExecutorRef.compareAndSet(null, executor)) {executor.shutdownNow();}
+        Option.option(reprojectionExecutorRef.get())
+              .onEmpty(() -> {
+                  var executor = Executors.newSingleThreadExecutor(reprojectionThreadFactory(self));
+                  if (!reprojectionExecutorRef.compareAndSet(null, executor)) {executor.shutdownNow();}
+              });
     }
 
     private static ThreadFactory reprojectionThreadFactory(NodeId self) {
@@ -249,19 +251,21 @@ record HealthReconcilerRecord(NodeId self,
     }
 
     private void shutdownReprojectionExecutor() {
-        var executor = reprojectionExecutorRef.getAndSet(null);
-        if (executor == null) {return;}
-        executor.shutdown();
-        awaitReprojectionExecutorTermination(executor);
+        Option.option(reprojectionExecutorRef.getAndSet(null))
+              .onPresent(executor -> {
+                  executor.shutdown();
+                  awaitReprojectionExecutorTermination(executor);
+              });
     }
 
     @Contract private static void awaitReprojectionExecutorTermination(ExecutorService executor) {
-        try {
-            if (!executor.awaitTermination(1, TimeUnit.SECONDS)) {executor.shutdownNow();}
-        } catch (InterruptedException _) {
-            Thread.currentThread().interrupt();
-            executor.shutdownNow();
-        }
+        org.pragmatica.lang.Result.lift(() -> {
+                   if (!executor.awaitTermination(1, TimeUnit.SECONDS)) {executor.shutdownNow();}
+               })
+               .onFailure(_ -> {
+                   Thread.currentThread().interrupt();
+                   executor.shutdownNow();
+               });
     }
 
     @Contract@Override public boolean isActive() {
@@ -282,30 +286,29 @@ record HealthReconcilerRecord(NodeId self,
 
     @Contract@Override public void requestReprojection(Supplier<ClusterGenerationSnapshot> reprojectionSupplier,
                                                        String reason) {
-        if (reprojectionSupplier == null) {return;}
-        if (!isLeader.get() || !started.get()) {return;}
-        reprojectionSupplierRef.set(Option.some(reprojectionSupplier));
-        reprojectionDirty.set(true);
-        var executor = reprojectionExecutorRef.get();
-        if (executor == null) {return;}
-        submitReprojectionDrain(executor, reason);
+        Option.option(reprojectionSupplier)
+              .filter(_ -> isLeader.get() && started.get())
+              .onPresent(fn -> {
+                  reprojectionSupplierRef.set(Option.some(fn));
+                  reprojectionDirty.set(true);
+                  Option.option(reprojectionExecutorRef.get())
+                        .onPresent(executor -> submitReprojectionDrain(executor, reason));
+              });
     }
 
     @Contract@Override public void requestReprojection(String reason) {
-        if (!isLeader.get() || !started.get()) {return;}
-        if (reprojectionSupplierRef.get().isEmpty()) {return;}
+        if (!isLeader.get() || !started.get() || reprojectionSupplierRef.get().isEmpty()) {
+            return;
+        }
         reprojectionDirty.set(true);
-        var executor = reprojectionExecutorRef.get();
-        if (executor == null) {return;}
-        submitReprojectionDrain(executor, reason);
+        Option.option(reprojectionExecutorRef.get())
+              .onPresent(executor -> submitReprojectionDrain(executor, reason));
     }
 
     @Contract private void submitReprojectionDrain(ExecutorService executor, String reason) {
-        try {
-            executor.execute(() -> drainReprojection(reason));
-        } catch (RejectedExecutionException _) {
-            log.trace("Reprojection request rejected (executor shut down) reason={}", reason);
-        }
+        org.pragmatica.lang.Result.lift(() -> executor.execute(() -> drainReprojection(reason)))
+              .onFailure(cause -> log.trace("Reprojection request rejected (executor shut down) reason={}: {}",
+                                            reason, cause.message()));
     }
 
     @Contract private void drainReprojection(String reason) {
@@ -317,13 +320,9 @@ record HealthReconcilerRecord(NodeId self,
     }
 
     @Contract private void runOneReprojection(Supplier<ClusterGenerationSnapshot> supplier, String reason) {
-        try {
-            var fresh = supplier.get();
-            if (fresh == null) {return;}
-            reseedMembership(fresh);
-        } catch (RuntimeException e) {
-            log.warn("Reprojection failed (reason={}): {}", reason, e.getMessage());
-        }
+        org.pragmatica.lang.Result.lift(supplier::get)
+              .onSuccess(fresh -> Option.option(fresh).onPresent(this::reseedMembership))
+              .onFailure(cause -> log.warn("Reprojection failed (reason={}): {}", reason, cause.message()));
     }
 
     @Contract@Override public void reseedMembership(ClusterGenerationSnapshot freshProjection) {

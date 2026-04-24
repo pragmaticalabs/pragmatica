@@ -30,7 +30,7 @@ public final class LeaderElectionFsm {
         context.initStates();
         var fsmName = "leader-election-" + context.self().id();
         var fsm = Fsm.fsm(fsmName, context.dormant(), observer);
-        LeaderElectionState.bindFsm(fsm);
+        context.bindFsm(fsm);
         return fsm;
     }
 }

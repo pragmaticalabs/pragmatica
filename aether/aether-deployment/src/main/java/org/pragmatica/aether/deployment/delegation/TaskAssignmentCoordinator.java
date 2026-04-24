@@ -21,6 +21,7 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -51,16 +52,16 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// transitions on caller thread. Dormant is a per-FSM singleton; Active is a fresh record per
 /// entry carrying the leader-tenure's working state (assignment map, failed-node tracking,
 /// reconcile timer).
-@SuppressWarnings("JBCT-RET-01")
-// MessageReceiver callbacks — void required by messaging framework
 public sealed interface TaskAssignmentCoordinator {
     TimeSpan DEFAULT_RECONCILE_INTERVAL = timeSpan(5).seconds();
 
     long FAILURE_COOLDOWN_MS = 30_000L;
 
+    @Contract
     @MessageReceiver
     void onLeaderChange(LeaderChange leaderChange);
 
+    @Contract
     @MessageReceiver
     void onTopologyChange(TopologyChangeNotification notification);
 
@@ -217,26 +218,28 @@ public sealed interface TaskAssignmentCoordinator {
 
         private List<TaskGroup> identifyGroupsNeedingAssignment(List<NodeId> healthyNodes) {
             var healthySet = new HashSet<>(healthyNodes);
-            var needsAssignment = new ArrayList<TaskGroup>();
-            for (var group : TaskGroup.values()) {
-                var assignment = assignmentMap.get(group);
-                if (assignment == null) {
-                    needsAssignment.add(group);
-                    continue;
-                }
-                if (!healthySet.contains(assignment.assignedTo())) {
-                    log.info("Task group {} orphaned (node {} not in topology), will reassign",
-                             group, assignment.assignedTo());
-                    needsAssignment.add(group);
-                    continue;
-                }
-                if (assignment.status() == AssignmentStatus.FAILED) {
-                    trackFailedNode(group, assignment.assignedTo());
-                    log.info("Task group {} failed on node {}, will reassign", group, assignment.assignedTo());
-                    needsAssignment.add(group);
-                }
+            return java.util.Arrays.stream(TaskGroup.values())
+                                   .filter(group -> needsReassignment(group, healthySet))
+                                   .toList();
+        }
+
+        private boolean needsReassignment(TaskGroup group, Set<NodeId> healthySet) {
+            return Option.option(assignmentMap.get(group))
+                         .fold(() -> true, assignment -> isOrphanedOrFailed(group, assignment, healthySet));
+        }
+
+        private boolean isOrphanedOrFailed(TaskGroup group, TaskAssignmentValue assignment, Set<NodeId> healthySet) {
+            if (!healthySet.contains(assignment.assignedTo())) {
+                log.info("Task group {} orphaned (node {} not in topology), will reassign",
+                         group, assignment.assignedTo());
+                return true;
             }
-            return needsAssignment;
+            if (assignment.status() == AssignmentStatus.FAILED) {
+                trackFailedNode(group, assignment.assignedTo());
+                log.info("Task group {} failed on node {}, will reassign", group, assignment.assignedTo());
+                return true;
+            }
+            return false;
         }
 
         private void assignGroups(List<TaskGroup> groups, List<NodeId> healthyNodes) {
@@ -269,10 +272,11 @@ public sealed interface TaskAssignmentCoordinator {
             if (!recentlyFailed.contains(node)) {
                 return false;
             }
-            var assignment = assignmentMap.values().stream()
-                                          .filter(v -> v.assignedTo().equals(node) && v.status() == AssignmentStatus.FAILED)
-                                          .findFirst();
-            return assignment.map(v -> v.assignedAtMs() > cooldownExpiry).orElse(false);
+            return Option.from(assignmentMap.values().stream()
+                                            .filter(v -> v.assignedTo().equals(node) && v.status() == AssignmentStatus.FAILED)
+                                            .findFirst())
+                         .map(v -> v.assignedAtMs() > cooldownExpiry)
+                         .or(false);
         }
 
         private long countActiveAssignments(NodeId node) {

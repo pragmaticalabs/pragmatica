@@ -304,14 +304,9 @@ import org.slf4j.LoggerFactory;
         }
 
         private static void executeTask(Context ctx, ScheduledTask task) {
-            Result.lift(() -> ctx.invoker.invoke(task.artifact(), task.methodName(), Unit.unit())
-                                         .onFailure(cause -> handleTaskFailure(ctx, task, cause.message()))
-                                         .onSuccess(_ -> writeSuccessState(ctx, task)))
-                  .onFailure(cause -> {
-                      log.error("Error executing scheduled task {}.{}: {}",
-                                task.configSection(), task.methodName().name(), cause.message());
-                      writeFailureState(ctx, task, cause.message());
-                  });
+            ctx.invoker.invoke(task.artifact(), task.methodName(), Unit.unit())
+                       .onSuccess(_ -> writeSuccessState(ctx, task))
+                       .onFailure(cause -> handleTaskFailure(ctx, task, cause.message()));
         }
 
         private static void handleTaskFailure(Context ctx, ScheduledTask task, String message) {
@@ -383,7 +378,7 @@ import org.slf4j.LoggerFactory;
         }
     }
 
-    sealed interface IntervalParser {
+    interface IntervalParser {
         Cause EMPTY_INTERVAL = () -> "Interval string is empty";
 
         Functions.Fn1<Cause, String> INVALID_INTERVAL =
@@ -406,7 +401,7 @@ import org.slf4j.LoggerFactory;
 
         private static Result<Long> parseNumber(String numberPart, String original) {
             return Result.lift(() -> Long.parseLong(numberPart))
-                         .fold(_ -> INVALID_INTERVAL.apply(original).result(), Result::success);
+                         .mapError(_ -> INVALID_INTERVAL.apply(original));
         }
 
         private static Result<TimeSpan> applyUnit(long value, char suffix, String original) {
@@ -419,7 +414,5 @@ import org.slf4j.LoggerFactory;
                 default -> INVALID_INTERVAL.apply(original).result();
             };
         }
-
-        record unused() implements IntervalParser {}
     }
 }
