@@ -44,7 +44,9 @@ public final class LeaderElectionFsm {
                                                    TimeSpan perRankDelay) {
         return leaderElectionFsm(self, proposalHandler, expectedCluster, router,
                                  proposalRetryDelay, baseElectionDelay, perRankDelay,
-                                 FsmObserver.noop(), LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER);
+                                 FsmObserver.noop(),
+                                 LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
+                                 LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER);
     }
 
     public static FsmWithContext leaderElectionFsm(NodeId self,
@@ -57,7 +59,9 @@ public final class LeaderElectionFsm {
                                                    FsmObserver<LeaderElectionState, ClusterFsmEvent> observer) {
         return leaderElectionFsm(self, proposalHandler, expectedCluster, router,
                                  proposalRetryDelay, baseElectionDelay, perRankDelay,
-                                 observer, LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER);
+                                 observer,
+                                 LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
+                                 LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER);
     }
 
     public static FsmWithContext leaderElectionFsm(NodeId self,
@@ -69,12 +73,33 @@ public final class LeaderElectionFsm {
                                                    TimeSpan perRankDelay,
                                                    FsmObserver<LeaderElectionState, ClusterFsmEvent> observer,
                                                    Supplier<Long> rabiaTermSupplier) {
+        return leaderElectionFsm(self, proposalHandler, expectedCluster, router,
+                                 proposalRetryDelay, baseElectionDelay, perRankDelay,
+                                 observer, rabiaTermSupplier,
+                                 LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER);
+    }
+
+    /// Full-arity factory accepting both the rabia-term supplier and the consensus-readiness
+    /// supplier. Production wiring (Aether's `RabiaNode`) plumbs the live `RabiaEngine::isActive`
+    /// accessor as `consensusReadySupplier`; tests pass an injectable `AtomicBoolean::get`-style
+    /// latch when they need to drive `QuorumWaiting → Electing` advancement deterministically.
+    public static FsmWithContext leaderElectionFsm(NodeId self,
+                                                   Option<LeaderProposalHandler> proposalHandler,
+                                                   List<NodeId> expectedCluster,
+                                                   MessageRouter router,
+                                                   TimeSpan proposalRetryDelay,
+                                                   TimeSpan baseElectionDelay,
+                                                   TimeSpan perRankDelay,
+                                                   FsmObserver<LeaderElectionState, ClusterFsmEvent> observer,
+                                                   Supplier<Long> rabiaTermSupplier,
+                                                   Supplier<Boolean> consensusReadySupplier) {
         var ctxHolder = new AtomicReference<LeaderElectionContext>();
         var timeout = LeaderElectionContext.proposalTimeoutFor(proposalRetryDelay);
         Function<Fsm<LeaderElectionState, ClusterFsmEvent>, LeaderElectionState> initialStateFactory =
             f -> buildContextAndInitialState(ctxHolder, f, self, proposalHandler, expectedCluster,
                                              router, proposalRetryDelay, baseElectionDelay,
-                                             perRankDelay, timeout, rabiaTermSupplier);
+                                             perRankDelay, timeout, rabiaTermSupplier,
+                                             consensusReadySupplier);
         var fsm = Fsm.fsm("leader-election", self.id(), initialStateFactory, observer);
         return new FsmWithContext(fsm, ctxHolder.get());
     }
@@ -89,13 +114,15 @@ public final class LeaderElectionFsm {
                                                                    TimeSpan baseElectionDelay,
                                                                    TimeSpan perRankDelay,
                                                                    TimeSpan proposalTimeout,
-                                                                   Supplier<Long> rabiaTermSupplier) {
+                                                                   Supplier<Long> rabiaTermSupplier,
+                                                                   Supplier<Boolean> consensusReadySupplier) {
         var ctx = new LeaderElectionContext(fsm, self, proposalHandler, expectedCluster, router,
                                             proposalRetryDelay, baseElectionDelay, perRankDelay,
                                             proposalTimeout,
                                             LeaderElectionContext.DEFAULT_STUCK_ELECTION_THRESHOLD,
                                             LeaderElectionContext.DEFAULT_JITTER_SOURCE,
-                                            rabiaTermSupplier);
+                                            rabiaTermSupplier,
+                                            consensusReadySupplier);
         ctxHolder.set(ctx);
         return ctx.dormant();
     }

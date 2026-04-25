@@ -197,7 +197,9 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                     .toList();
         LeaderManager leaderManager;
         if (useConsensusLeaderElection) {
-            // Consensus-based leader election: submit proposals through consensus
+            // Consensus-based leader election: submit proposals through consensus.
+            // `consensus::isActive` is the SSOT for "consensus engine is ready" — the FSM consults
+            // it on entry to `QuorumWaiting` to decide whether to immediately advance to electing.
             LeaderManager.LeaderProposalHandler proposalHandler =
             (candidate, viewSequence) -> submitLeaderProposal(consensus, candidate, DEFAULT_PROPOSAL_TIMEOUT);
             leaderManager = LeaderManager.leaderManager(config.topology()
@@ -205,7 +207,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                         delegateRouter,
                                                         proposalHandler,
                                                         expectedCluster,
-                                                        rabiaTermSupplier);
+                                                        rabiaTermSupplier,
+                                                        consensus::isActive);
         } else {
             // Local election mode: backward compatible
             leaderManager = LeaderManager.leaderManager(config.topology()

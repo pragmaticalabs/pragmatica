@@ -486,10 +486,14 @@ class LeaderManagerTest {
         }
 
         @Test
-        void triggerElectionBeforeQuorumEstablished_bufferedReplay() throws InterruptedException {
-            // AetherNode flow: triggerElection may arrive before QuorumEstablished. The FSM must
-            // buffer it and replay once quorum establishes, yielding a submitted proposal for
-            // the min-rank candidate.
+        void quorumEstablished_consensusAlreadyReady_autoAdvancesToElecting() throws InterruptedException {
+            // AetherNode flow: by the time quorum establishes, the consensus engine may already
+            // be active (its readiness is independent of leader election). Per the SSOT design,
+            // QuorumWaiting.onEntry queries the injected `consensusReadySupplier` directly and
+            // self-dispatches a ConsensusReady when the supplier returns true — no buffered
+            // event between FSM states. We model this with an `AtomicBoolean`-backed supplier,
+            // pre-set to true, and verify the FSM advances to Electing without any external
+            // `triggerElection()` call.
             var minNode = nodes.getFirst();
             var localRouter = MessageRouter.mutable();
             var localProposals = new CopyOnWriteArrayList<LeaderProposal>();
@@ -497,7 +501,11 @@ class LeaderManagerTest {
                 localProposals.add(new LeaderProposal(candidate, viewSequence));
                 return Promise.unitPromise();
             };
-            var localManager = LeaderManager.leaderManager(minNode, localRouter, handler, nodes);
+            // Consensus-ready supplier latched to `true` from the start — the FSM should advance
+            // out of QuorumWaiting on its own as soon as quorum is reported established.
+            var consensusReady = new java.util.concurrent.atomic.AtomicBoolean(true);
+            var localManager = LeaderManager.leaderManager(minNode, localRouter, handler, nodes,
+                                                           () -> 0L, consensusReady::get);
             localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
             localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
 
@@ -507,9 +515,8 @@ class LeaderManagerTest {
                 localRouter.route(nodeAdded(n, list.stream().sorted().toList()));
             }
 
-            // triggerElection BEFORE QuorumEstablished — should be buffered
-            localManager.triggerElection();
-            // Now establish quorum — buffered ConsensusReady replays
+            // Establish quorum — QuorumWaiting.onEntry queries the supplier (true) and
+            // self-dispatches ConsensusReady, advancing to Electing without external nudge.
             localRouter.route(QuorumStateNotification.established());
 
             // Wait past staggered initial delay (base 2s + rank 0)

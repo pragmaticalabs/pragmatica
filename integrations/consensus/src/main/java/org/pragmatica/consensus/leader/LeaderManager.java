@@ -89,7 +89,8 @@ public interface LeaderManager {
                      LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
                      LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
                      LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
-                     LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER);
+                     LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
+                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER);
     }
 
     static LeaderManager leaderManager(NodeId self, MessageRouter router, LeaderProposalHandler proposalHandler) {
@@ -97,7 +98,8 @@ public interface LeaderManager {
                      LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
                      LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
                      LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
-                     LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER);
+                     LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
+                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER);
     }
 
     static LeaderManager leaderManager(NodeId self,
@@ -108,7 +110,8 @@ public interface LeaderManager {
                      LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
                      LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
                      LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
-                     LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER);
+                     LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
+                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER);
     }
 
     static LeaderManager leaderManager(NodeId self,
@@ -120,13 +123,14 @@ public interface LeaderManager {
                                        TimeSpan perRankDelay) {
         return build(self, router, Option.some(proposalHandler), expectedCluster,
                      proposalRetryDelay, baseElectionDelay, perRankDelay,
-                     LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER);
+                     LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
+                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER);
     }
 
-    /// Full-arity factory accepting the `rabiaTermSupplier` consumed by
-    /// [`#currentLeaderEpoch`]. Production wiring (Aether's `RabiaNode` / `AetherNode`) calls
-    /// this overload to plumb the cluster-side leader term counter; tests and legacy callers
-    /// keep the simpler overloads with the no-op `() -> 0L` default.
+    /// Factory accepting the `rabiaTermSupplier` consumed by [`#currentLeaderEpoch`]. The
+    /// `consensusReadySupplier` defaults to `() -> false` — callers that want auto-advancement
+    /// from `QuorumWaiting` must use the [`#leaderManager(NodeId, MessageRouter,
+    /// LeaderProposalHandler, List, Supplier, Supplier)`] overload below.
     static LeaderManager leaderManager(NodeId self,
                                        MessageRouter router,
                                        LeaderProposalHandler proposalHandler,
@@ -136,7 +140,27 @@ public interface LeaderManager {
                      LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
                      LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
                      LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
-                     rabiaTermSupplier);
+                     rabiaTermSupplier,
+                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER);
+    }
+
+    /// Full-arity factory accepting both the rabia-term supplier and the consensus-engine
+    /// readiness supplier. Production wiring (Aether's `RabiaNode`) calls this overload to plumb
+    /// `RabiaEngine::isActive` as the SSOT for consensus readiness — eliminating the previous
+    /// flag-based event buffering between FSM states. Tests can pass an `AtomicBoolean::get`-style
+    /// latch when they need to drive `QuorumWaiting → Electing` advancement deterministically.
+    static LeaderManager leaderManager(NodeId self,
+                                       MessageRouter router,
+                                       LeaderProposalHandler proposalHandler,
+                                       List<NodeId> expectedCluster,
+                                       Supplier<Long> rabiaTermSupplier,
+                                       Supplier<Boolean> consensusReadySupplier) {
+        return build(self, router, Option.some(proposalHandler), expectedCluster,
+                     LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
+                     LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
+                     LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
+                     rabiaTermSupplier,
+                     consensusReadySupplier);
     }
 
     private static LeaderManager build(NodeId self,
@@ -146,11 +170,13 @@ public interface LeaderManager {
                                        TimeSpan proposalRetryDelay,
                                        TimeSpan baseElectionDelay,
                                        TimeSpan perRankDelay,
-                                       Supplier<Long> rabiaTermSupplier) {
+                                       Supplier<Long> rabiaTermSupplier,
+                                       Supplier<Boolean> consensusReadySupplier) {
         var built = LeaderElectionFsm.leaderElectionFsm(self, proposalHandler, expectedCluster,
                                                         router, proposalRetryDelay,
                                                         baseElectionDelay, perRankDelay,
-                                                        FsmObserver.noop(), rabiaTermSupplier);
+                                                        FsmObserver.noop(), rabiaTermSupplier,
+                                                        consensusReadySupplier);
         return new FsmBackedLeaderManager(built.fsm(), built.context(), proposalHandler.isEmpty());
     }
 

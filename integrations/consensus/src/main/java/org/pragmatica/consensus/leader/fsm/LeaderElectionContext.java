@@ -54,6 +54,13 @@ public final class LeaderElectionContext {
     /// canonical epoch source.
     public static final Supplier<Long> DEFAULT_RABIA_TERM_SUPPLIER = () -> 0L;
 
+    /// Default consensus-ready supplier — returns `false` when not injected. Production wiring
+    /// (Aether's `RabiaNode`) supplies the actual consensus-engine readiness accessor
+    /// (e.g. `RabiaEngine::isActive`); the FSM consults this supplier on entry to `QuorumWaiting`
+    /// to decide whether consensus is already ready, eliminating the need to buffer a
+    /// `ConsensusReady` event between FSM states.
+    public static final Supplier<Boolean> DEFAULT_CONSENSUS_READY_SUPPLIER = () -> false;
+
     private final NodeId self;
     private final Option<LeaderProposalHandler> proposalHandler;
     private final List<NodeId> expectedCluster;
@@ -65,6 +72,7 @@ public final class LeaderElectionContext {
     private final int stuckElectionThreshold;
     private final DoubleSupplier jitterSource;
     private final Supplier<Long> rabiaTermSupplier;
+    private final Supplier<Boolean> consensusReadySupplier;
 
     // Per-FSM "singletons" — one instance per state class, shared for the lifetime of this FSM.
     // Built in the constructor via the constructor-driven initial-state factory, so the fields
@@ -83,7 +91,6 @@ public final class LeaderElectionContext {
     private final AtomicReference<Option<NodeId>> currentLeader = new AtomicReference<>(Option.none());
     private final AtomicReference<Option<NodeId>> lastNotifiedLeader = new AtomicReference<>(Option.none());
     private final AtomicReference<List<NodeId>> currentTopology = new AtomicReference<>(List.of());
-    private final AtomicBoolean consensusReadyPending = new AtomicBoolean(false);
     private final AtomicBoolean hasEverHadLeader = new AtomicBoolean(false);
     private final AtomicBoolean proposalInFlight = new AtomicBoolean(false);
     private final AtomicInteger electionRetryCount = new AtomicInteger(0);
@@ -104,7 +111,7 @@ public final class LeaderElectionContext {
                           int stuckElectionThreshold) {
         this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
              baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
-             DEFAULT_JITTER_SOURCE, DEFAULT_RABIA_TERM_SUPPLIER);
+             DEFAULT_JITTER_SOURCE, DEFAULT_RABIA_TERM_SUPPLIER, DEFAULT_CONSENSUS_READY_SUPPLIER);
     }
 
     /// Full-arity constructor that accepts an injectable [`DoubleSupplier`] jitter source — for
@@ -122,11 +129,12 @@ public final class LeaderElectionContext {
                           DoubleSupplier jitterSource) {
         this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
              baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
-             jitterSource, DEFAULT_RABIA_TERM_SUPPLIER);
+             jitterSource, DEFAULT_RABIA_TERM_SUPPLIER, DEFAULT_CONSENSUS_READY_SUPPLIER);
     }
 
-    /// Full-arity constructor with both jitter source and rabia-term supplier — for production
-    /// wiring that wants to expose [`LeaderManager#currentLeaderEpoch`].
+    /// Full-arity constructor with jitter source and rabia-term supplier — uses the default
+    /// `() -> false` consensus-ready supplier (FSM never auto-advances from `QuorumWaiting`
+    /// without an explicit injected accessor).
     LeaderElectionContext(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
                           NodeId self,
                           Option<LeaderProposalHandler> proposalHandler,
@@ -139,6 +147,29 @@ public final class LeaderElectionContext {
                           int stuckElectionThreshold,
                           DoubleSupplier jitterSource,
                           Supplier<Long> rabiaTermSupplier) {
+        this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
+             baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
+             jitterSource, rabiaTermSupplier, DEFAULT_CONSENSUS_READY_SUPPLIER);
+    }
+
+    /// Full-arity constructor with all injectable suppliers — production wiring (Aether's
+    /// `RabiaNode`) calls this overload to plumb both the rabia-term counter and the
+    /// consensus-engine readiness accessor (e.g. `RabiaEngine::isActive`). The latter is the
+    /// SSOT consulted by [`LeaderElectionState.QuorumWaiting#onEntry`] — eliminating the
+    /// previous flag-based event buffering between FSM states.
+    LeaderElectionContext(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
+                          NodeId self,
+                          Option<LeaderProposalHandler> proposalHandler,
+                          List<NodeId> expectedCluster,
+                          MessageRouter router,
+                          TimeSpan proposalRetryDelay,
+                          TimeSpan baseElectionDelay,
+                          TimeSpan perRankDelay,
+                          TimeSpan proposalTimeout,
+                          int stuckElectionThreshold,
+                          DoubleSupplier jitterSource,
+                          Supplier<Long> rabiaTermSupplier,
+                          Supplier<Boolean> consensusReadySupplier) {
         this.fsm = fsm;
         this.self = self;
         this.proposalHandler = proposalHandler;
@@ -151,6 +182,7 @@ public final class LeaderElectionContext {
         this.stuckElectionThreshold = stuckElectionThreshold;
         this.jitterSource = jitterSource;
         this.rabiaTermSupplier = rabiaTermSupplier;
+        this.consensusReadySupplier = consensusReadySupplier;
         this.dormant = new LeaderElectionState.Dormant(this);
         this.quorumWaiting = new LeaderElectionState.QuorumWaiting(this);
         this.electing = new LeaderElectionState.Electing(this);
@@ -212,8 +244,10 @@ public final class LeaderElectionContext {
         currentTopology.set(List.copyOf(sorted));
     }
 
-    public boolean consumeConsensusReadyPending() { return consensusReadyPending.compareAndSet(true, false); }
-    public void markConsensusReadyPending() { consensusReadyPending.set(true); }
+    /// Live accessor for the consensus-engine readiness state — the SSOT consulted by
+    /// [`LeaderElectionState.QuorumWaiting#onEntry`]. When `true`, the FSM self-dispatches a
+    /// [`LeaderElectionEvents.ConsensusReady`] to immediately advance to `Electing`/`ReElecting`.
+    public Supplier<Boolean> consensusReadySupplier() { return consensusReadySupplier; }
 
     public boolean hasEverHadLeader() { return hasEverHadLeader.get(); }
     public void markHasEverHadLeader() { hasEverHadLeader.set(true); }

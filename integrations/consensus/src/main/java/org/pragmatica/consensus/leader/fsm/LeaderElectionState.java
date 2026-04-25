@@ -45,6 +45,11 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
     Logger log = LoggerFactory.getLogger(LeaderElectionState.class);
 
+    /// Marker no-op used in `tx.handle(...)` arms where an event is intentionally absorbed
+    /// without a transition or side-effect. Distinct from `tx.ignore()` to make the explicit
+    /// "handled, but no work to do" cases legible at the call site.
+    Runnable NO_ACTION_DORMANT = () -> {};
+
     LeaderElectionContext ctx();
 
     /// Dispatches an event to this FSM instance through the Fsm reference stored in the context.
@@ -62,7 +67,10 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             switch (event) {
                 case ClusterFsmEvent.QuorumEstablished _ -> tx.transitionTo(ctx.quorumWaiting());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
-                case ConsensusReady _ -> ctx.markConsensusReadyPending();
+                // ConsensusReady arriving in Dormant is acknowledged but causes no transition —
+                // the SSOT for consensus readiness is the consensus engine itself, queried on
+                // entry to QuorumWaiting via `ctx.consensusReadySupplier()`.
+                case ConsensusReady _ -> tx.handle(NO_ACTION_DORMANT);
                 case ClusterFsmEvent.NodeAdded na -> ctx.setCurrentTopology(na.topology());
                 case ClusterFsmEvent.NodeGone ng -> ctx.setCurrentTopology(ng.topology());
                 default -> tx.ignore();
@@ -73,10 +81,13 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     record QuorumWaiting(LeaderElectionContext ctx) implements LeaderElectionState {
         @Override
         public void onEntry() {
-            if (ctx.consumeConsensusReadyPending()) {
-                log.info("Replaying buffered ConsensusReady on entry to QuorumWaiting");
-                SharedScheduler.schedule(() -> dispatchSelf(ctx, new ConsensusReady()),
-                                         TimeSpan.timeSpan(0).millis());
+            // Query the consensus engine's readiness state directly (SSOT). If consensus is
+            // already active we synthesize a ConsensusReady event so the existing handler arm
+            // below advances the FSM. Synchronous dispatch — the FSM is single-threaded on the
+            // caller thread, so re-entry into `handle` happens before this method returns.
+            if (ctx.consensusReadySupplier().get()) {
+                log.info("Consensus engine reports ready on entry to QuorumWaiting — advancing");
+                dispatchSelf(ctx, new ConsensusReady());
             }
         }
 
@@ -232,7 +243,11 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                     }
                 }
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
-                case ConsensusReady _ -> ctx.markConsensusReadyPending();
+                // ConsensusReady arriving in QuorumLost is acknowledged but causes no
+                // transition — consensus-readiness will be re-queried via
+                // `ctx.consensusReadySupplier()` on next entry to QuorumWaiting (after
+                // QuorumEstablished re-establishes quorum).
+                case ConsensusReady _ -> tx.handle(NO_ACTION_DORMANT);
                 case ClusterFsmEvent.NodeAdded na -> ctx.setCurrentTopology(na.topology());
                 case ClusterFsmEvent.NodeGone ng -> ctx.setCurrentTopology(ng.topology());
                 case LeaderCommitted lc -> log.warn("Rejecting stale LeaderCommitted({}) in QuorumLost",
