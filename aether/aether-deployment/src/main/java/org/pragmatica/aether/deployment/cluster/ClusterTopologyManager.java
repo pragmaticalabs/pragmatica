@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.cluster;
 
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
@@ -46,6 +47,7 @@ public interface ClusterTopologyManager extends TopologyManager {
     int configuredSize();
     void onNodeReady(NodeId nodeId);
     void onTopologyChange(TopologyChangeNotification topologyChange);
+    void onClusterConfigChanged();
     void activate();
     void deactivate();
     TopologyObserver observer();
@@ -64,5 +66,23 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          snapshotSource,
                                                                          clusterConfigReader,
                                                                          commandApplier);
+    }
+
+    static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
+                                                         NodeLifecycleManager lifecycleManager,
+                                                         AutoHealConfig config,
+                                                         DeploymentMap deploymentMap,
+                                                         GenerationSnapshotSource snapshotSource,
+                                                         Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                         Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                         DrainCoordinator drainCoordinator) {
+        return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
+                                                                         lifecycleManager,
+                                                                         config,
+                                                                         deploymentMap,
+                                                                         snapshotSource,
+                                                                         clusterConfigReader,
+                                                                         commandApplier,
+                                                                         drainCoordinator);
     }
 }

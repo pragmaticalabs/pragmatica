@@ -116,6 +116,7 @@ public final class ClusterDeploymentContext {
                                                   ConcurrentHashMap.newKeySet(),
                                                   ConcurrentHashMap.newKeySet(),
                                                   new ConcurrentHashMap<>(),
+                                                  new ConcurrentHashMap<>(),
                                                   new AtomicInteger(0),
                                                   new AtomicBoolean(false),
                                                   CancellableTask.cancellableTask());

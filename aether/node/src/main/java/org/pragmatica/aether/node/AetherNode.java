@@ -846,13 +846,19 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                        ? Option.some(healthReconciler.currentSnapshot())
                                                                                                                                        : Option.none(),
                                                                                                                                   nodeSnapshotCache);
+        // Theme D #1: scale-down terminates only after a 2-phase drain via DrainCoordinator.
+        // rc1 ships with NoOpDrainCoordinator (immediate-success stub); rc2 #189 swaps it
+        // for the real ConsensusDrainCoordinator. Wiring is performed once here so the
+        // structural shape is in place from rc1.
+        var drainCoordinator = new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator();
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
                                                                                    deploymentMap,
                                                                                    leaderAwareSnapshotSource,
                                                                                    clusterConfigReader,
-                                                                                   clusterCommandApplier);
+                                                                                   clusterCommandApplier,
+                                                                                   drainCoordinator);
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, repository, artifactStore);
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
@@ -1148,6 +1154,11 @@ public interface AetherNode extends ManageableNode {
                                                         healthReconcilerActivator::onNodeLifecyclePut)
                                                  .onPut(AetherKey.ClusterConfigKey.class,
                                                         healthReconcilerActivator::onClusterConfigPut)
+                                                 // Theme D #3: trigger immediate CTM reconcile on ClusterConfigKey
+                                                 // changes — eliminates the up-to-10s safety-net poll lag for
+                                                 // setDesiredSize() and other operator-driven config writes.
+                                                 .onPut(AetherKey.ClusterConfigKey.class,
+                                                        (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> _) -> clusterTopologyManager.onClusterConfigChanged())
                                                  .build();
         allEntries.addAll(healthKvRouter.asRouteEntries());
         Supplier<Option<ClusterGenerationSnapshot>> spokesmanSnapshotSupplier = () -> isLeaderSupplier.getAsBoolean()

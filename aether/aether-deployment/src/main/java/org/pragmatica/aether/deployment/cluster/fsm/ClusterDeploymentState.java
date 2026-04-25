@@ -182,6 +182,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                   Set<Artifact> permanentlyFailed,
                   Set<NodeId> workerNodes,
                   Map<SliceNodeKey, Long> transitionalStateTimestamps,
+                  Map<Artifact, Integer> consecutiveImbalancedTicks,
                   AtomicInteger allocationIndex,
                   AtomicBoolean deactivated,
                   CancellableTask reconcileTimer) implements ClusterDeploymentState {
@@ -1732,9 +1733,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       blueprints.size(),
                       activeNodes().size());
             var reconciled = 0;
+            var rebalanceBudget = new java.util.concurrent.atomic.AtomicInteger(1);
             var blueprintSnapshot = List.copyOf(blueprints.values());
             for (var blueprint : blueprintSnapshot) {
-                if (reconcileBlueprint(blueprint)) {reconciled++;}
+                if (reconcileBlueprint(blueprint, rebalanceBudget)) {reconciled++;}
             }
             log.debug("Reconciliation complete: {} of {} blueprints required adjustment",
                       reconciled,
@@ -1746,19 +1748,126 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             detectStuckTransitionalStates();
         }
 
-        private boolean reconcileBlueprint(Blueprint blueprint) {
+        private boolean reconcileBlueprint(Blueprint blueprint,
+                                            java.util.concurrent.atomic.AtomicInteger rebalanceBudget) {
             var artifact = blueprint.artifact();
             if (permanentlyFailed.contains(artifact)) {return false;}
             if (hasInstancesOnDrainingNodes(artifact)) {return false;}
             var desiredInstances = blueprint.instances();
             var currentInstances = getCurrentInstances(artifact);
-            if (currentInstances.size() == desiredInstances) {return false;}
+            if (currentInstances.size() == desiredInstances) {
+                return rebalanceIfNeeded(artifact, currentInstances, rebalanceBudget);
+            }
+            consecutiveImbalancedTicks.remove(artifact);
             log.info("Reconciliation: {} has {} instances, desired {} - adjusting",
                      artifact,
                      currentInstances.size(),
                      desiredInstances);
             emitScalingEvent(artifact, currentInstances.size(), desiredInstances);
             issueAllocationCommands(artifact, desiredInstances);
+            return true;
+        }
+
+        /// Theme D #2: when desired instance count is satisfied but the placement spread is
+        /// uneven across allocatable nodes (e.g. a freshly-joined ON_DUTY node sits idle while
+        /// older peers carry multiple instances), perform at most one instance move per tick
+        /// to rebalance.
+        ///
+        /// Hysteresis: the imbalance must persist for `REBALANCE_HYSTERESIS_TICKS` consecutive
+        /// reconcile ticks before we act — protects against transient skew during in-flight
+        /// joins. Single-move-per-tick limits prevent rebalance storms when many nodes join
+        /// simultaneously; the next tick observes the (now-smaller) imbalance and continues
+        /// or stops.
+        private static final int REBALANCE_HYSTERESIS_TICKS = 2;
+
+        private boolean rebalanceIfNeeded(Artifact artifact,
+                                           List<SliceNodeKey> currentInstances,
+                                           java.util.concurrent.atomic.AtomicInteger rebalanceBudget) {
+            if (currentInstances.isEmpty()) {
+                consecutiveImbalancedTicks.remove(artifact);
+                return false;
+            }
+            var allocatable = allocatableNodes();
+            if (allocatable.size() < 2) {
+                consecutiveImbalancedTicks.remove(artifact);
+                return false;
+            }
+            var nodesHostingThisArtifact = currentInstances.stream()
+                                                                              .map(SliceNodeKey::nodeId)
+                                                                              .collect(Collectors.toUnmodifiableSet());
+            // Aggregate load: count of *all* live slice instances per allocatable node, across
+            // every blueprint. Rebalance fires when (a) at least one allocatable node has zero
+            // total load AND (b) the spread (max-min total load) exceeds 1. This catches the
+            // common scale-up case where a freshly-joined ON_DUTY node sits idle while older
+            // peers carry multiple slices each.
+            var totalLoadByNode = sliceStates.entrySet().stream()
+                                                                .filter(entry -> isLiveState(entry.getValue()))
+                                                                .map(Map.Entry::getKey)
+                                                                .collect(Collectors.groupingBy(SliceNodeKey::nodeId,
+                                                                                                Collectors.counting()));
+            var maxLoad = allocatable.stream()
+                                              .mapToLong(node -> totalLoadByNode.getOrDefault(node, 0L))
+                                              .max()
+                                              .orElse(0L);
+            var minLoad = allocatable.stream()
+                                              .mapToLong(node -> totalLoadByNode.getOrDefault(node, 0L))
+                                              .min()
+                                              .orElse(0L);
+            if (maxLoad - minLoad <= 1) {
+                consecutiveImbalancedTicks.remove(artifact);
+                return false;
+            }
+            // The donor must currently host this artifact (so we can move *this* blueprint's
+            // instance) and be the most heavily-loaded such node. The target must be the
+            // least-loaded allocatable node that does NOT yet host this artifact.
+            var donorOpt = nodesHostingThisArtifact.stream()
+                                                                     .max(Comparator.comparingLong(node -> totalLoadByNode.getOrDefault(node, 0L)));
+            var targetOpt = allocatable.stream()
+                                                  .filter(node -> !nodesHostingThisArtifact.contains(node))
+                                                  .min(Comparator.comparingLong(node -> totalLoadByNode.getOrDefault(node, 0L)));
+            if (donorOpt.isEmpty() || targetOpt.isEmpty()) {
+                consecutiveImbalancedTicks.remove(artifact);
+                return false;
+            }
+            var donorLoad = totalLoadByNode.getOrDefault(donorOpt.get(), 0L);
+            var targetLoad = totalLoadByNode.getOrDefault(targetOpt.get(), 0L);
+            if (donorLoad - targetLoad <= 1) {
+                consecutiveImbalancedTicks.remove(artifact);
+                return false;
+            }
+            var ticks = consecutiveImbalancedTicks.merge(artifact, 1, Integer::sum);
+            if (ticks < REBALANCE_HYSTERESIS_TICKS) {
+                log.debug("Rebalance hysteresis: {} imbalanced for {} tick(s) (need {})",
+                          artifact,
+                          ticks,
+                          REBALANCE_HYSTERESIS_TICKS);
+                return false;
+            }
+            // Single-move-per-tick budget enforced across all blueprints — the next reconcile
+            // tick observes the (now-smaller) imbalance for any remaining skewed blueprints.
+            if (rebalanceBudget.getAndDecrement() <= 0) {
+                log.debug("Rebalance: {} eligible but per-tick budget exhausted; deferred to next tick",
+                          artifact);
+                return false;
+            }
+            consecutiveImbalancedTicks.remove(artifact);
+            return executeSingleRebalanceMove(artifact, donorOpt.get(), donorLoad, targetOpt.get(), targetLoad);
+        }
+
+        private boolean executeSingleRebalanceMove(Artifact artifact,
+                                                    NodeId donor,
+                                                    long donorLoad,
+                                                    NodeId target,
+                                                    long targetLoad) {
+            var donorKey = SliceNodeKey.sliceNodeKey(artifact, donor);
+            log.info("Rebalance: moving {} from {} (load={}) to {} (load={})",
+                     artifact,
+                     donor,
+                     donorLoad,
+                     target,
+                     targetLoad);
+            issueUnloadCommand(donorKey);
+            tryAllocate(artifact, target);
             return true;
         }
 

@@ -18,8 +18,9 @@ import org.pragmatica.lang.io.TimeSpan;
 
 /// Coordinator for the two-phase drain protocol that takes a node out of routing rotation
 /// before terminating it (scale-down, rolling update, operator-initiated drain, FAULTY
-/// eviction). Sealed in rc1 to a single [`NoOpDrainCoordinator`] implementation; rc2 #189
-/// will add the real consensus-backed implementation.
+/// eviction). rc1 ships with a single [`NoOpDrainCoordinator`] implementation; rc2 #189
+/// will add the real consensus-backed implementation, and tests provide their own
+/// recording stubs.
 ///
 /// Lifecycle of a drain operation (rc2 contract):
 /// 1. Caller invokes [`#prepareDrain`] — coordinator writes `NodeLifecycleValue(DRAINING)`
@@ -28,7 +29,7 @@ import org.pragmatica.lang.io.TimeSpan;
 ///    by stopping new traffic to the draining node, or fails on timeout.
 /// 3. Caller invokes [`#markDrainComplete`] — terminal sink that records observability /
 ///    bookkeeping. Real terminate (`provider.terminate(...)`) happens in the caller.
-public sealed interface DrainCoordinator permits NoOpDrainCoordinator {
+public interface DrainCoordinator {
 
     /// Phase 1 of the drain protocol. rc1 stub returns immediate success without touching
     /// the KV-Store. rc2 will write `DRAINING` and dispatch a `LeavingRequested` event into

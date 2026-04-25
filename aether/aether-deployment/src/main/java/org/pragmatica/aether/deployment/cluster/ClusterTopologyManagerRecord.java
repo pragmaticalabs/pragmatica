@@ -5,10 +5,14 @@
 package org.pragmatica.aether.deployment.cluster;
 
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.deployment.drain.DrainCoordinator;
+import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
+import org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
@@ -99,9 +103,11 @@ import static org.pragmatica.lang.Unit.unit;
                                                                      GenerationSnapshotSource snapshotSource,
                                                                      Supplier<Option<ClusterConfigValue>> clusterConfigReader,
                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                                     DrainCoordinator drainCoordinator,
                                                                      AtomicReference<NodeReconcilerState> stateRef,
                                                                      AtomicBoolean active,
                                                                      ConcurrentHashMap<NodeId, Instant> nodeJoinTimes,
+                                                                     ConcurrentHashMap<NodeId, Promise<?>> inFlightProvisions,
                                                                      CancellableTask safetyNetTimer,
                                                                      AtomicLong realActualStableSinceMs,
                                                                      AtomicInteger lastObservedRealActual) implements ClusterTopologyManager {
@@ -119,7 +125,8 @@ import static org.pragmatica.lang.Unit.unit;
                                                                      DeploymentMap deploymentMap,
                                                                      GenerationSnapshotSource snapshotSource,
                                                                      Supplier<Option<ClusterConfigValue>> clusterConfigReader,
-                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier) {
+                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                                     DrainCoordinator drainCoordinator) {
         return new ClusterTopologyManagerRecord(observer,
                                                 lifecycleManager,
                                                 config,
@@ -127,12 +134,34 @@ import static org.pragmatica.lang.Unit.unit;
                                                 snapshotSource,
                                                 clusterConfigReader,
                                                 commandApplier,
+                                                drainCoordinator,
                                                 new AtomicReference<>(new NodeReconcilerState.Inactive("not yet activated")),
                                                 new AtomicBoolean(false),
+                                                new ConcurrentHashMap<>(),
                                                 new ConcurrentHashMap<>(),
                                                 CancellableTask.cancellableTask(),
                                                 new AtomicLong(System.currentTimeMillis()),
                                                 new AtomicInteger(UNINITIALIZED_REAL_ACTUAL));
+    }
+
+    /// Backward-compatible factory: constructs a CTM with the rc1 [`NoOpDrainCoordinator`].
+    /// Production wiring (`AetherNode`) and tests can pass a real coordinator via the
+    /// arity-8 overload above when rc2 #189 lands.
+    static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
+                                                                     NodeLifecycleManager lifecycleManager,
+                                                                     AutoHealConfig config,
+                                                                     DeploymentMap deploymentMap,
+                                                                     GenerationSnapshotSource snapshotSource,
+                                                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier) {
+        return clusterTopologyManagerRecord(observer,
+                                             lifecycleManager,
+                                             config,
+                                             deploymentMap,
+                                             snapshotSource,
+                                             clusterConfigReader,
+                                             commandApplier,
+                                             new NoOpDrainCoordinator());
     }
 
     @Override public NodeReconcilerState reconcilerState() {
@@ -196,6 +225,17 @@ import static org.pragmatica.lang.Unit.unit;
             log.info("Node {} reached ON_DUTY, checking reconciliation progress", nodeId);
             reconcile();
         }
+    }
+
+    /// Hook invoked by the host node (`AetherNode`) when a `ValuePut` for
+    /// `ClusterConfigKey.CURRENT` lands in the local KV store. Triggers an immediate
+    /// reconcile so `setDesiredSize` is observed without waiting for the safety-net
+    /// poll (`AutoHealConfig.retryInterval`, default 10s). No-op when CTM is inactive.
+    @SuppressWarnings("JBCT-RET-01")
+    @Override public void onClusterConfigChanged() {
+        if (!active.get()) {return;}
+        log.debug("CTM: ClusterConfigKey changed, triggering immediate reconciliation");
+        reconcile();
     }
 
     @Override@SuppressWarnings("JBCT-RET-01") public void onTopologyChange(TopologyChangeNotification topologyChange) {
@@ -407,6 +447,9 @@ import static org.pragmatica.lang.Unit.unit;
             log.info("CTM: reconcile target changed during Reconciling ({} → {}), resetting to Converged for re-dispatch",
                      reconciling.targetSize(),
                      configured);
+            // If the new target is below current actual we are entering a surplus path —
+            // cancel any in-flight provisions so we don't terminate freshly-provisioned nodes.
+            if (configured < actual) {cancelInFlightProvisions("target shrank to " + configured + " during Reconciling");}
             transitionTo(new NodeReconcilerState.Converged());
             effectiveState = stateRef.get();
         }
@@ -624,12 +667,28 @@ import static org.pragmatica.lang.Unit.unit;
         terminateNodes(nodesToTerminate);
     }
 
+    /// Selects up to `count` nodes from the snapshot's ON_DUTY set as termination
+    /// candidates for an operator-driven scale-down. JOINING nodes (lifecycle ≠ ON_DUTY)
+    /// are excluded — they're still being onboarded and terminating them would mean
+    /// throwing away in-progress provisioning work.
+    ///
+    /// The comparator returned by `surplusNodeComparator` walks fields in this order:
+    /// non-CTM-owned first → spot before on-demand → highest co-located host count first
+    /// → empty (no slices) before populated → newest join time first. The newest-first
+    /// `Comparator.reverseOrder()` on `nodeJoinTimes` is intentional: when an operator
+    /// scales down, the safest nodes to drop are those most recently provisioned by the
+    /// CTM itself (they have done the least work and are unlikely to hold critical
+    /// state caches yet). Older peers — especially the originally-seeded core — are
+    /// preserved.
     private List<NodeId> selectNodesForTermination(int count) {
         var selfId = observer.self().id();
         var ctmOwned = ctmProvisionedNodeIds();
+        var onDuty = snapshotSource.currentMembershipView().map(MembershipView::onDutyMemberIds)
+                                                            .or(Set.of());
         var activeNodes = observer.topology().stream()
                                            .filter(id -> !id.equals(selfId))
                                            .filter(ctmOwned::contains)
+                                           .filter(onDuty::contains)
                                            .toList();
         var emptyNodes = snapshotNodesWithoutSlices(activeNodes);
         var hostCounts = buildHostCounts(activeNodes);
@@ -690,11 +749,61 @@ import static org.pragmatica.lang.Unit.unit;
         for (var nodeId : nodes) {terminateSingleNode(nodeId);}
     }
 
+    /// 2-phase scale-down (rc1: NoOp drain coordinator → both phases resolve immediately).
+    /// Phase 1: write `NodeLifecycleValue(DRAINING, ...)` via consensus, preserving the
+    /// prior atom's host/port/epoch metadata (Theme C contract — see
+    /// [`NodeLifecycleValue#nodeLifecycleValue(NodeLifecycleState, String, int, Epoch)`]).
+    /// Phase 2: invoke `drainCoordinator.prepareDrain` then `awaitDrainAck` with a
+    /// fallback timeout reusing `provisioningTimeout` (default 60s).
+    /// Phase 3: `provider.terminate(instanceId)` after ack/timeout, then write the
+    /// DECOMMISSIONED atom via the existing `writeDecommissionedAtom` path.
+    /// rc2 #189 swaps the NoOp coordinator for a real one without touching this code.
     private void terminateSingleNode(NodeId nodeId) {
-        lifecycleManager.terminateNode(nodeId).onSuccess(_ -> handleTerminationSuccess(nodeId))
-                                      .onFailure(cause -> log.warn("CTM: Node {} termination failed: {}",
-                                                                   nodeId,
-                                                                   cause.message()));
+        writeDrainingAtom(nodeId);
+        var timeout = autoHealConfig.provisioningTimeout();
+        drainCoordinator.prepareDrain(nodeId, DrainReason.SCALE_DOWN)
+                        .flatMap(_ -> drainCoordinator.awaitDrainAck(nodeId, timeout))
+                        .onResult(result -> handleDrainResult(nodeId, result));
+    }
+
+    private void handleDrainResult(NodeId nodeId, Result<Unit> result) {
+        result.onFailure(cause -> log.warn("CTM: drain ack for {} failed/timed out ({}); proceeding to terminate",
+                                            nodeId,
+                                            cause.message()))
+              .onSuccess(_ -> log.debug("CTM: drain ack received for {}", nodeId));
+        proceedToTerminate(nodeId);
+    }
+
+    private void proceedToTerminate(NodeId nodeId) {
+        lifecycleManager.terminateNode(nodeId)
+                              .onSuccess(_ -> handleTerminateSuccessWithDrainComplete(nodeId))
+                              .onFailure(cause -> log.warn("CTM: Node {} termination failed: {}", nodeId, cause.message()));
+    }
+
+    private void handleTerminateSuccessWithDrainComplete(NodeId nodeId) {
+        drainCoordinator.markDrainComplete(nodeId);
+        handleTerminationSuccess(nodeId);
+    }
+
+    /// Phase 1 write: DRAINING atom carries forward the address from the topology
+    /// observer's `NodeInfo` so downstream consumers (drain coordinator, peers) can
+    /// still route during the drain. `observedCoreEpoch` is left at `ZERO` here —
+    /// Theme E (#189) hardens this with a read-modify-write that pulls the epoch from
+    /// the prior lifecycle atom in KV; for rc1 the metadata-preserving factory is
+    /// invoked with the addressing fields populated, leaving epoch hardening for
+    /// Theme E without changing the call shape.
+    private void writeDrainingAtom(NodeId nodeId) {
+        var info = observer.get(nodeId);
+        var host = info.map(i -> i.address().host()).or("");
+        var port = info.map(i -> i.address().port()).or(0);
+        var value = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING, host, port, Epoch.ZERO);
+        @SuppressWarnings("unchecked") var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId),
+                                                                                                                                    value);
+        commandApplier.apply(List.of(command))
+                            .onFailure(cause -> log.warn("CTM: failed to write DRAINING atom for {}: {}",
+                                                         nodeId,
+                                                         cause.message()))
+                            .onSuccess(_ -> log.info("CTM: wrote DRAINING atom for {} ({}:{})", nodeId, host, port));
     }
 
     private void handleTerminationSuccess(NodeId nodeId) {
@@ -728,9 +837,28 @@ import static org.pragmatica.lang.Unit.unit;
                                                    buildProvisionTags())
         .unwrap();
         var spec = computePlacementHint().map(baseSpec::withPlacement).or(baseSpec);
-        lifecycleManager.provisionNode(spec).onSuccess(_ -> log.info("CTM: Node provisioning succeeded"))
-                                      .onFailure(cause -> log.warn("CTM: Node provisioning failed: {}",
-                                                                   cause.message()));
+        var slotKey = NodeId.nodeId("ctm-inflight-" + System.nanoTime() + "-" + Math.abs(spec.hashCode())).unwrap();
+        var promise = lifecycleManager.provisionNode(spec)
+                                            .onSuccess(_ -> log.info("CTM: Node provisioning succeeded"))
+                                            .onFailure(cause -> log.warn("CTM: Node provisioning failed: {}",
+                                                                         cause.message()));
+        inFlightProvisions.put(slotKey, promise);
+        promise.onResult(_ -> inFlightProvisions.remove(slotKey));
+    }
+
+    /// Cancels all in-flight `provisionNode` Promises captured during the current Reconciling
+    /// wave. Called when reconcileActive observes the desired count has shrunk below the
+    /// real-actual count so that provisions in progress are not wasted on nodes the operator
+    /// no longer wants. Cancellation is best-effort — the underlying ComputeProvider may
+    /// have already produced an instance, in which case the next reconcile tick observes the
+    /// surplus and terminates via the standard 2-phase drain path.
+    private void cancelInFlightProvisions(String reason) {
+        if (inFlightProvisions.isEmpty()) {return;}
+        var size = inFlightProvisions.size();
+        log.info("CTM: cancelling {} in-flight provision(s) ({})", size, reason);
+        inFlightProvisions.values()
+                                  .forEach(Promise::cancel);
+        inFlightProvisions.clear();
     }
 
     private Map<String, String> buildProvisionTags() {
