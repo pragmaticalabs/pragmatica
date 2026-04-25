@@ -12,6 +12,11 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.statemachine.Fsm;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
 import static org.pragmatica.lang.Unit.unit;
 
@@ -24,15 +29,36 @@ import static org.pragmatica.lang.Unit.unit;
 /// Callers MUST NOT invoke [`#dispatch`] from the initial-state factory — the FSM is transiently
 /// uninitialized during factory execution.
 public final class AppHttpContext {
+    private static final Logger log = LoggerFactory.getLogger(AppHttpContext.class);
+
+    /// Default route-table supplier used when callers construct a context without wiring authority
+    /// data. Returns an empty table; the FSM will still fire `RouteTablePublished` carrying the
+    /// empty snapshot. Tests that construct contexts directly use this to avoid depending on the
+    /// real registry.
+    private static final Supplier<RouteTable> EMPTY_ROUTE_TABLE = RouteTable::empty;
+
+    /// Default quorum supplier — reports "not established" so `publishQuorumStateIfEstablished`
+    /// becomes a no-op. The adapter overrides this with the live observation.
+    private static final BooleanSupplier QUORUM_NOT_ESTABLISHED = () -> false;
 
     private final Fsm<AppHttpState, ClusterFsmEvent> fsm;
     private final AppHttpState stopped;
     private final AppHttpState starting;
+    private final Supplier<RouteTable> routeTableSupplier;
+    private final BooleanSupplier quorumEstablishedSupplier;
 
     public AppHttpContext(Fsm<AppHttpState, ClusterFsmEvent> fsm) {
+        this(fsm, EMPTY_ROUTE_TABLE, QUORUM_NOT_ESTABLISHED);
+    }
+
+    public AppHttpContext(Fsm<AppHttpState, ClusterFsmEvent> fsm,
+                          Supplier<RouteTable> routeTableSupplier,
+                          BooleanSupplier quorumEstablishedSupplier) {
         this.fsm = fsm;
         this.stopped = new AppHttpState.Stopped(this);
         this.starting = new AppHttpState.Starting(this);
+        this.routeTableSupplier = routeTableSupplier;
+        this.quorumEstablishedSupplier = quorumEstablishedSupplier;
     }
 
     // --- FSM / state access ---
@@ -51,6 +77,44 @@ public final class AppHttpContext {
 
     public AppHttpState starting() {
         return starting;
+    }
+
+    // --- Route / quorum republish helpers ---
+
+    /// Recompute the authoritative [`RouteTable`] from the wired supplier and dispatch a fresh
+    /// [`AppHttpEvents.RouteTablePublished`]. Replaces the adapter-side `publishRouteTable()` so
+    /// the FSM owns both the state and the authoritative re-read.
+    @Contract
+    public void publishRouteTable() {
+        var table = routeTableSupplier.get();
+        log.debug("Router rebuilt: {} local routes, {} remote routes",
+                  table.localRoutes().size(),
+                  table.remoteRoutes().size());
+        fsm.dispatch(new AppHttpEvents.RouteTablePublished(table));
+    }
+
+    /// Dispatch a fresh [`ClusterFsmEvent.QuorumEstablished`] iff the wired supplier reports that
+    /// quorum is currently held. Used after bind completion to recover from the case where quorum
+    /// was already established before the server reached a routable state — the original
+    /// notification would otherwise have been ignored by [`AppHttpState.Starting`].
+    @Contract
+    public void publishQuorumStateIfEstablished() {
+        if (quorumEstablishedSupplier.getAsBoolean()) {
+            fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());
+        }
+    }
+
+    /// Re-read authoritative route + quorum state and dispatch the corresponding events. Invoked
+    /// as the transition action when [`AppHttpState.Starting`] moves to `H1Only` / `H3Only`, so a
+    /// node booting after route state and quorum settled still reaches `RouteReady`.
+    ///
+    /// Order matters: routes first (so the new state carries a populated table), quorum second
+    /// (no-op in `RouteReady`, but kept for completeness when only `H1Only`/`H3Only` was reached
+    /// without the route publish).
+    @Contract
+    public void republishStateAfterBind() {
+        publishRouteTable();
+        publishQuorumStateIfEstablished();
     }
 
     // --- Helpers ---

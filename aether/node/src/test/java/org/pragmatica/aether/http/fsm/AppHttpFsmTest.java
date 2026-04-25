@@ -6,6 +6,8 @@ package org.pragmatica.aether.http.fsm;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.http.RouteTable;
+import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.lang.Option;
@@ -18,6 +20,8 @@ import org.pragmatica.statemachine.FsmTestHarness;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,6 +40,14 @@ class AppHttpFsmTest {
         return harness;
     }
 
+    private static FsmTestHarness<AppHttpState, ClusterFsmEvent> newHarness(java.util.function.Supplier<RouteTable> routeSupplier,
+                                                                            java.util.function.BooleanSupplier quorumSupplier) {
+        var ctxHolder = new AtomicReference<AppHttpContext>();
+        return FsmTestHarness.<AppHttpState, ClusterFsmEvent>harness(
+                "app-http-fsm-test",
+                fsm -> buildContextAndStopped(fsm, ctxHolder, routeSupplier, quorumSupplier));
+    }
+
     private static AppHttpState buildContextAndStopped(Fsm<AppHttpState, ClusterFsmEvent> fsm,
                                                        AtomicReference<AppHttpContext> ctxHolder) {
         var ctx = new AppHttpContext(fsm);
@@ -43,8 +55,21 @@ class AppHttpFsmTest {
         return ctx.stopped();
     }
 
+    private static AppHttpState buildContextAndStopped(Fsm<AppHttpState, ClusterFsmEvent> fsm,
+                                                       AtomicReference<AppHttpContext> ctxHolder,
+                                                       java.util.function.Supplier<RouteTable> routeSupplier,
+                                                       java.util.function.BooleanSupplier quorumSupplier) {
+        var ctx = new AppHttpContext(fsm, routeSupplier, quorumSupplier);
+        ctxHolder.set(ctx);
+        return ctx.stopped();
+    }
+
     @Test
     void happyPath_h1FirstThenH3_thenRoutes_thenStop() {
+        // Default suppliers (empty route table, quorum-not-established) — H1Ready transition action
+        // republishes an empty RouteTablePublished, collapsing Starting → H1Only → RouteReady in a
+        // single observable step. A subsequent H3Ready arriving in RouteReady upgrades the carried
+        // server pair (so dual-protocol startup attaches the second protocol).
         var harness = newHarness();
         var h1 = fakeHttpServer(8080);
         var h3 = fakeHttpServer(8080);
@@ -55,18 +80,16 @@ class AppHttpFsmTest {
         assertThat(harness.state()).isInstanceOf(AppHttpState.Starting.class);
 
         harness.dispatch(new AppHttpEvents.H1Ready(h1));
-        assertThat(harness.state()).isInstanceOf(AppHttpState.H1Only.class);
+        assertThat(harness.state()).isInstanceOf(AppHttpState.RouteReady.class);
+        var afterH1 = (AppHttpState.RouteReady) harness.state();
+        assertThat(afterH1.server().unwrap()).isSameAs(h1);
+        assertThat(afterH1.h3().isEmpty()).isTrue();
 
         harness.dispatch(new AppHttpEvents.H3Ready(h3));
-        assertThat(harness.state()).isInstanceOf(AppHttpState.Dual.class);
-
-        var table = RouteTable.empty();
-        harness.dispatch(new AppHttpEvents.RouteTablePublished(table));
-        assertThat(harness.state()).isInstanceOf(AppHttpState.RouteReady.class);
-        var routeReady = (AppHttpState.RouteReady) harness.state();
-        assertThat(routeReady.server().unwrap()).isSameAs(h1);
-        assertThat(routeReady.h3().unwrap()).isSameAs(h3);
-        assertThat(routeReady.routes()).isSameAs(table);
+        var afterH3 = (AppHttpState.RouteReady) harness.state();
+        assertThat(afterH3.server().unwrap()).isSameAs(h1);
+        assertThat(afterH3.h3().unwrap()).isSameAs(h3);
+        assertThat(afterH3.routes()).isSameAs(RouteTable.empty());
 
         harness.dispatch(new AppHttpEvents.StopRequested());
         assertThat(harness.state()).isInstanceOf(AppHttpState.Stopped.class);
@@ -74,19 +97,20 @@ class AppHttpFsmTest {
 
     @Test
     void happyPath_h3FirstThenH1_thenRoutes_thenStop() {
+        // Symmetric counterpart: H3Ready first collapses Starting → H3Only → RouteReady, then
+        // H1Ready upgrades the pair.
         var harness = newHarness();
         var h1 = fakeHttpServer(9090);
         var h3 = fakeHttpServer(9090);
 
         harness.dispatch(new AppHttpEvents.StartRequested());
         harness.dispatch(new AppHttpEvents.H3Ready(h3));
-        assertThat(harness.state()).isInstanceOf(AppHttpState.H3Only.class);
+        assertThat(harness.state()).isInstanceOf(AppHttpState.RouteReady.class);
 
         harness.dispatch(new AppHttpEvents.H1Ready(h1));
-        assertThat(harness.state()).isInstanceOf(AppHttpState.Dual.class);
-
-        harness.dispatch(new AppHttpEvents.RouteTablePublished(RouteTable.empty()));
-        assertThat(harness.state()).isInstanceOf(AppHttpState.RouteReady.class);
+        var routeReady = (AppHttpState.RouteReady) harness.state();
+        assertThat(routeReady.server().unwrap()).isSameAs(h1);
+        assertThat(routeReady.h3().unwrap()).isSameAs(h3);
 
         harness.dispatch(new AppHttpEvents.StopRequested());
         assertThat(harness.state()).isInstanceOf(AppHttpState.Stopped.class);
@@ -94,11 +118,13 @@ class AppHttpFsmTest {
 
     @Test
     void concurrent_routeTablePublished_exactlyOneCasWins() throws InterruptedException {
+        // After H1Ready the FSM is already in RouteReady (republish action). Concurrent
+        // RouteTablePublished events all become RouteReady → RouteReady swaps; each arriving event
+        // ultimately lands as a successful transition (no ignored events).
         var harness = newHarness();
         harness.dispatch(new AppHttpEvents.StartRequested());
         harness.dispatch(new AppHttpEvents.H1Ready(fakeHttpServer(1)));
-        harness.dispatch(new AppHttpEvents.H3Ready(fakeHttpServer(1)));
-        assertThat(harness.state()).isInstanceOf(AppHttpState.Dual.class);
+        assertThat(harness.state()).isInstanceOf(AppHttpState.RouteReady.class);
 
         var events = List.<ClusterFsmEvent>of(
                 new AppHttpEvents.RouteTablePublished(RouteTable.empty()),
@@ -112,14 +138,6 @@ class AppHttpFsmTest {
         harness.dispatchConcurrently(events);
 
         assertThat(harness.state()).isInstanceOf(AppHttpState.RouteReady.class);
-        // Exactly one CAS wins the Dual → RouteReady transition. Losers forward to the new
-        // RouteReady state (each arriving event is a valid RouteReady → RouteReady swap), so every
-        // event ultimately lands as a successful transition — no ignored events from this path.
-        var dualToRouteReady = harness.transitions().stream()
-                                      .filter(t -> t.from() instanceof AppHttpState.Dual
-                                                   && t.to() instanceof AppHttpState.RouteReady)
-                                      .count();
-        assertThat(dualToRouteReady).isEqualTo(1);
     }
 
     @Test
@@ -175,23 +193,104 @@ class AppHttpFsmTest {
     }
 
     @Test
-    void quorumEstablished_in_h1Only_transitions_to_routeReady_with_emptyTable() {
+    void h1Ready_coldStart_republishesPreSettledRoutesAndQuorum() {
+        // Simulate cold-start race: route table + quorum settled BEFORE bind completes.
+        // Pre-populate via suppliers; the supplier returns the pre-settled snapshot so
+        // republishStateAfterBind sees the authoritative state on the H1Ready transition.
+        var preSettledTable = preSettledRouteTable();
+        java.util.function.Supplier<RouteTable> routeSupplier = () -> preSettledTable;
+        var quorumFlag = new AtomicBoolean(true);
+        var harness = newHarness(routeSupplier, quorumFlag::get);
+
+        harness.dispatch(new AppHttpEvents.StartRequested());
+        assertThat(harness.state()).isInstanceOf(AppHttpState.Starting.class);
+
+        // Pre-bind: route + quorum events arriving in Starting are ignored (they're either KV
+        // callbacks or the consensus notification fired before we reached H1Ready).
+        harness.dispatch(new AppHttpEvents.RouteTablePublished(preSettledTable));
+        harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
+        assertThat(harness.state()).isInstanceOf(AppHttpState.Starting.class);
+
+        // Bind completes — Starting → H1Only must trigger republishStateAfterBind, which
+        // re-dispatches RouteTablePublished (driving H1Only → RouteReady carrying the populated
+        // table) and then QuorumEstablished (no-op in RouteReady).
+        var h1 = fakeHttpServer(8080);
+        harness.dispatch(new AppHttpEvents.H1Ready(h1));
+
+        assertThat(harness.state()).isInstanceOf(AppHttpState.RouteReady.class);
+        var routeReady = (AppHttpState.RouteReady) harness.state();
+        assertThat(routeReady.server().unwrap()).isSameAs(h1);
+        assertThat(routeReady.h3().isEmpty()).isTrue();
+        assertThat(routeReady.routes()).isSameAs(preSettledTable);
+        assertThat(routeReady.routes().localRoutes()).isNotEmpty();
+    }
+
+    @Test
+    void h3Ready_coldStart_republishesPreSettledRoutesAndQuorum() {
+        var preSettledTable = preSettledRouteTable();
+        java.util.function.Supplier<RouteTable> routeSupplier = () -> preSettledTable;
+        var harness = newHarness(routeSupplier, () -> true);
+
+        harness.dispatch(new AppHttpEvents.StartRequested());
+        var h3 = fakeHttpServer(9443);
+        harness.dispatch(new AppHttpEvents.H3Ready(h3));
+
+        assertThat(harness.state()).isInstanceOf(AppHttpState.RouteReady.class);
+        var routeReady = (AppHttpState.RouteReady) harness.state();
+        assertThat(routeReady.server().isEmpty()).isTrue();
+        assertThat(routeReady.h3().unwrap()).isSameAs(h3);
+        assertThat(routeReady.routes()).isSameAs(preSettledTable);
+    }
+
+    @Test
+    void h1Ready_coldStart_quorumNotEstablished_stopsAtH1OnlyAfterEmptyRepublish() {
+        // When quorum is not yet established and routes are empty, the republish is a no-op:
+        // the empty RouteTablePublished still drives H1Only → RouteReady (empty), but no
+        // QuorumEstablished fires because the supplier reports false.
+        var quorumFlag = new AtomicBoolean(false);
+        var harness = newHarness(RouteTable::empty, quorumFlag::get);
+
+        harness.dispatch(new AppHttpEvents.StartRequested());
+        var h1 = fakeHttpServer(8080);
+        harness.dispatch(new AppHttpEvents.H1Ready(h1));
+
+        // Empty RouteTablePublished from republish lands as H1Only → RouteReady(empty).
+        assertThat(harness.state()).isInstanceOf(AppHttpState.RouteReady.class);
+        var routeReady = (AppHttpState.RouteReady) harness.state();
+        assertThat(routeReady.routes().localRoutes()).isEmpty();
+        assertThat(routeReady.routes().remoteRoutes()).isEmpty();
+    }
+
+    @Test
+    void quorumEstablished_in_routeReady_isIgnored() {
+        // The republish action collapses Starting → H1Only → RouteReady on H1Ready. A subsequent
+        // QuorumEstablished arriving in RouteReady is a no-op; routes were already populated by
+        // the empty-table republish (default supplier) and the FSM stays in RouteReady.
         var harness = newHarness();
         var h1 = fakeHttpServer(1234);
 
         harness.dispatch(new AppHttpEvents.StartRequested());
         harness.dispatch(new AppHttpEvents.H1Ready(h1));
+        var beforeQuorum = harness.state();
         harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
 
-        assertThat(harness.state()).isInstanceOf(AppHttpState.RouteReady.class);
+        assertThat(harness.state()).isSameAs(beforeQuorum);
         var routeReady = (AppHttpState.RouteReady) harness.state();
-        assertThat(routeReady.routes().localRoutes()).isEmpty();
-        assertThat(routeReady.routes().remoteRoutes()).isEmpty();
         assertThat(routeReady.server().unwrap()).isSameAs(h1);
         assertThat(routeReady.h3().isEmpty()).isTrue();
     }
 
     // --- Test fixtures ---
+
+    /// Build a non-empty [`RouteTable`] simulating the case where local routes were published
+    /// before the HTTP server bound. Mirrors the real production shape: one local route, no
+    /// remote routes. Production code computes the table from a `HttpRoutePublisher` snapshot;
+    /// the test bypasses that by handing the table directly to the route supplier.
+    private static RouteTable preSettledRouteTable() {
+        var nodeId = NodeId.nodeId("cold-start-node").unwrap();
+        var localRoute = HttpNodeRouteKey.httpNodeRouteKey("GET", "/cold-start/", nodeId);
+        return RouteTable.routeTable(Set.of(localRoute), List.of());
+    }
 
     private static HttpServer fakeHttpServer(int port) {
         return new HttpServer() {

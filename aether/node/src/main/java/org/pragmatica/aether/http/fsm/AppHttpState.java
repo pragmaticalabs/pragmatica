@@ -54,16 +54,20 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
     /// Awaiting the first bound [`HttpServer`]. `H1Ready` moves to `H1Only`; `H3Ready` moves to
     /// `H3Only`. A `StopRequested` / `Shutdown` resets to `Stopped`.
     ///
-    /// RouteTablePublished arriving while bind is in flight is intentionally ignored — routes
-    /// arrive via the KV subscription path, which may fire before `H1Ready` completes; dropping
-    /// them here is safe because the adapter rebuilds and re-dispatches on every KV callback (and
-    /// on `QuorumEstablished` once the server is bound and routes are observable).
+    /// RouteTablePublished and QuorumEstablished arriving while bind is in flight are intentionally
+    /// ignored — both events may fire before `H1Ready` / `H3Ready` complete. To recover from the
+    /// cold-start race (route state + quorum settled before bind), the H1Ready/H3Ready transitions
+    /// run [`AppHttpContext#republishStateAfterBind`] which re-reads the authoritative state and
+    /// re-dispatches `RouteTablePublished` (and `QuorumEstablished` if currently held) into the
+    /// new H1Only/H3Only state.
     record Starting(AppHttpContext ctx) implements AppHttpState {
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
             switch (event) {
-                case H1Ready(HttpServer server) -> tx.transitionTo(new H1Only(ctx, server));
-                case H3Ready(HttpServer server) -> tx.transitionTo(new H3Only(ctx, server));
+                case H1Ready(HttpServer server) ->
+                        tx.transitionTo(new H1Only(ctx, server), ctx::republishStateAfterBind);
+                case H3Ready(HttpServer server) ->
+                        tx.transitionTo(new H3Only(ctx, server), ctx::republishStateAfterBind);
                 case StopRequested _, ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 default -> tx.ignore();
             }
@@ -126,6 +130,12 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
     /// subsequent [`RouteTablePublished`] is a fresh `RouteReady → RouteReady` swap that replaces
     /// the carried table. [`CertRotationRequested`] transitions to [`CertRotating`] carrying the
     /// current server refs as "previous" so the adapter can stop them.
+    ///
+    /// `H1Ready` / `H3Ready` arriving in `RouteReady` upgrade the carried server pair (the second
+    /// protocol bound after the first one already collapsed Starting → RouteReady via the
+    /// republish-after-bind action). Without this, dual-protocol startup paths would lose the
+    /// second protocol because the first H1Ready/H3Ready transitions out of Starting before the
+    /// second binds.
     record RouteReady(AppHttpContext ctx,
                       Option<HttpServer> server,
                       Option<HttpServer> h3,
@@ -136,6 +146,10 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
             switch (event) {
                 case RouteTablePublished(RouteTable updated) ->
                         tx.transitionTo(new RouteReady(ctx, server, h3, updated));
+                case H1Ready(HttpServer newServer) ->
+                        tx.transitionTo(new RouteReady(ctx, Option.some(newServer), h3, routes));
+                case H3Ready(HttpServer newH3) ->
+                        tx.transitionTo(new RouteReady(ctx, server, Option.some(newH3), routes));
                 case ClusterFsmEvent.QuorumEstablished _ -> tx.ignore();
                 case CertRotationRequested(var bundle) ->
                         tx.transitionTo(new CertRotating(ctx, server, h3, bundle, routes));

@@ -248,6 +248,12 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     private final AppHttpContext context;
 
+    /// Snapshot of the most recent quorum-state observation. Updated by [`#onQuorumStateChange`]
+    /// and read by the context's `quorumEstablishedSupplier` so a transition action firing after
+    /// bind completion can re-dispatch `QuorumEstablished` if quorum was already established
+    /// before the server became routable.
+    private volatile boolean quorumEstablished;
+
     AppHttpServerAdapter(AppHttpConfig config,
                       ForwardingTimeouts forwardingTimeouts,
                       NodeId selfNodeId,
@@ -284,7 +290,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                 deserializer,
                                                 forwardingTimeouts,
                                                 taskGroupOwnerResolver);
-        this.context = buildContext(selfNodeId);
+        this.context = buildContext(selfNodeId, this::computeRouteTable, () -> quorumEstablished);
     }
 
     /// Pair of the built Fsm and its context. The Fsm reference is also captured inside
@@ -293,21 +299,27 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// leader-election FSM.
     private record FsmAndContext(Fsm<AppHttpState, ClusterFsmEvent> fsm, AppHttpContext context) {}
 
-    private static AppHttpContext buildContext(NodeId selfNodeId) {
-        return buildFsmAndContext(selfNodeId).context();
+    private static AppHttpContext buildContext(NodeId selfNodeId,
+                                               java.util.function.Supplier<RouteTable> routeTableSupplier,
+                                               java.util.function.BooleanSupplier quorumEstablishedSupplier) {
+        return buildFsmAndContext(selfNodeId, routeTableSupplier, quorumEstablishedSupplier).context();
     }
 
-    private static FsmAndContext buildFsmAndContext(NodeId selfNodeId) {
+    private static FsmAndContext buildFsmAndContext(NodeId selfNodeId,
+                                                    java.util.function.Supplier<RouteTable> routeTableSupplier,
+                                                    java.util.function.BooleanSupplier quorumEstablishedSupplier) {
         var ctxHolder = new AtomicReference<AppHttpContext>();
         Function<Fsm<AppHttpState, ClusterFsmEvent>, AppHttpState> initialStateFactory =
-                fsm -> buildContextAndStopped(fsm, ctxHolder);
+                fsm -> buildContextAndStopped(fsm, ctxHolder, routeTableSupplier, quorumEstablishedSupplier);
         var fsm = Fsm.fsm("app-http", selfNodeId.id(), initialStateFactory);
         return new FsmAndContext(fsm, ctxHolder.get());
     }
 
     private static AppHttpState buildContextAndStopped(Fsm<AppHttpState, ClusterFsmEvent> fsm,
-                                                       AtomicReference<AppHttpContext> ctxHolder) {
-        var ctx = new AppHttpContext(fsm);
+                                                       AtomicReference<AppHttpContext> ctxHolder,
+                                                       java.util.function.Supplier<RouteTable> routeTableSupplier,
+                                                       java.util.function.BooleanSupplier quorumEstablishedSupplier) {
+        var ctx = new AppHttpContext(fsm, routeTableSupplier, quorumEstablishedSupplier);
         ctxHolder.set(ctx);
         return ctx.stopped();
     }
@@ -552,13 +564,14 @@ class AppHttpServerAdapter implements AppHttpServer {
         publishRouteTable();
     }
 
+    /// Thin delegate over [`AppHttpContext#publishRouteTable`] — the context owns the recompute +
+    /// dispatch path. The supplier passed at context construction (`this::computeRouteTable`)
+    /// provides the authoritative snapshot. Adapter-side call sites (KV callbacks, quorum
+    /// transitions, start completion) log their own arrival reason; the context logs the
+    /// resulting route counts.
     @Contract
     private void publishRouteTable() {
-        var newTable = computeRouteTable();
-        log.debug("Router rebuilt: {} local routes, {} remote routes",
-                  newTable.localRoutes().size(),
-                  newTable.remoteRoutes().size());
-        context.dispatch(new AppHttpEvents.RouteTablePublished(newTable));
+        context.publishRouteTable();
     }
 
     private RouteTable computeRouteTable() {
@@ -576,7 +589,9 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     @Override public void onQuorumStateChange(QuorumStateNotification notification) {
-        if (notification.state() == QuorumStateNotification.State.ESTABLISHED) {
+        var established = notification.state() == QuorumStateNotification.State.ESTABLISHED;
+        quorumEstablished = established;
+        if (established) {
             log.info("Quorum established — marking route sync complete");
             context.dispatch(new ClusterFsmEvent.QuorumEstablished());
             publishRouteTable();
