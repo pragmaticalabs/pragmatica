@@ -396,34 +396,6 @@ import static org.pragmatica.lang.Unit.unit;
         if (actual <configured) {handleDeficit(actual, configured);} else {handleSurplus(actual, configured);}
     }
 
-    /// Drops any `ProvisioningSlot` whose deadline has passed and CAS-installs a fresh
-    /// `Reconciling` state carrying only the surviving slots. Idempotent: if no slots have
-    /// expired, the original state is left untouched. Returns the slot list visible after
-    /// expiry so the caller can compute `inFlightCount` without re-reading the state.
-    private List<NodeReconcilerState.ProvisioningSlot> expireSlots(NodeReconcilerState.Reconciling reconciling) {
-        var nowMs = System.currentTimeMillis();
-        var alive = reconciling.inFlight().stream()
-                                                  .filter(slot -> slot.deadlineMs() >= nowMs)
-                                                  .toList();
-        if (alive.size() == reconciling.inFlight().size()) {return reconciling.inFlight();}
-        var expiredCount = reconciling.inFlight().size() - alive.size();
-        var refreshed = new NodeReconcilerState.Reconciling(reconciling.targetSize(),
-                                                             reconciling.currentSize(),
-                                                             List.copyOf(alive),
-                                                             reconciling.terminating(),
-                                                             reconciling.startedAt());
-        if (!stateRef.compareAndSet(reconciling, refreshed)) {
-            log.debug("CTM: slot expiry CAS lost — observed={}, expected=Reconciling, expired={}",
-                      stateRef.get(),
-                      expiredCount);
-            return alive;
-        }
-        log.info("CTM: expired {} stalled provisioning slot(s); {} slot(s) still in-flight",
-                 expiredCount,
-                 alive.size());
-        return alive;
-    }
-
     /// Summarizes per-node health buckets derived from the snapshot's `MembershipView`.
     /// CTM has no direct accessor to the leader's `swimHints` map; the snapshot view is the
     /// authoritative projection CTM uses for all reconcile decisions, so the same bucketing
@@ -440,64 +412,10 @@ import static org.pragmatica.lang.Unit.unit;
 
     private void handleDeficit(int actual, int desired) {
         var current = stateRef.get();
-        if (current instanceof NodeReconcilerState.Reconciling reconciling) {
-            handleDeficitDuringReconciling(reconciling, actual, desired);
+        if (current instanceof NodeReconcilerState.Reconciling) {
+            log.debug("CTM: Already reconciling, waiting for in-flight provisions to complete");
             return;
         }
-        handleDeficitFromConverged(current, actual, desired);
-    }
-
-    /// Top-up dispatch path. The cluster is already `Reconciling` from a previous wave;
-    /// expire any stalled slots, recompute deficit against `realActual + survivingSlots`,
-    /// and append fresh slots if a deficit remains. CAS-installs a Reconciling state with
-    /// the merged slot list. Self-correcting: a partial wave that loses one provision
-    /// times out its slot and the next tick fires a top-up.
-    private void handleDeficitDuringReconciling(NodeReconcilerState.Reconciling reconciling, int actual, int desired) {
-        var aliveSlots = expireSlots(reconciling);
-        var inFlightCount = aliveSlots.size();
-        var topupDeficit = desired - actual - inFlightCount;
-        if (topupDeficit <= 0) {
-            log.debug("CTM: reconciling wave still in-flight (real={}, inFlight={}, target={}); no top-up needed",
-                      actual,
-                      inFlightCount,
-                      desired);
-            return;
-        }
-        if (!lifecycleManager.isCloudManaged()) {
-            log.debug("CTM: top-up deficit of {} but no ComputeProvider, cannot auto-provision", topupDeficit);
-            return;
-        }
-        var batchSize = provisionBatchSize(topupDeficit);
-        var current = stateRef.get();
-        if (! (current instanceof NodeReconcilerState.Reconciling currentReconciling)) {
-            log.debug("CTM: top-up dispatch aborted — state changed to {} during expiry", current);
-            return;
-        }
-        var mergedSlots = mergeSlots(currentReconciling.inFlight(), batchSize);
-        var next = new NodeReconcilerState.Reconciling(desired,
-                                                       actual,
-                                                       mergedSlots,
-                                                       currentReconciling.terminating(),
-                                                       currentReconciling.startedAt());
-        if (!stateRef.compareAndSet(currentReconciling, next)) {
-            log.warn("CTM: state CAS lost (deficit, top-up) — observed={}, expected={}, next={}",
-                     stateRef.get(),
-                     currentReconciling,
-                     next);
-            return;
-        }
-        log.info("CTM: deficit={} (real={}, inFlight={}, target={}); provisioning {} more replacement(s)",
-                 topupDeficit,
-                 actual,
-                 inFlightCount,
-                 desired,
-                 batchSize);
-        provisionNodes(batchSize);
-    }
-
-    /// First-wave dispatch path. The cluster is `Converged` (or `Forming` cooldown completed);
-    /// build the initial slot list and CAS-install `Reconciling`.
-    private void handleDeficitFromConverged(NodeReconcilerState current, int actual, int desired) {
         var deficit = desired - actual;
         if (!lifecycleManager.isCloudManaged()) {
             var next = new NodeReconcilerState.Reconciling(desired, actual, List.of(), List.of(), Instant.now());
@@ -739,25 +657,11 @@ import static org.pragmatica.lang.Unit.unit;
         };
     }
 
-    private List<NodeReconcilerState.ProvisioningSlot> buildInFlightList(int count) {
-        var nowMs = System.currentTimeMillis();
-        var deadlineMs = nowMs + autoHealConfig.provisioningTimeout().millis();
-        var list = new ArrayList<NodeReconcilerState.ProvisioningSlot>(count);
-        for (var i = 0;i <count;i++) {list.add(new NodeReconcilerState.ProvisioningSlot(nowMs, deadlineMs));}
+    private static List<NodeReconcilerState.ProvisionAttempt> buildInFlightList(int count) {
+        var now = Instant.now();
+        var list = new ArrayList<NodeReconcilerState.ProvisionAttempt>(count);
+        for (var i = 0;i <count;i++) {list.add(new NodeReconcilerState.ProvisionAttempt(now, 1));}
         return List.copyOf(list);
-    }
-
-    /// Append `count` fresh slots to an existing in-flight list and return an immutable copy.
-    /// Used by the top-up dispatch path so the new wave's deadlines are independent of the
-    /// original wave's deadlines (each slot times out on its own clock).
-    private List<NodeReconcilerState.ProvisioningSlot> mergeSlots(List<NodeReconcilerState.ProvisioningSlot> existing,
-                                                                   int count) {
-        var nowMs = System.currentTimeMillis();
-        var deadlineMs = nowMs + autoHealConfig.provisioningTimeout().millis();
-        var merged = new ArrayList<NodeReconcilerState.ProvisioningSlot>(existing.size() + count);
-        merged.addAll(existing);
-        for (var i = 0;i <count;i++) {merged.add(new NodeReconcilerState.ProvisioningSlot(nowMs, deadlineMs));}
-        return List.copyOf(merged);
     }
 
     private static String stateName(NodeReconcilerState state) {
