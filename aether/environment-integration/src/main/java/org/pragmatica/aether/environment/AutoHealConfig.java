@@ -13,31 +13,59 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Configuration for cluster auto-healing behavior.
 ///
-/// @param retryInterval         interval between snapshot-driven safety-net polls when the
-///                              cluster is below target size (CTM also reacts immediately to
-///                              snapshot delta and topology change events)
-/// @param startupCooldown       delay before first auto-heal check during initial cluster
-///                              formation, allowing all nodes time to join before provisioning
-///                              replacements
-/// @param staleObservationTtl   maximum age of follower-produced peer observations
-///                              (`PeerHealthObservation` / `PeerConnectivityObservation`) accepted
-///                              by the leader's `HealthReconciler`. Observations whose
-///                              `producedAtMs` is older than `now - staleObservationTtl` at drain
-///                              time are dropped without affecting the snapshot. Defaults to 30s.
-public record AutoHealConfig(TimeSpan retryInterval, TimeSpan startupCooldown, TimeSpan staleObservationTtl) {
+/// @param retryInterval               interval between snapshot-driven safety-net polls when the
+///                                    cluster is below target size (CTM also reacts immediately to
+///                                    snapshot delta and topology change events)
+/// @param startupCooldown             delay before first auto-heal check during initial cluster
+///                                    formation, allowing all nodes time to join before provisioning
+///                                    replacements
+/// @param staleObservationTtl         maximum age of follower-produced peer observations
+///                                    (`PeerHealthObservation` / `PeerConnectivityObservation`) accepted
+///                                    by the leader's `HealthReconciler`. Observations whose
+///                                    `producedAtMs` is older than `now - staleObservationTtl` at drain
+///                                    time are dropped without affecting the snapshot. Defaults to 30s.
+/// @param quicMissPromotionThreshold  number of consecutive QUIC ping-misses (recorded via
+///                                    `peerObservationStore.recordPingMiss`) at which the leader's
+///                                    `HealthReconciler` promotes a peer's `swimHints` entry to
+///                                    `FAULTY` even if SWIM has not fired. Defense-in-depth: keeps
+///                                    auto-heal viable when SWIM is delayed or wedged. Idempotent —
+///                                    repeat promotions on subsequent misses are no-ops. Defaults to 10.
+public record AutoHealConfig(TimeSpan retryInterval,
+                              TimeSpan startupCooldown,
+                              TimeSpan staleObservationTtl,
+                              int quicMissPromotionThreshold) {
     public static final TimeSpan DEFAULT_STALE_OBSERVATION_TTL = timeSpan(30).seconds();
+
+    public static final int DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD = 10;
 
     public static final AutoHealConfig DEFAULT = autoHealConfig(timeSpan(10).seconds(),
                                                                  timeSpan(15).seconds(),
-                                                                 DEFAULT_STALE_OBSERVATION_TTL).unwrap();
+                                                                 DEFAULT_STALE_OBSERVATION_TTL,
+                                                                 DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD).unwrap();
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval, TimeSpan startupCooldown) {
-        return autoHealConfig(retryInterval, startupCooldown, DEFAULT_STALE_OBSERVATION_TTL);
+        return autoHealConfig(retryInterval,
+                              startupCooldown,
+                              DEFAULT_STALE_OBSERVATION_TTL,
+                              DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD);
     }
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
                                                          TimeSpan startupCooldown,
                                                          TimeSpan staleObservationTtl) {
-        return success(new AutoHealConfig(retryInterval, startupCooldown, staleObservationTtl));
+        return autoHealConfig(retryInterval,
+                              startupCooldown,
+                              staleObservationTtl,
+                              DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD);
+    }
+
+    public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
+                                                         TimeSpan startupCooldown,
+                                                         TimeSpan staleObservationTtl,
+                                                         int quicMissPromotionThreshold) {
+        return success(new AutoHealConfig(retryInterval,
+                                          startupCooldown,
+                                          staleObservationTtl,
+                                          quicMissPromotionThreshold));
     }
 }

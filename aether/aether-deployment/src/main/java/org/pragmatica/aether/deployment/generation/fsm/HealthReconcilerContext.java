@@ -52,6 +52,7 @@ import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.TransitionRequest;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -334,6 +335,13 @@ public final class HealthReconcilerContext {
 
     public ClusterGenerationSnapshot ambientSnapshot() {
         return ambientSnapshot.get();
+    }
+
+    /// Read-only view over the leader-projection SWIM hints map. Exposed for tests and
+    /// diagnostics — callers must not mutate. Mutations to `swimHints` go through
+    /// `handleSwimHint` / `promoteToFaultyIfThresholdReached` / `clearLeaderData`.
+    public Map<NodeId, HealthHint> swimHintsView() {
+        return Collections.unmodifiableMap(swimHints);
     }
 
     @Contract public void setAmbientSnapshot(ClusterGenerationSnapshot snapshot) {
@@ -729,7 +737,24 @@ public final class HealthReconcilerContext {
         if (!current.coreMembers().containsKey(quic.nodeId())) {return SignalOutcome.unchanged(current, termAdvance);}
         var missed = peerObservationStore.recordPingMiss(quic.nodeId());
         log.debug("QUIC disconnect from {} (counted as advisory miss {})", quic.nodeId(), missed);
+        promoteToFaultyIfThresholdReached(quic.nodeId(), missed);
         return SignalOutcome.unchanged(current, termAdvance);
+    }
+
+    /// Defense-in-depth: SWIM is the primary signal that flips `swimHints` to FAULTY, but if
+    /// SWIM is delayed or wedged a sustained run of QUIC ping-misses still indicates the peer
+    /// is unreachable. Once the consecutive-miss counter on `peerObservationStore` reaches
+    /// `autoHealConfig.quicMissPromotionThreshold()`, force `swimHints[peer] = FAULTY` so the
+    /// existing `shouldEvict` / auto-heal path can act. Idempotent — repeat promotions on
+    /// subsequent misses are no-ops (no duplicate log entries). The counter is reset whenever
+    /// SWIM reports HEALTHY (`applyClearSuspected`) or QUIC reports CONNECTED
+    /// (`handleRemoteConnectivity`).
+    @Contract private void promoteToFaultyIfThresholdReached(NodeId peer, int missed) {
+        if (missed < autoHealConfig.quicMissPromotionThreshold()) {return;}
+        if (swimHints.get(peer) == HealthHint.FAULTY) {return;}
+        swimHints.put(peer, HealthHint.FAULTY);
+        log.warn("Promoting peer {} to FAULTY based on {} sustained QUIC ping-misses (threshold={})",
+                 peer, missed, autoHealConfig.quicMissPromotionThreshold());
     }
 
     private SignalOutcome handleDrainCompleted(ClusterGenerationSnapshot current,
@@ -907,8 +932,18 @@ public final class HealthReconcilerContext {
                                                              new HealthSignal.QuicDisconnect(remote.peer(),
                                                                                              remote.observedAtEpoch()),
                                                              termAdvance);
-            case CONNECTED -> SignalOutcome.unchanged(current, termAdvance);
+            case CONNECTED -> handleRemoteConnected(current, remote.peer(), termAdvance);
         };
+    }
+
+    /// Reset the consecutive QUIC ping-miss counter on a fresh CONNECTED report so a peer that
+    /// recovers does not accrue toward the FAULTY-promotion threshold from prior outages.
+    /// Pairs with [`#promoteToFaultyIfThresholdReached`].
+    private SignalOutcome handleRemoteConnected(ClusterGenerationSnapshot current,
+                                                NodeId peer,
+                                                TermAdvance termAdvance) {
+        peerObservationStore.clearPingMisses(peer);
+        return SignalOutcome.unchanged(current, termAdvance);
     }
 
     /// Whether a remote observation is older than the configured staleness TTL.

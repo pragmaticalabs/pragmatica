@@ -358,7 +358,13 @@ import static org.pragmatica.lang.Result.success;
         var startupCooldown = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "startup_cooldown").or("15s");
         var staleObservationTtl = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "stale_observation_ttl")
                                           .or(AutoHealSpec.DEFAULT_STALE_OBSERVATION_TTL);
-        return AutoHealSpec.autoHealSpec(enabled, retryInterval, startupCooldown, staleObservationTtl);
+        var quicMissPromotionThreshold = doc.getInt(OPERATIONS_AUTO_HEAL_SECTION, "quic_miss_promotion_threshold")
+                                                .or(AutoHealSpec.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD);
+        return AutoHealSpec.autoHealSpec(enabled,
+                                         retryInterval,
+                                         startupCooldown,
+                                         staleObservationTtl,
+                                         quicMissPromotionThreshold);
     }
 
     private static TlsDeploymentConfig parseTlsConfig(TomlDocument doc) {
