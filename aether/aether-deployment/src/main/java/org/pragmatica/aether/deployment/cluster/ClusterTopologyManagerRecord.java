@@ -359,9 +359,16 @@ import static org.pragmatica.lang.Unit.unit;
     private void reconcileActive(NodeReconcilerState currentState) {
         var snapshot = snapshotSource.currentMembershipView();
         if (snapshot.isEmpty()) {return;}
-        var configured = snapshot.unwrap().desiredCoreSize();
+        var view = snapshot.unwrap();
+        var configured = view.desiredCoreSize();
         if (configured == 0) {return;}
         var actual = snapshotHealthyOnDutyCount();
+        var deficit = configured - actual;
+        log.debug("CTM reconcile: actual={} desired={} deficit={} hints={}",
+                  actual,
+                  configured,
+                  deficit,
+                  summarizeHealthHints(view));
         var effectiveState = currentState;
         if (effectiveState instanceof NodeReconcilerState.Reconciling reconciling && reconciling.targetSize() != configured) {
             log.info("CTM: reconcile target changed during Reconciling ({} → {}), resetting to Converged for re-dispatch",
@@ -371,10 +378,36 @@ import static org.pragmatica.lang.Unit.unit;
             effectiveState = stateRef.get();
         }
         if (actual == configured) {
-            if (! (effectiveState instanceof NodeReconcilerState.Converged)) {transitionTo(new NodeReconcilerState.Converged());}
+            if (effectiveState instanceof NodeReconcilerState.Converged) {
+                log.debug("CTM converged: actual={} matches desired={}", actual, configured);
+            } else {
+                log.info("CTM converged: actual={} matches desired={}, transitioning to Converged", actual, configured);
+                transitionTo(new NodeReconcilerState.Converged());
+            }
             return;
         }
+        if (effectiveState instanceof NodeReconcilerState.Converged) {
+            log.info("CTM deficit detected: actual={} desired={} deficit={} hints={}",
+                     actual,
+                     configured,
+                     deficit,
+                     summarizeHealthHints(view));
+        }
         if (actual <configured) {handleDeficit(actual, configured);} else {handleSurplus(actual, configured);}
+    }
+
+    /// Summarizes per-node health buckets derived from the snapshot's `MembershipView`.
+    /// CTM has no direct accessor to the leader's `swimHints` map; the snapshot view is the
+    /// authoritative projection CTM uses for all reconcile decisions, so the same bucketing
+    /// is logged here for traceability. Counts (not the full id-set) are emitted to keep
+    /// cardinality bounded in noisy log streams.
+    private static String summarizeHealthHints(MembershipView view) {
+        var coreCount = view.coreMemberIds().size();
+        var onDutyCount = view.onDutyMemberIds().size();
+        var healthy = view.healthyOnDutyCount();
+        var onDutyUnhealthy = onDutyCount - healthy;
+        var notOnDuty = coreCount - onDutyCount;
+        return "{HEALTHY=" + healthy + ", ON_DUTY_UNHEALTHY=" + onDutyUnhealthy + ", NOT_ON_DUTY=" + notOnDuty + "}";
     }
 
     private void handleDeficit(int actual, int desired) {
