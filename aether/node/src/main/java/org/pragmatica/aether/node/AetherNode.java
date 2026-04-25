@@ -298,6 +298,12 @@ public interface AetherNode extends ManageableNode {
         var rabiaMetricsCollector = RabiaMetricsCollector.rabiaMetricsCollector();
         var networkMetricsHandler = NetworkMetricsHandler.networkMetricsHandler();
         var persistence = resolvePersistence(config);
+        // Single source of truth for the cluster-side leader term — incremented in
+        // `onLeaderChangeForReconciler` when this node becomes leader; read by
+        // `LeaderManager.currentLeaderEpoch()` (via the RabiaNode plumbing) AND by
+        // `HealthReconcilerContext.defaultLeaderEpoch()` (via the assembleNode wiring).
+        var leaderTerm = new AtomicLong(0L);
+        Supplier<Long> rabiaTermSupplier = leaderTerm::get;
         return RabiaNode.rabiaNode(nodeConfig,
                                    delegateRouter,
                                    kvStore,
@@ -306,7 +312,8 @@ public interface AetherNode extends ManageableNode {
                                    rabiaMetricsCollector,
                                    true,
                                    persistence,
-                                   config.quicTls())
+                                   config.quicTls(),
+                                   rabiaTermSupplier)
         .flatMap(clusterNode -> assembleNode(config,
                                              delegateRouter,
                                              kvStore,
@@ -318,7 +325,8 @@ public interface AetherNode extends ManageableNode {
                                              serializer,
                                              deserializer,
                                              nodeCodec,
-                                             dhtNode));
+                                             dhtNode,
+                                             leaderTerm));
     }
 
     private static RabiaPersistence<KVCommand<AetherKey>> resolvePersistence(AetherNodeConfig config) {
@@ -367,7 +375,8 @@ public interface AetherNode extends ManageableNode {
                                                    Serializer serializer,
                                                    Deserializer deserializer,
                                                    SliceCodec nodeCodec,
-                                                   DHTNode dhtNode) {
+                                                   DHTNode dhtNode,
+                                                   AtomicLong leaderTerm) {
         DHTNetwork dhtNetwork = (target, msg) -> clusterNode.network().send(target, msg);
         var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode, dhtNetwork, config.artifactRepo());
         var aetherMaps = AetherMaps.aetherMaps(dhtClient.scoped(DHTConfig.FULL));
@@ -780,7 +789,6 @@ public interface AetherNode extends ManageableNode {
         metricsCollector.setInvocationMetricsProvider(invocationMetrics);
         metricsCollector.recordCustom("mgmt.port", config.managementPort());
         var peerObservationStore = org.pragmatica.aether.metrics.observation.PeerObservationStore.peerObservationStore();
-        var leaderTerm = new AtomicLong(0L);
         BooleanSupplier isLeaderSupplier = clusterNode.leaderManager()::isLeader;
         metricsCollector.setPongSignalFan(ClusterSyncPongSignalFan.clusterSyncPongSignalFan(stableHealthSink,
                                                                                             isLeaderSupplier));

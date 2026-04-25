@@ -6,7 +6,6 @@ package org.pragmatica.aether.deployment.generation;
 
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerContext;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
-import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.BecameLeader;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.MembershipReseeded;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.ReprojectionRequested;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.SignalReceived;
@@ -25,6 +24,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.statemachine.Fsm;
 
 import java.util.concurrent.atomic.AtomicReference;
@@ -43,9 +43,11 @@ import org.slf4j.LoggerFactory;
 /// LeadingReprojecting`, with transitions back to `Dormant` on leader loss and to a terminal
 /// `Stopped` on shutdown. See [`HealthReconcilerState`] for the full transition diagram.
 ///
-/// Public surface is preserved: `start(Epoch)` / `stop(StopReason)` translate to FSM dispatches;
+/// Public surface: `start()` / `stop(StopReason)` translate to FSM dispatches;
 /// `onSignal(HealthSignal)` enqueues a `SignalReceived` event; `requestReprojection(...)` triggers
-/// a coalescing `LeadingReprojecting` swap.
+/// a coalescing `LeadingReprojecting` swap. The leader epoch read at `start()` time comes from
+/// [`HealthReconcilerContext#defaultLeaderEpoch`] — the same source surfaced by
+/// [`org.pragmatica.consensus.leader.LeaderManager#currentLeaderEpoch`].
 ///
 /// Thread-confinement contract:
 ///   - `onSignal` / `seedSnapshot` / `start` / `stop` / `reseedMembership` are serialized via the
@@ -63,7 +65,7 @@ public interface HealthReconciler extends HealthSignalSink {
 
     int LATE_SIGNAL_WINDOW = 2;
 
-    @Contract void start(Epoch leaderEpoch);
+    @Contract void start();
     @Contract void stop(StopReason reason);
     @Contract boolean isActive();
     @Contract void onSignal(HealthSignal signal);
@@ -175,10 +177,15 @@ public interface HealthReconciler extends HealthSignalSink {
 record HealthReconcilerRecord(HealthReconcilerContext ctx) implements HealthReconciler {
     private static final Logger log = LoggerFactory.getLogger(HealthReconcilerRecord.class);
 
-    @Contract@Override public void start(Epoch leaderEpoch) {
+    @Contract@Override public void start() {
+        // Drive the FSM into a Leading* state via the canonical events. The first dispatch is
+        // a no-op when already past Dormant; the LeaderChange transitions Dormant /
+        // QuorumWaiting / Following → LeadingSteady, with the epoch sourced inside the state
+        // handler from `ctx.defaultLeaderEpoch()` (single source of truth — same supplier
+        // surfaced by `LeaderManager.currentLeaderEpoch()`).
         ctx.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        ctx.dispatch(new BecameLeader(leaderEpoch));
-        log.debug("HealthReconciler started at epoch {}", leaderEpoch);
+        ctx.dispatch(new ClusterFsmEvent.LeaderChange(Option.some(ctx.self()), true));
+        log.debug("HealthReconciler started at epoch {}", ctx.defaultLeaderEpoch());
     }
 
     @Contract@Override public void stop(StopReason reason) {

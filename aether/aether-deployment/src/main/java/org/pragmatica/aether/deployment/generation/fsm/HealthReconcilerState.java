@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.generation.fsm;
 
-import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.BecameLeader;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.CommandsApplied;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.CommandsApplyFailed;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.MembershipReseeded;
@@ -35,12 +34,14 @@ import org.slf4j.LoggerFactory;
 /// ```text
 /// Dormant
 ///   ──QuorumEstablished──► QuorumWaiting
+/// Dormant
+///   ──LeaderChange(localIsLeader=true)──► LeadingSteady(defaultLeaderEpoch, ambientSnapshot)
 /// QuorumWaiting
-///   ──LeaderChange(localIsLeader=true) | BecameLeader(epoch)──► LeadingSteady(startEpoch, snapshot)
+///   ──LeaderChange(localIsLeader=true)──► LeadingSteady(defaultLeaderEpoch, ambientSnapshot)
 /// QuorumWaiting
 ///   ──LeaderChange(localIsLeader=false)──► Following
 /// Following
-///   ──LeaderChange(localIsLeader=true) | BecameLeader(epoch)──► LeadingSteady(startEpoch, snapshot)
+///   ──LeaderChange(localIsLeader=true)──► LeadingSteady(defaultLeaderEpoch, ambientSnapshot)
 /// LeadingSteady
 ///   ──ReprojectionRequested(supplier)──► LeadingReprojecting(startEpoch, snapshot, supplier)
 /// LeadingReprojecting
@@ -52,6 +53,11 @@ import org.slf4j.LoggerFactory;
 /// Leading*  ──LeaderChange(localIsLeader=false) | QuorumDisappeared──► Dormant   (clears leader data)
 /// Any (non-terminal) ──Shutdown──► Stopped
 /// ```
+///
+/// The `defaultLeaderEpoch` read on entry to `LeadingSteady` from
+/// [`HealthReconcilerContext#defaultLeaderEpoch`] sources the rabia term — the same value
+/// surfaced by [`org.pragmatica.consensus.leader.LeaderManager#currentLeaderEpoch`] (single
+/// source of truth for leader-epoch identity).
 ///
 /// - `Dormant`, `QuorumWaiting`, `Following`, `Stopped` are per-context singletons (data-free).
 /// - `LeadingSteady(startEpoch, snapshot)` and `LeadingReprojecting(startEpoch, snapshot, supplier)`
@@ -78,8 +84,8 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
                                      TransitionRequest<HealthReconcilerState, ClusterFsmEvent> tx) {
             switch (event){
                 case QuorumEstablished _ -> tx.transitionTo(ctx.quorumWaiting());
-                case BecameLeader be -> tx.transitionTo(ctx.newLeadingSteady(be.startEpoch(), ctx.ambientSnapshot()));
-                case LeaderChange lc when lc.localIsLeader() -> tx.transitionTo(ctx.quorumWaiting());
+                case LeaderChange lc when lc.localIsLeader() -> tx.transitionTo(ctx.newLeadingSteady(ctx.defaultLeaderEpoch(),
+                                                                                                     ctx.ambientSnapshot()));
                 case SnapshotSeeded seeded -> handleSnapshotSeededAmbient(seeded, tx);
                 case Shutdown _ -> tx.transitionTo(ctx.stopped());
                 default -> tx.ignore();
@@ -96,7 +102,6 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
         @Override public void handle(ClusterFsmEvent event,
                                      TransitionRequest<HealthReconcilerState, ClusterFsmEvent> tx) {
             switch (event){
-                case BecameLeader be -> tx.transitionTo(ctx.newLeadingSteady(be.startEpoch(), ctx.ambientSnapshot()));
                 case LeaderChange lc when lc.localIsLeader() -> tx.transitionTo(ctx.newLeadingSteady(ctx.defaultLeaderEpoch(),
                                                                                                      ctx.ambientSnapshot()));
                 case LeaderChange lc when !lc.localIsLeader() -> tx.transitionTo(ctx.following());
@@ -121,7 +126,6 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
         @Override public void handle(ClusterFsmEvent event,
                                      TransitionRequest<HealthReconcilerState, ClusterFsmEvent> tx) {
             switch (event){
-                case BecameLeader be -> tx.transitionTo(ctx.newLeadingSteady(be.startEpoch(), ctx.ambientSnapshot()));
                 case LeaderChange lc when lc.localIsLeader() -> tx.transitionTo(ctx.newLeadingSteady(ctx.defaultLeaderEpoch(),
                                                                                                      ctx.ambientSnapshot()));
                 case QuorumDisappeared _ -> tx.transitionTo(ctx.dormant());

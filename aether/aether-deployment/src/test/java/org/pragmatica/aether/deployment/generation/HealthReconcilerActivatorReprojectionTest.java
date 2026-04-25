@@ -147,7 +147,7 @@ class HealthReconcilerActivatorReprojectionTest {
         int reprojectionCount() {return reprojectionCount.get();}
         String lastReprojectionReason() {return lastReason.get();}
 
-        @Override public void start(Epoch leaderEpoch) {delegate.start(leaderEpoch);}
+        @Override public void start() {delegate.start();}
         @Override public void stop(StopReason reason) {delegate.stop(reason);}
         @Override public boolean isActive() {return delegate.isActive();}
         @Override public void onSignal(HealthSignal signal) {delegate.onSignal(signal);}

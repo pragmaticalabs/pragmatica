@@ -8,7 +8,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerContext;
-import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.BecameLeader;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.SignalReceived;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.SnapshotSeeded;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerState;
@@ -30,6 +29,7 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.QuorumEstablished;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -106,7 +106,7 @@ class HealthReconcilerStalenessFilterTest {
         // inherits the seeded snapshot as its authoritative state.
         harness.dispatch(new SnapshotSeeded(seedSnapshotWithCoreA()));
         harness.dispatch(new QuorumEstablished());
-        harness.dispatch(new BecameLeader(Epoch.epoch(1L, 0L)));
+        harness.dispatch(new ClusterFsmEvent.LeaderChange(Option.some(SELF), true));
     }
 
     private static ClusterGenerationSnapshot seedSnapshotWithCoreA() {

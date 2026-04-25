@@ -25,8 +25,10 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.statemachine.Fsm;
+import org.pragmatica.statemachine.FsmObserver;
 
 import java.util.List;
+import java.util.function.Supplier;
 
 /// Leader manager responsible for choosing the cluster leader. Backed by the
 /// [`LeaderElectionFsm`](fsm/LeaderElectionFsm.java) — a GoF-style state machine with CAS-guarded
@@ -42,6 +44,16 @@ public interface LeaderManager {
     Option<NodeId> leader();
 
     boolean isLeader();
+
+    /// Returns the current leader's epoch (the cluster-side rabia term) iff this node is the
+    /// elected leader; otherwise [`Option#none`]. Source: the [`Supplier<Long>`] injected at
+    /// construction (`leaderManager(...)` overloads). Consumers (e.g. Aether's
+    /// `HealthReconciler`) wrap this raw term into their domain epoch type.
+    ///
+    /// SSOT note: leader-tenure identity (NodeId) and the rabia term advance together — the term
+    /// increments on each leader transition (view change), so a live read here is semantically
+    /// equivalent to a snapshot taken at promotion for the active-leader case.
+    Option<Long> currentLeaderEpoch();
 
     /// Called when leader election is committed through consensus.
     void onLeaderCommitted(NodeId leader);
@@ -76,14 +88,16 @@ public interface LeaderManager {
         return build(self, router, Option.none(), List.of(),
                      LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
                      LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
-                     LeaderElectionContext.DEFAULT_PER_RANK_DELAY);
+                     LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
+                     LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER);
     }
 
     static LeaderManager leaderManager(NodeId self, MessageRouter router, LeaderProposalHandler proposalHandler) {
         return build(self, router, Option.some(proposalHandler), List.of(),
                      LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
                      LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
-                     LeaderElectionContext.DEFAULT_PER_RANK_DELAY);
+                     LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
+                     LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER);
     }
 
     static LeaderManager leaderManager(NodeId self,
@@ -93,7 +107,8 @@ public interface LeaderManager {
         return build(self, router, Option.some(proposalHandler), expectedCluster,
                      LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
                      LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
-                     LeaderElectionContext.DEFAULT_PER_RANK_DELAY);
+                     LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
+                     LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER);
     }
 
     static LeaderManager leaderManager(NodeId self,
@@ -104,7 +119,24 @@ public interface LeaderManager {
                                        TimeSpan baseElectionDelay,
                                        TimeSpan perRankDelay) {
         return build(self, router, Option.some(proposalHandler), expectedCluster,
-                     proposalRetryDelay, baseElectionDelay, perRankDelay);
+                     proposalRetryDelay, baseElectionDelay, perRankDelay,
+                     LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER);
+    }
+
+    /// Full-arity factory accepting the `rabiaTermSupplier` consumed by
+    /// [`#currentLeaderEpoch`]. Production wiring (Aether's `RabiaNode` / `AetherNode`) calls
+    /// this overload to plumb the cluster-side leader term counter; tests and legacy callers
+    /// keep the simpler overloads with the no-op `() -> 0L` default.
+    static LeaderManager leaderManager(NodeId self,
+                                       MessageRouter router,
+                                       LeaderProposalHandler proposalHandler,
+                                       List<NodeId> expectedCluster,
+                                       Supplier<Long> rabiaTermSupplier) {
+        return build(self, router, Option.some(proposalHandler), expectedCluster,
+                     LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
+                     LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
+                     LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
+                     rabiaTermSupplier);
     }
 
     private static LeaderManager build(NodeId self,
@@ -113,10 +145,12 @@ public interface LeaderManager {
                                        List<NodeId> expectedCluster,
                                        TimeSpan proposalRetryDelay,
                                        TimeSpan baseElectionDelay,
-                                       TimeSpan perRankDelay) {
+                                       TimeSpan perRankDelay,
+                                       Supplier<Long> rabiaTermSupplier) {
         var built = LeaderElectionFsm.leaderElectionFsm(self, proposalHandler, expectedCluster,
                                                         router, proposalRetryDelay,
-                                                        baseElectionDelay, perRankDelay);
+                                                        baseElectionDelay, perRankDelay,
+                                                        FsmObserver.noop(), rabiaTermSupplier);
         return new FsmBackedLeaderManager(built.fsm(), built.context(), proposalHandler.isEmpty());
     }
 
@@ -133,6 +167,11 @@ public interface LeaderManager {
         @Override
         public boolean isLeader() {
             return context.isLeader();
+        }
+
+        @Override
+        public Option<Long> currentLeaderEpoch() {
+            return context.isLeader() ? Option.some(context.rabiaTermSupplier().get()) : Option.none();
         }
 
         @Override

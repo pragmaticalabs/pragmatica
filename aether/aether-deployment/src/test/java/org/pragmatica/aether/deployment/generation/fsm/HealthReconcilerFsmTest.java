@@ -9,7 +9,6 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.generation.PeerObservationReducer;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
-import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.BecameLeader;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.ReprojectionCompleted;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.ReprojectionRequested;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.SnapshotSeeded;
@@ -98,9 +97,9 @@ class HealthReconcilerFsmTest {
         }
 
         @Test
-        void quorumWaiting_BecameLeader_becomesLeadingSteadyWithCarriedEpoch() {
+        void quorumWaiting_LeaderChangeLocalIsLeader_becomesLeadingSteadyWithDefaultLeaderEpoch() {
             harness.dispatch(new QuorumEstablished());
-            harness.dispatch(new BecameLeader(LEADER_EPOCH));
+            harness.dispatch(new LeaderChange(Option.some(SELF), true));
             assertThat(harness.state()).isInstanceOf(HealthReconcilerState.LeadingSteady.class);
             var leading = (HealthReconcilerState.LeadingSteady) harness.state();
             assertThat(leading.startEpoch()).isEqualTo(LEADER_EPOCH);
@@ -109,7 +108,7 @@ class HealthReconcilerFsmTest {
         @Test
         void leadingSteady_ReprojectionRequested_entersLeadingReprojecting() {
             harness.dispatch(new QuorumEstablished());
-            harness.dispatch(new BecameLeader(LEADER_EPOCH));
+            harness.dispatch(new LeaderChange(Option.some(SELF), true));
             var baseline = ctx.ambientSnapshot();
             Supplier<ClusterGenerationSnapshot> supplier = () -> baseline;
             harness.dispatch(new ReprojectionRequested(supplier, "test"));
@@ -121,7 +120,7 @@ class HealthReconcilerFsmTest {
         @Test
         void leadingReprojecting_ReprojectionCompleted_returnsToLeadingSteadyWithNewSnapshot() {
             harness.dispatch(new QuorumEstablished());
-            harness.dispatch(new BecameLeader(LEADER_EPOCH));
+            harness.dispatch(new LeaderChange(Option.some(SELF), true));
             var freshSnapshot = ClusterGenerationSnapshot.empty(1L).withDesiredCoreSize(5);
             Supplier<ClusterGenerationSnapshot> supplier = () -> freshSnapshot;
             harness.dispatch(new ReprojectionRequested(supplier, "test"));
@@ -134,7 +133,7 @@ class HealthReconcilerFsmTest {
         @Test
         void leadingSteady_leaderLoss_viaLeaderChange_returnsToDormant() {
             harness.dispatch(new QuorumEstablished());
-            harness.dispatch(new BecameLeader(LEADER_EPOCH));
+            harness.dispatch(new LeaderChange(Option.some(SELF), true));
             harness.dispatch(new LeaderChange(Option.none(), false));
             assertThat(harness.state()).isInstanceOf(HealthReconcilerState.Dormant.class);
         }
@@ -142,7 +141,7 @@ class HealthReconcilerFsmTest {
         @Test
         void dormant_toStopped_viaShutdown() {
             harness.dispatch(new QuorumEstablished());
-            harness.dispatch(new BecameLeader(LEADER_EPOCH));
+            harness.dispatch(new LeaderChange(Option.some(SELF), true));
             harness.dispatch(new LeaderChange(Option.none(), false));
             // Dormant → Stopped
             harness.dispatch(new Shutdown());
@@ -156,7 +155,7 @@ class HealthReconcilerFsmTest {
             harness.dispatch(new QuorumEstablished());
             assertThat(harness.state()).isInstanceOf(HealthReconcilerState.QuorumWaiting.class);
 
-            harness.dispatch(new BecameLeader(LEADER_EPOCH));
+            harness.dispatch(new LeaderChange(Option.some(SELF), true));
             assertThat(harness.state()).isInstanceOf(HealthReconcilerState.LeadingSteady.class);
 
             var projected = ClusterGenerationSnapshot.empty(1L).withDesiredCoreSize(3);
@@ -179,7 +178,7 @@ class HealthReconcilerFsmTest {
         @Test
         void twoReprojectionRequestedInQuickSuccession_secondSupplierReplacesFirst() {
             harness.dispatch(new QuorumEstablished());
-            harness.dispatch(new BecameLeader(LEADER_EPOCH));
+            harness.dispatch(new LeaderChange(Option.some(SELF), true));
             Supplier<ClusterGenerationSnapshot> first = () -> ClusterGenerationSnapshot.empty(1L).withDesiredCoreSize(1);
             Supplier<ClusterGenerationSnapshot> second = () -> ClusterGenerationSnapshot.empty(1L).withDesiredCoreSize(2);
 
@@ -195,12 +194,12 @@ class HealthReconcilerFsmTest {
     @Nested
     class CasContention {
         @Test
-        void eightConcurrentBecameLeader_singleWinnerAndLeadingStateInitializedOnce() throws Exception {
+        void eightConcurrentLeaderChange_singleWinnerAndLeadingStateInitializedOnce() throws Exception {
             harness.dispatch(new QuorumEstablished());
             var transitionsBefore = harness.transitions().size();
             var events = new ArrayList<ClusterFsmEvent>();
             for (int i = 0; i < 8; i++) {
-                events.add(new BecameLeader(LEADER_EPOCH));
+                events.add(new LeaderChange(Option.some(SELF), true));
             }
             harness.dispatchConcurrently(events);
             assertThat(harness.state()).isInstanceOf(HealthReconcilerState.LeadingSteady.class);
@@ -240,7 +239,7 @@ class HealthReconcilerFsmTest {
         @Test
         void reprojectionCompleted_withOlderStartEpoch_rejectedNoStateAdvance() throws InterruptedException {
             harness.dispatch(new QuorumEstablished());
-            harness.dispatch(new BecameLeader(LEADER_EPOCH));
+            harness.dispatch(new LeaderChange(Option.some(SELF), true));
             // Use a latch-blocked supplier so the real `ReprojectionCompleted` never lands during
             // the test — the executor is still running when we manually dispatch the stale event.
             var release = new CountDownLatch(1);

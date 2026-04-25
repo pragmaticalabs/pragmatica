@@ -73,6 +73,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import io.netty.handler.codec.quic.QuicSslContext;
@@ -129,6 +130,24 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               boolean useConsensusLeaderElection,
                                                               RabiaPersistence<C> persistence,
                                                               TlsConfig tlsConfig) {
+        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer,
+                          metrics, useConsensusLeaderElection, persistence, tlsConfig,
+                          () -> 0L);
+    }
+
+    /// Overload that accepts a `rabiaTermSupplier` plumbed into the [`LeaderManager`] so
+    /// [`LeaderManager#currentLeaderEpoch`] returns the live cluster-side term. Production
+    /// wiring (Aether) calls this; legacy/test callers use the no-supplier overload above.
+    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
+                                                              DelegateRouter delegateRouter,
+                                                              StateMachine<C> stateMachine,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              ConsensusMetrics metrics,
+                                                              boolean useConsensusLeaderElection,
+                                                              RabiaPersistence<C> persistence,
+                                                              TlsConfig tlsConfig,
+                                                              Supplier<Long> rabiaTermSupplier) {
         return Result.all(
             TopologyObserver.topologyObserver(config.topology(), delegateRouter),
             QuicTlsProvider.serverContext(tlsConfig),
@@ -143,7 +162,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                        serverSsl,
                                                                        clientSsl,
                                                                        useConsensusLeaderElection,
-                                                                       persistence));
+                                                                       persistence,
+                                                                       rabiaTermSupplier));
     }
 
     @SuppressWarnings("unchecked")
@@ -157,7 +177,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                  QuicSslContext serverSsl,
                                                                  QuicSslContext clientSsl,
                                                                  boolean useConsensusLeaderElection,
-                                                                 RabiaPersistence<C> persistence) {
+                                                                 RabiaPersistence<C> persistence,
+                                                                 Supplier<Long> rabiaTermSupplier) {
         var network = new QuicClusterNetwork(topologyManager,
                                              serializer,
                                              deserializer,
@@ -183,7 +204,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               .self(),
                                                         delegateRouter,
                                                         proposalHandler,
-                                                        expectedCluster);
+                                                        expectedCluster,
+                                                        rabiaTermSupplier);
         } else {
             // Local election mode: backward compatible
             leaderManager = LeaderManager.leaderManager(config.topology()

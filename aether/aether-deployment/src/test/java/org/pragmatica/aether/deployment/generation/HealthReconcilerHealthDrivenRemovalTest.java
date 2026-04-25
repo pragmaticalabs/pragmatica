@@ -63,7 +63,7 @@ class HealthReconcilerHealthDrivenRemovalTest {
                                                         rabiaTerm::get,
                                                         isLeader::get,
                                                         AutoHealConfig.DEFAULT);
-        reconciler.start(Epoch.epoch(1L, 0L));
+        reconciler.start();
         seedThreeCoreNodesWithPartitionOwnedByA();
     }
 

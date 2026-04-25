@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.DoubleSupplier;
+import java.util.function.Supplier;
 
 /// Shared context for the leader-election FSM. Holds:
 /// - Configuration that never changes during the FSM's lifetime (self, expectedCluster, router,
@@ -48,6 +49,11 @@ public final class LeaderElectionContext {
     public static final DoubleSupplier DEFAULT_JITTER_SOURCE =
             () -> ThreadLocalRandom.current().nextDouble(0.5);
 
+    /// Default rabia term supplier — returns 0 when not injected. Real consumers (Aether) inject
+    /// the cluster-side leader-term counter so [`LeaderManager#currentLeaderEpoch`] returns the
+    /// canonical epoch source.
+    public static final Supplier<Long> DEFAULT_RABIA_TERM_SUPPLIER = () -> 0L;
+
     private final NodeId self;
     private final Option<LeaderProposalHandler> proposalHandler;
     private final List<NodeId> expectedCluster;
@@ -58,6 +64,7 @@ public final class LeaderElectionContext {
     private final TimeSpan proposalTimeout;
     private final int stuckElectionThreshold;
     private final DoubleSupplier jitterSource;
+    private final Supplier<Long> rabiaTermSupplier;
 
     // Per-FSM "singletons" — one instance per state class, shared for the lifetime of this FSM.
     // Built in the constructor via the constructor-driven initial-state factory, so the fields
@@ -97,7 +104,7 @@ public final class LeaderElectionContext {
                           int stuckElectionThreshold) {
         this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
              baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
-             DEFAULT_JITTER_SOURCE);
+             DEFAULT_JITTER_SOURCE, DEFAULT_RABIA_TERM_SUPPLIER);
     }
 
     /// Full-arity constructor that accepts an injectable [`DoubleSupplier`] jitter source — for
@@ -113,6 +120,25 @@ public final class LeaderElectionContext {
                           TimeSpan proposalTimeout,
                           int stuckElectionThreshold,
                           DoubleSupplier jitterSource) {
+        this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
+             baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
+             jitterSource, DEFAULT_RABIA_TERM_SUPPLIER);
+    }
+
+    /// Full-arity constructor with both jitter source and rabia-term supplier — for production
+    /// wiring that wants to expose [`LeaderManager#currentLeaderEpoch`].
+    LeaderElectionContext(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
+                          NodeId self,
+                          Option<LeaderProposalHandler> proposalHandler,
+                          List<NodeId> expectedCluster,
+                          MessageRouter router,
+                          TimeSpan proposalRetryDelay,
+                          TimeSpan baseElectionDelay,
+                          TimeSpan perRankDelay,
+                          TimeSpan proposalTimeout,
+                          int stuckElectionThreshold,
+                          DoubleSupplier jitterSource,
+                          Supplier<Long> rabiaTermSupplier) {
         this.fsm = fsm;
         this.self = self;
         this.proposalHandler = proposalHandler;
@@ -124,6 +150,7 @@ public final class LeaderElectionContext {
         this.proposalTimeout = proposalTimeout;
         this.stuckElectionThreshold = stuckElectionThreshold;
         this.jitterSource = jitterSource;
+        this.rabiaTermSupplier = rabiaTermSupplier;
         this.dormant = new LeaderElectionState.Dormant(this);
         this.quorumWaiting = new LeaderElectionState.QuorumWaiting(this);
         this.electing = new LeaderElectionState.Electing(this);
@@ -136,6 +163,13 @@ public final class LeaderElectionContext {
     /// `double` in the range [0.0, 0.5) scaled over the retry delay.
     public DoubleSupplier jitterSource() {
         return jitterSource;
+    }
+
+    /// Live read of the cluster-side rabia term. Source for
+    /// [`LeaderManager#currentLeaderEpoch`]; the rabia term is the canonical leader-tenure
+    /// identifier exposed to consumers (e.g. Aether's `HealthReconciler`).
+    public Supplier<Long> rabiaTermSupplier() {
+        return rabiaTermSupplier;
     }
 
     static TimeSpan proposalTimeoutFor(TimeSpan proposalRetryDelay) {

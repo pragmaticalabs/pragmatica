@@ -97,7 +97,7 @@ class HealthReconcilerLifecycleTest {
 
         @Test
         void start_makesReconcilerActive() {
-            reconciler.start(Epoch.epoch(6L, 0L));
+            reconciler.start();
 
             assertThat(reconciler.isActive()).isTrue();
         }
@@ -105,7 +105,7 @@ class HealthReconcilerLifecycleTest {
         @Test
         void stop_with_LEADER_LOST_clears_decision_state() {
             seedTwoCoreNodesAtEpoch(Epoch.epoch(6L, 0L));
-            reconciler.start(Epoch.epoch(6L, 0L));
+            reconciler.start();
             // Populate internal maps via a ping timeout (counter lives on PeerObservationStore singleton).
             reconciler.onSignal(new HealthSignal.PingTimeout(NODE_A, 1, Epoch.epoch(6L, 0L)));
 
@@ -119,7 +119,7 @@ class HealthReconcilerLifecycleTest {
 
         @Test
         void stop_with_SHUTDOWN_idempotent() {
-            reconciler.start(Epoch.epoch(6L, 0L));
+            reconciler.start();
             reconciler.stop(StopReason.SHUTDOWN);
             reconciler.stop(StopReason.SHUTDOWN);
 
@@ -129,7 +129,7 @@ class HealthReconcilerLifecycleTest {
         @Test
         void start_stop_start_clears_leader_projection_state_but_preserves_node_level_counters() {
             seedTwoCoreNodesAtEpoch(Epoch.epoch(6L, 0L));
-            reconciler.start(Epoch.epoch(6L, 0L));
+            reconciler.start();
             // Accumulate misses under the first leadership.
             reconciler.onSignal(new HealthSignal.PingTimeout(NODE_A, 1, Epoch.epoch(6L, 0L)));
             reconciler.onSignal(new HealthSignal.PingTimeout(NODE_A, 2, Epoch.epoch(6L, 0L)));
@@ -138,7 +138,7 @@ class HealthReconcilerLifecycleTest {
             // Re-seed as the new leader and restart.
             rabiaTerm.set(7L);
             seedTwoCoreNodesAtEpoch(Epoch.epoch(7L, 0L));
-            reconciler.start(Epoch.epoch(7L, 0L));
+            reconciler.start();
 
             // Q5: ping-miss counters live on the node-singleton PeerObservationStore — they
             // survive leader thrash by design, so a third miss under the new term DOES trip
@@ -155,7 +155,7 @@ class HealthReconcilerLifecycleTest {
         @Test
         void signal_at_stale_term_is_dropped() {
             seedTwoCoreNodesAtEpoch(Epoch.epoch(6L, 0L));
-            reconciler.start(Epoch.epoch(6L, 0L));
+            reconciler.start();
 
             // Observer reports under an older term (pre-leader-change). Must be dropped.
             reconciler.onSignal(new HealthSignal.SwimHint(NODE_A, HealthHint.FAULTY, Epoch.epoch(5L, 100L)));
@@ -168,7 +168,7 @@ class HealthReconcilerLifecycleTest {
             // Seed snapshot with counter already advanced to 10 so we can test the window.
             var seeded = seedTwoCoreNodesAtEpoch(Epoch.epoch(6L, 10L));
             assertThat(seeded.epoch().localCounter()).isEqualTo(10L);
-            reconciler.start(Epoch.epoch(6L, 0L));
+            reconciler.start();
 
             // Signal at (6, 7) — 10 - 7 = 3 > LATE_SIGNAL_WINDOW (2) → dropped.
             reconciler.onSignal(new HealthSignal.SwimHint(NODE_A, HealthHint.FAULTY, Epoch.epoch(6L, 7L)));
@@ -180,7 +180,7 @@ class HealthReconcilerLifecycleTest {
         void signal_inside_counter_window_is_accepted() {
             var seeded = seedTwoCoreNodesAtEpoch(Epoch.epoch(6L, 10L));
             assertThat(seeded.epoch().localCounter()).isEqualTo(10L);
-            reconciler.start(Epoch.epoch(6L, 0L));
+            reconciler.start();
 
             // Signal at (6, 8) — 10 - 8 = 2, within window → accepted.
             reconciler.onSignal(new HealthSignal.SwimHint(NODE_A, HealthHint.FAULTY, Epoch.epoch(6L, 8L)));
@@ -193,7 +193,7 @@ class HealthReconcilerLifecycleTest {
             // Even with a large counter gap, a ZERO-epoch signal (operator / KV notification)
             // is authoritative and must be processed.
             seedTwoCoreNodesAtEpoch(Epoch.epoch(6L, 50L));
-            reconciler.start(Epoch.epoch(6L, 0L));
+            reconciler.start();
 
             reconciler.onSignal(new HealthSignal.OperatorAction(new OperatorIntent.SetDesiredSize(9)));
 

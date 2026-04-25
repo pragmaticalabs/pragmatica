@@ -8,7 +8,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerContext;
-import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.BecameLeader;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.SnapshotSeeded;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerState;
 import org.pragmatica.aether.environment.AutoHealConfig;
@@ -138,7 +137,7 @@ class HealthReconcilerObservationDrainTest {
                                                        HealthHintWire.FAULTY,
                                                        1L, 0L,
                                                        now.get() - 1_000L));
-            harness.dispatch(new BecameLeader(Epoch.epoch(1L, 0L)));
+            harness.dispatch(new LeaderChange(Option.some(SELF), true));
             assertThat(currentSnapshot().coreMembers().get(PEER_A).healthHint()).isEqualTo(HealthHint.SUSPECTED);
         }
 
@@ -152,7 +151,7 @@ class HealthReconcilerObservationDrainTest {
                                                                     1L, 0L,
                                                                     now.get() - 1_000L));
             assertThat(store.pingMissCount(PEER_A)).isEqualTo(0);
-            harness.dispatch(new BecameLeader(Epoch.epoch(1L, 0L)));
+            harness.dispatch(new LeaderChange(Option.some(SELF), true));
             assertThat(store.pingMissCount(PEER_A)).isEqualTo(1);
         }
     }
@@ -166,7 +165,7 @@ class HealthReconcilerObservationDrainTest {
                                                        HealthHintWire.FAULTY,
                                                        1L, 0L,
                                                        now.get() - 60_000L));
-            harness.dispatch(new BecameLeader(Epoch.epoch(1L, 0L)));
+            harness.dispatch(new LeaderChange(Option.some(SELF), true));
             assertThat(currentSnapshot().coreMembers().get(PEER_A).healthHint()).isEqualTo(HealthHint.HEALTHY);
         }
 
@@ -177,7 +176,7 @@ class HealthReconcilerObservationDrainTest {
                                                                     ConnectivityState.DISCONNECTED,
                                                                     1L, 0L,
                                                                     now.get() - 60_000L));
-            harness.dispatch(new BecameLeader(Epoch.epoch(1L, 0L)));
+            harness.dispatch(new LeaderChange(Option.some(SELF), true));
             assertThat(store.pingMissCount(PEER_A)).isEqualTo(0);
         }
     }
@@ -186,7 +185,7 @@ class HealthReconcilerObservationDrainTest {
     class LiveSubscription {
         @Test
         void leadingSteady_liveCallback_freshHealthObservationAfterEntryReachesFsm() {
-            harness.dispatch(new BecameLeader(Epoch.epoch(1L, 0L)));
+            harness.dispatch(new LeaderChange(Option.some(SELF), true));
             // Buffer was empty on entry; now push live and verify it lands.
             assertThat(currentSnapshot().coreMembers().get(PEER_A).healthHint()).isEqualTo(HealthHint.HEALTHY);
             store.pushHealth(new PeerHealthObservation(PEER_A,
@@ -198,7 +197,7 @@ class HealthReconcilerObservationDrainTest {
 
         @Test
         void leadingSteady_liveCallback_stalenessFilterAppliedToLiveArrivals() {
-            harness.dispatch(new BecameLeader(Epoch.epoch(1L, 0L)));
+            harness.dispatch(new LeaderChange(Option.some(SELF), true));
             store.pushHealth(new PeerHealthObservation(PEER_A,
                                                        HealthHintWire.FAULTY,
                                                        1L, 0L,
@@ -212,7 +211,7 @@ class HealthReconcilerObservationDrainTest {
     class UnsubscribeOnExit {
         @Test
         void demote_releasesSubscriptionsViaClearLeaderData_noCallbackDispatchAfterExit() {
-            harness.dispatch(new BecameLeader(Epoch.epoch(1L, 0L)));
+            harness.dispatch(new LeaderChange(Option.some(SELF), true));
             // Demote — Dormant.onEntry calls clearLeaderData which releases both subscriptions.
             harness.dispatch(new LeaderChange(Option.none(), false));
             assertThat(harness.state()).isInstanceOf(HealthReconcilerState.Dormant.class);
@@ -229,7 +228,7 @@ class HealthReconcilerObservationDrainTest {
 
         @Test
         void quorumLost_releasesSubscriptionsViaClearLeaderData_noCallbackDispatchAfterExit() {
-            harness.dispatch(new BecameLeader(Epoch.epoch(1L, 0L)));
+            harness.dispatch(new LeaderChange(Option.some(SELF), true));
             harness.dispatch(new QuorumDisappeared());
             assertThat(harness.state()).isInstanceOf(HealthReconcilerState.Dormant.class);
             var ignoredBefore = harness.ignored().size();

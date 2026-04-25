@@ -183,7 +183,7 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
             bootstrapAttempts.set(0);
             var seeded = projectFromCommittedAtoms();
             reconciler.seedSnapshot(seeded);
-            reconciler.start(Epoch.epoch(rabiaTermSupplier.get(), 0L));
+            reconciler.start();
             attemptBootstrap(seeded);
             seedClusterConfigIfMissing();
         } else {

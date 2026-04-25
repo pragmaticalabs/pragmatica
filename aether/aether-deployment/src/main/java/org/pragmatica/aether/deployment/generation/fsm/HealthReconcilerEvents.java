@@ -21,9 +21,11 @@ import java.util.function.Supplier;
 /// reconciler-specific events below all flow through the same `Fsm.dispatch` path.
 ///
 /// Mapping from legacy call sites:
-/// - `HealthReconciler.start(Epoch)` → [`BecameLeader(Epoch)`]. The thin adapter first dispatches
-///   [`ClusterFsmEvent.QuorumEstablished`] (idempotent if already past Dormant), then
-///   `BecameLeader(epoch)` to drive the QuorumWaiting/Following → LeadingSteady transition.
+/// - `HealthReconciler.start()` → dispatches [`ClusterFsmEvent.QuorumEstablished`] (idempotent
+///   if already past Dormant) followed by [`ClusterFsmEvent.LeaderChange(self, true)`]. The
+///   epoch is read from [`HealthReconcilerContext#defaultLeaderEpoch`] (the cluster rabia term,
+///   also surfaced by [`org.pragmatica.consensus.leader.LeaderManager#currentLeaderEpoch`]) —
+///   single source of truth.
 /// - `HealthReconciler.stop(StopReason.LEADER_LOST)` → [`ClusterFsmEvent.QuorumDisappeared`].
 ///   The reconciler was driven by a leader-change notification; the cluster-wide quorum did not
 ///   necessarily disappear, but from this node's viewpoint the leader-only responsibility is gone
@@ -38,8 +40,6 @@ import java.util.function.Supplier;
 /// - `cluster.apply(commands).onSuccess` → [`CommandsApplied(reason, previous, next)`].
 /// - `cluster.apply(commands).onFailure` → [`CommandsApplyFailed(attempted)`].
 public interface HealthReconcilerEvents extends ClusterFsmEvent {
-    record BecameLeader(Epoch startEpoch) implements HealthReconcilerEvents{}
-
     record SnapshotSeeded(ClusterGenerationSnapshot snapshot) implements HealthReconcilerEvents{}
 
     record MembershipReseeded(ClusterGenerationSnapshot freshProjection) implements HealthReconcilerEvents{}
