@@ -433,6 +433,13 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
+        // Same-state same-incarnation: gossip rebroadcast, not a state event.
+        // Canonical SWIM: ignore. Otherwise repeated gossip would re-fire listener
+        // notifications and reset suspect timers, preventing FAULTY transition.
+        if (update.incarnation() == existing.incarnation() && update.state() == existing.state()) {
+            return;
+        }
+
         // Same incarnation: only accept if update state has higher or equal priority
         if (update.incarnation() == existing.incarnation()
             && statePriority(update.state()) < statePriority(existing.state())) {

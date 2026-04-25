@@ -272,6 +272,73 @@ class SwimProtocolTest {
             // The piggyback should contain updates about newly added members
             assertThat(ack.piggyback()).isNotEmpty();
         }
+
+        /// Regression: peers continuously rebroadcast (N, SUSPECT, k) for a peer
+        /// already viewed locally as (SUSPECT, k). Same-state same-incarnation gossip
+        /// must be a no-op so the suspect timer can elapse and N transitions to FAULTY.
+        @Test
+        void suspect_faulty_within_timeout_when_peers_continue_gossiping_suspect() throws InterruptedException {
+            // Tight config: suspectTimeout 500ms, period 50ms, fast startup.
+            var config = swimConfig(
+                timeSpan(50).millis(),
+                timeSpan(20).millis(),
+                3,
+                timeSpan(500).millis(),
+                8,
+                timeSpan(5).seconds(),
+                timeSpan(50).millis()
+            );
+            var localTransport = new RecordingTransport();
+            var localListener = new RecordingListener();
+            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
+                                            .fold(cause -> null, v -> v);
+
+            localProtocol.addSeedMember(NODE_A, ADDR_A);
+
+            // Drive ALIVE -> SUSPECT (incarnation=0) via a piggybacked update from a peer.
+            var initialSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0L, ADDR_A);
+            localProtocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(initialSuspect)));
+
+            assertThat(localListener.suspected).hasSize(1);
+            assertThat(localListener.suspected.getFirst().nodeId()).isEqualTo(NODE_A);
+
+            // Snapshot the SwimMember reference: the no-op guard must NOT replace
+            // the entry on same-state same-incarnation rebroadcasts.
+            var memberRefBefore = localProtocol.members().get(NODE_A);
+            assertThat(memberRefBefore.state()).isEqualTo(MemberState.SUSPECT);
+
+            // Flood 14 rebroadcasts of (NODE_A, SUSPECT, incarnation=0). With the bug,
+            // each of these would replace members.get(NODE_A) and (in the original
+            // diagnosis) reset the suspect timer. With the fix they are no-ops.
+            for (var i = 0; i < 14; i++) {
+                var rebroadcast = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0L, ADDR_A);
+                localProtocol.onMessage(ADDR_B, new Ping(NODE_B, 100L + i, List.of(rebroadcast)));
+            }
+
+            // Reference equality: same-state same-incarnation is observed as a no-op.
+            assertThat(localProtocol.members().get(NODE_A)).isSameAs(memberRefBefore);
+            // Listener saw exactly one onMemberSuspect — the initial transition only.
+            assertThat(localListener.suspected).hasSize(1);
+
+            // Start the protocol so tick() drives expireSuspectMembers().
+            localProtocol.start();
+            try {
+                // Wait suspectTimeout (500ms) plus margin for tick scheduling.
+                var deadline = System.currentTimeMillis() + 3_000L;
+                while (localListener.faulty.isEmpty() && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(50L);
+                }
+
+                assertThat(localListener.faulty)
+                    .as("NODE_A must transition to FAULTY despite continuous SUSPECT gossip rebroadcasts")
+                    .hasSize(1);
+                assertThat(localListener.faulty.getFirst().nodeId()).isEqualTo(NODE_A);
+                // Still exactly one suspect notification across the whole test.
+                assertThat(localListener.suspected).hasSize(1);
+            } finally {
+                localProtocol.stop();
+            }
+        }
     }
 
     @Nested
