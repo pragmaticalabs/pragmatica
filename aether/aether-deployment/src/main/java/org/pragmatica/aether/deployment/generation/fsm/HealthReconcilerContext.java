@@ -1082,6 +1082,19 @@ public final class HealthReconcilerContext {
                                     CoreMember member,
                                     GenerationReason reason,
                                     TermAdvance termAdvance) {
+        // Theme C — split-brain protection: only the majority-side reconciler may write
+        // DECOMMISSIONED atoms. A minority partition's leader-projection that sees a peer as
+        // unreachable would otherwise erase healthy metadata after the partition heals. The
+        // guard is intentionally based on the projected snapshot (single source of truth) so
+        // it survives leader handoff and does not require a cross-component subscription.
+        if (!quorumActive(current)) {
+            log.warn("Skipping eviction of {} — quorum not active in projected snapshot "
+                     + "(onDuty={}, desired={}). Possible minority partition; deferring write.",
+                     nodeId,
+                     onDutyCount(current),
+                     current.desiredCoreSize());
+            return SignalOutcome.unchanged(current, termAdvance);
+        }
         pendingRemovals.add(nodeId);
         var leftValue = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
                                                               nowMs(),
@@ -1094,6 +1107,29 @@ public final class HealthReconcilerContext {
         commands.add(new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId), leftValue));
         commands.addAll(handlePartitionsOf(current, nodeId));
         return applyCommandsWithCounterBump(current, commands, reason, Set.of(nodeId), termAdvance);
+    }
+
+    /// Quorum-activity gate (Theme C). Returns true iff the projected snapshot reports a
+    /// majority of `desiredCoreSize` core members in `ON_DUTY` state. Used to guard
+    /// destructive lifecycle writes (`DECOMMISSIONED`) so a minority-partition reconciler
+    /// cannot eject a healthy peer based on stale connectivity observations.
+    ///
+    /// Edge case: when `desiredCoreSize == 0` (uninitialized snapshot) the guard returns
+    /// false — at that point no quorum has ever existed, and silently allowing the write
+    /// would mask configuration bugs.
+    private boolean quorumActive(ClusterGenerationSnapshot current) {
+        var desired = current.desiredCoreSize();
+        if (desired <= 0) {return false;}
+        var majority = (desired / 2) + 1;
+        return onDutyCount(current) >= majority;
+    }
+
+    private long onDutyCount(ClusterGenerationSnapshot current) {
+        return current.coreMembers()
+                      .values()
+                      .stream()
+                      .filter(member -> member.lifecycle() == NodeLifecycleState.ON_DUTY)
+                      .count();
     }
 
     private List<KVCommand<AetherKey>> handlePartitionsOf(ClusterGenerationSnapshot current, NodeId departedNode) {

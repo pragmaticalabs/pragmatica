@@ -151,6 +151,8 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
                 case H3Ready(HttpServer newH3) ->
                         tx.transitionTo(new RouteReady(ctx, server, Option.some(newH3), routes));
                 case ClusterFsmEvent.QuorumEstablished _ -> tx.ignore();
+                case ClusterFsmEvent.QuorumDisappeared _ ->
+                        tx.transitionTo(new Quiesced(ctx, server, h3));
                 case CertRotationRequested(var bundle) ->
                         tx.transitionTo(new CertRotating(ctx, server, h3, bundle, routes));
                 case StopRequested _, ClusterFsmEvent.Shutdown _ ->
@@ -176,8 +178,43 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
                         tx.transitionTo(new RouteReady(ctx, newServer, newH3, updated));
                 case RouteTablePublished(RouteTable updated) ->
                         tx.transitionTo(new CertRotating(ctx, prevServer, prevH3, newBundle, updated));
+                case ClusterFsmEvent.QuorumDisappeared _ ->
+                        tx.transitionTo(new Quiesced(ctx, prevServer, prevH3));
                 case StopRequested _, ClusterFsmEvent.Shutdown _ ->
                         tx.transitionTo(ctx.stopped(), () -> ctx.stopServers(prevServer, prevH3));
+                default -> tx.ignore();
+            }
+        }
+    }
+
+    /// Quorum-loss steady state. Servers remain bound (so existing connections are not
+    /// abruptly torn down) but the FSM no longer carries a [`RouteTable`], which causes
+    /// [`AppHttpContext#currentRoutes`] to return [`RouteTable#empty`]. The request handler
+    /// dispatches against the empty table and naturally returns 503/404 for application
+    /// traffic — this prevents a minority partition from continuing to serve stale routes
+    /// (split-brain). On `QuorumEstablished` the FSM transitions back to [`RouteReady`] and
+    /// re-reads the authoritative route table via [`AppHttpContext#publishRouteTable`].
+    ///
+    /// `RouteTablePublished` arrives during quorum loss for two reasons: late KV-Store
+    /// callbacks fired before the FSM transitioned out, or a follower-cache snapshot. Either
+    /// way we ignore it — only `QuorumEstablished` re-activates routing.
+    record Quiesced(AppHttpContext ctx,
+                    Option<HttpServer> server,
+                    Option<HttpServer> h3) implements AppHttpState {
+
+        @Override
+        public void handle(ClusterFsmEvent event, TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
+            switch (event) {
+                case ClusterFsmEvent.QuorumEstablished _ ->
+                        tx.transitionTo(new RouteReady(ctx, server, h3, RouteTable.empty()),
+                                        ctx::publishRouteTable);
+                case RouteTablePublished _, ClusterFsmEvent.QuorumDisappeared _ -> tx.ignore();
+                case H1Ready(HttpServer newServer) ->
+                        tx.transitionTo(new Quiesced(ctx, Option.some(newServer), h3));
+                case H3Ready(HttpServer newH3) ->
+                        tx.transitionTo(new Quiesced(ctx, server, Option.some(newH3)));
+                case StopRequested _, ClusterFsmEvent.Shutdown _ ->
+                        tx.transitionTo(ctx.stopped(), () -> ctx.stopServers(server, h3));
                 default -> tx.ignore();
             }
         }

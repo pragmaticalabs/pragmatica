@@ -6,9 +6,11 @@ package org.pragmatica.aether.deployment.node.fsm;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.config.ConfigNotificationManager;
+import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SliceDeployment;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SuspendedSlice;
 import org.pragmatica.aether.deployment.node.RoutingEpochAckTracker;
+import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.LeavingRequested;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactRemoveReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeRoutesPutReceived;
@@ -90,7 +92,10 @@ import org.slf4j.LoggerFactory;
 // Slice state transitions discard Promise results by design — the pipelines own their own
 // completion/failure handlers via .onSuccess/.onFailure; the return value is not usable by callers.
 public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState, ClusterFsmEvent>
-        permits NodeDeploymentState.Dormant, NodeDeploymentState.Active, NodeDeploymentState.Stopped {
+        permits NodeDeploymentState.Dormant,
+                NodeDeploymentState.Active,
+                NodeDeploymentState.Leaving,
+                NodeDeploymentState.Stopped {
 
     Logger LOG = LoggerFactory.getLogger(NodeDeploymentState.class);
 
@@ -182,6 +187,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 case NodeArtifactRemoveReceived(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) ->
                         handleNodeArtifactRemove(valueRemove, tx);
                 case NodeRoutesPutReceived(var valuePut) -> handleNodeRoutesPut(valuePut, tx);
+                case LeavingRequested(DrainReason reason) ->
+                        // TODO(rc2-#189): drain implementation — write DRAINING atom, suspend
+                        // new activations, await ack from peers, then dispatch Shutdown.
+                        tx.transitionTo(ctx.newLeaving(reason));
                 case QuorumDisappeared _ -> handleQuorumDisappeared(tx);
                 case Shutdown _ -> handleShutdown(tx);
                 default -> tx.ignore();
@@ -1204,6 +1213,46 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 if (deployment.state() == SliceState.ACTIVE) {forceCleanupSlice(sliceKey);}
             }
             deployments.clear();
+        }
+    }
+
+    /// Theme C / rc2-#189 hook. Structural placeholder for the drain protocol — entered from
+    /// [`Active`] on [`NodeDeploymentEvents.LeavingRequested`]. rc1 behavior:
+    ///   - Suspend new slice activations (carrying state into a flag, no KV writes).
+    ///   - Ignore all subsequent KV-Store events except `Shutdown`.
+    ///   - Transition to [`Stopped`] on `Shutdown`.
+    ///
+    /// rc2 will:
+    ///   - Drain in-flight requests (await a quiescent point on each ACTIVE slice).
+    ///   - Flush pending KV operations + dispatch `DrainCompleted` to the leader's reconciler.
+    ///   - Carry the suspended-slice list forward so a re-Active path can resume cleanly.
+    ///
+    /// All carried fields and methods MUST stay annotated `// TODO(rc2-#189):` so the rc2
+    /// migration can find them.
+    record Leaving(NodeDeploymentContext ctx,
+                   // TODO(rc2-#189): drain implementation — promote to a real per-slice draining
+                   // tracker that records inflight count, awaits drain, and signals completion.
+                   DrainReason reason,
+                   List<SuspendedSlice> suspendedAtEntry) implements NodeDeploymentState {
+
+        @Override
+        public void onEntry() {
+            LOG.info("Node {} entering Leaving state (reason={}); suspending {} slices",
+                     ctx.self().id(),
+                     reason,
+                     suspendedAtEntry.size());
+            // TODO(rc2-#189): write DRAINING atom + dispatch DrainCompleted on quiescence.
+        }
+
+        @Override
+        public void handle(ClusterFsmEvent event, TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
+            switch (event) {
+                case Shutdown _ -> tx.transitionTo(ctx.stopped());
+                // TODO(rc2-#189): every other event arm (NodeArtifactPut, NodeRoutesPut, etc.)
+                // ignores by design in rc1 — rc2 will route relevant events through the drain
+                // tracker so slices flush cleanly before shutdown.
+                default -> tx.ignore();
+            }
         }
     }
 }

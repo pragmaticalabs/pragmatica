@@ -145,6 +145,9 @@ public final class AppHttpContext {
         return switch (fsm.current()) {
             case AppHttpState.RouteReady(_, _, _, RouteTable routes) -> routes;
             case AppHttpState.CertRotating(_, _, _, _, RouteTable routes) -> routes;
+            // Quiesced is a quorum-loss steady state: servers stay bound but the FSM holds no
+            // RouteTable so the dispatch path naturally returns 503/404 — split-brain protection.
+            case AppHttpState.Quiesced _ -> RouteTable.empty();
             default -> RouteTable.empty();
         };
     }
@@ -160,6 +163,8 @@ public final class AppHttpContext {
             case AppHttpState.RouteReady(_, Option<HttpServer> server, Option<HttpServer> h3, _) ->
                     server.map(HttpServer::port).orElse(() -> h3.map(HttpServer::port));
             case AppHttpState.CertRotating(_, Option<HttpServer> server, Option<HttpServer> h3, _, _) ->
+                    server.map(HttpServer::port).orElse(() -> h3.map(HttpServer::port));
+            case AppHttpState.Quiesced(_, Option<HttpServer> server, Option<HttpServer> h3) ->
                     server.map(HttpServer::port).orElse(() -> h3.map(HttpServer::port));
             case AppHttpState.Stopped _, AppHttpState.Starting _ -> Option.none();
         };
@@ -187,6 +192,8 @@ public final class AppHttpContext {
             case AppHttpState.RouteReady(_, Option<HttpServer> server, Option<HttpServer> h3, _) ->
                     new ServerPair(server, h3);
             case AppHttpState.CertRotating(_, Option<HttpServer> server, Option<HttpServer> h3, _, _) ->
+                    new ServerPair(server, h3);
+            case AppHttpState.Quiesced(_, Option<HttpServer> server, Option<HttpServer> h3) ->
                     new ServerPair(server, h3);
             case AppHttpState.Stopped _, AppHttpState.Starting _ ->
                     new ServerPair(Option.none(), Option.none());

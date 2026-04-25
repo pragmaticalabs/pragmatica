@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.node.fsm;
 
+import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
@@ -42,4 +43,12 @@ public interface NodeDeploymentEvents extends ClusterFsmEvent {
     /// observe cross-node routing-epoch acks and fast-transition ROUTING → ACTIVE; other states
     /// ignore it.
     record NodeRoutesPutReceived(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) implements NodeDeploymentEvents {}
+
+    /// Theme C / rc2-#189 hook: request to drain this node. In rc2 the
+    /// [`org.pragmatica.aether.deployment.drain.DrainCoordinator`] dispatches this event after
+    /// writing the DRAINING atom. rc1 callers do not dispatch it — the
+    /// [`org.pragmatica.aether.deployment.node.fsm.NodeDeploymentState.Leaving`] state exists
+    /// purely as a structural placeholder so the rc2 implementation lands without re-shaping
+    /// the FSM topology.
+    record LeavingRequested(DrainReason reason) implements NodeDeploymentEvents {}
 }

@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.node.fsm;
 
 import org.pragmatica.aether.deployment.config.ConfigNotificationManager;
+import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SuspendedSlice;
 import org.pragmatica.aether.deployment.node.RoutingEpochAckTracker;
 import org.pragmatica.aether.http.HttpRoutePublisher;
@@ -137,6 +138,13 @@ public final class NodeDeploymentContext {
                                               ConfigNotificationManager.configNotificationManager(),
                                               RoutingEpochAckTracker.routingEpochAckTracker(),
                                               pendingReactivation);
+    }
+
+    /// Theme C / rc2-#189 hook — build a fresh [`NodeDeploymentState.Leaving`]. rc1 carries an
+    /// empty suspended-slices list (no real drain is performed). rc2 will populate the list
+    /// from the active deployments at transition time so the drain tracker can iterate.
+    public NodeDeploymentState.Leaving newLeaving(DrainReason reason) {
+        return new NodeDeploymentState.Leaving(this, reason, List.of());
     }
 
     // --- Config accessors ---

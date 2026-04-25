@@ -611,12 +611,40 @@ import static org.pragmatica.lang.Option.none;
             if (provisioningSource == null) {provisioningSource = ProvisioningSource.UNKNOWN;}
         }
 
+        /// Metadata-erasing factory. Use ONLY at the very first lifecycle write for a node
+        /// when host/port/epoch/provisioning-source are genuinely unknown. Any subsequent
+        /// transition (DRAINING, DECOMMISSIONED, etc.) MUST carry forward the prior atom's
+        /// metadata to preserve the single-source-of-truth invariant — see Theme E (#189).
+        ///
+        /// Prefer the metadata-preserving overload
+        /// [`#nodeLifecycleValue(NodeLifecycleState, String, int, Epoch)`] which keeps host
+        /// and port populated for downstream consumers (CTM provisioning, health projection,
+        /// drain coordination).
+        @Deprecated(since = "rc1-wave3", forRemoval = false)
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state) {
             return new NodeLifecycleValue(state,
                                           System.currentTimeMillis(),
                                           "",
                                           0,
                                           Epoch.ZERO,
+                                          HlcTimestamp.ZERO,
+                                          ProvisioningSource.UNKNOWN);
+        }
+
+        /// Metadata-preserving factory (Theme C / rc2 #189 hook). Use this when transitioning
+        /// a node between lifecycle states (e.g. ON_DUTY → DRAINING → DECOMMISSIONED) so the
+        /// host, port and observed core epoch from the prior atom are not erased. Callers
+        /// should read the prior `NodeLifecycleValue` from the KV-Store and forward
+        /// `host`/`port`/`epoch` from there.
+        public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state,
+                                                            String host,
+                                                            int port,
+                                                            Epoch observedCoreEpoch) {
+            return new NodeLifecycleValue(state,
+                                          System.currentTimeMillis(),
+                                          host,
+                                          port,
+                                          observedCoreEpoch,
                                           HlcTimestamp.ZERO,
                                           ProvisioningSource.UNKNOWN);
         }

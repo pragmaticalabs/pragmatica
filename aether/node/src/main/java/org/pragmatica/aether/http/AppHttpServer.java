@@ -595,6 +595,14 @@ class AppHttpServerAdapter implements AppHttpServer {
             log.info("Quorum established — marking route sync complete");
             context.dispatch(new ClusterFsmEvent.QuorumEstablished());
             publishRouteTable();
+        } else {
+            // Theme C — split-brain protection: on quorum loss the FSM transitions
+            // RouteReady/CertRotating → Quiesced so AppHttpContext.currentRoutes returns
+            // RouteTable.empty(). Existing dispatch path returns 503/404 for application
+            // traffic until quorum is reestablished. Servers stay bound so the management
+            // plane and existing connections are not abruptly torn down.
+            log.warn("Quorum disappeared — quiescing app HTTP routing (split-brain protection)");
+            context.dispatch(new ClusterFsmEvent.QuorumDisappeared());
         }
     }
 
