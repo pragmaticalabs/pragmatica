@@ -52,7 +52,8 @@ public interface ClusterGenerationProjector {
                            Map<NodeId, Epoch> lastSeenPerNode,
                            Map<String, Epoch> lastAckPerCommunity,
                            Map<String, SliceTargetValue> sliceTargets,
-                           Set<NodeId> nodesWithArtifacts) {
+                           Set<NodeId> nodesWithArtifacts,
+                           Map<NodeId, HealthHint> swimHints) {
         public ProjectionInput {
             lifecycles = Map.copyOf(lifecycles);
             governors = Map.copyOf(governors);
@@ -64,6 +65,7 @@ public interface ClusterGenerationProjector {
             nodesWithArtifacts = nodesWithArtifacts == null
                                 ? Set.of()
                                 : Set.copyOf(nodesWithArtifacts);
+            swimHints = swimHints == null ? Map.of() : Map.copyOf(swimHints);
         }
 
         public static ProjectionInput projectionInput(long rabiaTerm,
@@ -106,6 +108,36 @@ public interface ClusterGenerationProjector {
                                                       Map<String, Epoch> lastAckPerCommunity,
                                                       Map<String, SliceTargetValue> sliceTargets,
                                                       Set<NodeId> nodesWithArtifacts) {
+            return projectionInput(rabiaTerm,
+                                   localCounter,
+                                   desiredCoreSize,
+                                   reason,
+                                   now,
+                                   lifecycles,
+                                   governors,
+                                   partitions,
+                                   spokesmen,
+                                   lastSeenPerNode,
+                                   lastAckPerCommunity,
+                                   sliceTargets,
+                                   nodesWithArtifacts,
+                                   Map.of());
+        }
+
+        public static ProjectionInput projectionInput(long rabiaTerm,
+                                                      long localCounter,
+                                                      int desiredCoreSize,
+                                                      GenerationReason reason,
+                                                      HlcTimestamp now,
+                                                      Map<NodeId, NodeLifecycleValue> lifecycles,
+                                                      Map<String, GovernorAnnouncementValue> governors,
+                                                      Map<String, DhtPartitionOwnershipValue> partitions,
+                                                      Map<NodeId, SpokesmanValue> spokesmen,
+                                                      Map<NodeId, Epoch> lastSeenPerNode,
+                                                      Map<String, Epoch> lastAckPerCommunity,
+                                                      Map<String, SliceTargetValue> sliceTargets,
+                                                      Set<NodeId> nodesWithArtifacts,
+                                                      Map<NodeId, HealthHint> swimHints) {
             return new ProjectionInput(rabiaTerm,
                                        localCounter,
                                        desiredCoreSize,
@@ -118,7 +150,8 @@ public interface ClusterGenerationProjector {
                                        lastSeenPerNode,
                                        lastAckPerCommunity,
                                        sliceTargets,
-                                       nodesWithArtifacts);
+                                       nodesWithArtifacts,
+                                       swimHints);
         }
     }
 
@@ -167,7 +200,7 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
 
     private static CoreMember toCoreMember(NodeId nodeId, NodeLifecycleValue lifecycle, ProjectionInput input) {
         var lastSeen = input.lastSeenPerNode().getOrDefault(nodeId, Epoch.ZERO);
-        var healthHint = deriveHealthHint(lifecycle);
+        var healthHint = deriveHealthHint(nodeId, lifecycle, input.swimHints());
         return CoreMember.coreMember(nodeId,
                                      lifecycle.host(),
                                      lifecycle.port(),
@@ -178,11 +211,42 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
                                      lifecycle.provisioningSource());
     }
 
-    private static HealthHint deriveHealthHint(NodeLifecycleValue lifecycle) {
-        return switch (lifecycle.state()){
+    /// Derive the health hint for a core member.
+    ///
+    /// Lifecycle determines the baseline:
+    ///   `DECOMMISSIONED` / `SHUTTING_DOWN` → `FAULTY`,
+    ///   `DRAINING` → `SUSPECTED`,
+    ///   `JOINING` / `ON_DUTY` → `HEALTHY`.
+    ///
+    /// The leader-side `swimHints` map (populated by the [`HealthReconciler`]'s SWIM and QUIC
+    /// signal handlers) overrides the baseline when its hint is **worse** (priority order:
+    /// `FAULTY` > `SUSPECTED` > `HEALTHY`). This lets `MembershipView.healthyOnDutyCount()`
+    /// reflect detected failures immediately, rather than waiting for the eviction path
+    /// (10+ misses, ~25 s) to flip lifecycle to `DECOMMISSIONED`.
+    private static HealthHint deriveHealthHint(NodeId nodeId,
+                                               NodeLifecycleValue lifecycle,
+                                               Map<NodeId, HealthHint> swimHints) {
+        var lifecycleHint = switch (lifecycle.state()){
             case DECOMMISSIONED, SHUTTING_DOWN -> HealthHint.FAULTY;
             case DRAINING -> HealthHint.SUSPECTED;
             case JOINING, ON_DUTY -> HealthHint.HEALTHY;
+        };
+        var swimHint = swimHints.get(nodeId);
+        if (swimHint == null) {return lifecycleHint;}
+        return worse(lifecycleHint, swimHint);
+    }
+
+    /// Return the strictly worse of two [`HealthHint`] values per the priority
+    /// `FAULTY` > `SUSPECTED` > `HEALTHY`.
+    private static HealthHint worse(HealthHint a, HealthHint b) {
+        return rank(a) >= rank(b) ? a : b;
+    }
+
+    private static int rank(HealthHint h) {
+        return switch (h){
+            case FAULTY -> 2;
+            case SUSPECTED -> 1;
+            case HEALTHY -> 0;
         };
     }
 

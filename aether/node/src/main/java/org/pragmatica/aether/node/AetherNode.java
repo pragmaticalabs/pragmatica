@@ -181,6 +181,7 @@ import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 import org.pragmatica.swim.AesGcmGossipEncryptor;
 import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.swim.RotatingGossipEncryptor;
+import org.pragmatica.swim.SwimConfig;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -1079,6 +1080,10 @@ public interface AetherNode extends ManageableNode {
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
         allEntries.addAll(aetherEntries);
         allEntries.addAll(activationKvRouter.asRouteEntries());
+        var swimTimeouts = config.timeouts().swim();
+        var swimConfig = SwimConfig.fromTimeouts(swimTimeouts.period(),
+                                                 swimTimeouts.probeTimeout(),
+                                                 swimTimeouts.suspectTimeout());
         var swimHealthDetector = CoreSwimHealthDetector.coreSwimHealthDetector(delegateRouter,
                                                                                config.topology(),
                                                                                serializer,
@@ -1086,7 +1091,8 @@ public interface AetherNode extends ManageableNode {
                                                                                stableHealthSink,
                                                                                leaderEpochSupplier,
                                                                                isLeaderSupplier,
-                                                                               peerObservationStore);
+                                                                               peerObservationStore,
+                                                                               swimConfig);
         // Let the SWIM detector recognise "the faulty peer IS the current leader" on follower
         // nodes and bypass the buffer-upstream single-writer rule by routing DisconnectNode
         // locally. Without this, a dead leader pins LeaderKey forever because the buffered

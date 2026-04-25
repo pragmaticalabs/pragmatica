@@ -97,13 +97,22 @@ class HealthReconcilerHealthDrivenRemovalTest {
     }
 
     @Test
-    void pingTimeoutAndQuicDisconnect_withoutSwimHintFaulty_doesNotRemove() {
+    void pingTimeoutAndQuicDisconnect_withoutExternalSwimHint_promotesAndRemoves() {
+        // Theme A — Fix 2 contract: SWIM is the primary signal but is not the *only* signal.
+        // A sustained run of PingTimeouts (>= autoHealConfig.quicMissPromotionThreshold)
+        // independently escalates `swimHints[peer]` to FAULTY via the leader-side promotion
+        // path in `HealthReconcilerContext.handlePingTimeout` — defense-in-depth against a
+        // wedged or delayed SWIM detector. With FAULTY hint set and >=10 misses, the
+        // existing `shouldEvict` rule fires and writes DECOMMISSIONED.
         reconciler.onSignal(new HealthSignal.QuicDisconnect(NODE_A, Epoch.epoch(1L, 0L)));
         for (int i = 1; i <= 20; i++) {
             reconciler.onSignal(new HealthSignal.PingTimeout(NODE_A, i, Epoch.epoch(1L, 0L)));
         }
 
-        assertThat(cluster.writesTargetingLifecycle(NODE_A)).isEmpty();
+        var lifecycleWrites = cluster.writesTargetingLifecycle(NODE_A);
+        assertThat(lifecycleWrites).hasSize(1);
+        var value = (AetherValue.NodeLifecycleValue) lifecycleWrites.getFirst().value();
+        assertThat(value.state()).isEqualTo(NodeLifecycleState.DECOMMISSIONED);
     }
 
     @Test

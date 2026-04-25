@@ -694,6 +694,11 @@ public final class HealthReconcilerContext {
                                             TermAdvance termAdvance) {
         var nodeId = ping.nodeId();
         var missed = peerObservationStore.recordPingMiss(nodeId);
+        // Defense-in-depth: independent of SWIM. A sustained run of QUIC ping-misses is
+        // sufficient to flip swimHints[FAULTY] without needing a `QuicDisconnect` to fire.
+        // Mirrors the call shape in `handleQuicDisconnect`. The idempotency guard inside
+        // `promoteToFaultyIfThresholdReached` makes repeat calls safe.
+        promoteToFaultyIfThresholdReached(nodeId, missed);
         return Option.option(current.coreMembers().get(nodeId)).filter(_ -> !pendingRemovals.contains(nodeId))
                             .map(member -> applyPingTimeoutDecision(current, nodeId, member, missed, termAdvance))
                             .or(() -> SignalOutcome.unchanged(current, termAdvance));

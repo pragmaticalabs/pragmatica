@@ -78,4 +78,23 @@ public record SwimConfig(TimeSpan period,
     public static SwimConfig swimConfig() {
         return DEFAULT;
     }
+
+    /// Build a [`SwimConfig`] from caller-supplied timing values, preserving
+    /// [`SwimConfig#DEFAULT`]'s tuning constants for fields that are not exposed
+    /// at the call boundary (`indirectProbes`, `maxPiggyback`, `revivalGrace`,
+    /// `startupDelay`).
+    ///
+    /// Used by `aether-config`'s `TimeoutsConfig.SwimTimeouts` to wire the
+    /// toml-parsed `[timeouts.swim]` section into the SWIM detector.
+    public static SwimConfig fromTimeouts(TimeSpan period,
+                                          TimeSpan probeTimeout,
+                                          TimeSpan suspectTimeout) {
+        return new SwimConfig(period,
+                              probeTimeout,
+                              DEFAULT.indirectProbes(),
+                              suspectTimeout,
+                              DEFAULT.maxPiggyback(),
+                              DEFAULT.revivalGrace(),
+                              DEFAULT.startupDelay());
+    }
 }

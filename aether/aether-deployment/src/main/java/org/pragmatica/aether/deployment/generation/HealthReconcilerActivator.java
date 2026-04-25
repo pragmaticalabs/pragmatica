@@ -364,6 +364,11 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
         var nodesWithArtifacts = collectNodesWithArtifacts(kv);
         var term = rabiaTermSupplier.get();
         var desiredCoreSize = collectDesiredCoreSize(kv).or(lifecycles.size());
+        // Carry leader-side `swimHints` into the projection so peers detected as FAULTY by
+        // SWIM/QUIC ping-miss escalation are reflected in CoreMember.healthHint() — and thus
+        // visible to MembershipView.healthyOnDutyCount() — before the slow eviction path
+        // (>=10 misses) writes DECOMMISSIONED. Empty on followers/dormant nodes.
+        var swimHints = reconciler.swimHintsView();
         var input = ClusterGenerationProjector.ProjectionInput.projectionInput(term,
                                                                                0L,
                                                                                desiredCoreSize,
@@ -376,7 +381,8 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
                                                                                Map.<NodeId, Epoch>of(),
                                                                                Map.<String, Epoch>of(),
                                                                                Map.of(),
-                                                                               nodesWithArtifacts);
+                                                                               nodesWithArtifacts,
+                                                                               swimHints);
         return projector.project(input);
     }
 

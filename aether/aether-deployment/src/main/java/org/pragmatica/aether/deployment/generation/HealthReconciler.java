@@ -15,6 +15,7 @@ import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.GenerationChangedSink;
+import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -27,6 +28,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.statemachine.Fsm;
 
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
@@ -77,6 +79,15 @@ public interface HealthReconciler extends HealthSignalSink {
     @Contract void requestReprojection(Supplier<ClusterGenerationSnapshot> reprojectionSupplier, String reason);
     @Contract void requestReprojection(String reason);
     long consensusApplyFailedCount();
+
+    /// Read-only snapshot of the leader-side `swimHints` map (FAULTY/SUSPECTED hints derived
+    /// from SWIM gossip and QUIC ping-miss escalation). Returned by reference; callers must
+    /// not mutate. When the reconciler is not in a `Leading*` state the map is still valid —
+    /// it is cleared on `clearLeaderData()` at entry to `Dormant` / `Following` / `Stopped`.
+    /// Used by [`HealthReconcilerActivator#projectFromCommittedAtoms`] to pipe leader-side
+    /// hints through into [`ClusterGenerationProjector.ProjectionInput#swimHints`] so the
+    /// projected `CoreMember.healthHint()` reflects detected failures before lifecycle eviction.
+    Map<NodeId, HealthHint> swimHintsView();
 
     @Contract@Override default void emit(HealthSignal signal) {
         onSignal(signal);
@@ -245,5 +256,9 @@ record HealthReconcilerRecord(HealthReconcilerContext ctx) implements HealthReco
 
     @Override public long consensusApplyFailedCount() {
         return ctx.consensusApplyFailedCount();
+    }
+
+    @Override public Map<NodeId, HealthHint> swimHintsView() {
+        return ctx.swimHintsView();
     }
 }

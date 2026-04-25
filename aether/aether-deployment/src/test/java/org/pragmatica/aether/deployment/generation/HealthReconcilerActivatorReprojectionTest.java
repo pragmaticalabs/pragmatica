@@ -171,6 +171,8 @@ class HealthReconcilerActivatorReprojectionTest {
 
         @Override public long consensusApplyFailedCount() {return delegate.consensusApplyFailedCount();}
 
+        @Override public Map<NodeId, HealthHint> swimHintsView() {return delegate.swimHintsView();}
+
         @Override public void emit(HealthSignal signal) {delegate.emit(signal);}
     }
 

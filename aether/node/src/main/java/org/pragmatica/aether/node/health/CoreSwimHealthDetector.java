@@ -64,14 +64,14 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private static final Logger log = LoggerFactory.getLogger(CoreSwimHealthDetector.class);
 
-    private static final SwimConfig CORE_SWIM_CONFIG = SwimConfig.DEFAULT;
-
     public static final int SWIM_PORT_OFFSET = SwimHealthState.SWIM_PORT_OFFSET;
 
     private final SwimHealthContext context;
+    private final SwimConfig swimConfig;
 
-    private CoreSwimHealthDetector(SwimHealthContext context) {
+    private CoreSwimHealthDetector(SwimHealthContext context, SwimConfig swimConfig) {
         this.context = context;
+        this.swimConfig = swimConfig;
     }
 
     public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
@@ -82,7 +82,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                       HealthSignalSink.noop(),
                                       () -> Epoch.ZERO,
                                       () -> true,
-                                      PeerObservationStore.peerObservationStore());
+                                      PeerObservationStore.peerObservationStore(),
+                                      SwimConfig.DEFAULT);
     }
 
     public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
@@ -94,7 +95,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         return coreSwimHealthDetector(router, topologyConfig, serializer, deserializer,
                                       signalSink, epochSupplier,
                                       () -> true,
-                                      PeerObservationStore.peerObservationStore());
+                                      PeerObservationStore.peerObservationStore(),
+                                      SwimConfig.DEFAULT);
     }
 
     public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
@@ -105,13 +107,27 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                 Supplier<Epoch> epochSupplier,
                                                                 BooleanSupplier isLeaderSupplier,
                                                                 PeerObservationStore observationStore) {
+        return coreSwimHealthDetector(router, topologyConfig, serializer, deserializer,
+                                      signalSink, epochSupplier, isLeaderSupplier, observationStore,
+                                      SwimConfig.DEFAULT);
+    }
+
+    public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
+                                                                TopologyConfig topologyConfig,
+                                                                Serializer serializer,
+                                                                Deserializer deserializer,
+                                                                HealthSignalSink signalSink,
+                                                                Supplier<Epoch> epochSupplier,
+                                                                BooleanSupplier isLeaderSupplier,
+                                                                PeerObservationStore observationStore,
+                                                                SwimConfig swimConfig) {
         var ctxHolder = new AtomicReference<SwimHealthContext>();
         Function<Fsm<SwimHealthState, SwimHealthEvents>, SwimHealthState> initialStateFactory =
                 fsm -> buildContextAndStopped(fsm, ctxHolder, router, topologyConfig, serializer,
                                               deserializer, signalSink, epochSupplier,
-                                              isLeaderSupplier, observationStore);
+                                              isLeaderSupplier, observationStore, swimConfig);
         Fsm.fsm("swim-health", topologyConfig.self().id(), initialStateFactory);
-        return new CoreSwimHealthDetector(ctxHolder.get());
+        return new CoreSwimHealthDetector(ctxHolder.get(), swimConfig);
     }
 
     private static SwimHealthState buildContextAndStopped(Fsm<SwimHealthState, SwimHealthEvents> fsm,
@@ -123,10 +139,11 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                           HealthSignalSink signalSink,
                                                           Supplier<Epoch> epochSupplier,
                                                           BooleanSupplier isLeaderSupplier,
-                                                          PeerObservationStore observationStore) {
+                                                          PeerObservationStore observationStore,
+                                                          SwimConfig swimConfig) {
         var ctx = new SwimHealthContext(fsm, router, topologyConfig, serializer, deserializer,
                                         signalSink, epochSupplier, isLeaderSupplier, observationStore,
-                                        CORE_SWIM_CONFIG);
+                                        swimConfig);
         ctxHolder.set(ctx);
         return ctx.stopped();
     }
@@ -238,7 +255,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         return transport.start(swimPort, (sender, message) -> deliverToProtocol(sender, message))
                         .await(timeSpan(5).seconds())
                         .onFailure(cause -> log.error("SWIM transport failed to start: {}", cause.message()))
-                        .flatMap(_ -> SwimProtocol.swimProtocol(CORE_SWIM_CONFIG, transport, this,
+                        .flatMap(_ -> SwimProtocol.swimProtocol(swimConfig, transport, this,
                                                                 context.topologyConfig().self(), selfAddress))
                         .flatMap(SwimProtocol::start)
                         .map(protocol -> seedAndWrap(protocol, transport, encryptor));
