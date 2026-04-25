@@ -779,6 +779,7 @@ public interface AetherNode extends ManageableNode {
                                                                                         .millis());
         metricsCollector.setInvocationMetricsProvider(invocationMetrics);
         metricsCollector.recordCustom("mgmt.port", config.managementPort());
+        var peerObservationStore = org.pragmatica.aether.metrics.observation.PeerObservationStore.peerObservationStore();
         var leaderTerm = new AtomicLong(0L);
         BooleanSupplier isLeaderSupplier = clusterNode.leaderManager()::isLeader;
         metricsCollector.setPongSignalFan(ClusterSyncPongSignalFan.clusterSyncPongSignalFan(stableHealthSink,
@@ -820,9 +821,13 @@ public interface AetherNode extends ManageableNode {
                                                                          snapshotEncoder,
                                                                          stableHealthSink,
                                                                          ClusterSyncScheduler.DEFAULT_PING_TIMEOUT_THRESHOLD,
-                                                                         leaderEpochSupplier);
+                                                                         leaderEpochSupplier,
+                                                                         peerObservationStore);
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
-        metricsCollector.setPeerObservationBuffer(metricsScheduler);
+        // Drain the node-level store directly into outbound pongs. Both leader and follower
+        // eras now read from the same singleton — a freshly-promoted leader can observe its
+        // own SWIM hints without waiting for a peer's ping (Q1 / Q3).
+        metricsCollector.setPeerObservationBuffer(peerObservationStore);
         Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT).filter(v -> v instanceof AetherValue.ClusterConfigValue)
                                                                                                 .map(v -> (AetherValue.ClusterConfigValue) v);
         java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> clusterCommandApplier = commands -> clusterNode.apply(commands);
@@ -1072,7 +1077,7 @@ public interface AetherNode extends ManageableNode {
                                                                                stableHealthSink,
                                                                                leaderEpochSupplier,
                                                                                isLeaderSupplier,
-                                                                               metricsScheduler);
+                                                                               peerObservationStore);
         // Let the SWIM detector recognise "the faulty peer IS the current leader" on follower
         // nodes and bypass the buffer-upstream single-writer rule by routing DisconnectNode
         // locally. Without this, a dead leader pins LeaderKey forever because the buffered
@@ -1105,7 +1110,7 @@ public interface AetherNode extends ManageableNode {
                                                                                             initialCoreSizeSupplier);
         healthSinkRef.set(healthReconcilerActivator.sink());
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
-        attachQuicFollowerWiring(clusterNode.network(), isLeaderSupplier, metricsScheduler, leaderEpochSupplier);
+        attachQuicFollowerWiring(clusterNode.network(), isLeaderSupplier, peerObservationStore, leaderEpochSupplier);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForReconciler(change,
                                                                                        leaderTerm,

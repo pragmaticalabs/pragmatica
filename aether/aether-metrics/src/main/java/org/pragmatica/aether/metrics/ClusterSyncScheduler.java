@@ -7,6 +7,7 @@ package org.pragmatica.aether.metrics;
 import org.pragmatica.aether.metrics.fsm.ClusterSyncContext;
 import org.pragmatica.aether.metrics.fsm.ClusterSyncEvents;
 import org.pragmatica.aether.metrics.fsm.ClusterSyncState;
+import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.delegation.DelegatedComponent;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
@@ -74,7 +75,8 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
                                     _ -> new byte[0],
                                     HealthSignalSink.noop(),
                                     DEFAULT_PING_TIMEOUT_THRESHOLD,
-                                    () -> Epoch.ZERO);
+                                    () -> Epoch.ZERO,
+                                    PeerObservationStore.peerObservationStore());
     }
 
     static ClusterSyncScheduler clusterSyncScheduler(NodeId self,
@@ -93,7 +95,8 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
                                     snapshotEncoder,
                                     HealthSignalSink.noop(),
                                     DEFAULT_PING_TIMEOUT_THRESHOLD,
-                                    () -> Epoch.ZERO);
+                                    () -> Epoch.ZERO,
+                                    PeerObservationStore.peerObservationStore());
     }
 
     static ClusterSyncScheduler clusterSyncScheduler(NodeId self,
@@ -106,6 +109,30 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
                                                      HealthSignalSink signalSink,
                                                      int pingTimeoutThreshold,
                                                      Supplier<Epoch> epochSupplier) {
+        return clusterSyncScheduler(self,
+                                    network,
+                                    clusterSyncCollector,
+                                    interval,
+                                    rabiaTermSupplier,
+                                    snapshotSupplier,
+                                    snapshotEncoder,
+                                    signalSink,
+                                    pingTimeoutThreshold,
+                                    epochSupplier,
+                                    PeerObservationStore.peerObservationStore());
+    }
+
+    static ClusterSyncScheduler clusterSyncScheduler(NodeId self,
+                                                     ClusterNetwork network,
+                                                     ClusterSyncCollector clusterSyncCollector,
+                                                     TimeSpan interval,
+                                                     Supplier<Long> rabiaTermSupplier,
+                                                     Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
+                                                     Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder,
+                                                     HealthSignalSink signalSink,
+                                                     int pingTimeoutThreshold,
+                                                     Supplier<Epoch> epochSupplier,
+                                                     PeerObservationStore observationStore) {
         var ctxHolder = new AtomicReference<ClusterSyncContext>();
         Function<Fsm<ClusterSyncState, ClusterFsmEvent>, ClusterSyncState> initialStateFactory =
                 fsm -> buildContextAndDormant(fsm,
@@ -119,7 +146,8 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
                                               snapshotEncoder,
                                               signalSink,
                                               pingTimeoutThreshold,
-                                              epochSupplier);
+                                              epochSupplier,
+                                              observationStore);
         // Fsm constructor publishes itself into ctxHolder via initialStateFactory —
         // we only need the context here; the FSM reference lives on ctx.fsm().
         var _fsm = Fsm.fsm("cluster-sync", self.id(), initialStateFactory);
@@ -146,7 +174,8 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
                                                            Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder,
                                                            HealthSignalSink signalSink,
                                                            int pingTimeoutThreshold,
-                                                           Supplier<Epoch> epochSupplier) {
+                                                           Supplier<Epoch> epochSupplier,
+                                                           PeerObservationStore observationStore) {
         var ctx = new ClusterSyncContext(fsm,
                                          self,
                                          network,
@@ -157,7 +186,8 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
                                          snapshotEncoder,
                                          signalSink,
                                          pingTimeoutThreshold,
-                                         epochSupplier);
+                                         epochSupplier,
+                                         observationStore);
         ctxHolder.set(ctx);
         return ctx.dormant();
     }

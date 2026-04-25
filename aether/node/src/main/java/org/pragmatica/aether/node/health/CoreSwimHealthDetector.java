@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.health;
 
+import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.node.health.fsm.SwimHealthContext;
 import org.pragmatica.aether.node.health.fsm.SwimHealthEvents;
 import org.pragmatica.aether.node.health.fsm.SwimHealthState;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
-import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
@@ -82,7 +82,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                       HealthSignalSink.noop(),
                                       () -> Epoch.ZERO,
                                       () -> true,
-                                      PeerObservationBuffer.NOOP);
+                                      PeerObservationStore.peerObservationStore());
     }
 
     public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
@@ -94,7 +94,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         return coreSwimHealthDetector(router, topologyConfig, serializer, deserializer,
                                       signalSink, epochSupplier,
                                       () -> true,
-                                      PeerObservationBuffer.NOOP);
+                                      PeerObservationStore.peerObservationStore());
     }
 
     public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
@@ -104,13 +104,12 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                 HealthSignalSink signalSink,
                                                                 Supplier<Epoch> epochSupplier,
                                                                 BooleanSupplier isLeaderSupplier,
-                                                                PeerObservationBuffer observationBuffer) {
-        var buffer = observationBuffer == null ? PeerObservationBuffer.NOOP : observationBuffer;
+                                                                PeerObservationStore observationStore) {
         var ctxHolder = new AtomicReference<SwimHealthContext>();
         Function<Fsm<SwimHealthState, SwimHealthEvents>, SwimHealthState> initialStateFactory =
                 fsm -> buildContextAndStopped(fsm, ctxHolder, router, topologyConfig, serializer,
                                               deserializer, signalSink, epochSupplier,
-                                              isLeaderSupplier, buffer);
+                                              isLeaderSupplier, observationStore);
         Fsm.fsm("swim-health", topologyConfig.self().id(), initialStateFactory);
         return new CoreSwimHealthDetector(ctxHolder.get());
     }
@@ -124,9 +123,9 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                           HealthSignalSink signalSink,
                                                           Supplier<Epoch> epochSupplier,
                                                           BooleanSupplier isLeaderSupplier,
-                                                          PeerObservationBuffer buffer) {
+                                                          PeerObservationStore observationStore) {
         var ctx = new SwimHealthContext(fsm, router, topologyConfig, serializer, deserializer,
-                                        signalSink, epochSupplier, isLeaderSupplier, buffer,
+                                        signalSink, epochSupplier, isLeaderSupplier, observationStore,
                                         CORE_SWIM_CONFIG);
         ctxHolder.set(ctx);
         return ctx.stopped();

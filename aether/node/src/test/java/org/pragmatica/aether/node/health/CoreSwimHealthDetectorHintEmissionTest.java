@@ -9,14 +9,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.cluster.metrics.HealthHintWire;
-import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
-import org.pragmatica.cluster.metrics.PeerHealthObservation;
-import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
@@ -30,7 +28,6 @@ import org.pragmatica.swim.SwimMember.MemberState;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -38,27 +35,29 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Verifies leader/follower paths of `CoreSwimHealthDetector`:
 ///   - **Leader:** state-transition callbacks emit `HealthSignal.SwimHint` through
-///     the injected sink and `onMemberFaulty`/`onMemberLeft` route `DisconnectNode`.
-///   - **Follower:** callbacks DO NOT emit through the sink — observations buffer
-///     into the `PeerObservationBuffer` for upstream delivery on the next pong
-///     (ClusterSync refactor commit 2). `DisconnectNode` is ALSO routed locally so
-///     the follower's `QuicClusterNetwork` can drop the dead peer and `LeaderManager`
-///     can trigger re-election when the dead peer was the leader. Single-writer rule
-///     applies to authoritative membership atoms, not per-node transport hygiene.
+///     the injected sink and ALSO push the observation into the node-level
+///     `PeerObservationStore`. `onMemberFaulty`/`onMemberLeft` route `DisconnectNode`.
+///   - **Follower:** Q1 dual-write — callbacks ALSO emit through the local sink
+///     (no longer follower-silent) and push the observation into the store. Drives
+///     the per-node store ownership: a freshly-promoted leader can subscribe to the
+///     same store without waiting for the next pong drain. `DisconnectNode` is still
+///     routed locally only when the faulty peer IS the current leader (single-writer
+///     rule for KV atoms is unaffected — only the leader writes; the store is shared
+///     transport-side infrastructure).
 class CoreSwimHealthDetectorHintEmissionTest {
     private static final NodeId SELF = new NodeId("node-1");
     private static final NodeId PEER_A = new NodeId("node-2");
     private static final NodeId PEER_B = new NodeId("node-3");
 
     private final List<HealthSignal> emittedSignals = new ArrayList<>();
-    private RecordingBuffer buffer;
+    private PeerObservationStore store;
     private CoreSwimHealthDetector detector;
 
     @BeforeEach
     void setUp() {
         emittedSignals.clear();
         HealthSignalSink sink = emittedSignals::add;
-        buffer = new RecordingBuffer();
+        store = PeerObservationStore.peerObservationStore();
         var router = MessageRouter.mutable();
         var nodeA = NodeInfo.nodeInfo(SELF, NodeAddress.nodeAddress("127.0.0.1", 9001).unwrap());
         var nodeB = NodeInfo.nodeInfo(PEER_A, NodeAddress.nodeAddress("127.0.0.2", 9001).unwrap());
@@ -69,7 +68,7 @@ class CoreSwimHealthDetectorHintEmissionTest {
         Deserializer deserializer = Mockito.mock(Deserializer.class);
         detector = CoreSwimHealthDetector.coreSwimHealthDetector(router, topologyConfig, serializer, deserializer,
                                                                    sink, () -> Epoch.epoch(7L, 3L),
-                                                                   () -> true, buffer);
+                                                                   () -> true, store);
     }
 
     private CoreSwimHealthDetector followerDetector() {
@@ -84,7 +83,7 @@ class CoreSwimHealthDetectorHintEmissionTest {
         Deserializer deserializer = Mockito.mock(Deserializer.class);
         return CoreSwimHealthDetector.coreSwimHealthDetector(router, topologyConfig, serializer, deserializer,
                                                               sink, () -> Epoch.epoch(7L, 3L),
-                                                              () -> false, buffer);
+                                                              () -> false, store);
     }
 
     @Nested
@@ -192,86 +191,78 @@ class CoreSwimHealthDetectorHintEmissionTest {
         }
     }
 
-    /// Commit 2: on a follower node the detector is a pure sensor — observations
-    /// push into the upstream buffer and the local reconciler sink is untouched.
+    /// Q1: per-node store ownership — every callback (leader OR follower) writes to BOTH
+    /// the local sink and the node-level `PeerObservationStore`. Followers used to be
+    /// sink-silent; the gating is gone so that promoting a follower to leader does not
+    /// require a fresh pong drain to surface the recently-observed hints.
     @Nested
-    class FollowerSensorOnly {
+    class FollowerDualWrite {
         @Test
-        void onMemberFaulty_follower_buffersObservation_andSinkIsSilent() {
+        void onMemberFaulty_follower_writesToStoreAndSink() {
             var follower = followerDetector();
             var faultyMember = SwimMember.swimMember(PEER_A, MemberState.FAULTY, 0,
                                                       new InetSocketAddress("127.0.0.2", 9002));
 
             follower.onMemberFaulty(faultyMember);
 
-            assertThat(emittedSignals).as("follower must not emit local health signals").isEmpty();
-            assertThat(buffer.health()).singleElement()
-                                       .satisfies(obs -> {
-                                           assertThat(obs.peerId()).isEqualTo(PEER_A);
-                                           assertThat(obs.hint()).isEqualTo(HealthHintWire.FAULTY);
-                                           assertThat(obs.observedEpochTerm()).isEqualTo(7L);
-                                           assertThat(obs.observedEpochCounter()).isEqualTo(3L);
-                                       });
+            assertThat(emittedSignals).as("Q1: follower now emits health signals locally too")
+                                      .singleElement()
+                                      .isInstanceOfSatisfying(HealthSignal.SwimHint.class,
+                                                               hint -> assertThat(hint.state()).isEqualTo(HealthHint.FAULTY));
+            assertThat(store.drainHealth()).singleElement()
+                                           .satisfies(obs -> {
+                                               assertThat(obs.peerId()).isEqualTo(PEER_A);
+                                               assertThat(obs.hint()).isEqualTo(HealthHintWire.FAULTY);
+                                               assertThat(obs.observedEpochTerm()).isEqualTo(7L);
+                                               assertThat(obs.observedEpochCounter()).isEqualTo(3L);
+                                           });
         }
 
         @Test
-        void onMemberSuspect_follower_buffersSuspectedObservation() {
+        void onMemberSuspect_follower_writesToStoreAndSink() {
             var follower = followerDetector();
             var suspect = SwimMember.swimMember(PEER_A, MemberState.SUSPECT, 0,
                                                   new InetSocketAddress("127.0.0.2", 9002));
 
             follower.onMemberSuspect(suspect);
 
-            assertThat(emittedSignals).isEmpty();
-            assertThat(buffer.health()).singleElement()
-                                       .satisfies(obs -> assertThat(obs.hint()).isEqualTo(HealthHintWire.SUSPECTED));
+            assertThat(emittedSignals).singleElement()
+                                      .isInstanceOfSatisfying(HealthSignal.SwimHint.class,
+                                                               hint -> assertThat(hint.state()).isEqualTo(HealthHint.SUSPECTED));
+            assertThat(store.drainHealth()).singleElement()
+                                           .satisfies(obs -> assertThat(obs.hint()).isEqualTo(HealthHintWire.SUSPECTED));
         }
 
         @Test
-        void onMemberLeft_follower_buffersFaultyObservation_noSinkEmit() {
+        void onMemberLeft_follower_writesToStoreAndSink() {
             var follower = followerDetector();
 
             follower.onMemberLeft(PEER_B);
 
-            assertThat(emittedSignals).isEmpty();
-            assertThat(buffer.health()).singleElement()
-                                       .satisfies(obs -> {
-                                           assertThat(obs.peerId()).isEqualTo(PEER_B);
-                                           assertThat(obs.hint()).isEqualTo(HealthHintWire.FAULTY);
-                                       });
+            assertThat(emittedSignals).singleElement()
+                                      .isInstanceOfSatisfying(HealthSignal.SwimHint.class, hint -> {
+                                          assertThat(hint.nodeId()).isEqualTo(PEER_B);
+                                          assertThat(hint.state()).isEqualTo(HealthHint.FAULTY);
+                                      });
+            assertThat(store.drainHealth()).singleElement()
+                                           .satisfies(obs -> {
+                                               assertThat(obs.peerId()).isEqualTo(PEER_B);
+                                               assertThat(obs.hint()).isEqualTo(HealthHintWire.FAULTY);
+                                           });
         }
 
         @Test
-        void onMemberJoined_follower_buffersHealthyObservation() {
+        void onMemberJoined_follower_writesToStoreAndSink() {
             var follower = followerDetector();
             var member = SwimMember.swimMember(PEER_A, new InetSocketAddress("127.0.0.2", 9002));
 
             follower.onMemberJoined(member);
 
-            assertThat(emittedSignals).isEmpty();
-            assertThat(buffer.health()).singleElement()
-                                       .satisfies(obs -> assertThat(obs.hint()).isEqualTo(HealthHintWire.HEALTHY));
+            assertThat(emittedSignals).singleElement()
+                                      .isInstanceOfSatisfying(HealthSignal.SwimHint.class,
+                                                               hint -> assertThat(hint.state()).isEqualTo(HealthHint.HEALTHY));
+            assertThat(store.drainHealth()).singleElement()
+                                           .satisfies(obs -> assertThat(obs.hint()).isEqualTo(HealthHintWire.HEALTHY));
         }
-    }
-
-    private static final class RecordingBuffer implements PeerObservationBuffer {
-        private final List<PeerHealthObservation> health = new CopyOnWriteArrayList<>();
-        private final List<PeerConnectivityObservation> connectivity = new CopyOnWriteArrayList<>();
-
-        @Override public void pushHealth(PeerHealthObservation observation) {health.add(observation);}
-        @Override public void pushConnectivity(PeerConnectivityObservation observation) {connectivity.add(observation);}
-        @Override public List<PeerHealthObservation> drainHealth() {
-            var snapshot = List.copyOf(health);
-            health.clear();
-            return snapshot;
-        }
-        @Override public List<PeerConnectivityObservation> drainConnectivity() {
-            var snapshot = List.copyOf(connectivity);
-            connectivity.clear();
-            return snapshot;
-        }
-
-        List<PeerHealthObservation> health() {return List.copyOf(health);}
-        List<PeerConnectivityObservation> connectivity() {return List.copyOf(connectivity);}
     }
 }

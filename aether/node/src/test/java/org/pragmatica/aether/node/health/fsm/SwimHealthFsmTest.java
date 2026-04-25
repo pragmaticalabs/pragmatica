@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.cluster.metrics.PeerObservationBuffer;
+import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -83,7 +83,7 @@ class SwimHealthFsmTest {
                                         _ -> {}, // HealthSignalSink no-op
                                         () -> Epoch.ZERO,
                                         () -> isLeader,
-                                        PeerObservationBuffer.NOOP,
+                                        PeerObservationStore.peerObservationStore(),
                                         SwimConfig.DEFAULT);
         ctxRef.set(ctx);
         return ctx.stopped();
@@ -202,7 +202,7 @@ class SwimHealthFsmTest {
     @Nested
     class LeaderRouting {
         @Test
-        void follower_running_peerFaultyIsCurrentLeader_routesDisconnectLocally() {
+        void follower_running_peerFaultyIsCurrentLeader_routesDisconnectLocally() throws InterruptedException {
             buildHarness(false); // follower
             harness.dispatch(new SwimHealthEvents.StartRequested());
             harness.dispatch(new SwimHealthEvents.ProtocolReady(swimWithSeeds(),
@@ -215,6 +215,10 @@ class SwimHealthFsmTest {
             routedDisconnects.clear();
 
             harness.dispatch(new SwimHealthEvents.PeerFaulty(faulty(PEER_A)));
+            // routeFaulty → routeDisconnect → routeAsync → Promise.async — give the executor
+            // a brief window to publish the DisconnectNode message before asserting (matches
+            // the Thread.sleep(100) pattern in CoreSwimReconnectTest).
+            Thread.sleep(50);
 
             // Must route DisconnectNode locally (follower + faulty-is-current-leader path).
             assertThat(routedDisconnects).hasSize(1);

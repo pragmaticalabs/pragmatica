@@ -4,17 +4,18 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.health.fsm;
 
+import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.cluster.metrics.HealthHintWire;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
-import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -52,7 +53,7 @@ public final class SwimHealthContext {
     private final HealthSignalSink signalSink;
     private final Supplier<Epoch> epochSupplier;
     private final BooleanSupplier isLeaderSupplier;
-    private final PeerObservationBuffer observationBuffer;
+    private final PeerObservationStore observationStore;
     private final SwimConfig swimConfig;
     private final LongSupplier clock;
 
@@ -75,10 +76,10 @@ public final class SwimHealthContext {
                              HealthSignalSink signalSink,
                              Supplier<Epoch> epochSupplier,
                              BooleanSupplier isLeaderSupplier,
-                             PeerObservationBuffer observationBuffer,
+                             PeerObservationStore observationStore,
                              SwimConfig swimConfig) {
         this(fsm, router, topologyConfig, serializer, deserializer, signalSink, epochSupplier,
-             isLeaderSupplier, observationBuffer, swimConfig, System::currentTimeMillis);
+             isLeaderSupplier, observationStore, swimConfig, System::currentTimeMillis);
     }
 
     /// Full constructor with injectable clock — for tests that need deterministic time.
@@ -90,7 +91,7 @@ public final class SwimHealthContext {
                              HealthSignalSink signalSink,
                              Supplier<Epoch> epochSupplier,
                              BooleanSupplier isLeaderSupplier,
-                             PeerObservationBuffer observationBuffer,
+                             PeerObservationStore observationStore,
                              SwimConfig swimConfig,
                              LongSupplier clock) {
         this.fsm = fsm;
@@ -101,7 +102,7 @@ public final class SwimHealthContext {
         this.signalSink = signalSink;
         this.epochSupplier = epochSupplier;
         this.isLeaderSupplier = isLeaderSupplier;
-        this.observationBuffer = observationBuffer;
+        this.observationStore = observationStore;
         this.swimConfig = swimConfig;
         this.clock = clock;
         this.stopped = new SwimHealthState.Stopped(this);
@@ -146,24 +147,24 @@ public final class SwimHealthContext {
 
     // --- Health reporting ---
 
-    /// Route a health hint according to leader/follower role policy: leaders emit through the
-    /// signal sink (fed into HealthReconciler); followers buffer upstream for the next pong
-    /// (single-writer rule). Both paths use the current epoch from [`epochSupplier`].
-    public void reportHint(NodeId nodeId, HealthHint hint) {
-        if (isLeaderSupplier.getAsBoolean()) {
-            emitLeaderHint(nodeId, hint);
-            return;
-        }
+    /// Route a health hint to BOTH the local signal sink (HealthReconciler — leader-active)
+    /// and the node-level observation store (drained into outbound pongs / consumed by future
+    /// LeadingSteady subscribers — Q3). Role-gating is gone: both writes happen unconditionally
+    /// because the destinations themselves no-op on the wrong role (the reconciler ignores
+    /// signals when this node is not the leader; the store outlives leader/follower toggles).
+    /// Both writes use the current epoch from [`epochSupplier`].
+    @Contract public void reportHint(NodeId nodeId, HealthHint hint) {
+        emitLeaderHint(nodeId, hint);
         bufferHealthObservation(nodeId, hint);
     }
 
-    public void emitLeaderHint(NodeId nodeId, HealthHint hint) {
+    @Contract public void emitLeaderHint(NodeId nodeId, HealthHint hint) {
         signalSink.emit(new HealthSignal.SwimHint(nodeId, hint, epochSupplier.get()));
     }
 
-    public void bufferHealthObservation(NodeId nodeId, HealthHint hint) {
+    @Contract public void bufferHealthObservation(NodeId nodeId, HealthHint hint) {
         var epoch = epochSupplier.get();
-        observationBuffer.pushHealth(new PeerHealthObservation(nodeId,
+        observationStore.pushHealth(new PeerHealthObservation(nodeId,
                                                                toWire(hint),
                                                                epoch.rabiaTerm(),
                                                                epoch.localCounter()));
@@ -184,15 +185,17 @@ public final class SwimHealthContext {
     /// buffers the observation upstream for the leader's HealthReconciler and, when the faulty
     /// peer IS the current leader (buffer-upstream cannot work), also routes DisconnectNode
     /// locally so LeaderManager detects NodeRemoved and proposes a new leader.
-    public void routeFaulty(NodeId peer, Option<NodeId> currentLeader) {
+    @Contract public void routeFaulty(NodeId peer, Option<NodeId> currentLeader) {
         if (isLeaderSupplier.getAsBoolean()) {
             routeDisconnect(peer);
             emitLeaderHint(peer, HealthHint.FAULTY);
+            bufferHealthObservation(peer, HealthHint.FAULTY);
             return;
         }
         if (currentLeader.filter(peer::equals).isPresent()) {
             routeDisconnect(peer);
         }
+        emitLeaderHint(peer, HealthHint.FAULTY);
         bufferHealthObservation(peer, HealthHint.FAULTY);
     }
 

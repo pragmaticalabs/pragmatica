@@ -203,7 +203,8 @@ class ClusterSyncFsmTest {
                                                      _ -> new byte[0],
                                                      sink,
                                                      threshold,
-                                                     () -> Epoch.epoch(7L, 0L));
+                                                     () -> Epoch.epoch(7L, 0L),
+                                                     org.pragmatica.aether.metrics.observation.PeerObservationStore.peerObservationStore());
                     ctxRef.set(ctx);
                     return ctx.dormant();
                 };
