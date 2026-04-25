@@ -163,6 +163,12 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         return context.fsm().current();
     }
 
+    /// Test-only accessor for direct FSM dispatch. Tests in the same package use this to
+    /// drive the FSM through `Stopped → Starting → Running` without binding real UDP sockets.
+    SwimHealthContext contextForTest() {
+        return context;
+    }
+
     @Contract
     public void onNodeConnected(NodeId nodeId) {
         context.dispatch(new SwimHealthEvents.PeerConnected(nodeId, none()));

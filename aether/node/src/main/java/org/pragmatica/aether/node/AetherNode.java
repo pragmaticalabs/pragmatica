@@ -1112,6 +1112,7 @@ public interface AetherNode extends ManageableNode {
         healthSinkRef.set(healthReconcilerActivator.sink());
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
         attachQuicFollowerWiring(clusterNode.network(), isLeaderSupplier, peerObservationStore, leaderEpochSupplier);
+        attachQuicHealthReporter(clusterNode.network(), peerObservationStore);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForReconciler(change,
                                                                                        leaderTerm,
@@ -1421,6 +1422,34 @@ public interface AetherNode extends ManageableNode {
             }
         };
         quicNetwork.setFollowerObservationWiring(isLeaderSupplier, reporter, epochAdapter);
+    }
+
+    /// Q6: route QUIC view-change health observations into the node-level
+    /// `PeerObservationStore`. NodeAdded -> HEALTHY, NodeRemoved/NodeDown -> FAULTY. This
+    /// makes QUIC handshake completion the canonical observation source so SWIM Stopped /
+    /// Starting can ignore peer events safely.
+    private static void attachQuicHealthReporter(ClusterNetwork network,
+                                                 org.pragmatica.aether.metrics.observation.PeerObservationStore store) {
+        if (!(network instanceof QuicClusterNetwork quicNetwork)) {return;}
+        org.pragmatica.consensus.net.quic.PeerHealthReporter reporter =
+            new org.pragmatica.consensus.net.quic.PeerHealthReporter() {
+                @Override public void onPeerHealthy(NodeId peerId, long observedTerm, long observedCounter) {
+                    store.pushHealth(new org.pragmatica.cluster.metrics.PeerHealthObservation(peerId,
+                                                                                              org.pragmatica.cluster.metrics.HealthHintWire.HEALTHY,
+                                                                                              observedTerm,
+                                                                                              observedCounter,
+                                                                                              System.currentTimeMillis()));
+                }
+
+                @Override public void onPeerFaulty(NodeId peerId, long observedTerm, long observedCounter) {
+                    store.pushHealth(new org.pragmatica.cluster.metrics.PeerHealthObservation(peerId,
+                                                                                              org.pragmatica.cluster.metrics.HealthHintWire.FAULTY,
+                                                                                              observedTerm,
+                                                                                              observedCounter,
+                                                                                              System.currentTimeMillis()));
+                }
+            };
+        quicNetwork.setHealthReporter(reporter);
     }
 
     private static Option<NodeId> lookupGovernor(KVStore<AetherKey, AetherValue> kvStore, String communityId) {

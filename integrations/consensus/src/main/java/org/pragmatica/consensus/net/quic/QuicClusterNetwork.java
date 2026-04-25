@@ -49,6 +49,7 @@ import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.lang.Promise;
@@ -124,6 +125,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private volatile BooleanSupplier isLeaderSupplier;
     private volatile PeerConnectivityReporter connectivityReporter;
     private volatile ObservedEpochSupplier observedEpochSupplier;
+
+    /// View-change health observation sink. Both leader and follower call this on every
+    /// processViewChange so SWIM-pre-Running is no longer the canonical observation source —
+    /// QUIC's NodeAdded / NodeRemoved becomes the production-safe path. See Q6 design.
+    private volatile PeerHealthReporter healthReporter = PeerHealthReporter.noop();
 
     /// Minimal cross-module shape for the follower's observed epoch — keeps the
     /// consensus module free of `aether/slice` types. Upper layers translate.
@@ -217,6 +223,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
         this.isLeaderSupplier = isLeaderSupplier == null ? () -> true : isLeaderSupplier;
         this.connectivityReporter = connectivityReporter == null ? PeerConnectivityReporter.noop() : connectivityReporter;
         this.observedEpochSupplier = observedEpochSupplier == null ? ObservedEpochSupplier.zero() : observedEpochSupplier;
+    }
+
+    /// Late-bound health reporter for QUIC view-change health observations. Per Q6: NodeAdded
+    /// reports HEALTHY, NodeRemoved/NodeDown reports FAULTY. Higher layers adapt these into
+    /// `PeerHealthObservation` writes against the node-level `PeerObservationStore`.
+    /// `null` resets to the no-op reporter.
+    @Contract public void setHealthReporter(PeerHealthReporter reporter) {
+        this.healthReporter = reporter == null ? PeerHealthReporter.noop() : reporter;
     }
 
     /// Attach a QUIC-disconnect listener post-construction. Higher layers (e.g.
@@ -808,6 +822,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
                     log.info("Quorum established with {} active peer(s) (need {})", activePeerCount, quorumSize);
                     router.route(QuorumStateNotification.established());
                 }
+                // Q6: NodeAdded is the production-safe HEALTHY observation source. SWIM
+                // Stopped/Starting no longer process peer events, so QUIC handshake completion
+                // is now the canonical "peer is reachable" signal that flows into the
+                // node-level PeerObservationStore via the higher-layer reporter.
+                reportPeerHealthy(peerId);
                 yield TopologyChangeNotification.nodeAdded(peerId, currentView());
             }
             case REMOVE -> {
@@ -818,6 +837,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // `topologyManager.unregisterPeer` stays put on both roles: it is local transport
                 // hygiene (drops the peer from the QUIC peer table), not a cluster-membership decision.
                 reportPeerRemoval(peerId);
+                // Q6: also report a FAULTY health observation so the node-level
+                // PeerObservationStore observes a coherent peer-departure signal even when
+                // SWIM is pre-Running.
+                reportPeerFaulty(peerId);
                 topologyManager.unregisterPeer(peerId);
                 if (!currentlyHaveQuorum && quorumEstablished.compareAndSet(true, false)) {
                     log.warn("Quorum lost — {} active peer(s), need {}", activePeerCount, quorumSize);
@@ -861,6 +884,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
         var epoch = observedEpochSupplier;
         connectivityReporter.onPeerDisconnected(peerId, epoch.term(), epoch.counter());
+    }
+
+    private void reportPeerHealthy(NodeId peerId) {
+        var epoch = observedEpochSupplier;
+        healthReporter.onPeerHealthy(peerId, epoch.term(), epoch.counter());
+    }
+
+    private void reportPeerFaulty(NodeId peerId) {
+        var epoch = observedEpochSupplier;
+        healthReporter.onPeerFaulty(peerId, epoch.term(), epoch.counter());
     }
 
     private List<NodeId> currentView() {

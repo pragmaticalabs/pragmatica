@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
+import org.pragmatica.aether.node.health.fsm.SwimHealthEvents;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.HealthSignal;
@@ -18,12 +19,20 @@ import org.pragmatica.cluster.metrics.HealthHintWire;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.swim.GossipEncryptor;
+import org.pragmatica.swim.SwimConfig;
 import org.pragmatica.swim.SwimMember;
 import org.pragmatica.swim.SwimMember.MemberState;
+import org.pragmatica.swim.SwimMembershipListener;
+import org.pragmatica.swim.SwimMessage;
+import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTransport;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
@@ -69,6 +78,33 @@ class CoreSwimHealthDetectorHintEmissionTest {
         detector = CoreSwimHealthDetector.coreSwimHealthDetector(router, topologyConfig, serializer, deserializer,
                                                                    sink, () -> Epoch.epoch(7L, 3L),
                                                                    () -> true, store);
+        // Q6: SWIM Stopped/Starting ignore peer events. Drive the FSM to Running so the
+        // membership-callback assertions exercise the production-active code path.
+        driveToRunning(detector);
+    }
+
+    private static void driveToRunning(CoreSwimHealthDetector det) {
+        var ctx = det.contextForTest();
+        ctx.dispatch(new SwimHealthEvents.StartRequested());
+        var swim = SwimProtocol.swimProtocol(SwimConfig.DEFAULT, new StubTransport(),
+                                              noopListener(), SELF,
+                                              new InetSocketAddress("127.0.0.1", 9101)).unwrap();
+        ctx.dispatch(new SwimHealthEvents.ProtocolReady(swim, new StubTransport(), GossipEncryptor.none()));
+    }
+
+    private static SwimMembershipListener noopListener() {
+        return new SwimMembershipListener() {
+            @Override public void onMemberJoined(SwimMember member) {}
+            @Override public void onMemberSuspect(SwimMember member) {}
+            @Override public void onMemberFaulty(SwimMember member) {}
+            @Override public void onMemberLeft(NodeId nodeId) {}
+        };
+    }
+
+    private static final class StubTransport implements SwimTransport {
+        @Override public Promise<Unit> send(InetSocketAddress target, SwimMessage message) { return Promise.unitPromise(); }
+        @Override public Promise<Unit> start(int port, SwimMessageHandler handler) { return Promise.unitPromise(); }
+        @Override public Promise<Unit> stop() { return Promise.unitPromise(); }
     }
 
     private CoreSwimHealthDetector followerDetector() {
@@ -81,9 +117,11 @@ class CoreSwimHealthDetectorHintEmissionTest {
                                                  List.of(nodeA, nodeB, nodeC));
         Serializer serializer = Mockito.mock(Serializer.class);
         Deserializer deserializer = Mockito.mock(Deserializer.class);
-        return CoreSwimHealthDetector.coreSwimHealthDetector(router, topologyConfig, serializer, deserializer,
-                                                              sink, () -> Epoch.epoch(7L, 3L),
-                                                              () -> false, store);
+        var det = CoreSwimHealthDetector.coreSwimHealthDetector(router, topologyConfig, serializer, deserializer,
+                                                                 sink, () -> Epoch.epoch(7L, 3L),
+                                                                 () -> false, store);
+        driveToRunning(det);
+        return det;
     }
 
     @Nested

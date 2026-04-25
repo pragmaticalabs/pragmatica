@@ -52,34 +52,25 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
 
     // --- State records ---
 
-    /// Data-free lifecycle state: SWIM protocol is not running. Membership events still arrive
-    /// from unit tests that inject synthetic [`SwimMember`] values — they route through the
-    /// shared context helpers without the rolling-window faulty check (no protocol = no member
-    /// count to compare against). `currentLeader` is unknown in this state, so the
-    /// faulty-is-current-leader branch never fires.
+    /// Data-free lifecycle state: SWIM protocol is not running. Per Q6 design, peer-membership
+    /// events are NOT processed pre-Running — production-safe observation arrival flows from
+    /// QUIC's `processViewChange` (NodeAdded/Removed) directly into the node-level
+    /// `PeerObservationStore`. The detector hasn't bound; ignoring peer events here prevents
+    /// side effects with an unknown leader and an empty SWIM member view.
     record Stopped(SwimHealthContext ctx) implements SwimHealthState {
         @Override
         public void handle(SwimHealthEvents event, TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
             switch (event) {
                 case StartRequested _ -> tx.transitionTo(ctx.starting());
-                case PeerJoined pj -> handleStoppedPeerJoined(ctx, pj.member());
-                case PeerSuspect ps -> ctx.reportHint(ps.member().nodeId(), HealthHint.SUSPECTED);
-                case PeerFaulty pf -> ctx.routeFaulty(pf.member().nodeId(), Option.none());
-                case PeerLeft pl -> ctx.routeFaulty(pl.peer(), Option.none());
-                case PeerConnected pc -> ctx.reportHint(pc.peer(), HealthHint.HEALTHY);
-                case ReportHint rh -> ctx.reportHint(rh.peer(), rh.hint());
+                case PeerJoined _, PeerSuspect _, PeerFaulty _, PeerLeft _, PeerConnected _, ReportHint _ -> tx.ignore();
                 case StopRequested _, LeaderChanged _, ProtocolReady _, StartFailed _ -> tx.ignore();
             }
         }
     }
 
-    private static void handleStoppedPeerJoined(SwimHealthContext ctx, SwimMember member) {
-        LOG.info("SWIM member joined (detector stopped): {}", member.nodeId());
-        ctx.reportHint(member.nodeId(), HealthHint.HEALTHY);
-    }
-
-    /// Data-free lifecycle state: SWIM start in flight. Membership callbacks that arrive during
-    /// the start window route through the same Stopped-style path (no live protocol yet).
+    /// Data-free lifecycle state: SWIM start in flight. Per Q6 design, peer-membership events
+    /// are NOT processed pre-Running. Observations arrive via QUIC's `processViewChange` writing
+    /// directly to `PeerObservationStore`.
     record Starting(SwimHealthContext ctx) implements SwimHealthState {
         @Override
         public void handle(SwimHealthEvents event, TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
@@ -91,12 +82,7 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
                                                                          Option.none()));
                 case StartFailed _ -> tx.transitionTo(ctx.stopped());
                 case StopRequested _ -> tx.transitionTo(ctx.stopped());
-                case PeerJoined pj -> handleStoppedPeerJoined(ctx, pj.member());
-                case PeerSuspect ps -> ctx.reportHint(ps.member().nodeId(), HealthHint.SUSPECTED);
-                case PeerFaulty pf -> ctx.routeFaulty(pf.member().nodeId(), Option.none());
-                case PeerLeft pl -> ctx.routeFaulty(pl.peer(), Option.none());
-                case PeerConnected pc -> ctx.reportHint(pc.peer(), HealthHint.HEALTHY);
-                case ReportHint rh -> ctx.reportHint(rh.peer(), rh.hint());
+                case PeerJoined _, PeerSuspect _, PeerFaulty _, PeerLeft _, PeerConnected _, ReportHint _ -> tx.ignore();
                 case StartRequested _, LeaderChanged _ -> tx.ignore();
             }
         }
