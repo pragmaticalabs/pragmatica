@@ -36,6 +36,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -184,8 +185,7 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
             var seeded = projectFromCommittedAtoms();
             reconciler.seedSnapshot(seeded);
             reconciler.start();
-            attemptBootstrap(seeded);
-            seedClusterConfigIfMissing();
+            performLeaderChangeBootstrap(seeded);
         } else {
             log.info("HealthReconciler stepping down — stopping reconciler");
             reconciler.stop(StopReason.LEADER_LOST);
@@ -195,23 +195,62 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
         }
     }
 
+    @Contract private void performLeaderChangeBootstrap(ClusterGenerationSnapshot seeded) {
+        cluster.onPresent(clusterNode -> applyLeaderChangeBootstrapBatch(clusterNode, seeded));
+    }
+
+    @Contract private void applyLeaderChangeBootstrapBatch(ClusterNode<KVCommand<AetherKey>> clusterNode,
+                                                           ClusterGenerationSnapshot seeded) {
+        var batch = new ArrayList<KVCommand<AetherKey>>();
+        var corePlan = planCoreBootstrap(seeded);
+        var configPlan = planClusterConfigSeed();
+        corePlan.onPresent(plan -> batch.add(plan.command()));
+        configPlan.onPresent(plan -> batch.add(plan.command()));
+        if (batch.isEmpty()) {return;}
+        corePlan.onPresent(this::logCoreBootstrap);
+        configPlan.onPresent(this::logClusterConfigSeed);
+        var hasCore = corePlan.isPresent();
+        if (hasCore) {bootstrapAttempts.incrementAndGet();}
+        var commandCount = batch.size();
+        clusterNode.apply(List.copyOf(batch))
+                   .onFailure(cause -> log.warn("Leader-change bootstrap batch failed ({} commands, attempt {}/{}): {}",
+                                                commandCount,
+                                                bootstrapAttempts.get(),
+                                                HealthReconcilerActivator.BOOTSTRAP_MAX_ATTEMPTS,
+                                                cause.message()))
+                   .onSuccess(_ -> onLeaderChangeBootstrapCommitted(hasCore, commandCount));
+    }
+
+    @Contract private void onLeaderChangeBootstrapCommitted(boolean hasCore, int commandCount) {
+        if (hasCore) {bootstrapComplete.set(true);}
+        log.info("Leader-change bootstrap committed: {} commands", commandCount);
+    }
+
     @Contract private void attemptBootstrap(ClusterGenerationSnapshot seeded) {
         if (bootstrapComplete.get()) {return;}
-        cluster.onPresent(clusterNode -> applyCoreBootstrap(clusterNode, seeded));
+        cluster.onPresent(clusterNode -> applyCoreBootstrapRetry(clusterNode, seeded));
     }
 
-    @Contract private void seedClusterConfigIfMissing() {
+    @Contract private void applyCoreBootstrapRetry(ClusterNode<KVCommand<AetherKey>> clusterNode,
+                                                   ClusterGenerationSnapshot seeded) {
+        planCoreBootstrap(seeded).onPresent(plan -> writeCoreBootstrap(clusterNode, plan));
+    }
+
+    private Option<CoreBootstrapPlan> planCoreBootstrap(ClusterGenerationSnapshot seeded) {
+        if (bootstrapComplete.get()) {return Option.none();}
+        var self = selfSupplier.get();
+        var existing = Option.option(seeded.partitions().get(CORE_PARTITION_ID));
+        return decideCoreOwnership(existing, seeded, self).map(command -> new CoreBootstrapPlan(command, existing, self));
+    }
+
+    private Option<ClusterConfigSeedPlan> planClusterConfigSeed() {
         var existing = kvSnapshotSupplier.get().get(ClusterConfigKey.CURRENT);
-        if (existing instanceof ClusterConfigValue) {return;}
+        if (existing instanceof ClusterConfigValue) {return Option.none();}
         var initialSize = initialCoreSizeSupplier.get();
-        if (initialSize <3) {
+        if (initialSize < 3) {
             log.debug("Skipping ClusterConfigValue seed: initial core size {} below quorum minimum", initialSize);
-            return;
+            return Option.none();
         }
-        cluster.onPresent(clusterNode -> writeClusterConfigSeed(clusterNode, initialSize));
-    }
-
-    @Contract private void writeClusterConfigSeed(ClusterNode<KVCommand<AetherKey>> clusterNode, int initialSize) {
         var coreMax = Math.max(initialSize, SEED_CORE_MAX);
         if (coreMax % 2 == 0) {coreMax += 1;}
         var seed = ClusterConfigValue.clusterConfigValue("",
@@ -223,14 +262,29 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
                                                          "bootstrap-seed",
                                                          1L);
         KVCommand<AetherKey> command = new KVCommand.Put<AetherKey, AetherValue>(ClusterConfigKey.CURRENT, seed);
-        log.info("Seeding ClusterConfigValue with coreCount={}, coreMin={}, coreMax={}",
-                 initialSize,
-                 SEED_CORE_MIN,
-                 coreMax);
-        clusterNode.apply(List.of(command))
-                         .onFailure(cause -> log.warn("ClusterConfigValue seed failed: {}",
-                                                      cause.message()));
+        return Option.some(new ClusterConfigSeedPlan(command, initialSize, coreMax));
     }
+
+    @Contract private void logClusterConfigSeed(ClusterConfigSeedPlan plan) {
+        log.info("Seeding ClusterConfigValue with coreCount={}, coreMin={}, coreMax={}",
+                 plan.initialSize(),
+                 SEED_CORE_MIN,
+                 plan.coreMax());
+    }
+
+    @Contract private void logCoreBootstrap(CoreBootstrapPlan plan) {
+        plan.existing()
+            .onPresent(owner -> log.info("Rewriting DhtPartitionOwnershipKey(\"core\"): previous owner {} is not a live core member — {} takes over (ownershipTerm {})",
+                                         owner.ownerNodeId(),
+                                         plan.self(),
+                                         owner.ownershipTerm() + 1L))
+            .onEmpty(() -> log.info("Bootstrapping DhtPartitionOwnershipKey(\"core\") with owner {} (ownershipTerm 1)",
+                                    plan.self()));
+    }
+
+    private record CoreBootstrapPlan(KVCommand<AetherKey> command, Option<PartitionOwner> existing, NodeId self) {}
+
+    private record ClusterConfigSeedPlan(KVCommand<AetherKey> command, int initialSize, int coreMax) {}
 
     private static final int SEED_CORE_MIN = 3;
 
@@ -240,14 +294,6 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
         if (bootstrapComplete.get() || !isLeaderSupplier.getAsBoolean()) {return;}
         if (bootstrapAttempts.get() >= HealthReconcilerActivator.BOOTSTRAP_MAX_ATTEMPTS) {return;}
         attemptBootstrap(reconciler.currentSnapshot());
-    }
-
-    @Contract private void applyCoreBootstrap(ClusterNode<KVCommand<AetherKey>> clusterNode,
-                                              ClusterGenerationSnapshot seeded) {
-        var self = selfSupplier.get();
-        var existing = Option.option(seeded.partitions().get(CORE_PARTITION_ID));
-        var decision = decideCoreOwnership(existing, seeded, self);
-        decision.onPresent(command -> writeCoreBootstrap(clusterNode, command, existing, self));
     }
 
     private Option<KVCommand<AetherKey>> decideCoreOwnership(Option<PartitionOwner> existing,
@@ -299,20 +345,13 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
     }
 
     @Contract private void writeCoreBootstrap(ClusterNode<KVCommand<AetherKey>> clusterNode,
-                                              KVCommand<AetherKey> command,
-                                              Option<PartitionOwner> existing,
-                                              NodeId self) {
-        existing.onPresent(owner -> log.info("Rewriting DhtPartitionOwnershipKey(\"core\"): previous owner {} is not a live core member — {} takes over (ownershipTerm {})",
-                                             owner.ownerNodeId(),
-                                             self,
-                                             owner.ownershipTerm() + 1L))
-        .onEmpty(() -> log.info("Bootstrapping DhtPartitionOwnershipKey(\"core\") with owner {} (ownershipTerm 1)",
-                                self));
+                                              CoreBootstrapPlan plan) {
+        logCoreBootstrap(plan);
         bootstrapAttempts.incrementAndGet();
-        clusterNode.apply(List.of(command)).onFailure(cause -> log.warn("Core DhtPartitionOwnership bootstrap failed (attempt {}/{}): {}",
-                                                                        bootstrapAttempts.get(),
-                                                                        HealthReconcilerActivator.BOOTSTRAP_MAX_ATTEMPTS,
-                                                                        cause.message()))
+        clusterNode.apply(List.of(plan.command())).onFailure(cause -> log.warn("Core DhtPartitionOwnership bootstrap failed (attempt {}/{}): {}",
+                                                                                bootstrapAttempts.get(),
+                                                                                HealthReconcilerActivator.BOOTSTRAP_MAX_ATTEMPTS,
+                                                                                cause.message()))
                          .onSuccess(_ -> bootstrapComplete.set(true));
     }
 
