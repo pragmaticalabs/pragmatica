@@ -157,6 +157,14 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         @Override
         public void onEntry() {
             log.info("Node {} NodeDeploymentManager activated", ctx.self().id());
+            // INVARIANT: Active.onEntry runs only at first-time activation OR post-drain rejoin.
+            // In both cases, KV-store has zero slice assignments owned by this node:
+            //   - first-time activation: leader hasn't issued any assignments yet,
+            //   - post-drain rejoin: drain unloaded all slices and cleared assignments before
+            //     re-entering Dormant.
+            // Subsequent assignments arrive one-at-a-time via @MessageReceiver onNodeArtifactPut
+            // events, processed asynchronously. Therefore processPendingLoadCommands() iterates a
+            // bounded set (typically empty at entry) and does NOT starve the FSM dispatcher.
             processPendingLoadCommands();
             if (!pendingReactivation.isEmpty()) {
                 log.info("Node {} has {} suspended slices to reactivate",
