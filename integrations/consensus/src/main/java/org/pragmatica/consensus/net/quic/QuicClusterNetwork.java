@@ -24,8 +24,10 @@ import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
+import java.util.function.LongSupplier;
 import java.util.stream.Stream;
 
 import io.netty.buffer.Unpooled;
@@ -107,6 +109,18 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private final AtomicBoolean quorumEstablished = new AtomicBoolean(false);
     private final QuicTransportMetrics quicMetrics = QuicTransportMetrics.quicTransportMetrics();
+
+    /// Per-peer eviction-driven reconnect backoff. Without this, an eviction storm at the
+    /// 1Hz consensus heartbeat tempo (writeToStream → evictStaleConnection → connectPeer →
+    /// next heartbeat sees same dead channel) reproducibly leaks one ephemeral UDP socket
+    /// per cycle. Initial 100ms, capped at 5s, jittered by 0.5..1.5 to prevent thundering
+    /// herd when N peers all evict in lock-step.
+    private static final long BACKOFF_INITIAL_MS = 100L;
+    private static final long BACKOFF_CAP_MS = 5_000L;
+    private static final double BACKOFF_JITTER_MIN = 0.5;
+    private static final double BACKOFF_JITTER_MAX = 1.5;
+    private final Map<NodeId, ReconnectBackoff> reconnectBackoff = new ConcurrentHashMap<>();
+    private volatile LongSupplier wallClockMs = System::currentTimeMillis;
 
     /// Retained for API compatibility with existing callers. All hysteresis/grace-window
     /// buffering was removed in favour of authoritative single-writer semantics (spec §8) —
@@ -331,6 +345,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
         // Channel-level writability backpressure queue is bytes-for-the-dead-channel; wipe.
         cleanupPeerQueues(nodeId);
+        // Datagram channel and reconnect-backoff slot follow the peer to the grave.
+        var clientRef = client;
+        if (clientRef != null) {
+            clientRef.closeDatagramChannel(nodeId);
+        }
+        resetReconnectBackoff(nodeId);
         quicMetrics.onConnectionClosed();
         processViewChange(REMOVE, nodeId);
     }
@@ -526,6 +546,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
             case PeerState.AttachResult.ACCEPTED -> quicMetrics.onConnectionEstablished();
         }
 
+        // Successful attach — clear any reconnect backoff so a future flap starts at the
+        // initial delay rather than carrying over the doubled value.
+        resetReconnectBackoff(peerId);
         installWritabilityHandler(connection, peerId);
         drainOfflineBufferInto(state, connection);
 
@@ -775,10 +798,19 @@ public class QuicClusterNetwork implements ClusterNetwork {
         cleanupPeerQueues(peerId);
         quicMetrics.onConnectionClosed();
         evicted.onPresent(this::closeDroppedConnection);
+        // Close the per-peer ephemeral UDP socket. Without this, every reconnect leaks
+        // one datagram channel because the client previously held a single volatile field
+        // and overwrote it on each `bind(0)`. See QuicClusterClient#closeDatagramChannel.
+        var clientRef = client;
+        if (clientRef != null) {
+            clientRef.closeDatagramChannel(peerId);
+        }
         log.warn("Node {} evicted stale (inactive) link — peer remains in topology, offline buffer preserved for reconnect",
                  peerId);
         // Re-dial the peer if we are the initiator side. Higher NodeIds wait for inbound.
-        if (ConnectionDirection.shouldInitiate(self.id(), peerId)) {
+        // Backoff-gated to prevent the 1Hz consensus tempo from re-firing eviction every
+        // heartbeat against a peer that is genuinely down.
+        if (ConnectionDirection.shouldInitiate(self.id(), peerId) && backoffAllowsReconnect(peerId)) {
             topologyManager.get(peerId).onPresent(this::connectPeer);
         }
         // Explicit use of the `connection` parameter to satisfy the API contract — the
@@ -786,6 +818,65 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (connection != null && connection.isActive()) {
             connection.close();
         }
+    }
+
+    /// Per-peer reconnect backoff state. Mutable, guarded by the enclosing
+    /// `ConcurrentHashMap.compute` callback.
+    private static final class ReconnectBackoff {
+        long nextAttemptMs;
+        long currentDelayMs;
+
+        ReconnectBackoff(long nextAttemptMs, long currentDelayMs) {
+            this.nextAttemptMs = nextAttemptMs;
+            this.currentDelayMs = currentDelayMs;
+        }
+    }
+
+    /// Returns true if the eviction-driven reconnect for `peerId` is allowed at the
+    /// current wall-clock instant. Doubles `currentDelayMs` (capped) and applies a
+    /// random jitter factor in `[BACKOFF_JITTER_MIN, BACKOFF_JITTER_MAX]` for the next
+    /// scheduled attempt. Single-threaded per key via `compute`.
+    /// Package-private — tests assert backoff doubling under a deterministic clock.
+    @SuppressWarnings("JBCT-PAT-01") // Backoff state mutation under compute()
+    boolean backoffAllowsReconnect(NodeId peerId) {
+        var nowMs = wallClockMs.getAsLong();
+        var allowed = new boolean[]{false};
+        reconnectBackoff.compute(peerId, (_, prior) -> {
+            if (prior == null) {
+                allowed[0] = true;
+                return new ReconnectBackoff(nowMs + jittered(BACKOFF_INITIAL_MS), BACKOFF_INITIAL_MS);
+            }
+            if (nowMs < prior.nextAttemptMs) {
+                allowed[0] = false;
+                return prior;
+            }
+            allowed[0] = true;
+            var nextDelay = Math.min(prior.currentDelayMs * 2, BACKOFF_CAP_MS);
+            prior.currentDelayMs = nextDelay;
+            prior.nextAttemptMs = nowMs + jittered(nextDelay);
+            return prior;
+        });
+        if (!allowed[0]) {
+            log.debug("Reconnect for peer {} suppressed by backoff", peerId);
+        }
+        return allowed[0];
+    }
+
+    private long jittered(long delayMs) {
+        var factor = BACKOFF_JITTER_MIN + (BACKOFF_JITTER_MAX - BACKOFF_JITTER_MIN) * ThreadLocalRandom.current().nextDouble();
+        return Math.max(1L, (long) (delayMs * factor));
+    }
+
+    /// Reset the per-peer reconnect backoff. Called on successful peer attach so a
+    /// peer that flaps once does not pay the doubled delay forever.
+    @Contract void resetReconnectBackoff(NodeId peerId) {
+        reconnectBackoff.remove(peerId);
+    }
+
+    /// Test/diagnostic — inject a deterministic clock to validate backoff windows
+    /// without sleeping. Defaults to `System::currentTimeMillis`.
+    @Contract void overrideWallClockForTests(LongSupplier clock) {
+        this.wallClockMs = clock == null ? System::currentTimeMillis : clock;
     }
 
     // --- Internal: view change ---
@@ -918,6 +1009,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
         peers.clear();
         outboundQueues.clear();
+        reconnectBackoff.clear();
         if (promises.isEmpty()) {
             return Promise.unitPromise();
         }

@@ -17,8 +17,11 @@
 package org.pragmatica.consensus.net.quic;
 
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
@@ -26,6 +29,7 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
@@ -70,6 +74,17 @@ public sealed interface QuicClusterClient {
     /// Shut down the client and release resources.
     Promise<Unit> close();
 
+    /// Close the per-peer datagram (UDP) channel allocated by [#connect].
+    ///
+    /// Each successful or attempted `connect` allocates a fresh ephemeral UDP socket
+    /// via `bootstrap.bind(0)`. When the QUIC link to that peer is evicted, the
+    /// underlying datagram channel must be closed too — otherwise the kernel-level
+    /// socket leaks until JVM exit. Idempotent: a missing entry resolves immediately.
+    Promise<Unit> closeDatagramChannel(NodeId peerId);
+
+    /// Snapshot the count of currently-tracked datagram channels. Test/diagnostic only.
+    int datagramChannelCount();
+
     /// Create a new QUIC cluster client.
     ///
     /// @param selfId          this node's identity
@@ -104,6 +119,16 @@ public sealed interface QuicClusterClient {
         public Promise<Unit> close() {
             return Promise.unitPromise();
         }
+
+        @Override
+        public Promise<Unit> closeDatagramChannel(NodeId peerId) {
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public int datagramChannelCount() {
+            return 0;
+        }
     }
 }
 
@@ -127,7 +152,12 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     private final EventLoopGroup eventLoopGroup;
     private final boolean ownsEventLoop;
     private final QuicClusterServer.MessageReceiver messageReceiver;
-    private volatile Channel datagramChannel;
+    /// Per-peer ephemeral UDP socket. `bootstrap.bind(0)` is invoked on every
+    /// `connect(peerId, ...)` call, so without per-peer tracking the previous channel
+    /// reference would be dropped (and the kernel-level socket leaked) on every
+    /// reconnect. The map is the single ownership root for client-side datagram
+    /// channels and is drained by [#closeDatagramChannel] / [#initiateClose].
+    private final Map<NodeId, Channel> datagramChannels = new ConcurrentHashMap<>();
 
     QuicClusterClientInstance(NodeId selfId,
                               NodeRole selfRole,
@@ -164,10 +194,20 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     private void initiateConnection(NodeId peerId,
                                     InetSocketAddress address,
                                     Promise<QuicPeerConnection> promise) {
+        // Close any previously-tracked datagram channel for this peer BEFORE allocating a new
+        // ephemeral UDP socket. Without this, repeated reconnects (e.g. eviction storm at 1Hz
+        // during chaos tests) leaked one socket per reconnect to JVM exit.
+        var stale = datagramChannels.remove(peerId);
+        if (stale != null) {
+            stale.close();
+        }
         var codec = buildQuicCodec();
         var bootstrap = new Bootstrap()
             .group(eventLoopGroup)
             .channel(NioDatagramChannel.class)
+            // SO_REUSEADDR: defensive on the client side — eliminates rebind hangs if a previous
+            // ephemeral binding lingers in TIME_WAIT during rapid reconnect storms.
+            .option(ChannelOption.SO_REUSEADDR, true)
             .handler(codec);
 
         bootstrap.bind(0)
@@ -183,8 +223,15 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             promise.fail(new QuicTransportError.ConnectFailed(address.toString(), future.cause()));
             return;
         }
-        datagramChannel = ((io.netty.channel.ChannelFuture) future).channel();
-        connectQuicChannel(datagramChannel, peerId, address, promise);
+        var newChannel = ((io.netty.channel.ChannelFuture) future).channel();
+        // Stash by peerId so eviction / shutdown can close it deterministically. If a
+        // concurrent connect for the same peer raced ahead, close the previous entry
+        // (defence-in-depth — initiateConnection already removed any stale entry).
+        var racedOut = datagramChannels.put(peerId, newChannel);
+        if (racedOut != null && racedOut != newChannel) {
+            racedOut.close();
+        }
+        connectQuicChannel(newChannel, peerId, address, promise);
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Netty QUIC channel bootstrap
@@ -264,13 +311,37 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         return new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
     }
 
+    @SuppressWarnings("JBCT-PAT-01") // Lifecycle: close all per-peer channels then shut event loop
     private void initiateClose(Promise<Unit> promise) {
-        var channel = datagramChannel;
-        if (channel != null) {
-            channel.close().addListener(_ -> shutdownEventLoop(promise));
-        } else {
+        var snapshot = new ArrayList<Channel>(datagramChannels.values());
+        datagramChannels.clear();
+        if (snapshot.isEmpty()) {
             shutdownEventLoop(promise);
+            return;
         }
+        var pending = new AtomicInteger(snapshot.size());
+        for (var ch : snapshot) {
+            ch.close().addListener(_ -> {
+                if (pending.decrementAndGet() == 0) {
+                    shutdownEventLoop(promise);
+                }
+            });
+        }
+    }
+
+    @Override
+    public Promise<Unit> closeDatagramChannel(NodeId peerId) {
+        var channel = datagramChannels.remove(peerId);
+        if (channel == null) {
+            return Promise.unitPromise();
+        }
+        return Promise.promise(promise ->
+            channel.close().addListener(_ -> promise.succeed(unit())));
+    }
+
+    @Override
+    public int datagramChannelCount() {
+        return datagramChannels.size();
     }
 
     private void shutdownEventLoop(Promise<Unit> promise) {

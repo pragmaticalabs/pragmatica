@@ -45,6 +45,7 @@ import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -174,6 +175,80 @@ class QuicClusterNetworkHintEmissionTest {
     }
 
     private record ReportedDisconnect(NodeId peerId, long term, long counter) {}
+
+    @Test
+    void evictionBackoff_suppressesRapidReconnects_underDeterministicClock() {
+        // 5 evict events fired in quick succession under a deterministic clock must NOT
+        // produce 5 reconnect attempts. The first call seeds a `nextAttemptMs` of
+        // `now + jitter(100ms)`; calls 2..5 within the same logical instant fall before
+        // that deadline and must be suppressed. Lower bound: jitter floor is 50ms, so at
+        // least the first attempt is allowed.
+        var clock = new AtomicLong(1_000_000L);
+        var network = createNetworkWithListener(NodeId.randomNodeId(), List.of(), MessageRouter.mutable(),
+                                                 QuicDisconnectListener.noop());
+        network.overrideWallClockForTests(clock::get);
+
+        var peer = new NodeId("peer-bouncing");
+        var allowed = 0;
+        for (int i = 0; i < 5; i++) {
+            if (network.backoffAllowsReconnect(peer)) {
+                allowed++;
+            }
+            // Advance 1ms — well below the 100ms initial floor — to simulate the 1Hz
+            // consensus heartbeat hammering the same peer in tight succession during a
+            // single test tick.
+            clock.addAndGet(1L);
+        }
+        assertThat(allowed)
+            .as("backoff must suppress at least one of the 5 close-spaced eviction reconnects")
+            .isLessThan(5)
+            .isGreaterThanOrEqualTo(1);
+
+        // Advance well past the upper jitter bound (BACKOFF_INITIAL_MS * 1.5 = 150ms,
+        // doubled = 300ms, jittered to at most 450ms). After 1s the next attempt must
+        // be allowed.
+        clock.addAndGet(1_000L);
+        assertThat(network.backoffAllowsReconnect(peer))
+            .as("after the backoff window expires, reconnect is allowed again")
+            .isTrue();
+    }
+
+    @Test
+    void evictionBackoff_doublesDelayOnRepeatedEviction() {
+        // Drive the backoff machine through three evictions and assert each successive
+        // suppression window is at least 2x the previous one (the lower jitter bound is
+        // 0.5x, so 2x growth is the worst-case lower bound for two consecutive doubles
+        // *on average*, but for a single sample we assert the deadline grows monotonically
+        // and exceeds the BACKOFF_INITIAL_MS lower jitter floor on the first window).
+        var clock = new AtomicLong(0L);
+        var network = createNetworkWithListener(NodeId.randomNodeId(), List.of(), MessageRouter.mutable(),
+                                                 QuicDisconnectListener.noop());
+        network.overrideWallClockForTests(clock::get);
+        var peer = new NodeId("peer-flap");
+
+        // Attempt 1 — first call seeds the backoff with `currentDelay = 100ms`.
+        assertThat(network.backoffAllowsReconnect(peer)).isTrue();
+        // Step past the (jittered) first window. Upper jitter on 100ms = 150ms.
+        clock.addAndGet(200L);
+
+        // Attempt 2 — allowed; doubles `currentDelay` to 200ms internally.
+        assertThat(network.backoffAllowsReconnect(peer)).isTrue();
+        // Probe right after attempt 2 — still inside the 200ms*0.5 = 100ms minimum window.
+        var probedAt = clock.get();
+        clock.addAndGet(50L);
+        assertThat(network.backoffAllowsReconnect(peer))
+            .as("second window must still be active 50ms after the doubled attempt at " + probedAt)
+            .isFalse();
+
+        // Step past the 200ms*1.5 = 300ms upper bound, then attempt 3.
+        clock.addAndGet(400L);
+        assertThat(network.backoffAllowsReconnect(peer)).isTrue();
+        // Probe inside the doubled-again 400ms*0.5 = 200ms minimum window.
+        clock.addAndGet(100L);
+        assertThat(network.backoffAllowsReconnect(peer))
+            .as("third window (>=200ms after attempt 3) must still suppress reconnect")
+            .isFalse();
+    }
 
     @Test
     void defaultConstructor_usesNoopListener_withoutCrashing() {

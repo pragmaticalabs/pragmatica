@@ -26,6 +26,7 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
@@ -203,6 +204,10 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         var bootstrap = new Bootstrap()
             .group(group)
             .channel(NioDatagramChannel.class)
+            // SO_REUSEADDR enables fast rebind when a node restarts and the kernel still holds
+            // the cluster UDP port in TIME_WAIT — without it `BindException: Address already in
+            // use` cascades through chaos tests every time a node is killed and restarted.
+            .option(ChannelOption.SO_REUSEADDR, true)
             .handler(codec);
 
         bootstrap.bind(new InetSocketAddress(port))
