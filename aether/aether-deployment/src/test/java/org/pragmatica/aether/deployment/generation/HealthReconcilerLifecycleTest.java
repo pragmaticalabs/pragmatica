@@ -106,7 +106,7 @@ class HealthReconcilerLifecycleTest {
         void stop_with_LEADER_LOST_clears_decision_state() {
             seedTwoCoreNodesAtEpoch(Epoch.epoch(6L, 0L));
             reconciler.start(Epoch.epoch(6L, 0L));
-            // Populate internal maps via a ping timeout to set consecutivePingMisses.
+            // Populate internal maps via a ping timeout (counter lives on PeerObservationStore singleton).
             reconciler.onSignal(new HealthSignal.PingTimeout(NODE_A, 1, Epoch.epoch(6L, 0L)));
 
             reconciler.stop(StopReason.LEADER_LOST);
@@ -127,7 +127,7 @@ class HealthReconcilerLifecycleTest {
         }
 
         @Test
-        void start_stop_start_preserves_no_stale_decision_state() {
+        void start_stop_start_clears_leader_projection_state_but_preserves_node_level_counters() {
             seedTwoCoreNodesAtEpoch(Epoch.epoch(6L, 0L));
             reconciler.start(Epoch.epoch(6L, 0L));
             // Accumulate misses under the first leadership.
@@ -140,11 +140,13 @@ class HealthReconcilerLifecycleTest {
             seedTwoCoreNodesAtEpoch(Epoch.epoch(7L, 0L));
             reconciler.start(Epoch.epoch(7L, 0L));
 
-            // A single PingTimeout under the new epoch must not trip the suspect threshold
-            // (which would require 3 accumulated misses) — proves misses were cleared.
+            // Q5: ping-miss counters live on the node-singleton PeerObservationStore — they
+            // survive leader thrash by design, so a third miss under the new term DOES trip
+            // suspect (2 carried + 1 new = 3 ≥ DEFAULT_SUSPECT_THRESHOLD). Leader-projection
+            // state (swimHints, pendingRemovals) IS cleared on stop.
             reconciler.onSignal(new HealthSignal.PingTimeout(NODE_A, 1, Epoch.epoch(7L, 0L)));
 
-            assertThat(reconciler.currentSnapshot().coreMembers().get(NODE_A).healthHint()).isEqualTo(HealthHint.HEALTHY);
+            assertThat(reconciler.currentSnapshot().coreMembers().get(NODE_A).healthHint()).isEqualTo(HealthHint.SUSPECTED);
         }
     }
 

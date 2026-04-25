@@ -13,6 +13,7 @@ import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.Si
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.SnapshotSeeded;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerState;
 import org.pragmatica.aether.environment.AutoHealConfig;
+import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.ConnectivityReport;
 import org.pragmatica.aether.slice.generation.CoreMember;
@@ -94,6 +95,7 @@ class HealthReconcilerStalenessFilterTest {
                                                         autoHeal,
                                                         GenerationChangedSink.noop(),
                                                         PeerObservationReducer.peerObservationReducer(),
+                                                        PeerObservationStore.peerObservationStore(),
                                                         now::get);
                     ctxHolder.set(c);
                     return c.dormant();

@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.generation.fsm;
 
 import org.pragmatica.aether.deployment.generation.PeerObservationReducer;
+import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.CommandsApplied;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.CommandsApplyFailed;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.MembershipReseeded;
@@ -76,9 +77,11 @@ import static org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot.e
 /// - Collaborators and config (cluster, projector, clock, suppliers, external leader supplier,
 ///   generation-changed sink, self id, auto-heal config).
 /// - Per-leadership mutable bookkeeping that is NOT guard-visible by state transitions —
-///   `consecutivePingMisses`, `swimHints`, `pendingRemovals`, `peerObservationReducer`, and the
+///   `swimHints`, `pendingRemovals`, `peerObservationReducer`, and the
 ///   `consensusApplyFailed` metric counter. Cleared on `clearLeaderData()` at entry to
-///   `Dormant` / `Following` / `Stopped`.
+///   `Dormant` / `Following` / `Stopped`. The consecutive ping-miss counter
+///   intentionally lives on the node-singleton [`PeerObservationStore`] (NOT here) — its
+///   lifetime is per-NODE so leader thrash does not lose miss telemetry.
 /// - The reprojection executor — a dedicated single-thread `ExecutorService` that runs supplier
 ///   tasks and dispatches `ReprojectionCompleted` / `ReprojectionFailed` events back into the FSM.
 /// - The ambient snapshot — the snapshot visible to external readers when we are NOT leading
@@ -103,13 +106,12 @@ public final class HealthReconcilerContext {
     private final AutoHealConfig autoHealConfig;
     private final GenerationChangedSink generationChangedSink;
     private final PeerObservationReducer peerObservationReducer;
+    private final PeerObservationStore peerObservationStore;
     private final LongSupplier clock;
     private final HealthReconcilerState dormant;
     private final HealthReconcilerState quorumWaiting;
     private final HealthReconcilerState following;
     private final HealthReconcilerState stopped;
-
-    private final Map<NodeId, Integer> consecutivePingMisses = new ConcurrentHashMap<>();
 
     private final Map<NodeId, HealthHint> swimHints = new ConcurrentHashMap<>();
 
@@ -131,9 +133,11 @@ public final class HealthReconcilerContext {
                                    BooleanSupplier externalLeaderSupplier,
                                    AutoHealConfig autoHealConfig,
                                    GenerationChangedSink generationChangedSink,
-                                   PeerObservationReducer peerObservationReducer) {
+                                   PeerObservationReducer peerObservationReducer,
+                                   PeerObservationStore peerObservationStore) {
         this(fsm, self, cluster, hlcClock, rabiaTermSupplier, externalLeaderSupplier,
-             autoHealConfig, generationChangedSink, peerObservationReducer, System::currentTimeMillis);
+             autoHealConfig, generationChangedSink, peerObservationReducer,
+             peerObservationStore, System::currentTimeMillis);
     }
 
     /// Full-arity constructor with injectable clock — for tests that need deterministic time.
@@ -146,6 +150,7 @@ public final class HealthReconcilerContext {
                                    AutoHealConfig autoHealConfig,
                                    GenerationChangedSink generationChangedSink,
                                    PeerObservationReducer peerObservationReducer,
+                                   PeerObservationStore peerObservationStore,
                                    LongSupplier clock) {
         this.fsm = fsm;
         this.self = self;
@@ -156,6 +161,7 @@ public final class HealthReconcilerContext {
         this.autoHealConfig = autoHealConfig;
         this.generationChangedSink = generationChangedSink;
         this.peerObservationReducer = peerObservationReducer;
+        this.peerObservationStore = peerObservationStore;
         this.clock = clock;
         this.ambientSnapshot = new AtomicReference<>(empty(rabiaTermSupplier.get()));
         this.dormant = new HealthReconcilerState.Dormant(this);
@@ -238,8 +244,12 @@ public final class HealthReconcilerContext {
         ambientSnapshot.set(snapshot);
     }
 
+    /// Clears strictly leader-projection state. The consecutive ping-miss counter is
+    /// intentionally NOT cleared here — it lives on the node-singleton
+    /// [`PeerObservationStore`] and is per-NODE, not per-leader-tenure. swimHints and
+    /// pendingRemovals are leader-projection state correctly re-derived from KV-store on
+    /// next leader entry.
     @Contract public void clearLeaderData() {
-        consecutivePingMisses.clear();
         swimHints.clear();
         pendingRemovals.clear();
         lastSupplier.set(null);
@@ -564,7 +574,7 @@ public final class HealthReconcilerContext {
     }
 
     private void pruneMapsAgainstCore(Set<NodeId> liveCore) {
-        consecutivePingMisses.keySet().retainAll(liveCore);
+        peerObservationStore.retainPingMisses(liveCore);
         swimHints.keySet().retainAll(liveCore);
         pendingRemovals.retainAll(liveCore);
     }
@@ -573,7 +583,7 @@ public final class HealthReconcilerContext {
                                             HealthSignal.PingTimeout ping,
                                             TermAdvance termAdvance) {
         var nodeId = ping.nodeId();
-        var missed = consecutivePingMisses.merge(nodeId, 1, Integer::sum);
+        var missed = peerObservationStore.recordPingMiss(nodeId);
         return Option.option(current.coreMembers().get(nodeId)).filter(_ -> !pendingRemovals.contains(nodeId))
                             .map(member -> applyPingTimeoutDecision(current, nodeId, member, missed, termAdvance))
                             .or(() -> SignalOutcome.unchanged(current, termAdvance));
@@ -615,7 +625,7 @@ public final class HealthReconcilerContext {
                                                HealthSignal.QuicDisconnect quic,
                                                TermAdvance termAdvance) {
         if (!current.coreMembers().containsKey(quic.nodeId())) {return SignalOutcome.unchanged(current, termAdvance);}
-        var missed = consecutivePingMisses.merge(quic.nodeId(), 1, Integer::sum);
+        var missed = peerObservationStore.recordPingMiss(quic.nodeId());
         log.debug("QUIC disconnect from {} (counted as advisory miss {})", quic.nodeId(), missed);
         return SignalOutcome.unchanged(current, termAdvance);
     }
@@ -845,7 +855,7 @@ public final class HealthReconcilerContext {
                                               NodeId nodeId,
                                               CoreMember member,
                                               TermAdvance termAdvance) {
-        consecutivePingMisses.remove(nodeId);
+        peerObservationStore.clearPingMisses(nodeId);
         return applyHealthHintChange(current, nodeId, member.withHealthHint(HealthHint.HEALTHY), termAdvance);
     }
 

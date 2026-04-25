@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.generation;
 
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerContext;
+import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.BecameLeader;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.MembershipReseeded;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.ReprojectionRequested;
@@ -93,7 +94,8 @@ public interface HealthReconciler extends HealthSignalSink {
                                 rabiaTermSupplier,
                                 isLeaderSupplier,
                                 autoHealConfig,
-                                GenerationChangedSink.noop());
+                                GenerationChangedSink.noop(),
+                                PeerObservationStore.peerObservationStore());
     }
 
     static HealthReconciler healthReconciler(NodeId self,
@@ -104,6 +106,26 @@ public interface HealthReconciler extends HealthSignalSink {
                                              BooleanSupplier isLeaderSupplier,
                                              AutoHealConfig autoHealConfig,
                                              GenerationChangedSink generationChangedSink) {
+        return healthReconciler(self,
+                                cluster,
+                                projector,
+                                hlcClock,
+                                rabiaTermSupplier,
+                                isLeaderSupplier,
+                                autoHealConfig,
+                                generationChangedSink,
+                                PeerObservationStore.peerObservationStore());
+    }
+
+    static HealthReconciler healthReconciler(NodeId self,
+                                             ClusterNode<KVCommand<AetherKey>> cluster,
+                                             ClusterGenerationProjector projector,
+                                             HlcClock hlcClock,
+                                             Supplier<Long> rabiaTermSupplier,
+                                             BooleanSupplier isLeaderSupplier,
+                                             AutoHealConfig autoHealConfig,
+                                             GenerationChangedSink generationChangedSink,
+                                             PeerObservationStore peerObservationStore) {
         var ctxHolder = new AtomicReference<HealthReconcilerContext>();
         Function<Fsm<HealthReconcilerState, ClusterFsmEvent>, HealthReconcilerState> initialStateFactory = fsm -> buildContextAndDormant(fsm,
                                                                                                                                          ctxHolder,
@@ -113,7 +135,8 @@ public interface HealthReconciler extends HealthSignalSink {
                                                                                                                                          rabiaTermSupplier,
                                                                                                                                          isLeaderSupplier,
                                                                                                                                          autoHealConfig,
-                                                                                                                                         generationChangedSink);
+                                                                                                                                         generationChangedSink,
+                                                                                                                                         peerObservationStore);
         // Fsm constructor publishes itself into ctxHolder via initialStateFactory —
         // we only need the context here; the FSM reference lives on ctx.fsm().
         var _fsm = Fsm.fsm("health-reconciler", self.id(), initialStateFactory);
@@ -128,7 +151,8 @@ public interface HealthReconciler extends HealthSignalSink {
                                                                 Supplier<Long> rabiaTermSupplier,
                                                                 BooleanSupplier isLeaderSupplier,
                                                                 AutoHealConfig autoHealConfig,
-                                                                GenerationChangedSink generationChangedSink) {
+                                                                GenerationChangedSink generationChangedSink,
+                                                                PeerObservationStore peerObservationStore) {
         var ctx = new HealthReconcilerContext(fsm,
                                               self,
                                               cluster,
@@ -137,7 +161,8 @@ public interface HealthReconciler extends HealthSignalSink {
                                               isLeaderSupplier,
                                               autoHealConfig,
                                               generationChangedSink,
-                                              PeerObservationReducer.peerObservationReducer());
+                                              PeerObservationReducer.peerObservationReducer(),
+                                              peerObservationStore);
         ctxHolder.set(ctx);
         return ctx.dormant();
     }

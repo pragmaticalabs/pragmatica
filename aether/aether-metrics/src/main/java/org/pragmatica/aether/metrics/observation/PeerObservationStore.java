@@ -13,9 +13,13 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
+
+import org.pragmatica.consensus.NodeId;
 
 
 /// Node-level singleton owner of buffered peer observations.
@@ -48,6 +52,13 @@ public final class PeerObservationStore implements PeerObservationBuffer {
 
     private final CopyOnWriteArrayList<Consumer<PeerHealthObservation>> healthSubscribers = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<Consumer<PeerConnectivityObservation>> connectivitySubscribers = new CopyOnWriteArrayList<>();
+
+    /// Per-peer running count of consecutive ping misses. Owned at the node level — survives
+    /// leader thrash so HealthReconciler does not lose miss telemetry on every demote/promote
+    /// flip. Counters are pruned by HealthReconciler against live core members
+    /// (see `retainPingMisses`) and explicitly cleared on SWIM HEALTHY transitions
+    /// (see `clearPingMisses`).
+    private final ConcurrentHashMap<NodeId, Integer> pingMisses = new ConcurrentHashMap<>();
 
     private volatile IntSupplier capSupplier = () -> DEFAULT_CAP;
 
@@ -104,10 +115,42 @@ public final class PeerObservationStore implements PeerObservationBuffer {
 
     /// Drop both buffers. Called from `ClusterSyncState.Stopped.onEntry` so the terminal state
     /// does not retain dangling observations. Subscribers are NOT cleared — the store outlives
-    /// the FSM.
+    /// the FSM. Ping-miss counters are also retained intentionally — they outlive any single
+    /// FSM and only reset on `clearAllPingMisses()` (node shutdown / explicit reset) or
+    /// targeted `clearPingMisses(NodeId)` (peer recovered).
     @Contract public void clear() {
         synchronized (healthLock) { healthBuffer.clear(); }
         synchronized (connectivityLock) { connectivityBuffer.clear(); }
+    }
+
+    /// Increment and return the consecutive ping-miss count for a peer. Called by
+    /// HealthReconciler on `PingTimeout` and `QuicDisconnect` signals.
+    public int recordPingMiss(NodeId peer) {
+        return pingMisses.merge(peer, 1, Integer::sum);
+    }
+
+    /// Reset the consecutive ping-miss count for a peer. Called when SWIM reports the peer
+    /// HEALTHY again so the suspect/evict thresholds restart from zero.
+    @Contract public void clearPingMisses(NodeId peer) {
+        pingMisses.remove(peer);
+    }
+
+    /// Read-only view of the current consecutive ping-miss count for a peer (zero if absent).
+    /// Exposed for tests and diagnostics.
+    public int pingMissCount(NodeId peer) {
+        return pingMisses.getOrDefault(peer, 0);
+    }
+
+    /// Prune ping-miss counters down to the supplied live-core set. Called by HealthReconciler
+    /// on every signal so counters for departed members do not linger.
+    @Contract public void retainPingMisses(Set<NodeId> liveCore) {
+        pingMisses.keySet().retainAll(liveCore);
+    }
+
+    /// Drop all ping-miss counters. Reserved for explicit resets; NOT invoked on leader demote
+    /// (counter lifetime is per-NODE, not per-leader-tenure).
+    @Contract public void clearAllPingMisses() {
+        pingMisses.clear();
     }
 
     /// Subscribe a callback fired synchronously on every fresh health observation arrival.

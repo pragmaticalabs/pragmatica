@@ -8,6 +8,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.generation.PeerObservationReducer;
+import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.BecameLeader;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.ReprojectionCompleted;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.ReprojectionRequested;
@@ -82,7 +83,8 @@ class HealthReconcilerFsmTest {
                                                     externalLeaderGate::get,
                                                     AutoHealConfig.DEFAULT,
                                                     GenerationChangedSink.noop(),
-                                                    PeerObservationReducer.peerObservationReducer());
+                                                    PeerObservationReducer.peerObservationReducer(),
+                                                    PeerObservationStore.peerObservationStore());
         ctxHolder.set(context);
         return context.dormant();
     }

@@ -796,7 +796,8 @@ public interface AetherNode extends ManageableNode {
                                                                  rabiaTermSupplier,
                                                                  isLeaderSupplier,
                                                                  config.autoHeal(),
-                                                                 generationChangedSink);
+                                                                 generationChangedSink,
+                                                                 peerObservationStore);
         java.util.function.Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder = serializer::encode;
         java.util.function.Function<byte[], Option<ClusterGenerationSnapshot>> snapshotDecoder = bytes -> decodeSnapshot(deserializer,
                                                                                                                          bytes);
