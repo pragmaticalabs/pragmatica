@@ -149,7 +149,11 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
     record LeadingSteady(HealthReconcilerContext ctx, Epoch startEpoch, ClusterGenerationSnapshot snapshot) implements HealthReconcilerState {
         @Override public void onEntry() {
             ctx.ensureReprojectionExecutor();
-            ctx.publishLeadingSnapshot(snapshot);
+            // Theme B Item 1: first publish per Leading-tenure goes through the barrier
+            // (waits for consensus-drain or 1s grace) so phantom-CTM cannot observe a
+            // stale-replication-window snapshot. Subsequent publishes within the same tenure
+            // are unconditionally immediate (the barrier is self-gated by firstPublishCompleted).
+            ctx.publishLeadingSnapshotWithBarrier(snapshot);
             ctx.activatePeerObservationChannelOnFirstLeadingEntry();
         }
 

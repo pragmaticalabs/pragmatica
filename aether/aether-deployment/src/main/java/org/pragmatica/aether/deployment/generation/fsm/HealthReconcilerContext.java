@@ -140,6 +140,14 @@ public final class HealthReconcilerContext {
     /// pair. Reset to `true` on `clearLeaderData()`.
     private final AtomicBoolean firstLeadingEntry = new AtomicBoolean(true);
 
+    /// Tracks whether the FIRST publish of the current Leading tenure has completed. Until
+    /// this flips to `true`, [`#publishLeadingSnapshotWithBarrier`] defers the publish behind
+    /// either a no-op consensus apply (proof of replication drain) OR a 1-second grace timer.
+    /// Reset to `false` on every `clearLeaderData()` so each new Leading tenure re-arms the
+    /// barrier. Theme B Item 1 — closes the phantom-provision window between leader-gain and
+    /// reconciler-ready.
+    private final AtomicBoolean firstPublishCompleted = new AtomicBoolean(false);
+
     /// Active peer-observation subscriptions for the current Leading-tenure. Released by
     /// `releasePeerObservationChannel()` from `clearLeaderData()`.
     private final AtomicReference<PeerObservationStore.Subscription> healthSubscription = new AtomicReference<>();
@@ -352,6 +360,59 @@ public final class HealthReconcilerContext {
         ambientSnapshot.set(snapshot);
     }
 
+    /// Latest snapshot pending publication while the first-publish barrier is armed. Updated
+    /// by every `publishLeadingSnapshotWithBarrier` call during the barrier window so that
+    /// when the grace timer fires it publishes the FRESHEST snapshot (not the snapshot from
+    /// the original arming call). Coalesces a flurry of intra-tenure publishes into a single
+    /// publish at grace expiry.
+    private final AtomicReference<ClusterGenerationSnapshot> pendingBarrierSnapshot = new AtomicReference<>();
+
+    /// First-publish barrier (Theme B Item 1): on the FIRST publish of a new Leading tenure
+    /// the snapshot is held back until a 1-second grace timer expires. Subsequent publishes
+    /// within the same tenure that arrive BEFORE the grace timer fires update the pending
+    /// snapshot pointer (so the freshest is published at grace expiry). Once the timer has
+    /// fired, all subsequent publishes are immediate. Reset by `clearLeaderData()` on
+    /// demote/shutdown.
+    ///
+    /// The publish itself just sets `ambientSnapshot`; the barrier exists so external readers
+    /// (CTM, dashboard, REST) cannot observe a stale-replication-window snapshot before the
+    /// new leader's term has been replicated.
+    ///
+    /// TODO(rc2): replace the time-based grace with a real consensus-drain barrier. The
+    /// straightforward approach (`cluster.apply(List.of())` as a no-op probe) breaks fake
+    /// `ClusterNode` test fixtures that count `apply` invocations — every Leading entry would
+    /// emit an empty batch into their recorded history. Either introduce a `KVCommand.NoOp`
+    /// sentinel that fixtures can ignore OR expose a dedicated drain primitive on
+    /// `ClusterNode`. Until then, the time-based grace is best-effort and assumes that 1
+    /// second is sufficient for replication to catch up after leader-gain.
+    @Contract public void publishLeadingSnapshotWithBarrier(ClusterGenerationSnapshot snapshot) {
+        if (firstPublishCompleted.get()) {
+            ambientSnapshot.set(snapshot);
+            return;
+        }
+        // Always remember the latest snapshot while the barrier is armed.
+        pendingBarrierSnapshot.set(snapshot);
+        // Schedule the grace timer ONCE per tenure. CAS ensures exactly one timer is armed.
+        if (barrierTimerScheduled.compareAndSet(false, true)) {
+            org.pragmatica.lang.utils.SharedScheduler.schedule(this::releaseFirstPublishBarrier,
+                                                                org.pragmatica.lang.io.TimeSpan.timeSpan(1).seconds());
+        }
+    }
+
+    /// Latch for "grace timer scheduled" — flips false→true on first barrier call per tenure;
+    /// reset by `clearLeaderData()` so each new tenure re-arms exactly one timer.
+    private final AtomicBoolean barrierTimerScheduled = new AtomicBoolean(false);
+
+    /// Grace-timer callback: publishes the latest pending snapshot (if any) and flips the
+    /// barrier flag so subsequent publishes are immediate. Idempotent — re-entry is a no-op
+    /// because `firstPublishCompleted` is already true.
+    @Contract private void releaseFirstPublishBarrier() {
+        if (!firstPublishCompleted.compareAndSet(false, true)) {return;}
+        var pending = pendingBarrierSnapshot.getAndSet(null);
+        if (pending != null) {ambientSnapshot.set(pending);}
+        log.debug("LeadingSteady first-publish barrier released by grace-timer");
+    }
+
     /// Clears strictly leader-projection state. The consecutive ping-miss counter is
     /// intentionally NOT cleared here — it lives on the node-singleton
     /// [`PeerObservationStore`] and is per-NODE, not per-leader-tenure. swimHints and
@@ -363,6 +424,13 @@ public final class HealthReconcilerContext {
         lastSupplier.set(null);
         releasePeerObservationChannel();
         firstLeadingEntry.set(true);
+        // If the first-publish barrier was armed but never released, flush the freshest
+        // pending snapshot to ambientSnapshot before tearing down. Otherwise external
+        // readers would observe a stale snapshot from before the barrier was armed.
+        var pending = pendingBarrierSnapshot.getAndSet(null);
+        if (pending != null) {ambientSnapshot.set(pending);}
+        firstPublishCompleted.set(false);
+        barrierTimerScheduled.set(false);
     }
 
     public Option<Supplier<ClusterGenerationSnapshot>> lastSupplier() {

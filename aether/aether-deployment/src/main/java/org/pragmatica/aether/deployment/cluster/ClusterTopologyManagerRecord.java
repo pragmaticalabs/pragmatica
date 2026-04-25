@@ -48,6 +48,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -78,6 +80,17 @@ import static org.pragmatica.lang.Unit.unit;
 /// The hysteresis previously used to absorb transient flaps is now provided by snapshot
 /// `healthHint` transitions on the leader (see cluster-generation-spec §15.3).
 ///
+/// Provisioning stability gate: every dispatch path through `handleDeficit` is gated on
+/// `realActual` (the snapshot's healthy ON_DUTY count) being stable for at least
+/// `provisionStabilityWindow`. This prevents phantom provisioning during cluster boot
+/// when only N of M static nodes have joined: the count is still climbing, so a brief
+/// pause lets the remaining lifecycles converge before auto-heal fires. Slot-based
+/// timeout (per-attempt deadlines via `ProvisioningSlot`) recovers from stalled waves.
+///
+/// TODO(theme-H): Replace direct `System::currentTimeMillis` with an injected
+/// `LongSupplier clock`. This context does not yet have a clock supplier; once Theme H
+/// lands the clock pattern across all FSM contexts, swap it in here.
+///
 /// @SuppressWarnings: void callbacks required by TopologyManager/ClusterTopologyManager interfaces
 @SuppressWarnings("JBCT-RET-01") record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
@@ -89,12 +102,16 @@ import static org.pragmatica.lang.Unit.unit;
                                                                      AtomicReference<NodeReconcilerState> stateRef,
                                                                      AtomicBoolean active,
                                                                      ConcurrentHashMap<NodeId, Instant> nodeJoinTimes,
-                                                                     CancellableTask safetyNetTimer) implements ClusterTopologyManager {
+                                                                     CancellableTask safetyNetTimer,
+                                                                     AtomicLong realActualStableSinceMs,
+                                                                     AtomicInteger lastObservedRealActual) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
 
     private static final int MINIMUM_CLUSTER_SIZE = 3;
 
     private static final int MAX_WAVE_SIZE = 5;
+
+    private static final int UNINITIALIZED_REAL_ACTUAL = -1;
 
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
@@ -113,7 +130,9 @@ import static org.pragmatica.lang.Unit.unit;
                                                 new AtomicReference<>(new NodeReconcilerState.Inactive("not yet activated")),
                                                 new AtomicBoolean(false),
                                                 new ConcurrentHashMap<>(),
-                                                CancellableTask.cancellableTask());
+                                                CancellableTask.cancellableTask(),
+                                                new AtomicLong(System.currentTimeMillis()),
+                                                new AtomicInteger(UNINITIALIZED_REAL_ACTUAL));
     }
 
     @Override public NodeReconcilerState reconcilerState() {
@@ -191,24 +210,37 @@ import static org.pragmatica.lang.Unit.unit;
 
     private void handleNodeAdded(NodeAdded added) {
         nodeJoinTimes.putIfAbsent(added.nodeId(), Instant.now());
+        bumpRealActualStability("node-added " + added.nodeId());
         log.info("CTM: Node {} added, triggering reconciliation", added.nodeId());
         reconcile();
     }
 
     private void handleNodeRemoved(NodeRemoved removed) {
         nodeJoinTimes.remove(removed.nodeId());
+        bumpRealActualStability("node-removed " + removed.nodeId());
         log.info("CTM: Node {} removed, triggering reconciliation", removed.nodeId());
         reconcile();
     }
 
     private void handleNodeDown(NodeDown down) {
+        bumpRealActualStability("node-down " + down.nodeId());
         log.warn("CTM: Node {} is down, triggering immediate reconciliation", down.nodeId());
         reconcile();
+    }
+
+    /// Resets the stability window anchor — called on every event that might change `realActual`
+    /// (the snapshot's healthy ON_DUTY count). The next `handleDeficit` invocation will be deferred
+    /// until `provisionStabilityWindow` has elapsed since this reset.
+    private void bumpRealActualStability(String reason) {
+        var nowMs = System.currentTimeMillis();
+        realActualStableSinceMs.set(nowMs);
+        log.debug("CTM: stability anchor reset ({}), nowMs={}", reason, nowMs);
     }
 
     @Override public void activate() {
         if (!active.compareAndSet(false, true)) {return;}
         seedJoinTimesForExistingNodes();
+        bumpRealActualStability("activate");
         activateWithCurrentTopology();
         scheduleSafetyNetPoll();
     }
@@ -363,6 +395,7 @@ import static org.pragmatica.lang.Unit.unit;
         var configured = view.desiredCoreSize();
         if (configured == 0) {return;}
         var actual = snapshotHealthyOnDutyCount();
+        observeRealActualForStability(actual);
         var deficit = configured - actual;
         log.debug("CTM reconcile: actual={} desired={} deficit={} hints={}",
                   actual,
@@ -396,6 +429,44 @@ import static org.pragmatica.lang.Unit.unit;
         if (actual <configured) {handleDeficit(actual, configured);} else {handleSurplus(actual, configured);}
     }
 
+    /// Tracks observed `realActual` between reconcile ticks; whenever the snapshot reports a
+    /// different healthy ON_DUTY count than last observed, reset the stability anchor so the
+    /// gate re-arms. This catches snapshot-driven changes that don't flow through topology
+    /// events (e.g., remote nodes flipping HEALTHY/FAULTY in `swimHints`).
+    private void observeRealActualForStability(int actual) {
+        var previous = lastObservedRealActual.getAndSet(actual);
+        if (previous == UNINITIALIZED_REAL_ACTUAL) {return;}
+        if (previous != actual) {bumpRealActualStability("realActual " + previous + " -> " + actual);}
+    }
+
+    /// Drops any `ProvisioningSlot` whose deadline has passed and CAS-installs a fresh
+    /// `Reconciling` state carrying only the surviving slots. Idempotent: if no slots have
+    /// expired, the original state is left untouched. Returns the slot list visible after
+    /// expiry so the caller can compute `inFlightCount` without re-reading the state.
+    private List<NodeReconcilerState.ProvisioningSlot> expireSlots(NodeReconcilerState.Reconciling reconciling) {
+        var nowMs = System.currentTimeMillis();
+        var alive = reconciling.inFlight().stream()
+                                                  .filter(slot -> slot.deadlineMs() >= nowMs)
+                                                  .toList();
+        if (alive.size() == reconciling.inFlight().size()) {return reconciling.inFlight();}
+        var expiredCount = reconciling.inFlight().size() - alive.size();
+        var refreshed = new NodeReconcilerState.Reconciling(reconciling.targetSize(),
+                                                             reconciling.currentSize(),
+                                                             List.copyOf(alive),
+                                                             reconciling.terminating(),
+                                                             reconciling.startedAt());
+        if (!stateRef.compareAndSet(reconciling, refreshed)) {
+            log.debug("CTM: slot expiry CAS lost — observed={}, expected=Reconciling, expired={}",
+                      stateRef.get(),
+                      expiredCount);
+            return alive;
+        }
+        log.info("CTM: expired {} stalled provisioning slot(s); {} slot(s) still in-flight",
+                 expiredCount,
+                 alive.size());
+        return alive;
+    }
+
     /// Summarizes per-node health buckets derived from the snapshot's `MembershipView`.
     /// CTM has no direct accessor to the leader's `swimHints` map; the snapshot view is the
     /// authoritative projection CTM uses for all reconcile decisions, so the same bucketing
@@ -410,12 +481,86 @@ import static org.pragmatica.lang.Unit.unit;
         return "{HEALTHY=" + healthy + ", ON_DUTY_UNHEALTHY=" + onDutyUnhealthy + ", NOT_ON_DUTY=" + notOnDuty + "}";
     }
 
+    /// Universal stability gate: returns true if `provisionStabilityWindow` has elapsed since
+    /// the last observed `realActual` change. All five `handleDeficit` callsites
+    /// (handleFormationCooldownExpired, activateWithLeaderFailover, scheduled safety-net poll,
+    /// snapshot-delta reconcile, and topology-event reconcile) flow through here.
+    private boolean stabilityElapsed(long nowMs) {
+        var anchor = realActualStableSinceMs.get();
+        var elapsed = nowMs - anchor;
+        return elapsed >= autoHealConfig.provisionStabilityWindow().millis();
+    }
+
     private void handleDeficit(int actual, int desired) {
-        var current = stateRef.get();
-        if (current instanceof NodeReconcilerState.Reconciling) {
-            log.debug("CTM: Already reconciling, waiting for in-flight provisions to complete");
+        var nowMs = System.currentTimeMillis();
+        if (!stabilityElapsed(nowMs)) {
+            var elapsed = nowMs - realActualStableSinceMs.get();
+            log.info("CTM: stability window not yet elapsed (elapsed={}ms, required={}ms, actual={}, desired={}); deferring provisioning dispatch",
+                     elapsed,
+                     autoHealConfig.provisionStabilityWindow().millis(),
+                     actual,
+                     desired);
             return;
         }
+        var current = stateRef.get();
+        if (current instanceof NodeReconcilerState.Reconciling reconciling) {
+            handleDeficitDuringReconciling(reconciling, actual, desired);
+            return;
+        }
+        handleDeficitFromConverged(current, actual, desired);
+    }
+
+    /// Top-up dispatch path. The cluster is already `Reconciling` from a previous wave;
+    /// expire any stalled slots, recompute deficit against `realActual + survivingSlots`,
+    /// and append fresh slots if a deficit remains. CAS-installs a Reconciling state with
+    /// the merged slot list. Self-correcting: a partial wave that loses one provision
+    /// times out its slot and the next tick fires a top-up.
+    private void handleDeficitDuringReconciling(NodeReconcilerState.Reconciling reconciling, int actual, int desired) {
+        var aliveSlots = expireSlots(reconciling);
+        var inFlightCount = aliveSlots.size();
+        var topupDeficit = desired - actual - inFlightCount;
+        if (topupDeficit <= 0) {
+            log.debug("CTM: reconciling wave still in-flight (real={}, inFlight={}, target={}); no top-up needed",
+                      actual,
+                      inFlightCount,
+                      desired);
+            return;
+        }
+        if (!lifecycleManager.isCloudManaged()) {
+            log.debug("CTM: top-up deficit of {} but no ComputeProvider, cannot auto-provision", topupDeficit);
+            return;
+        }
+        var batchSize = provisionBatchSize(topupDeficit);
+        var current = stateRef.get();
+        if (! (current instanceof NodeReconcilerState.Reconciling currentReconciling)) {
+            log.debug("CTM: top-up dispatch aborted — state changed to {} during expiry", current);
+            return;
+        }
+        var mergedSlots = mergeSlots(currentReconciling.inFlight(), batchSize);
+        var next = new NodeReconcilerState.Reconciling(desired,
+                                                       actual,
+                                                       mergedSlots,
+                                                       currentReconciling.terminating(),
+                                                       currentReconciling.startedAt());
+        if (!stateRef.compareAndSet(currentReconciling, next)) {
+            log.warn("CTM: state CAS lost (deficit, top-up) — observed={}, expected={}, next={}",
+                     stateRef.get(),
+                     currentReconciling,
+                     next);
+            return;
+        }
+        log.info("CTM: deficit={} (real={}, inFlight={}, target={}); provisioning {} more replacement(s)",
+                 topupDeficit,
+                 actual,
+                 inFlightCount,
+                 desired,
+                 batchSize);
+        provisionNodes(batchSize);
+    }
+
+    /// First-wave dispatch path. The cluster is `Converged` (or `Forming` cooldown completed);
+    /// build the initial slot list and CAS-install `Reconciling`.
+    private void handleDeficitFromConverged(NodeReconcilerState current, int actual, int desired) {
         var deficit = desired - actual;
         if (!lifecycleManager.isCloudManaged()) {
             var next = new NodeReconcilerState.Reconciling(desired, actual, List.of(), List.of(), Instant.now());
@@ -657,11 +802,25 @@ import static org.pragmatica.lang.Unit.unit;
         };
     }
 
-    private static List<NodeReconcilerState.ProvisionAttempt> buildInFlightList(int count) {
-        var now = Instant.now();
-        var list = new ArrayList<NodeReconcilerState.ProvisionAttempt>(count);
-        for (var i = 0;i <count;i++) {list.add(new NodeReconcilerState.ProvisionAttempt(now, 1));}
+    private List<NodeReconcilerState.ProvisioningSlot> buildInFlightList(int count) {
+        var nowMs = System.currentTimeMillis();
+        var deadlineMs = nowMs + autoHealConfig.provisioningTimeout().millis();
+        var list = new ArrayList<NodeReconcilerState.ProvisioningSlot>(count);
+        for (var i = 0;i <count;i++) {list.add(new NodeReconcilerState.ProvisioningSlot(nowMs, deadlineMs));}
         return List.copyOf(list);
+    }
+
+    /// Append `count` fresh slots to an existing in-flight list and return an immutable copy.
+    /// Used by the top-up dispatch path so the new wave's deadlines are independent of the
+    /// original wave's deadlines (each slot times out on its own clock).
+    private List<NodeReconcilerState.ProvisioningSlot> mergeSlots(List<NodeReconcilerState.ProvisioningSlot> existing,
+                                                                   int count) {
+        var nowMs = System.currentTimeMillis();
+        var deadlineMs = nowMs + autoHealConfig.provisioningTimeout().millis();
+        var merged = new ArrayList<NodeReconcilerState.ProvisioningSlot>(existing.size() + count);
+        merged.addAll(existing);
+        for (var i = 0;i <count;i++) {merged.add(new NodeReconcilerState.ProvisioningSlot(nowMs, deadlineMs));}
+        return List.copyOf(merged);
     }
 
     private static String stateName(NodeReconcilerState state) {

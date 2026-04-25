@@ -83,8 +83,17 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
         configStore = new StubClusterConfigStore();
         configStore.seed(5);
         // Use a long retry interval so the safety-net timer never fires during the test —
-        // we drive reconciliation purely via setDesiredSize / topology events.
-        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(), timeSpan(1).millis()).unwrap();
+        // we drive reconciliation purely via setDesiredSize / topology events. Use a 1ms
+        // stability window so the post-RC1 phantom-provision gate is a no-op for these
+        // legacy provisioning-flow tests; the gate itself is covered by
+        // `ClusterTopologyManagerStabilityWindowTest`.
+        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
+                                                      timeSpan(1).millis(),
+                                                      AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
+                                                      AutoHealConfig.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
+                                                      AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
+                                                      timeSpan(0).millis())
+                                            .unwrap();
         ctm = ClusterTopologyManager.clusterTopologyManager(observer,
                                                             lifecycleManager,
                                                             autoHeal,

@@ -360,11 +360,17 @@ import static org.pragmatica.lang.Result.success;
                                           .or(AutoHealSpec.DEFAULT_STALE_OBSERVATION_TTL);
         var quicMissPromotionThreshold = doc.getInt(OPERATIONS_AUTO_HEAL_SECTION, "quic_miss_promotion_threshold")
                                                 .or(AutoHealSpec.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD);
+        var provisioningTimeout = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "provisioning_timeout")
+                                          .or(AutoHealSpec.DEFAULT_PROVISIONING_TIMEOUT);
+        var provisionStabilityWindow = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "provision_stability_window")
+                                                .or(AutoHealSpec.DEFAULT_PROVISION_STABILITY_WINDOW);
         return AutoHealSpec.autoHealSpec(enabled,
                                          retryInterval,
                                          startupCooldown,
                                          staleObservationTtl,
-                                         quicMissPromotionThreshold);
+                                         quicMissPromotionThreshold,
+                                         provisioningTimeout,
+                                         provisionStabilityWindow);
     }
 
     private static TlsDeploymentConfig parseTlsConfig(TomlDocument doc) {

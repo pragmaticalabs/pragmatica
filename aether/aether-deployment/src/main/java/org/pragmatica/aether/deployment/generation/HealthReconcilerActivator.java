@@ -42,6 +42,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -77,6 +79,11 @@ public interface HealthReconcilerActivator {
     int BOOTSTRAP_MAX_ATTEMPTS = 3;
 
     @Contract void onLeaderChange(LeaderChange change);
+    /// Hook called after the leader-change bootstrap batch commits (or immediately if no
+    /// bootstrap commands were needed). Used by `AetherNode` to chain `CTM.activate()` so
+    /// that CTM does not start dispatching before the first snapshot has been published —
+    /// closes the phantom-provision window between leader-gain and reconciler-ready.
+    @Contract HealthReconcilerActivator onBootstrapCommitted(Runnable callback);
     @Contract void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> notification);
     @Contract void onGovernorAnnouncementRemove(ValueRemove<GovernorAnnouncementKey, GovernorAnnouncementValue> notification);
     @Contract void onSpokesmanPut(ValuePut<SpokesmanKey, SpokesmanValue> notification);
@@ -97,7 +104,10 @@ public interface HealthReconcilerActivator {
                                                                                   reconciler::self,
                                                                                   () -> 0,
                                                                                   new AtomicBoolean(false),
-                                                                                  new AtomicInteger()));
+                                                                                  new AtomicInteger(),
+                                                                                  new AtomicLong(0L),
+                                                                                  new AtomicLong(0L),
+                                                                                  new AtomicReference<>()));
     }
 
     static HealthReconcilerActivator healthReconcilerActivator(HealthReconciler reconciler,
@@ -116,7 +126,10 @@ public interface HealthReconcilerActivator {
                                                    reconciler::self,
                                                    () -> 0,
                                                    new AtomicBoolean(false),
-                                                   new AtomicInteger());
+                                                   new AtomicInteger(),
+                                                   new AtomicLong(0L),
+                                                   new AtomicLong(0L),
+                                                   new AtomicReference<>());
     }
 
     static HealthReconcilerActivator healthReconcilerActivator(HealthReconciler reconciler,
@@ -137,7 +150,10 @@ public interface HealthReconcilerActivator {
                                                    selfSupplier,
                                                    () -> 0,
                                                    new AtomicBoolean(false),
-                                                   new AtomicInteger());
+                                                   new AtomicInteger(),
+                                                   new AtomicLong(0L),
+                                                   new AtomicLong(0L),
+                                                   new AtomicReference<>());
     }
 
     static HealthReconcilerActivator healthReconcilerActivator(HealthReconciler reconciler,
@@ -159,7 +175,10 @@ public interface HealthReconcilerActivator {
                                                    selfSupplier,
                                                    initialCoreSizeSupplier,
                                                    new AtomicBoolean(false),
-                                                   new AtomicInteger());
+                                                   new AtomicInteger(),
+                                                   new AtomicLong(0L),
+                                                   new AtomicLong(0L),
+                                                   new AtomicReference<>());
     }
 }
 
@@ -173,8 +192,22 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
                                        Supplier<NodeId> selfSupplier,
                                        Supplier<Integer> initialCoreSizeSupplier,
                                        AtomicBoolean bootstrapComplete,
-                                       AtomicInteger bootstrapAttempts) implements HealthReconcilerActivator {
+                                       AtomicInteger bootstrapAttempts,
+                                       AtomicLong leaderBootstrapTimeMs,
+                                       AtomicLong lastSeedAttemptMs,
+                                       AtomicReference<Runnable> bootstrapCommittedCallback) implements HealthReconcilerActivator {
     private static final Logger log = LoggerFactory.getLogger(HealthReconcilerActivatorRecord.class);
+
+    /// Maximum time after leader gain to defer the `ClusterConfigValue` seed when the
+    /// observed lifecycle count is still climbing toward `initialCoreSize`. After this
+    /// grace expires the seed proceeds even if not all core nodes have joined yet —
+    /// quorum (≥3 lifecycles) is still required separately. See Theme B.
+    private static final long SEED_GRACE_MS = 60_000L;
+
+    /// Minimum interval between seed-attempt evaluations during the grace window.
+    /// Prevents hot-looping when a flurry of KV notifications drives `applyLeaderChangeBootstrapBatch`
+    /// in rapid succession before the lifecycle count converges.
+    private static final long SEED_ATTEMPT_THROTTLE_MS = 5_000L;
 
     @Contract@Override public void onLeaderChange(LeaderChange change) {
         if (change.localNodeIsLeader()) {
@@ -182,6 +215,8 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
             reconciler.stop(StopReason.LEADER_LOST);
             bootstrapComplete.set(false);
             bootstrapAttempts.set(0);
+            leaderBootstrapTimeMs.set(System.currentTimeMillis());
+            lastSeedAttemptMs.set(0L);
             var seeded = projectFromCommittedAtoms();
             reconciler.seedSnapshot(seeded);
             reconciler.start();
@@ -192,11 +227,16 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
             reconciler.seedSnapshot(ClusterGenerationSnapshot.empty(reconciler.currentEpoch().rabiaTerm()));
             bootstrapComplete.set(false);
             bootstrapAttempts.set(0);
+            leaderBootstrapTimeMs.set(0L);
+            lastSeedAttemptMs.set(0L);
         }
     }
 
     @Contract private void performLeaderChangeBootstrap(ClusterGenerationSnapshot seeded) {
         cluster.onPresent(clusterNode -> applyLeaderChangeBootstrapBatch(clusterNode, seeded));
+        // Theme B Item 2: if there is no cluster (test-only paths) the bootstrap-committed
+        // callback still must fire, otherwise CTM activation would never be chained.
+        if (cluster.isEmpty()) {fireBootstrapCommitted();}
     }
 
     @Contract private void applyLeaderChangeBootstrapBatch(ClusterNode<KVCommand<AetherKey>> clusterNode,
@@ -206,7 +246,12 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
         var configPlan = planClusterConfigSeed();
         corePlan.onPresent(plan -> batch.add(plan.command()));
         configPlan.onPresent(plan -> batch.add(plan.command()));
-        if (batch.isEmpty()) {return;}
+        if (batch.isEmpty()) {
+            // Nothing to commit — invariants already satisfied. Fire the bootstrap-committed
+            // callback immediately so CTM activation is chained without an empty batch round-trip.
+            fireBootstrapCommitted();
+            return;
+        }
         corePlan.onPresent(this::logCoreBootstrap);
         configPlan.onPresent(this::logClusterConfigSeed);
         var hasCore = corePlan.isPresent();
@@ -224,6 +269,23 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
     @Contract private void onLeaderChangeBootstrapCommitted(boolean hasCore, int commandCount) {
         if (hasCore) {bootstrapComplete.set(true);}
         log.info("Leader-change bootstrap committed: {} commands", commandCount);
+        // Theme B Item 2: chain CTM activation here. Subscribers registered via
+        // `onBootstrapCommitted(...)` run AFTER the bootstrap batch commits — they observe a
+        // reconciler that has already seeded its first snapshot, eliminating the phantom-
+        // provision window.
+        fireBootstrapCommitted();
+    }
+
+    @Contract@Override public HealthReconcilerActivator onBootstrapCommitted(Runnable callback) {
+        bootstrapCommittedCallback.set(callback);
+        return this;
+    }
+
+    @Contract private void fireBootstrapCommitted() {
+        var callback = bootstrapCommittedCallback.get();
+        if (callback == null) {return;}
+        Result.lift(callback::run).onFailure(cause -> log.warn("Bootstrap-committed callback threw: {}",
+                                                                cause.message()));
     }
 
     @Contract private void attemptBootstrap(ClusterGenerationSnapshot seeded) {
@@ -243,7 +305,7 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
         return decideCoreOwnership(existing, seeded, self).map(command -> new CoreBootstrapPlan(command, existing, self));
     }
 
-    private Option<ClusterConfigSeedPlan> planClusterConfigSeed() {
+    Option<ClusterConfigSeedPlan> planClusterConfigSeed() {
         var existing = kvSnapshotSupplier.get().get(ClusterConfigKey.CURRENT);
         if (existing instanceof ClusterConfigValue) {return Option.none();}
         var initialSize = initialCoreSizeSupplier.get();
@@ -251,6 +313,7 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
             log.debug("Skipping ClusterConfigValue seed: initial core size {} below quorum minimum", initialSize);
             return Option.none();
         }
+        if (!seedGraceElapsedOrConverged(initialSize)) {return Option.none();}
         var coreMax = Math.max(initialSize, SEED_CORE_MAX);
         if (coreMax % 2 == 0) {coreMax += 1;}
         var seed = ClusterConfigValue.clusterConfigValue("",
@@ -263,6 +326,45 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
                                                          1L);
         KVCommand<AetherKey> command = new KVCommand.Put<AetherKey, AetherValue>(ClusterConfigKey.CURRENT, seed);
         return Option.some(new ClusterConfigSeedPlan(command, initialSize, coreMax));
+    }
+
+    /// Returns true if the seed should proceed: either the lifecycle count has converged to
+    /// `initialSize` OR the seed grace window (`SEED_GRACE_MS`) has elapsed since leader gain.
+    /// Throttles re-evaluations to once every `SEED_ATTEMPT_THROTTLE_MS` to avoid hot-looping
+    /// when a rapid burst of KV notifications drives the activator before the cluster forms.
+    private boolean seedGraceElapsedOrConverged(int initialSize) {
+        var lifecycleCount = countLifecycleAtoms();
+        if (lifecycleCount >= initialSize) {return true;}
+        var nowMs = System.currentTimeMillis();
+        var bootstrapTime = leaderBootstrapTimeMs.get();
+        if (bootstrapTime == 0L) {
+            // Defensive: leader-change time wasn't recorded — proceed (legacy/test path).
+            return true;
+        }
+        var elapsed = nowMs - bootstrapTime;
+        if (elapsed >= SEED_GRACE_MS) {
+            log.info("ClusterConfigValue seed grace expired ({}ms ≥ {}ms) with lifecycle count {} of expected {} — seeding anyway",
+                     elapsed,
+                     SEED_GRACE_MS,
+                     lifecycleCount,
+                     initialSize);
+            return true;
+        }
+        var lastAttempt = lastSeedAttemptMs.get();
+        if (lastAttempt > 0L && nowMs - lastAttempt < SEED_ATTEMPT_THROTTLE_MS) {return false;}
+        lastSeedAttemptMs.set(nowMs);
+        log.debug("Deferring ClusterConfigValue seed: lifecycle count {} < initialSize {}, grace elapsed {}ms / {}ms",
+                  lifecycleCount,
+                  initialSize,
+                  elapsed,
+                  SEED_GRACE_MS);
+        return false;
+    }
+
+    private int countLifecycleAtoms() {
+        return (int) kvSnapshotSupplier.get().keySet().stream()
+                                          .filter(NodeLifecycleKey.class::isInstance)
+                                          .count();
     }
 
     @Contract private void logClusterConfigSeed(ClusterConfigSeedPlan plan) {
@@ -284,7 +386,7 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
 
     private record CoreBootstrapPlan(KVCommand<AetherKey> command, Option<PartitionOwner> existing, NodeId self) {}
 
-    private record ClusterConfigSeedPlan(KVCommand<AetherKey> command, int initialSize, int coreMax) {}
+    record ClusterConfigSeedPlan(KVCommand<AetherKey> command, int initialSize, int coreMax) {}
 
     private static final int SEED_CORE_MIN = 3;
 

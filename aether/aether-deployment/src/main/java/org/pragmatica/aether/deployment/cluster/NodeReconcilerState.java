@@ -19,11 +19,21 @@ public sealed interface NodeReconcilerState {
 
     record Converged() implements NodeReconcilerState{}
 
+    /// Reconciling carries one `ProvisioningSlot` per in-flight provision attempt. Each slot
+    /// has its own deadline (`spawnedAtMs + provisioningTimeout`). On every reconcile tick the
+    /// CTM expires timed-out slots and recomputes the deficit against `realActual + nonExpiredSlots`;
+    /// a stalled or failed provision frees its slot when the deadline passes, allowing the next tick
+    /// to dispatch a top-up. `terminating` lists nodes selected for termination during a surplus.
     record Reconciling(int targetSize,
                        int currentSize,
-                       List<ProvisionAttempt> inFlight,
+                       List<ProvisioningSlot> inFlight,
                        List<NodeId> terminating,
                        Instant startedAt) implements NodeReconcilerState{}
 
-    record ProvisionAttempt(Instant startedAt, int attemptNumber){}
+    /// Tracks one in-flight CTM provisioning attempt. `spawnedAtMs` is when the dispatch fired;
+    /// `deadlineMs` is the absolute wall-clock millisecond after which the slot is considered
+    /// expired and is dropped from the in-flight list so that the deficit can be recomputed.
+    /// FIFO timeout — there is intentionally no slot-to-node binding; the next reconcile tick
+    /// recomputes the deficit from real-actual healthy ON_DUTY count plus surviving slots.
+    record ProvisioningSlot(long spawnedAtMs, long deadlineMs){}
 }

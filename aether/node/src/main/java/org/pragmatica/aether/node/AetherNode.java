@@ -1123,6 +1123,12 @@ public interface AetherNode extends ManageableNode {
                                                                                             clusterNode,
                                                                                             config::self,
                                                                                             initialCoreSizeSupplier);
+        // Theme B Item 2: chain CTM activation AFTER the leader-change bootstrap batch commits.
+        // Without this ordering CTM may dispatch provisioning before the reconciler has seeded
+        // its first snapshot, opening the phantom-provision window. The standalone
+        // `activateOnLeaderChange` LeaderChange route below is reduced to a deactivate-only
+        // path; activation flows exclusively through this callback.
+        healthReconcilerActivator.onBootstrapCommitted(clusterTopologyManager::activate);
         healthSinkRef.set(healthReconcilerActivator.sink());
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
         attachQuicFollowerWiring(clusterNode.network(), isLeaderSupplier, peerObservationStore, leaderEpochSupplier);
@@ -1499,9 +1505,13 @@ public interface AetherNode extends ManageableNode {
         activator.onLeaderChange(change);
     }
 
-    @SuppressWarnings("JBCT-RET-01") private static void activateOnLeaderChange(LeaderNotification.LeaderChange change,
-                                                                                ClusterTopologyManager ctm) {
-        if (change.localNodeIsLeader()) {ctm.activate();} else {ctm.deactivate();}
+    /// Theme B Item 2: ONLY deactivate via raw `LeaderChange`. CTM activation is chained from
+    /// the `HealthReconcilerActivator.onBootstrapCommitted` callback so it always runs AFTER
+    /// the reconciler's first snapshot has been seeded — eliminating the phantom-provision
+    /// window between leader-gain and reconciler-ready.
+    @SuppressWarnings("JBCT-RET-01") private static void deactivateOnLeaderChangeIfNotLeader(LeaderNotification.LeaderChange change,
+                                                                                              ClusterTopologyManager ctm) {
+        if (!change.localNodeIsLeader()) {ctm.deactivate();}
     }
 
     private static void startSwimOnQuorum(QuorumStateNotification notification,
@@ -1945,7 +1955,7 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               consumerGroupCoordinator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              change -> activateOnLeaderChange(change, clusterTopologyManager)));
+                                              change -> deactivateOnLeaderChangeIfNotLeader(change, clusterTopologyManager)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> rabiaMetricsCollector.updateRole(change.localNodeIsLeader(),
                                                                                          change.leaderId()

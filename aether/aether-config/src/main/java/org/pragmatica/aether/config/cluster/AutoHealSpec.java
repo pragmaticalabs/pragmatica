@@ -8,17 +8,25 @@ public record AutoHealSpec(boolean enabled,
                            String retryInterval,
                            String startupCooldown,
                            String staleObservationTtl,
-                           int quicMissPromotionThreshold) {
+                           int quicMissPromotionThreshold,
+                           String provisioningTimeout,
+                           String provisionStabilityWindow) {
     public static final String DEFAULT_STALE_OBSERVATION_TTL = "30s";
 
     public static final int DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD = 10;
+
+    public static final String DEFAULT_PROVISIONING_TIMEOUT = "60s";
+
+    public static final String DEFAULT_PROVISION_STABILITY_WINDOW = "30s";
 
     public static AutoHealSpec autoHealSpec(boolean enabled, String retryInterval, String startupCooldown) {
         return new AutoHealSpec(enabled,
                                 retryInterval,
                                 startupCooldown,
                                 DEFAULT_STALE_OBSERVATION_TTL,
-                                DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD);
+                                DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
+                                DEFAULT_PROVISIONING_TIMEOUT,
+                                DEFAULT_PROVISION_STABILITY_WINDOW);
     }
 
     public static AutoHealSpec autoHealSpec(boolean enabled,
@@ -29,7 +37,9 @@ public record AutoHealSpec(boolean enabled,
                                 retryInterval,
                                 startupCooldown,
                                 staleObservationTtl,
-                                DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD);
+                                DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
+                                DEFAULT_PROVISIONING_TIMEOUT,
+                                DEFAULT_PROVISION_STABILITY_WINDOW);
     }
 
     public static AutoHealSpec autoHealSpec(boolean enabled,
@@ -41,7 +51,40 @@ public record AutoHealSpec(boolean enabled,
                                 retryInterval,
                                 startupCooldown,
                                 staleObservationTtl,
-                                quicMissPromotionThreshold);
+                                quicMissPromotionThreshold,
+                                DEFAULT_PROVISIONING_TIMEOUT,
+                                DEFAULT_PROVISION_STABILITY_WINDOW);
+    }
+
+    public static AutoHealSpec autoHealSpec(boolean enabled,
+                                             String retryInterval,
+                                             String startupCooldown,
+                                             String staleObservationTtl,
+                                             int quicMissPromotionThreshold,
+                                             String provisioningTimeout) {
+        return new AutoHealSpec(enabled,
+                                retryInterval,
+                                startupCooldown,
+                                staleObservationTtl,
+                                quicMissPromotionThreshold,
+                                provisioningTimeout,
+                                DEFAULT_PROVISION_STABILITY_WINDOW);
+    }
+
+    public static AutoHealSpec autoHealSpec(boolean enabled,
+                                             String retryInterval,
+                                             String startupCooldown,
+                                             String staleObservationTtl,
+                                             int quicMissPromotionThreshold,
+                                             String provisioningTimeout,
+                                             String provisionStabilityWindow) {
+        return new AutoHealSpec(enabled,
+                                retryInterval,
+                                startupCooldown,
+                                staleObservationTtl,
+                                quicMissPromotionThreshold,
+                                provisioningTimeout,
+                                provisionStabilityWindow);
     }
 
     public static AutoHealSpec defaultAutoHealSpec() {
@@ -49,6 +92,8 @@ public record AutoHealSpec(boolean enabled,
                                 "60s",
                                 "15s",
                                 DEFAULT_STALE_OBSERVATION_TTL,
-                                DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD);
+                                DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
+                                DEFAULT_PROVISIONING_TIMEOUT,
+                                DEFAULT_PROVISION_STABILITY_WINDOW);
     }
 }
