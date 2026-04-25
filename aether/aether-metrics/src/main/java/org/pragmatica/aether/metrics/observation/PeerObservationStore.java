@@ -75,24 +75,44 @@ public final class PeerObservationStore implements PeerObservationBuffer {
         capSupplier = supplier;
     }
 
+    /// Push a health observation. When at least one subscriber is registered, the observation
+    /// is delivered ONLY via the subscriber callback (no buffering — the leader-era subscriber
+    /// is authoritative). With no subscribers (follower era) the observation is buffered for
+    /// the next `drainHealth()` call (typically `buildPong`). The buffer-vs-notify decision is
+    /// taken UNDER `healthLock` so it serializes with `subscribeHealthAndDrain` — guaranteeing
+    /// every observation lands in EXACTLY ONE channel (buffer XOR callback) and never gets
+    /// orphaned across the subscribe boundary.
     @Override @Contract public void pushHealth(PeerHealthObservation observation) {
+        boolean delivered;
         synchronized (healthLock) {
-            if (healthBuffer.size() >= capSupplier.getAsInt()) {
-                healthBuffer.pollFirst();
+            if (healthSubscribers.isEmpty()) {
+                if (healthBuffer.size() >= capSupplier.getAsInt()) {
+                    healthBuffer.pollFirst();
+                }
+                healthBuffer.offerLast(observation);
+                delivered = false;
+            } else {
+                delivered = true;
             }
-            healthBuffer.offerLast(observation);
         }
-        notifyHealth(observation);
+        if (delivered) {notifyHealth(observation);}
     }
 
+    /// Push a connectivity observation. See [`#pushHealth`] for the buffer-vs-callback policy.
     @Override @Contract public void pushConnectivity(PeerConnectivityObservation observation) {
+        boolean delivered;
         synchronized (connectivityLock) {
-            if (connectivityBuffer.size() >= capSupplier.getAsInt()) {
-                connectivityBuffer.pollFirst();
+            if (connectivitySubscribers.isEmpty()) {
+                if (connectivityBuffer.size() >= capSupplier.getAsInt()) {
+                    connectivityBuffer.pollFirst();
+                }
+                connectivityBuffer.offerLast(observation);
+                delivered = false;
+            } else {
+                delivered = true;
             }
-            connectivityBuffer.offerLast(observation);
         }
-        notifyConnectivity(observation);
+        if (delivered) {notifyConnectivity(observation);}
     }
 
     @Override public List<PeerHealthObservation> drainHealth() {
@@ -164,6 +184,47 @@ public final class PeerObservationStore implements PeerObservationBuffer {
     public Subscription subscribeConnectivity(Consumer<PeerConnectivityObservation> callback) {
         connectivitySubscribers.add(callback);
         return () -> connectivitySubscribers.remove(callback);
+    }
+
+    /// Atomically subscribe a callback AND drain the existing buffer. Race-free: pushes
+    /// happening between subscribe-add and drain-clear are either delivered via the
+    /// callback (push saw subscriber present → no buffer) or captured by the drain
+    /// (push saw subscriber absent → buffered → drained). Used by
+    /// `HealthReconciler.LeadingSteady.onEntry` (Q3) so the freshly-promoted leader picks
+    /// up follower-era buffered observations AND from-now-on observations without losing
+    /// any across the subscribe boundary.
+    public DrainAndSubscribe<PeerHealthObservation> subscribeHealthAndDrain(Consumer<PeerHealthObservation> callback) {
+        synchronized (healthLock) {
+            healthSubscribers.add(callback);
+            var drained = healthBuffer.isEmpty()
+                          ? List.<PeerHealthObservation>of()
+                          : List.copyOf(new ArrayList<>(healthBuffer));
+            healthBuffer.clear();
+            Subscription sub = () -> healthSubscribers.remove(callback);
+            return new DrainAndSubscribe<>(drained, sub);
+        }
+    }
+
+    public DrainAndSubscribe<PeerConnectivityObservation> subscribeConnectivityAndDrain(
+            Consumer<PeerConnectivityObservation> callback) {
+        synchronized (connectivityLock) {
+            connectivitySubscribers.add(callback);
+            var drained = connectivityBuffer.isEmpty()
+                          ? List.<PeerConnectivityObservation>of()
+                          : List.copyOf(new ArrayList<>(connectivityBuffer));
+            connectivityBuffer.clear();
+            Subscription sub = () -> connectivitySubscribers.remove(callback);
+            return new DrainAndSubscribe<>(drained, sub);
+        }
+    }
+
+    /// Result of an atomic subscribe-and-drain: the items that were buffered at subscribe
+    /// time (in chronological order, oldest first) and the [`Subscription`] token to call
+    /// `unsubscribe()` on when the subscriber is no longer needed.
+    public record DrainAndSubscribe<T>(List<T> drained, Subscription subscription) {
+        public DrainAndSubscribe {
+            drained = List.copyOf(drained);
+        }
     }
 
     private void notifyHealth(PeerHealthObservation observation) {

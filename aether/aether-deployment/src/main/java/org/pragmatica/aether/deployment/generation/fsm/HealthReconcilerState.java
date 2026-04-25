@@ -137,10 +137,16 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
         }
     }
 
+    /// On `onEntry` the FSM enables the peer-observation subscribe-and-drain channel: a single
+    /// pair of subscriptions is held on the context for the entire Leading-tenure (NOT per
+    /// state record) — intra-Leading transitions inherit them. This avoids the duplicate-
+    /// callback-during-transition race that would arise if every fresh state took its own pair
+    /// of subscriptions. The pair is released by `clearLeaderData()` on demote / shutdown.
     record LeadingSteady(HealthReconcilerContext ctx, Epoch startEpoch, ClusterGenerationSnapshot snapshot) implements HealthReconcilerState {
         @Override public void onEntry() {
             ctx.ensureReprojectionExecutor();
             ctx.publishLeadingSnapshot(snapshot);
+            ctx.activatePeerObservationChannelOnFirstLeadingEntry();
         }
 
         @Override public void handle(ClusterFsmEvent event,
@@ -175,12 +181,15 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
         }
     }
 
+    /// While reprojection is in flight we still want fresh peer observations to flow into the
+    /// FSM — see `LeadingSteady` for the lifecycle of the subscribe-and-drain channel.
     record LeadingReprojecting(HealthReconcilerContext ctx,
                                Epoch startEpoch,
                                ClusterGenerationSnapshot snapshot,
                                Supplier<ClusterGenerationSnapshot> supplier) implements HealthReconcilerState {
         @Override public void onEntry() {
             ctx.publishLeadingSnapshot(snapshot);
+            ctx.activatePeerObservationChannelOnFirstLeadingEntry();
             ctx.submitReprojection(startEpoch, supplier);
         }
 

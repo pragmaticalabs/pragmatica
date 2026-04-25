@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.generation.fsm;
 
 import org.pragmatica.aether.deployment.generation.PeerObservationReducer;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
+import org.pragmatica.aether.slice.generation.ConnectivityReport;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.CommandsApplied;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.CommandsApplyFailed;
 import org.pragmatica.aether.deployment.generation.fsm.HealthReconcilerEvents.MembershipReseeded;
@@ -34,6 +35,10 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
+import org.pragmatica.cluster.metrics.ConnectivityState;
+import org.pragmatica.cluster.metrics.HealthHintWire;
+import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
+import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
@@ -58,6 +63,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -124,6 +130,19 @@ public final class HealthReconcilerContext {
     private final AtomicReference<Supplier<ClusterGenerationSnapshot>> lastSupplier = new AtomicReference<>();
 
     private final AtomicReference<ClusterGenerationSnapshot> ambientSnapshot;
+
+    /// True when the next entry into Leading* is the first since promotion (or since
+    /// `clearLeaderData()` ran on a demote). The first entry takes a single
+    /// subscribe-and-drain pair on the [`PeerObservationStore`] (held on the context, NOT on
+    /// the state records) so intra-Leading* transitions inherit them — avoiding the
+    /// duplicate-callback race that would arise if every fresh Leading record took its own
+    /// pair. Reset to `true` on `clearLeaderData()`.
+    private final AtomicBoolean firstLeadingEntry = new AtomicBoolean(true);
+
+    /// Active peer-observation subscriptions for the current Leading-tenure. Released by
+    /// `releasePeerObservationChannel()` from `clearLeaderData()`.
+    private final AtomicReference<PeerObservationStore.Subscription> healthSubscription = new AtomicReference<>();
+    private final AtomicReference<PeerObservationStore.Subscription> connectivitySubscription = new AtomicReference<>();
 
     public HealthReconcilerContext(Fsm<HealthReconcilerState, ClusterFsmEvent> fsm,
                                    NodeId self,
@@ -212,6 +231,87 @@ public final class HealthReconcilerContext {
         return new HealthReconcilerState.LeadingReprojecting(this, startEpoch, snapshot, supplier);
     }
 
+    /// Returns the node-singleton observation store. Used by `LeadingSteady.onEntry` and
+    /// `LeadingReprojecting.onEntry` to drain pre-existing observations on entry.
+    public PeerObservationStore peerObservationStore() {
+        return peerObservationStore;
+    }
+
+    /// Atomically (1) subscribe live callbacks for fresh peer-observation arrivals AND
+    /// (2) forward every pre-promotion buffered observation through the same callbacks IF
+    /// this is the first Leading* entry since promotion (or last `clearLeaderData()`).
+    /// Subsequent intra-Leading* re-entries are no-ops: the subscriptions taken on first
+    /// entry survive intra-Leading transitions and are released only when `clearLeaderData()`
+    /// runs (demote / quorum loss / shutdown).
+    ///
+    /// Why context-held subscriptions: per-state-record subscriptions would create a
+    /// brief double-subscription window during every intra-Leading transition (factory
+    /// subscribes NEW before CAS while OLD subscription is still live), causing every push
+    /// in that window to fire BOTH callbacks → duplicate `SignalReceived` events. Holding a
+    /// single subscription pair for the entire Leading-tenure eliminates that race and is
+    /// consistent with the per-NODE semantics of [`PeerObservationStore`] (counters and
+    /// buffers outlive any single state record).
+    @Contract public void activatePeerObservationChannelOnFirstLeadingEntry() {
+        if (!firstLeadingEntry.compareAndSet(true, false)) {return;}
+        var healthDrainAndSub = peerObservationStore.subscribeHealthAndDrain(this::onPeerHealth);
+        var connDrainAndSub = peerObservationStore.subscribeConnectivityAndDrain(this::onPeerConnectivity);
+        healthSubscription.set(healthDrainAndSub.subscription());
+        connectivitySubscription.set(connDrainAndSub.subscription());
+        healthDrainAndSub.drained().forEach(this::onPeerHealth);
+        connDrainAndSub.drained().forEach(this::onPeerConnectivity);
+    }
+
+    /// Release the peer-observation subscriptions taken by
+    /// [`#activatePeerObservationChannelOnFirstLeadingEntry`]. Idempotent — safe to call from
+    /// `clearLeaderData()` even if no subscription was taken (e.g., never reached Leading*).
+    @Contract private void releasePeerObservationChannel() {
+        Option.option(healthSubscription.getAndSet(null)).onPresent(PeerObservationStore.Subscription::unsubscribe);
+        Option.option(connectivitySubscription.getAndSet(null)).onPresent(PeerObservationStore.Subscription::unsubscribe);
+    }
+
+    /// Callback fired by the [`PeerObservationStore`] subscription on every fresh health
+    /// observation arrival, AND replayed for every observation drained on Leading* entry.
+    /// Translates the buffered self-observation into a [`HealthSignal.RemoteSwimHint`] (observer
+    /// = self) and dispatches a `SignalReceived` event so the existing leader-side handlers
+    /// process it. Q4 staleness filter is applied downstream by [`#isStaleObservation`] inside
+    /// `handleRemoteSwimHint`.
+    @Contract public void onPeerHealth(PeerHealthObservation observation) {
+        var signal = new HealthSignal.RemoteSwimHint(self,
+                                                     observation.peerId(),
+                                                     translateHint(observation.hint()),
+                                                     Epoch.epoch(observation.observedEpochTerm(),
+                                                                 observation.observedEpochCounter()),
+                                                     observation.producedAtMs());
+        fsm.dispatch(new SignalReceived(signal));
+    }
+
+    /// Companion to [`#onPeerHealth`] for connectivity observations.
+    @Contract public void onPeerConnectivity(PeerConnectivityObservation observation) {
+        var signal = new HealthSignal.RemoteConnectivity(self,
+                                                         observation.peerId(),
+                                                         translateConnectivity(observation.state()),
+                                                         Epoch.epoch(observation.observedEpochTerm(),
+                                                                     observation.observedEpochCounter()),
+                                                         observation.producedAtMs());
+        fsm.dispatch(new SignalReceived(signal));
+    }
+
+    private static HealthHint translateHint(HealthHintWire wire) {
+        return switch (wire){
+            case HEALTHY -> HealthHint.HEALTHY;
+            case SUSPECTED -> HealthHint.SUSPECTED;
+            case FAULTY -> HealthHint.FAULTY;
+        };
+    }
+
+    private static ConnectivityReport translateConnectivity(ConnectivityState state) {
+        return switch (state){
+            case CONNECTED -> ConnectivityReport.CONNECTED;
+            case DISCONNECTED -> ConnectivityReport.DISCONNECTED;
+            case STALE -> ConnectivityReport.STALE;
+        };
+    }
+
     public NodeId self() {
         return self;
     }
@@ -253,6 +353,8 @@ public final class HealthReconcilerContext {
         swimHints.clear();
         pendingRemovals.clear();
         lastSupplier.set(null);
+        releasePeerObservationChannel();
+        firstLeadingEntry.set(true);
     }
 
     public Option<Supplier<ClusterGenerationSnapshot>> lastSupplier() {
@@ -380,10 +482,10 @@ public final class HealthReconcilerContext {
             return;
         }
         applyOutcomeEffects(state.startEpoch(), state.snapshot(), outcome);
-        tx.transitionToOrDrop(new HealthReconcilerState.LeadingReprojecting(this,
-                                                                            state.startEpoch(),
-                                                                            outcome.nextSnapshot(),
-                                                                            state.supplier()));
+        tx.transitionToOrDrop(newLeadingReprojecting(state.startEpoch(),
+                                                     outcome.nextSnapshot(),
+                                                     state.supplier(),
+                                                     "signal-received"));
     }
 
     @Contract private void applyOutcomeEffects(Epoch startEpoch,
@@ -439,10 +541,10 @@ public final class HealthReconcilerContext {
                           state.snapshot(),
                           applied.nextSnapshot(),
                           applied.attemptedNodeIds());
-        tx.transitionToOrDrop(new HealthReconcilerState.LeadingReprojecting(this,
-                                                                            state.startEpoch(),
-                                                                            applied.nextSnapshot(),
-                                                                            state.supplier()));
+        tx.transitionToOrDrop(newLeadingReprojecting(state.startEpoch(),
+                                                     applied.nextSnapshot(),
+                                                     state.supplier(),
+                                                     "membership-reseed"));
     }
 
     @Contract public void handleCommandsAppliedFromLeadingSteady(HealthReconcilerState.LeadingSteady state,
@@ -468,10 +570,10 @@ public final class HealthReconcilerContext {
         generationChangedSink.emit(GenerationChangedNotice.generationChangedNotice(event.previousSnapshot().epoch(),
                                                                                    event.nextSnapshot().epoch(),
                                                                                    event.reason()));
-        tx.transitionToOrDrop(new HealthReconcilerState.LeadingReprojecting(this,
-                                                                            state.startEpoch(),
-                                                                            event.nextSnapshot(),
-                                                                            state.supplier()));
+        tx.transitionToOrDrop(newLeadingReprojecting(state.startEpoch(),
+                                                     event.nextSnapshot(),
+                                                     state.supplier(),
+                                                     "commands-applied"));
     }
 
     @Contract public void handleCommandsApplyFailedFromLeading(HealthReconcilerState state,
