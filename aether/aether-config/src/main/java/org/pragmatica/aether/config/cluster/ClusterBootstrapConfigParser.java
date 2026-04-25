@@ -356,7 +356,9 @@ import static org.pragmatica.lang.Result.success;
         var enabled = doc.getBoolean(OPERATIONS_AUTO_HEAL_SECTION, "enabled").or(true);
         var retryInterval = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "retry_interval").or("60s");
         var startupCooldown = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "startup_cooldown").or("15s");
-        return AutoHealSpec.autoHealSpec(enabled, retryInterval, startupCooldown);
+        var staleObservationTtl = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "stale_observation_ttl")
+                                          .or(AutoHealSpec.DEFAULT_STALE_OBSERVATION_TTL);
+        return AutoHealSpec.autoHealSpec(enabled, retryInterval, startupCooldown, staleObservationTtl);
     }
 
     private static TlsDeploymentConfig parseTlsConfig(TomlDocument doc) {

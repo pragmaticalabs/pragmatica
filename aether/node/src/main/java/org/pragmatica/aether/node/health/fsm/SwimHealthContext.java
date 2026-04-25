@@ -167,7 +167,8 @@ public final class SwimHealthContext {
         observationStore.pushHealth(new PeerHealthObservation(nodeId,
                                                                toWire(hint),
                                                                epoch.rabiaTerm(),
-                                                               epoch.localCounter()));
+                                                               epoch.localCounter(),
+                                                               nowMs()));
     }
 
     private static HealthHintWire toWire(HealthHint hint) {

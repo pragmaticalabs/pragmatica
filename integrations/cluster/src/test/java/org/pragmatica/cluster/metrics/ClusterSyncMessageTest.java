@@ -128,11 +128,13 @@ class ClusterSyncMessageTest {
             var healthObs = new PeerHealthObservation(peerA,
                                                       HealthHintWire.SUSPECTED,
                                                       7L,
-                                                      42L);
+                                                      42L,
+                                                      0L);
             var connObs = new PeerConnectivityObservation(peerB,
                                                           ConnectivityState.DISCONNECTED,
                                                           7L,
-                                                          43L);
+                                                          43L,
+                                                          0L);
 
             var pong = new ClusterSyncPong(PEER,
                                            Map.of(),

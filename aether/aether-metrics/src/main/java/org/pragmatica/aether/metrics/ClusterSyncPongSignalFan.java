@@ -48,7 +48,8 @@ import java.util.function.BooleanSupplier;
                                                   observation.peerId(),
                                                   translateHint(observation.hint()),
                                                   Epoch.epoch(observation.observedEpochTerm(),
-                                                              observation.observedEpochCounter())));
+                                                              observation.observedEpochCounter()),
+                                                  observation.producedAtMs()));
     }
 
     private static void emitConnectivity(ClusterSyncPong pong,
@@ -58,7 +59,8 @@ import java.util.function.BooleanSupplier;
                                                       observation.peerId(),
                                                       translateConnectivity(observation.state()),
                                                       Epoch.epoch(observation.observedEpochTerm(),
-                                                                  observation.observedEpochCounter())));
+                                                                  observation.observedEpochCounter()),
+                                                      observation.producedAtMs()));
     }
 
     private static HealthHint translateHint(HealthHintWire wire) {

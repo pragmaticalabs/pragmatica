@@ -4,12 +4,21 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
-public record AutoHealSpec(boolean enabled, String retryInterval, String startupCooldown) {
+public record AutoHealSpec(boolean enabled, String retryInterval, String startupCooldown, String staleObservationTtl) {
+    public static final String DEFAULT_STALE_OBSERVATION_TTL = "30s";
+
     public static AutoHealSpec autoHealSpec(boolean enabled, String retryInterval, String startupCooldown) {
-        return new AutoHealSpec(enabled, retryInterval, startupCooldown);
+        return new AutoHealSpec(enabled, retryInterval, startupCooldown, DEFAULT_STALE_OBSERVATION_TTL);
+    }
+
+    public static AutoHealSpec autoHealSpec(boolean enabled,
+                                             String retryInterval,
+                                             String startupCooldown,
+                                             String staleObservationTtl) {
+        return new AutoHealSpec(enabled, retryInterval, startupCooldown, staleObservationTtl);
     }
 
     public static AutoHealSpec defaultAutoHealSpec() {
-        return new AutoHealSpec(true, "60s", "15s");
+        return new AutoHealSpec(true, "60s", "15s", DEFAULT_STALE_OBSERVATION_TTL);
     }
 }

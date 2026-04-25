@@ -64,13 +64,29 @@ public sealed interface HealthSignal {
         }
     }
 
-    record RemoteSwimHint(NodeId observer, NodeId peer, HealthHint hint, Epoch observedAtEpoch) implements HealthSignal {
+    /// Remote SWIM health observation from a follower carried via ClusterSyncPong.
+    /// `producedAtMs` is the observer's wall-clock millis at observation time —
+    /// consumers apply a configurable TTL to drop stale reports independent of
+    /// cluster epoch.
+    record RemoteSwimHint(NodeId observer, NodeId peer, HealthHint hint, Epoch observedAtEpoch, long producedAtMs) implements HealthSignal {
+        public RemoteSwimHint(NodeId observer, NodeId peer, HealthHint hint, Epoch observedAtEpoch) {
+            this(observer, peer, hint, observedAtEpoch, 0L);
+        }
+
         @Override public Epoch observedAt() {
             return observedAtEpoch;
         }
     }
 
-    record RemoteConnectivity(NodeId observer, NodeId peer, ConnectivityReport state, Epoch observedAtEpoch) implements HealthSignal {
+    /// Remote QUIC connectivity observation from a follower carried via ClusterSyncPong.
+    /// `producedAtMs` is the observer's wall-clock millis at observation time —
+    /// consumers apply a configurable TTL to drop stale reports independent of
+    /// cluster epoch.
+    record RemoteConnectivity(NodeId observer, NodeId peer, ConnectivityReport state, Epoch observedAtEpoch, long producedAtMs) implements HealthSignal {
+        public RemoteConnectivity(NodeId observer, NodeId peer, ConnectivityReport state, Epoch observedAtEpoch) {
+            this(observer, peer, state, observedAtEpoch, 0L);
+        }
+
         @Override public Epoch observedAt() {
             return observedAtEpoch;
         }

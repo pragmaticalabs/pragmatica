@@ -34,8 +34,8 @@ class ClusterSyncSchedulerBufferTest {
     void pushHealth_andDrain_returnsAllEntries_clearsBuffer() {
         var scheduler = newScheduler();
 
-        scheduler.pushHealth(new PeerHealthObservation(PEER_A, HealthHintWire.FAULTY, 7L, 3L));
-        scheduler.pushHealth(new PeerHealthObservation(PEER_B, HealthHintWire.SUSPECTED, 7L, 4L));
+        scheduler.pushHealth(new PeerHealthObservation(PEER_A, HealthHintWire.FAULTY, 7L, 3L, 0L));
+        scheduler.pushHealth(new PeerHealthObservation(PEER_B, HealthHintWire.SUSPECTED, 7L, 4L, 0L));
 
         var first = scheduler.drainHealth();
         assertThat(first).hasSize(2);
@@ -49,7 +49,7 @@ class ClusterSyncSchedulerBufferTest {
     void pushConnectivity_andDrain_returnsAllEntries_clearsBuffer() {
         var scheduler = newScheduler();
 
-        scheduler.pushConnectivity(new PeerConnectivityObservation(PEER_A, ConnectivityState.DISCONNECTED, 7L, 3L));
+        scheduler.pushConnectivity(new PeerConnectivityObservation(PEER_A, ConnectivityState.DISCONNECTED, 7L, 3L, 0L));
 
         var drained = scheduler.drainConnectivity();
         assertThat(drained).singleElement()
@@ -68,7 +68,7 @@ class ClusterSyncSchedulerBufferTest {
         scheduler.onTopologyChange(new TopologyChangeNotification.NodeAdded(PEER_A, List.of(SELF, PEER_A)));
 
         for (int i = 0; i < 12; i++) {
-            scheduler.pushHealth(new PeerHealthObservation(PEER_A, HealthHintWire.FAULTY, 7L, i));
+            scheduler.pushHealth(new PeerHealthObservation(PEER_A, HealthHintWire.FAULTY, 7L, i, 0L));
         }
 
         var drained = scheduler.drainHealth();
@@ -81,8 +81,8 @@ class ClusterSyncSchedulerBufferTest {
     void stop_clearsBuffers() {
         var scheduler = newScheduler();
 
-        scheduler.pushHealth(new PeerHealthObservation(PEER_A, HealthHintWire.FAULTY, 7L, 3L));
-        scheduler.pushConnectivity(new PeerConnectivityObservation(PEER_A, ConnectivityState.DISCONNECTED, 7L, 3L));
+        scheduler.pushHealth(new PeerHealthObservation(PEER_A, HealthHintWire.FAULTY, 7L, 3L, 0L));
+        scheduler.pushConnectivity(new PeerConnectivityObservation(PEER_A, ConnectivityState.DISCONNECTED, 7L, 3L, 0L));
 
         scheduler.stop();
 

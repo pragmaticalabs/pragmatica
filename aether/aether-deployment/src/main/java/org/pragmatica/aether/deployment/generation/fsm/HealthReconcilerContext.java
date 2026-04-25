@@ -763,6 +763,12 @@ public final class HealthReconcilerContext {
                                                HealthSignal.RemoteSwimHint remote,
                                                TermAdvance termAdvance) {
         if (!current.coreMembers().containsKey(remote.peer())) {return SignalOutcome.unchanged(current, termAdvance);}
+        if (isStaleObservation(remote.producedAtMs())) {
+            log.trace("Dropping stale RemoteSwimHint observer={} peer={} producedAtMs={} (TTL={})",
+                      remote.observer(), remote.peer(), remote.producedAtMs(),
+                      autoHealConfig.staleObservationTtl());
+            return SignalOutcome.unchanged(current, termAdvance);
+        }
         peerObservationReducer.recordHint(remote.observer(), remote.peer(), remote.hint(), remote.observedAtEpoch());
         var totalObservers = current.coreMembers().size();
         var resolved = peerObservationReducer.resolvedHint(remote.peer(), totalObservers);
@@ -778,6 +784,12 @@ public final class HealthReconcilerContext {
                                                    HealthSignal.RemoteConnectivity remote,
                                                    TermAdvance termAdvance) {
         if (!current.coreMembers().containsKey(remote.peer())) {return SignalOutcome.unchanged(current, termAdvance);}
+        if (isStaleObservation(remote.producedAtMs())) {
+            log.trace("Dropping stale RemoteConnectivity observer={} peer={} producedAtMs={} (TTL={})",
+                      remote.observer(), remote.peer(), remote.producedAtMs(),
+                      autoHealConfig.staleObservationTtl());
+            return SignalOutcome.unchanged(current, termAdvance);
+        }
         return switch (remote.state()){
             case DISCONNECTED, STALE -> handleQuicDisconnect(current,
                                                              new HealthSignal.QuicDisconnect(remote.peer(),
@@ -785,6 +797,16 @@ public final class HealthReconcilerContext {
                                                              termAdvance);
             case CONNECTED -> SignalOutcome.unchanged(current, termAdvance);
         };
+    }
+
+    /// Whether a remote observation is older than the configured staleness TTL.
+    /// `producedAtMs == 0L` is treated as "no timestamp available" and accepted —
+    /// preserves backward compatibility with synthetic in-process signals (test
+    /// fixtures, Q1 in-process emits) that never traversed the wire.
+    private boolean isStaleObservation(long producedAtMs) {
+        if (producedAtMs == 0L) {return false;}
+        var cutoff = nowMs() - autoHealConfig.staleObservationTtl().millis();
+        return producedAtMs < cutoff;
     }
 
     private SignalOutcome writeDrainingAtom(ClusterGenerationSnapshot current,

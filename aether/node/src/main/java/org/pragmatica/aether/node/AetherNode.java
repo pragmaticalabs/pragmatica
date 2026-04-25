@@ -1408,7 +1408,8 @@ public interface AetherNode extends ManageableNode {
         org.pragmatica.consensus.net.quic.PeerConnectivityReporter reporter = (peerId, term, counter) -> buffer.pushConnectivity(new org.pragmatica.cluster.metrics.PeerConnectivityObservation(peerId,
                                                                                                                                                                                                 org.pragmatica.cluster.metrics.ConnectivityState.DISCONNECTED,
                                                                                                                                                                                                 term,
-                                                                                                                                                                                                counter));
+                                                                                                                                                                                                counter,
+                                                                                                                                                                                                System.currentTimeMillis()));
         org.pragmatica.consensus.net.quic.QuicClusterNetwork.ObservedEpochSupplier epochAdapter = new org.pragmatica.consensus.net.quic.QuicClusterNetwork.ObservedEpochSupplier() {
             @Override public long term() {
                 return epochSupplier.get().rabiaTerm();

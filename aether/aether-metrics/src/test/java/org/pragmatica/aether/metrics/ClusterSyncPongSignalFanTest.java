@@ -41,12 +41,13 @@ class ClusterSyncPongSignalFanTest {
                                    17L,
                                    "ON_DUTY",
                                    List.of(),
-                                   List.of(new PeerHealthObservation(PEER_A, HealthHintWire.FAULTY, 3L, 17L),
-                                           new PeerHealthObservation(PEER_B, HealthHintWire.SUSPECTED, 3L, 18L)),
+                                   List.of(new PeerHealthObservation(PEER_A, HealthHintWire.FAULTY, 3L, 17L, 0L),
+                                           new PeerHealthObservation(PEER_B, HealthHintWire.SUSPECTED, 3L, 18L, 0L)),
                                    List.of(new PeerConnectivityObservation(PEER_A,
                                                                            ConnectivityState.DISCONNECTED,
                                                                            3L,
-                                                                           17L)));
+                                                                           17L,
+                                                                           0L)));
     }
 
     @Nested
