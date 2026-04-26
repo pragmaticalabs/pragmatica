@@ -45,12 +45,18 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///                                    have joined: the count is still climbing, so a brief pause lets
 ///                                    the remaining lifecycles converge before auto-heal fires.
 ///                                    Defaults to 30s.
+/// @param decommissionedRetention     maximum age of `NodeLifecycleValue(state == DECOMMISSIONED)`
+///                                    atoms before the leader-side periodic GC removes them via
+///                                    `KVCommand.Remove`. Theme K #4 — without this sweep, terminated
+///                                    nodes accumulate as tombstones over the cluster's lifetime.
+///                                    Defaults to 24h.
 public record AutoHealConfig(TimeSpan retryInterval,
                               TimeSpan startupCooldown,
                               TimeSpan staleObservationTtl,
                               int quicMissPromotionThreshold,
                               TimeSpan provisioningTimeout,
-                              TimeSpan provisionStabilityWindow) {
+                              TimeSpan provisionStabilityWindow,
+                              TimeSpan decommissionedRetention) {
     public static final TimeSpan DEFAULT_STALE_OBSERVATION_TTL = timeSpan(30).seconds();
 
     public static final int DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD = 10;
@@ -59,12 +65,15 @@ public record AutoHealConfig(TimeSpan retryInterval,
 
     public static final TimeSpan DEFAULT_PROVISION_STABILITY_WINDOW = timeSpan(30).seconds();
 
+    public static final TimeSpan DEFAULT_DECOMMISSIONED_RETENTION = timeSpan(24).hours();
+
     public static final AutoHealConfig DEFAULT = autoHealConfig(timeSpan(10).seconds(),
                                                                  timeSpan(15).seconds(),
                                                                  DEFAULT_STALE_OBSERVATION_TTL,
                                                                  DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
                                                                  DEFAULT_PROVISIONING_TIMEOUT,
-                                                                 DEFAULT_PROVISION_STABILITY_WINDOW).unwrap();
+                                                                 DEFAULT_PROVISION_STABILITY_WINDOW,
+                                                                 DEFAULT_DECOMMISSIONED_RETENTION).unwrap();
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval, TimeSpan startupCooldown) {
         return autoHealConfig(retryInterval,
@@ -72,7 +81,8 @@ public record AutoHealConfig(TimeSpan retryInterval,
                               DEFAULT_STALE_OBSERVATION_TTL,
                               DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
                               DEFAULT_PROVISIONING_TIMEOUT,
-                              DEFAULT_PROVISION_STABILITY_WINDOW);
+                              DEFAULT_PROVISION_STABILITY_WINDOW,
+                              DEFAULT_DECOMMISSIONED_RETENTION);
     }
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
@@ -83,7 +93,8 @@ public record AutoHealConfig(TimeSpan retryInterval,
                               staleObservationTtl,
                               DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
                               DEFAULT_PROVISIONING_TIMEOUT,
-                              DEFAULT_PROVISION_STABILITY_WINDOW);
+                              DEFAULT_PROVISION_STABILITY_WINDOW,
+                              DEFAULT_DECOMMISSIONED_RETENTION);
     }
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
@@ -95,7 +106,8 @@ public record AutoHealConfig(TimeSpan retryInterval,
                               staleObservationTtl,
                               quicMissPromotionThreshold,
                               DEFAULT_PROVISIONING_TIMEOUT,
-                              DEFAULT_PROVISION_STABILITY_WINDOW);
+                              DEFAULT_PROVISION_STABILITY_WINDOW,
+                              DEFAULT_DECOMMISSIONED_RETENTION);
     }
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
@@ -108,7 +120,8 @@ public record AutoHealConfig(TimeSpan retryInterval,
                               staleObservationTtl,
                               quicMissPromotionThreshold,
                               provisioningTimeout,
-                              DEFAULT_PROVISION_STABILITY_WINDOW);
+                              DEFAULT_PROVISION_STABILITY_WINDOW,
+                              DEFAULT_DECOMMISSIONED_RETENTION);
     }
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
@@ -117,11 +130,28 @@ public record AutoHealConfig(TimeSpan retryInterval,
                                                          int quicMissPromotionThreshold,
                                                          TimeSpan provisioningTimeout,
                                                          TimeSpan provisionStabilityWindow) {
+        return autoHealConfig(retryInterval,
+                              startupCooldown,
+                              staleObservationTtl,
+                              quicMissPromotionThreshold,
+                              provisioningTimeout,
+                              provisionStabilityWindow,
+                              DEFAULT_DECOMMISSIONED_RETENTION);
+    }
+
+    public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
+                                                         TimeSpan startupCooldown,
+                                                         TimeSpan staleObservationTtl,
+                                                         int quicMissPromotionThreshold,
+                                                         TimeSpan provisioningTimeout,
+                                                         TimeSpan provisionStabilityWindow,
+                                                         TimeSpan decommissionedRetention) {
         return success(new AutoHealConfig(retryInterval,
                                           startupCooldown,
                                           staleObservationTtl,
                                           quicMissPromotionThreshold,
                                           provisioningTimeout,
-                                          provisionStabilityWindow));
+                                          provisionStabilityWindow,
+                                          decommissionedRetention));
     }
 }

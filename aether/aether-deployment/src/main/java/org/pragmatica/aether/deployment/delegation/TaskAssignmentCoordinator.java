@@ -193,6 +193,27 @@ public sealed interface TaskAssignmentCoordinator {
         }
     }
 
+    /// Theme K #2 (DEFERRED to rc2 #189): `failedNodes` is local in-memory cooldown state
+    /// — the set of (taskGroup, nodeId) pairs that recently failed an assignment.
+    /// On leader handoff a fresh `Active` is constructed with an empty `failedNodes` map,
+    /// so the new leader cannot observe the cooldown and may immediately re-assign a
+    /// task group to a node that just failed.
+    ///
+    /// Mitigating factor (already in place — `isRecentlyFailed` at lines below): the
+    /// cooldown check intersects `failedNodes` with `assignmentMap.values()` filtered by
+    /// `status == FAILED && assignedAtMs > cutoff`. Since `assignmentMap` is rebuilt from
+    /// KV (`readCurrentAssignments`) on every reconcile, the FAILED status survives leader
+    /// handoff. The in-memory `failedNodes` is a per-leader fast-path, not the source of
+    /// truth — the `assignedAtMs` timestamp on the persisted `TaskAssignmentValue` is.
+    ///
+    /// A full KV migration would either:
+    ///   (a) add a `TaskAssignmentCooldownKey` namespace mirroring the in-memory map, OR
+    ///   (b) extend `TaskAssignmentValue` with a `failedAt: long` field separate from
+    ///       `assignedAtMs` so the FAILED→ASSIGNED transition preserves the failure
+    ///       timestamp.
+    /// Both are tracked under rc2 #189. For rc1 the existing KV-derived check
+    /// (`isRecentlyFailed` matching against `assignmentMap.values()`) is the architectural
+    /// floor — `failedNodes` is a per-leader hint that lossy-reset on handoff is benign.
     record Active(Context ctx,
                   Map<TaskGroup, TaskAssignmentValue> assignmentMap,
                   Map<TaskGroup, Set<NodeId>> failedNodes,

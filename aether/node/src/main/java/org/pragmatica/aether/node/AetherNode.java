@@ -1141,6 +1141,15 @@ public interface AetherNode extends ManageableNode {
         // `activateOnLeaderChange` LeaderChange route below is reduced to a deactivate-only
         // path; activation flows exclusively through this callback.
         healthReconcilerActivator.onBootstrapCommitted(clusterTopologyManager::activate);
+        // Theme K #4: periodic GC of stale DECOMMISSIONED lifecycle atoms. Runs only on the
+        // leader; uses `AutoHealConfig.decommissionedRetention` (default 24h) to decide which
+        // atoms are stale enough to remove. Started here so it shares the node lifecycle —
+        // stop is invoked when the surrounding component lifecycle tears down.
+        var decommissionedAtomGc = org.pragmatica.aether.deployment.generation.DecommissionedAtomGc.decommissionedAtomGc(clusterNode,
+                                                                                                                          kvStore::snapshot,
+                                                                                                                          isLeaderSupplier,
+                                                                                                                          config.autoHeal());
+        decommissionedAtomGc.start();
         healthSinkRef.set(healthReconcilerActivator.sink());
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
         attachQuicFollowerWiring(clusterNode.network(), isLeaderSupplier, peerObservationStore, leaderEpochSupplier);

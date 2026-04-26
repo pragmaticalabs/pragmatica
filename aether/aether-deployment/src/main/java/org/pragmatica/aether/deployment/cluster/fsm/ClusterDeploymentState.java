@@ -172,6 +172,35 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
     /// All per-activation mutable collections are created fresh on entry via
     /// [`ClusterDeploymentContext#newActive`]. The reconcile timer is started in [`#onEntry`] and
     /// cancelled in [`#onExit`].
+    /// Theme K #1 (DEFERRED to rc2): the three fields `restoringBlueprints`,
+    /// `permanentlyFailed`, and `transitionalStateTimestamps` are local in-memory state on
+    /// the `Active` record. They violate the architectural invariant that all state must be
+    /// reconstructible from the KV-Store: on every leader handoff the new leader's `Active`
+    /// record is created with empty sets/maps, losing whatever was tracked.
+    ///
+    /// Migrating each requires schema extensions:
+    ///   - `transitionalStateTimestamps` → would need a `transitionedAt: long` field on
+    ///     `SliceNodeValue` (currently the value carries only `state`, `failureReason`,
+    ///     `fatal` — see AetherValue.java:139). Adding that would touch `SliceNodeValue`
+    ///     plus every site that constructs it (~40+ in this file alone) and the
+    ///     `ENVELOPE_FORMAT_VERSION` envelope-versioning rule.
+    ///   - `restoringBlueprints` → would need either a new `BlueprintRestoreStatusKey`
+    ///     namespace or a `restoring: bool` flag on the existing `AppBlueprintValue`.
+    ///   - `permanentlyFailed` → would need a `permanentlyFailed: bool` on
+    ///     `SliceTargetValue` (or a new `SlicePermanentFailureKey` namespace).
+    ///
+    /// These migrations are tracked under rc2 GitHub issue #189 and are out of scope for
+    /// the current FSM-coordination wave. The runtime impact is bounded:
+    ///   - Stuck-slice timer (`detectStuckTransitionalStates`) loses tracking on handoff,
+    ///     so a slice that became stuck just before the handoff has its stuck-detection
+    ///     timer reset; the new leader observes it for `STUCK_TIMEOUT_MULTIPLIER * timeout`
+    ///     before remediating. Worst-case: ~1 minute extra latency for stuck remediation.
+    ///   - `restoringBlueprints` is short-lived (single reconcile cycle); a leader-handoff
+    ///     mid-restore may cause a second restore attempt — idempotent at the consensus
+    ///     level so no incorrect state, just one extra apply.
+    ///   - `permanentlyFailed` causes a node that previously refused a slice (fatal
+    ///     classification) to retry once after handoff. Self-healing if the failure is
+    ///     transient; redundant if not. Bounded by `MAX_RETRIES` on the new leader.
     record Active(ClusterDeploymentContext ctx,
                   Map<Artifact, Blueprint> blueprints,
                   Map<SliceNodeKey, SliceState> sliceStates,

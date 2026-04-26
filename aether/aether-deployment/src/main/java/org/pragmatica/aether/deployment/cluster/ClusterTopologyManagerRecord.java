@@ -93,9 +93,18 @@ import static org.pragmatica.lang.Unit.unit;
 /// timeout (per-attempt deadlines via `ProvisioningSlot`) recovers from stalled waves.
 ///
 /// Theme H clock injection: `clock` is the canonical wall-clock supplier — all timestamping
-/// (stability anchor, slot deadlines, lifecycle atom transitionedAt, ClusterConfigValue.updatedAt,
-/// nodeJoinTimes anchor) reads from this supplier. Tests pass a deterministic clock; production
+/// (stability anchor, slot deadlines, lifecycle atom transitionedAt, ClusterConfigValue.updatedAt)
+/// reads from this supplier. Tests pass a deterministic clock; production
 /// passes `System::currentTimeMillis`.
+///
+/// Theme K #3 KV-reconstructibility: surplus-termination ordering is no longer derived from
+/// the previously-held in-memory `nodeJoinTimes` map (which was reset on every leader handoff,
+/// violating the architectural invariant that local in-memory state must be reconstructible
+/// from the KV-Store). Instead the comparator's "newest-first" tiebreak now reads
+/// `NodeLifecycleValue.observedCoreEpoch` from the lifecycle atom via `lifecycleReader`. The
+/// `Epoch` value is monotonically advanced by the leader on every consensus term advance and
+/// per-leader local mutation, so it is a stable identity that survives leader transitions:
+/// a node provisioned at term T carries observedCoreEpoch (T,n) that no future leader rewrites.
 ///
 /// @SuppressWarnings: void callbacks required by TopologyManager/ClusterTopologyManager interfaces
 @SuppressWarnings("JBCT-RET-01") record ClusterTopologyManagerRecord(TopologyObserver observer,
@@ -109,7 +118,6 @@ import static org.pragmatica.lang.Unit.unit;
                                                                      DrainCoordinator drainCoordinator,
                                                                      AtomicReference<NodeReconcilerState> stateRef,
                                                                      AtomicBoolean active,
-                                                                     ConcurrentHashMap<NodeId, Instant> nodeJoinTimes,
                                                                      ConcurrentHashMap<NodeId, Promise<?>> inFlightProvisions,
                                                                      CancellableTask safetyNetTimer,
                                                                      AtomicLong realActualStableSinceMs,
@@ -166,7 +174,6 @@ import static org.pragmatica.lang.Unit.unit;
                                                 drainCoordinator,
                                                 new AtomicReference<>(new NodeReconcilerState.Inactive("not yet activated")),
                                                 new AtomicBoolean(false),
-                                                new ConcurrentHashMap<>(),
                                                 new ConcurrentHashMap<>(),
                                                 CancellableTask.cancellableTask(),
                                                 new AtomicLong(clock.getAsLong()),
@@ -292,14 +299,12 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private void handleNodeAdded(NodeAdded added) {
-        nodeJoinTimes.putIfAbsent(added.nodeId(), nowInstant());
         bumpRealActualStability("node-added " + added.nodeId());
         log.info("CTM: Node {} added, triggering reconciliation", added.nodeId());
         reconcile();
     }
 
     private void handleNodeRemoved(NodeRemoved removed) {
-        nodeJoinTimes.remove(removed.nodeId());
         bumpRealActualStability("node-removed " + removed.nodeId());
         log.info("CTM: Node {} removed, triggering reconciliation", removed.nodeId());
         reconcile();
@@ -322,14 +327,9 @@ import static org.pragmatica.lang.Unit.unit;
 
     @Override public void activate() {
         if (!active.compareAndSet(false, true)) {return;}
-        seedJoinTimesForExistingNodes();
         bumpRealActualStability("activate");
         activateWithCurrentTopology();
         scheduleSafetyNetPoll();
-    }
-
-    private void seedJoinTimesForExistingNodes() {
-        for (var nodeId : observer.topology()) {nodeJoinTimes.putIfAbsent(nodeId, nowInstant());}
     }
 
     private void activateWithCurrentTopology() {
@@ -717,12 +717,18 @@ import static org.pragmatica.lang.Unit.unit;
     ///
     /// The comparator returned by `surplusNodeComparator` walks fields in this order:
     /// non-CTM-owned first → spot before on-demand → highest co-located host count first
-    /// → empty (no slices) before populated → newest join time first. The newest-first
-    /// `Comparator.reverseOrder()` on `nodeJoinTimes` is intentional: when an operator
+    /// → empty (no slices) before populated → newest join epoch first. The newest-first
+    /// `Comparator.reverseOrder()` on `observedCoreEpoch` (read from the
+    /// `NodeLifecycleValue` atom via `lifecycleReader`) is intentional: when an operator
     /// scales down, the safest nodes to drop are those most recently provisioned by the
     /// CTM itself (they have done the least work and are unlikely to hold critical
     /// state caches yet). Older peers — especially the originally-seeded core — are
-    /// preserved.
+    /// preserved. Theme K #3: this used to read an in-memory `nodeJoinTimes` map populated
+    /// from `Instant.now()` at NodeAdded events. That map was lost on every leader handoff,
+    /// breaking the architectural invariant that local state must be reconstructible from
+    /// KV. The lifecycle atom's `observedCoreEpoch` is a stable monotonic identity
+    /// (term-counter pair set at provision time and never rewritten by future leaders),
+    /// so the surplus ordering survives leader transitions.
     private List<NodeId> selectNodesForTermination(int count) {
         var selfId = observer.self().id();
         var ctmOwned = ctmProvisionedNodeIds();
@@ -784,8 +790,17 @@ import static org.pragmatica.lang.Unit.unit;
                          .thenComparing(id -> hostCount(id, hostCounts),
                                         Comparator.reverseOrder())
                          .thenComparing(id -> !emptyNodes.contains(id))
-                         .thenComparing(id -> nodeJoinTimes.getOrDefault(id, Instant.EPOCH),
+                         .thenComparing(this::nodeJoinEpoch,
                                         Comparator.reverseOrder());
+    }
+
+    /// Reads the `observedCoreEpoch` from the node's `NodeLifecycleValue` atom. Returns
+    /// `Epoch.ZERO` when the atom is absent (treated as oldest in the reverse-time
+    /// comparator, so an unknown node is preserved over a known recently-provisioned one).
+    /// This replaces the previously in-memory `nodeJoinTimes` map (Theme K #3).
+    private Epoch nodeJoinEpoch(NodeId nodeId) {
+        return lifecycleReader.apply(nodeId).map(NodeLifecycleValue::observedCoreEpoch)
+                                            .or(Epoch.ZERO);
     }
 
     private void terminateNodes(List<NodeId> nodes) {
@@ -871,7 +886,6 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private void handleTerminationSuccess(NodeId nodeId) {
-        nodeJoinTimes.remove(nodeId);
         log.info("CTM: Node {} terminated successfully", nodeId);
         writeDecommissionedAtom(nodeId);
         reconcile();

@@ -364,13 +364,16 @@ import static org.pragmatica.lang.Result.success;
                                           .or(AutoHealSpec.DEFAULT_PROVISIONING_TIMEOUT);
         var provisionStabilityWindow = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "provision_stability_window")
                                                 .or(AutoHealSpec.DEFAULT_PROVISION_STABILITY_WINDOW);
+        var decommissionedRetention = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "decommissioned_retention")
+                                                .or(AutoHealSpec.DEFAULT_DECOMMISSIONED_RETENTION);
         return AutoHealSpec.autoHealSpec(enabled,
                                          retryInterval,
                                          startupCooldown,
                                          staleObservationTtl,
                                          quicMissPromotionThreshold,
                                          provisioningTimeout,
-                                         provisionStabilityWindow);
+                                         provisionStabilityWindow,
+                                         decommissionedRetention);
     }
 
     private static TlsDeploymentConfig parseTlsConfig(TomlDocument doc) {
