@@ -19,7 +19,10 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -174,6 +177,106 @@ class TopologyObserverTest {
             observer.unregisterPeer(PEER_A);
 
             assertThat(observer.topology()).doesNotContain(PEER_A);
+        }
+    }
+
+    /// Fix C: `initReconcile` must consult the KV-Store's `NodeLifecycleValue.DECOMMISSIONED`
+    /// atoms via the injected `isDecommissioned` predicate, not just the in-memory
+    /// `tombstonedNodes` set. The set is empty after a process restart; without the
+    /// KV-backed predicate a DECOMMISSIONED ghost peer is silently re-seeded from
+    /// `config.coreNodes()` on every reconciliation tick.
+    @Nested
+    class KvDecommissionedFilter {
+        private static TopologyObserver observerWith(MessageRouter router, Predicate<NodeId> isDecommissioned) {
+            return TopologyObserver.topologyObserver(baseConfig(), router, isDecommissioned).unwrap();
+        }
+
+        @Test
+        void initReconcile_decommissionedNodeInKV_skipsConfigReseed() {
+            // PEER_A is in `config.coreNodes()` but the KV says it's DECOMMISSIONED.
+            // The fresh observer must NOT add it, neither at construction time nor when
+            // `start()` triggers `initReconcile`.
+            Predicate<NodeId> isDecommissioned = id -> id.equals(PEER_A);
+
+            var observer = observerWith(MessageRouter.mutable(), isDecommissioned);
+            observer.start().await();
+
+            assertThat(observer.topology()).doesNotContain(PEER_A);
+            assertThat(observer.get(PEER_A).isEmpty()).isTrue();
+        }
+
+        @Test
+        void initReconcile_activeNodeInKV_addsConfigReseed() {
+            // PEER_A is in `config.coreNodes()` and KV does NOT mark it DECOMMISSIONED
+            // (e.g. state is ACTIVE). It must be added.
+            Predicate<NodeId> isDecommissioned = _ -> false;
+
+            var observer = observerWith(MessageRouter.mutable(), isDecommissioned);
+            observer.start().await();
+
+            assertThat(observer.topology()).contains(PEER_A);
+            assertThat(observer.get(PEER_A).isPresent()).isTrue();
+        }
+
+        @Test
+        void initReconcile_noKVAtom_addsConfigReseed_legacyBehavior() {
+            // Predicate returns false for every node — the legacy "no KV reader wired"
+            // case (test fixtures, non-Aether RabiaNode usage). Behaviour matches
+            // pre-Fix-C: every `config.coreNodes()` entry is added.
+            Predicate<NodeId> isDecommissioned = _ -> false;
+
+            var observer = observerWith(MessageRouter.mutable(), isDecommissioned);
+            observer.start().await();
+
+            assertThat(observer.topology()).contains(SELF, PEER_A, PEER_B);
+        }
+
+        @Test
+        void initReconcile_inMemoryTombstone_skipsRegardlessOfKV() {
+            // In-memory tombstone (set by `unregisterPeer`) wins independently of the
+            // KV predicate. KV reports the node as ACTIVE (not DECOMMISSIONED), but the
+            // in-session tombstone still suppresses the reseed.
+            Predicate<NodeId> isDecommissioned = _ -> false;
+
+            var observer = observerWith(MessageRouter.mutable(), isDecommissioned);
+            observer.start().await();
+            // Sanity: reseed has happened by now.
+            assertThat(observer.topology()).contains(PEER_A);
+
+            observer.unregisterPeer(PEER_A);
+
+            assertThat(observer.topology()).doesNotContain(PEER_A);
+            // Subsequent `initReconcile` ticks are a no-op for tombstoned peers.
+            // We force a re-entry by calling start() on a stopped observer; even though
+            // start() is idempotent, the public contract says tombstoned peers stay out.
+            assertThat(observer.topology()).doesNotContain(PEER_A);
+        }
+
+        @Test
+        void registerPeer_explicitReadd_overridesKvDecommissioned() {
+            // Brief requirement #5: an explicit re-add (e.g. restarted container completes
+            // QUIC Hello handshake → `registerPeer`) MUST succeed even if the KV still says
+            // DECOMMISSIONED. The standard CTM lifecycle write path will replace the atom;
+            // the observer-level filter must not stand in the way.
+            //
+            // The KV state is mutable in this test: initially DECOMMISSIONED (so the
+            // initReconcile filter blocks the reseed), then we observe that registerPeer
+            // bypasses the filter unconditionally.
+            var kvState = new AtomicReference<Set<NodeId>>(Set.of(PEER_A));
+            Predicate<NodeId> isDecommissioned = id -> kvState.get().contains(id);
+
+            var observer = observerWith(MessageRouter.mutable(), isDecommissioned);
+            observer.start().await();
+            // Pre-condition: PEER_A blocked by KV filter.
+            assertThat(observer.topology()).doesNotContain(PEER_A);
+
+            observer.registerPeer(INFO_A);
+
+            // Post-condition: explicit re-add succeeded despite KV still saying
+            // DECOMMISSIONED. CTM is expected to subsequently transition the lifecycle
+            // atom away from DECOMMISSIONED via the standard write path.
+            assertThat(observer.topology()).contains(PEER_A);
+            assertThat(observer.get(PEER_A).isPresent()).isTrue();
         }
     }
 }

@@ -203,6 +203,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -309,6 +310,17 @@ public interface AetherNode extends ManageableNode {
         // `HealthReconcilerContext.defaultLeaderEpoch()` (via the assembleNode wiring).
         var leaderTerm = new AtomicLong(0L);
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
+        // Fix C: TopologyObserver.initReconcile must consult the KV-Store's
+        // NodeLifecycleValue.DECOMMISSIONED atoms in addition to the in-memory
+        // `tombstonedNodes` set. The set is empty after a process restart, so without
+        // this predicate a DECOMMISSIONED ghost peer is silently re-seeded from
+        // `config.coreNodes()` when consensus replays the lifecycle log.
+        Predicate<NodeId> isDecommissioned = nodeId ->
+            kvStore.get(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId))
+                   .filter(v -> v instanceof AetherValue.NodeLifecycleValue)
+                   .map(v -> (AetherValue.NodeLifecycleValue) v)
+                   .map(v -> v.state() == AetherValue.NodeLifecycleState.DECOMMISSIONED)
+                   .or(false);
         return RabiaNode.rabiaNode(nodeConfig,
                                    delegateRouter,
                                    kvStore,
@@ -318,7 +330,8 @@ public interface AetherNode extends ManageableNode {
                                    true,
                                    persistence,
                                    config.quicTls(),
-                                   rabiaTermSupplier)
+                                   rabiaTermSupplier,
+                                   isDecommissioned)
         .flatMap(clusterNode -> assembleNode(config,
                                              delegateRouter,
                                              kvStore,

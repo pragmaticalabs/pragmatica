@@ -31,6 +31,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -83,26 +84,58 @@ public interface TopologyObserver extends TopologyManager {
         return new EffectiveMembership(coreNodes(), EffectiveMembership.Source.LEGACY);
     }
 
+    /// Default predicate used when no KV-backed lifecycle reader is wired (tests and
+    /// legacy call sites). Preserves pre-rc1 behaviour: nothing is treated as
+    /// DECOMMISSIONED, so `initReconcile` reseeds every `config.coreNodes()` entry.
+    Predicate<NodeId> NEVER_DECOMMISSIONED = _ -> false;
+
     static Result<TopologyObserver> topologyObserver(TopologyConfig config, MessageRouter router) {
-        return topologyObserver(config, router, TimeSource.system(), GenerationSnapshotSource.noop());
+        return topologyObserver(config, router, TimeSource.system(), GenerationSnapshotSource.noop(), NEVER_DECOMMISSIONED);
     }
 
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
                                                      MessageRouter router,
                                                      TimeSource timeSource) {
-        return topologyObserver(config, router, timeSource, GenerationSnapshotSource.noop());
+        return topologyObserver(config, router, timeSource, GenerationSnapshotSource.noop(), NEVER_DECOMMISSIONED);
     }
 
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
                                                      MessageRouter router,
                                                      GenerationSnapshotSource snapshotSource) {
-        return topologyObserver(config, router, TimeSource.system(), snapshotSource);
+        return topologyObserver(config, router, TimeSource.system(), snapshotSource, NEVER_DECOMMISSIONED);
     }
 
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
                                                      MessageRouter router,
                                                      TimeSource timeSource,
                                                      GenerationSnapshotSource snapshotSource) {
+        return topologyObserver(config, router, timeSource, snapshotSource, NEVER_DECOMMISSIONED);
+    }
+
+    /// Production overload: accepts a `isDecommissioned` predicate driven by the local
+    /// KV-Store's `NodeLifecycleValue` atoms. `initReconcile` consults it alongside the
+    /// in-memory `tombstonedNodes` set so a DECOMMISSIONED ghost peer that survived a
+    /// process restart (consensus log replay) is not silently re-added from
+    /// `config.coreNodes()`. The in-memory set still covers the just-removed-this-session
+    /// window; this predicate covers the persisted-across-restart window.
+    static Result<TopologyObserver> topologyObserver(TopologyConfig config,
+                                                     MessageRouter router,
+                                                     Predicate<NodeId> isDecommissioned) {
+        return topologyObserver(config, router, TimeSource.system(), GenerationSnapshotSource.noop(), isDecommissioned);
+    }
+
+    static Result<TopologyObserver> topologyObserver(TopologyConfig config,
+                                                     MessageRouter router,
+                                                     GenerationSnapshotSource snapshotSource,
+                                                     Predicate<NodeId> isDecommissioned) {
+        return topologyObserver(config, router, TimeSource.system(), snapshotSource, isDecommissioned);
+    }
+
+    static Result<TopologyObserver> topologyObserver(TopologyConfig config,
+                                                     MessageRouter router,
+                                                     TimeSource timeSource,
+                                                     GenerationSnapshotSource snapshotSource,
+                                                     Predicate<NodeId> isDecommissioned) {
         // Validate that self node is in coreNodes - required for self() to work
         var selfInCoreNodes = config.coreNodes()
                                     .stream()
@@ -121,7 +154,8 @@ public interface TopologyObserver extends TopologyManager {
                        java.util.Set<NodeId> readyNodes,
                        Set<NodeId> coreNodeIds,
                        Set<NodeId> tombstonedNodes,
-                       GenerationSnapshotSource snapshotSource) implements TopologyObserver {
+                       GenerationSnapshotSource snapshotSource,
+                       Predicate<NodeId> isDecommissioned) implements TopologyObserver {
             private static final Logger log = LoggerFactory.getLogger(TopologyObserver.class);
 
             Manager(Map<NodeId, NodeState> nodeStatesById,
@@ -134,7 +168,8 @@ public interface TopologyObserver extends TopologyManager {
                     java.util.Set<NodeId> readyNodes,
                     Set<NodeId> coreNodeIds,
                     Set<NodeId> tombstonedNodes,
-                    GenerationSnapshotSource snapshotSource) {
+                    GenerationSnapshotSource snapshotSource,
+                    Predicate<NodeId> isDecommissioned) {
                 this.config = config;
                 this.router = router;
                 this.nodeStatesById = nodeStatesById;
@@ -146,8 +181,15 @@ public interface TopologyObserver extends TopologyManager {
                 this.coreNodeIds = coreNodeIds;
                 this.tombstonedNodes = tombstonedNodes;
                 this.snapshotSource = snapshotSource;
+                this.isDecommissioned = isDecommissioned;
                 this.effectiveClusterSize.set(config.clusterSize());
+                // Mirror the `initReconcile` filter: a peer the cluster has durably retired
+                // (KV NodeLifecycleValue.DECOMMISSIONED) must not be reconstructed from
+                // static config on a fresh process restart. Self is always added — it must
+                // be present in nodeStatesById for `self()` to work.
                 config().coreNodes()
+                      .stream()
+                      .filter(node -> node.id().equals(config.self()) || !isDecommissioned.test(node.id()))
                       .forEach(this::addNode);
                 // Self node validation is done in the factory method before construction
                 log.trace("Topology observer {} initialized with {} nodes, cluster size {}",
@@ -170,6 +212,12 @@ public interface TopologyObserver extends TopologyManager {
                     // and must not be resurrected from config, otherwise they linger as phantoms
                     // alongside any CTM-provisioned replacement and inflate cluster count.
                     //
+                    // Also skip nodes whose KV-Store `NodeLifecycleValue` atom is DECOMMISSIONED:
+                    // the in-memory `tombstonedNodes` set is cleared on every JVM restart, so
+                    // without consulting the KV atom a process restart re-seeds a DECOMMISSIONED
+                    // ghost peer from static config. The two filters compose: in-memory covers
+                    // the just-removed-this-session window; KV covers the across-restart window.
+                    //
                     // Peer eviction on sustained SUSPECTED state is intentionally NOT handled here:
                     // HealthReconciler on the leader consumes accumulated PingTimeout + SwimHint
                     // signals and writes NodeLifecycleKey = LEFT via fenced atom updates, which
@@ -177,12 +225,17 @@ public interface TopologyObserver extends TopologyManager {
                     config().coreNodes().stream()
                           .filter(node -> !nodeStatesById.containsKey(node.id()))
                           .filter(node -> !tombstonedNodes.contains(node.id()))
+                          .filter(node -> !isDecommissioned.test(node.id()))
                           .forEach(this::addNode);
                     router().route(new NetworkServiceMessage.ListConnectedNodes());
                 } else if (nodeStatesById().size() <= 1) {
                     log.info("Topology drained to self-only — re-seeding from config ({} core nodes)", config().coreNodes().size());
                     tombstonedNodes.clear();
-                    config().coreNodes()
+                    // The drained-to-self re-seed still respects KV DECOMMISSIONED — clearing the
+                    // local tombstone set does not authorise resurrection of a node that the
+                    // cluster has durably retired.
+                    config().coreNodes().stream()
+                          .filter(node -> !isDecommissioned.test(node.id()))
                           .forEach(this::addNode);
                 }
             }
@@ -522,6 +575,7 @@ public interface TopologyObserver extends TopologyManager {
                                           ConcurrentHashMap.newKeySet(),
                                           ConcurrentHashMap.newKeySet(),
                                           ConcurrentHashMap.newKeySet(),
-                                          snapshotSource));
+                                          snapshotSource,
+                                          isDecommissioned));
     }
 }

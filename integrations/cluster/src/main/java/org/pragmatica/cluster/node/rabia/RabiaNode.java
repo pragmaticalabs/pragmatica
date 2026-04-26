@@ -73,6 +73,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -132,12 +133,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               TlsConfig tlsConfig) {
         return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer,
                           metrics, useConsensusLeaderElection, persistence, tlsConfig,
-                          () -> 0L);
+                          () -> 0L, TopologyObserver.NEVER_DECOMMISSIONED);
     }
 
     /// Overload that accepts a `rabiaTermSupplier` plumbed into the [`LeaderManager`] so
-    /// [`LeaderManager#currentLeaderEpoch`] returns the live cluster-side term. Production
-    /// wiring (Aether) calls this; legacy/test callers use the no-supplier overload above.
+    /// [`LeaderManager#currentLeaderEpoch`] returns the live cluster-side term. Legacy
+    /// callers without a KV-backed lifecycle predicate use this overload.
     static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
                                                               DelegateRouter delegateRouter,
                                                               StateMachine<C> stateMachine,
@@ -148,8 +149,29 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               RabiaPersistence<C> persistence,
                                                               TlsConfig tlsConfig,
                                                               Supplier<Long> rabiaTermSupplier) {
+        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer,
+                          metrics, useConsensusLeaderElection, persistence, tlsConfig,
+                          rabiaTermSupplier, TopologyObserver.NEVER_DECOMMISSIONED);
+    }
+
+    /// Production overload: accepts an `isDecommissioned` predicate that consults the
+    /// local KV-Store for `NodeLifecycleValue` atoms in DECOMMISSIONED state. The
+    /// predicate is forwarded to [`TopologyObserver`] so static-config reseed in
+    /// `initReconcile` skips nodes the cluster has durably retired (the in-memory
+    /// `tombstonedNodes` set alone is insufficient — it does not survive process restart).
+    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
+                                                              DelegateRouter delegateRouter,
+                                                              StateMachine<C> stateMachine,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              ConsensusMetrics metrics,
+                                                              boolean useConsensusLeaderElection,
+                                                              RabiaPersistence<C> persistence,
+                                                              TlsConfig tlsConfig,
+                                                              Supplier<Long> rabiaTermSupplier,
+                                                              Predicate<NodeId> isDecommissioned) {
         return Result.all(
-            TopologyObserver.topologyObserver(config.topology(), delegateRouter),
+            TopologyObserver.topologyObserver(config.topology(), delegateRouter, isDecommissioned),
             QuicTlsProvider.serverContext(tlsConfig),
             QuicTlsProvider.clientContext(tlsConfig)
         ).map((topologyManager, serverSsl, clientSsl) -> assembleNode(config,
