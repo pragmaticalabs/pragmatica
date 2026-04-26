@@ -137,13 +137,18 @@ public final class DecommissionedAtomGc {
         var nowMs = clock.getAsLong();
         var cutoffMs = nowMs - autoHealConfig.decommissionedRetention().millis();
         var commands = new ArrayList<KVCommand<AetherKey>>();
-        kvSnapshotSupplier.get()
-                          .forEach((key, value) -> appendIfExpired(key, value, cutoffMs, commands));
+        // Widen to raw Map<?, ?> so javac does not insert a checkcast AetherKey on
+        // each entry — the merged KV may contain LeaderKey/LeaderValue (consensus
+        // layer, sibling sealed hierarchy). instanceof handles cross-hierarchy keys.
+        Map<?, ?> raw = kvSnapshotSupplier.get();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            appendIfExpired(entry.getKey(), entry.getValue(), cutoffMs, commands);
+        }
         return List.copyOf(commands);
     }
 
-    private static void appendIfExpired(AetherKey key,
-                                         AetherValue value,
+    private static void appendIfExpired(Object key,
+                                         Object value,
                                          long cutoffMs,
                                          List<KVCommand<AetherKey>> commands) {
         if (! (key instanceof NodeLifecycleKey lifecycleKey)) {return;}

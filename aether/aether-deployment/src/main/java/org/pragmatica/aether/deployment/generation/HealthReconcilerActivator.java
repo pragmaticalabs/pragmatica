@@ -419,11 +419,15 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
 
     private int countLifecycleAtoms() {
         // The merged KV snapshot may contain keys from sibling sealed hierarchies
-        // (e.g., consensus-layer LeaderKey alongside aether-slice AetherKey). A
-        // method-reference `Class::isInstance` triggers a synthetic cast that throws
-        // ClassCastException on cross-hierarchy keys. The lambda form sidesteps that.
+        // (e.g., consensus-layer LeaderKey alongside aether-slice AetherKey). The
+        // `Supplier<Map<AetherKey, AetherValue>>` declaration lies about runtime
+        // contents — javac inserts a `checkcast AetherKey` after Iterator.next()
+        // for any typed iteration (stream, for-each, forEach), which throws CCE on
+        // cross-hierarchy keys. Widen the iteration source to `Map<?, ?>` to erase
+        // the type info and avoid the bytecode-inserted cast.
         var count = 0;
-        for (var k : kvSnapshotSupplier.get().keySet()) {
+        Map<?, ?> raw = kvSnapshotSupplier.get();
+        for (Object k : raw.keySet()) {
             if (k instanceof NodeLifecycleKey) {
                 count++;
             }
