@@ -23,6 +23,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -44,6 +45,7 @@ class RollbackManagerTest {
     private RollbackConfig config;
     private TestClusterNode clusterNode;
     private TestKVStore kvStore;
+    private TestLeaderManager leaderManager;
     private RollbackManager rollbackManager;
 
     @BeforeEach
@@ -51,7 +53,8 @@ class RollbackManagerTest {
         config = RollbackConfig.rollbackConfig();
         clusterNode = new TestClusterNode(SELF);
         kvStore = new TestKVStore();
-        rollbackManager = RollbackManager.rollbackManager(SELF, config, clusterNode, kvStore);
+        leaderManager = new TestLeaderManager();
+        rollbackManager = RollbackManager.rollbackManager(SELF, config, clusterNode, kvStore, leaderManager);
     }
 
     @Nested
@@ -82,6 +85,7 @@ class RollbackManagerTest {
 
         @Test
         void leader_tracksVersionChanges() {
+            leaderManager.setLeader(true);
             rollbackManager.activate();
             var v1 = Artifact.artifact("org.example:test:1.0.0").unwrap();
             var v2 = Artifact.artifact("org.example:test:2.0.0").unwrap();
@@ -101,6 +105,7 @@ class RollbackManagerTest {
     class RollbackTriggering {
         @BeforeEach
         void becomeLeader() {
+            leaderManager.setLeader(true);
             rollbackManager.activate();
         }
 
@@ -141,6 +146,7 @@ class RollbackManagerTest {
     class StatsTracking {
         @BeforeEach
         void becomeLeader() {
+            leaderManager.setLeader(true);
             rollbackManager.activate();
         }
 
@@ -256,5 +262,33 @@ class RollbackManagerTest {
         void put(AetherKey key, AetherValue value) {
             data.put(key, value);
         }
+    }
+
+    static class TestLeaderManager implements LeaderManager {
+        private volatile boolean leader = false;
+
+        void setLeader(boolean value) {
+            this.leader = value;
+        }
+
+        @Override public Option<NodeId> leader() {
+            return leader ? Option.some(LEADER) : Option.none();
+        }
+
+        @Override public boolean isLeader() {
+            return leader;
+        }
+
+        @Override public Option<Long> currentLeaderEpoch() {
+            return Option.none();
+        }
+
+        @Override public void onLeaderCommitted(NodeId leader) {}
+        @Override public void triggerElection() {}
+        @Override public void stop() {}
+        @Override public void nodeAdded(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded n) {}
+        @Override public void nodeRemoved(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved n) {}
+        @Override public void nodeDown(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown n) {}
+        @Override public void watchQuorumState(org.pragmatica.consensus.topology.QuorumStateNotification q) {}
     }
 }

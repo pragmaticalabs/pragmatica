@@ -22,6 +22,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -31,7 +32,6 @@ import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -174,24 +174,23 @@ public interface RollbackManager extends DelegatedComponent {
     static RollbackManager rollbackManager(NodeId self,
                                            RollbackConfig config,
                                            ClusterNode<KVCommand<AetherKey>> cluster,
-                                           KVStore<AetherKey, AetherValue> kvStore) {
+                                           KVStore<AetherKey, AetherValue> kvStore,
+                                           LeaderManager leaderManager) {
         record rollbackManager(NodeId self,
                                RollbackConfig config,
                                ClusterNode<KVCommand<AetherKey>> cluster,
                                KVStore<AetherKey, AetherValue> kvStore,
-                               AtomicBoolean isLeader,
+                               LeaderManager leaderManager,
                                ConcurrentHashMap<ArtifactBase, RollbackState> rollbackStates,
                                Logger log) implements RollbackManager {
             @Override public Promise<Unit> activate() {
                 log.info("Node {} activating RollbackManager", self);
-                isLeader.set(true);
                 loadPreviousVersionsFromKvStore();
                 return Promise.unitPromise();
             }
 
             @Override public Promise<Unit> deactivate() {
                 log.info("Node {} deactivating RollbackManager", self);
-                isLeader.set(false);
                 rollbackStates.clear();
                 return Promise.unitPromise();
             }
@@ -201,7 +200,7 @@ public interface RollbackManager extends DelegatedComponent {
             }
 
             @Override public boolean isActive() {
-                return isLeader.get();
+                return leaderManager.isLeader();
             }
 
             @Override public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
@@ -225,7 +224,7 @@ public interface RollbackManager extends DelegatedComponent {
                     log.debug("Rollback on AllInstancesFailed disabled, ignoring event for {}", event.artifact());
                     return;
                 }
-                if (!isLeader.get()) {
+                if (!leaderManager.isLeader()) {
                     log.debug("Not leader, skipping rollback decision for {}", event.artifact());
                     return;
                 }
@@ -276,7 +275,7 @@ public interface RollbackManager extends DelegatedComponent {
             }
 
             private void trackVersionChange(ArtifactBase artifactBase, SliceTargetValue sliceTargetValue) {
-                if (!isLeader.get()) {return;}
+                if (!leaderManager.isLeader()) {return;}
                 var currentVersion = sliceTargetValue.currentVersion();
                 rollbackStates.compute(artifactBase,
                                        (ab, existing) -> computeVersionTracking(ab,
@@ -407,7 +406,7 @@ public interface RollbackManager extends DelegatedComponent {
                                           config,
                                           cluster,
                                           kvStore,
-                                          new AtomicBoolean(false),
+                                          leaderManager,
                                           new ConcurrentHashMap<>(),
                                           LoggerFactory.getLogger(RollbackManager.class));
         manager.loadPreviousVersionsFromKvStore();

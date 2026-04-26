@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
+import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.lang.Cause;
@@ -34,7 +35,6 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -64,10 +64,11 @@ import org.slf4j.LoggerFactory;
     static ScheduledTaskManager scheduledTaskManager(ScheduledTaskRegistry registry,
                                                      SliceInvoker invoker,
                                                      NodeId self,
-                                                     Consumer<KVCommand<AetherKey>> stateWriter) {
+                                                     Consumer<KVCommand<AetherKey>> stateWriter,
+                                                     LeaderManager leaderManager) {
         var ctxHolder = new AtomicReference<Context>();
         Function<Fsm<SchedulerState, ClusterFsmEvent>, SchedulerState> initialStateFactory =
-            f -> buildContextAndInitialState(ctxHolder, f, registry, invoker, self, stateWriter);
+            f -> buildContextAndInitialState(ctxHolder, f, registry, invoker, self, stateWriter, leaderManager);
         var fsm = Fsm.fsm("scheduled-task", self.id(), initialStateFactory);
         var ctx = ctxHolder.get();
         registry.setChangeListener(new RegistryListener(ctx, fsm)::onChange);
@@ -79,8 +80,9 @@ import org.slf4j.LoggerFactory;
                                                               ScheduledTaskRegistry registry,
                                                               SliceInvoker invoker,
                                                               NodeId self,
-                                                              Consumer<KVCommand<AetherKey>> stateWriter) {
-        var ctx = new Context(fsm, registry, invoker, self, stateWriter);
+                                                              Consumer<KVCommand<AetherKey>> stateWriter,
+                                                              LeaderManager leaderManager) {
+        var ctx = new Context(fsm, registry, invoker, self, stateWriter, leaderManager);
         ctxHolder.set(ctx);
         return ctx.dormant;
     }
@@ -91,8 +93,8 @@ import org.slf4j.LoggerFactory;
         final SliceInvoker invoker;
         final NodeId self;
         final Consumer<KVCommand<AetherKey>> stateWriter;
+        final LeaderManager leaderManager;
         final Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers = new ConcurrentHashMap<>();
-        final AtomicBoolean lastKnownIsLeader = new AtomicBoolean(false);
         final AtomicLong quorumSequence = new AtomicLong(0);
         final Dormant dormant;
         final Following following;
@@ -103,12 +105,14 @@ import org.slf4j.LoggerFactory;
                 ScheduledTaskRegistry registry,
                 SliceInvoker invoker,
                 NodeId self,
-                Consumer<KVCommand<AetherKey>> stateWriter) {
+                Consumer<KVCommand<AetherKey>> stateWriter,
+                LeaderManager leaderManager) {
             this.fsm = fsm;
             this.registry = registry;
             this.invoker = invoker;
             this.self = self;
             this.stateWriter = stateWriter;
+            this.leaderManager = leaderManager;
             this.dormant = new Dormant(this);
             this.following = new Following(this);
             this.leading = new Leading(this);
@@ -126,8 +130,8 @@ import org.slf4j.LoggerFactory;
         public void handle(ClusterFsmEvent event, TransitionRequest<SchedulerState, ClusterFsmEvent> tx) {
             switch (event) {
                 case ClusterFsmEvent.QuorumEstablished _ ->
-                    tx.transitionTo(ctx.lastKnownIsLeader.get() ? ctx.leading : ctx.following);
-                case ClusterFsmEvent.LeaderChange lc -> ctx.lastKnownIsLeader.set(lc.localIsLeader());
+                    tx.transitionTo(ctx.leaderManager.isLeader() ? ctx.leading : ctx.following);
+                case ClusterFsmEvent.LeaderChange _ -> tx.ignore();
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped);
                 default -> tx.ignore();
             }
@@ -152,7 +156,6 @@ import org.slf4j.LoggerFactory;
         public void handle(ClusterFsmEvent event, TransitionRequest<SchedulerState, ClusterFsmEvent> tx) {
             switch (event) {
                 case ClusterFsmEvent.LeaderChange lc -> {
-                    ctx.lastKnownIsLeader.set(lc.localIsLeader());
                     if (lc.localIsLeader()) {
                         tx.transitionTo(ctx.leading);
                     }
@@ -182,7 +185,6 @@ import org.slf4j.LoggerFactory;
         public void handle(ClusterFsmEvent event, TransitionRequest<SchedulerState, ClusterFsmEvent> tx) {
             switch (event) {
                 case ClusterFsmEvent.LeaderChange lc -> {
-                    ctx.lastKnownIsLeader.set(lc.localIsLeader());
                     if (!lc.localIsLeader()) {
                         tx.transitionTo(ctx.following);
                     }

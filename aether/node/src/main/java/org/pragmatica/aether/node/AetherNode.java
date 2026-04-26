@@ -792,7 +792,7 @@ public interface AetherNode extends ManageableNode {
         var peerObservationStore = org.pragmatica.aether.metrics.observation.PeerObservationStore.peerObservationStore();
         BooleanSupplier isLeaderSupplier = clusterNode.leaderManager()::isLeader;
         metricsCollector.setPongSignalFan(ClusterSyncPongSignalFan.clusterSyncPongSignalFan(stableHealthSink,
-                                                                                            isLeaderSupplier));
+                                                                                            clusterNode.leaderManager()));
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
         Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.get(), 0L);
         var hlcClockEarly = HlcClock.hlcClock(config.self().id()).unwrap();
@@ -906,7 +906,7 @@ public interface AetherNode extends ManageableNode {
                                                   config.controllerConfig(),
                                                   delegateRouter::route);
         var rollbackManager = config.rollback().enabled()
-                             ? RollbackManager.rollbackManager(config.self(), config.rollback(), clusterNode, kvStore)
+                             ? RollbackManager.rollbackManager(config.self(), config.rollback(), clusterNode, kvStore, clusterNode.leaderManager())
                              : RollbackManager.disabled();
         var abTestManager = AbTestManager.abTestManager(clusterNode, kvStore, invocationMetrics);
         var sliceInvoker = SliceInvoker.sliceInvoker(config.self(),
@@ -927,7 +927,8 @@ public interface AetherNode extends ManageableNode {
         var scheduledTaskManager = ScheduledTaskManager.scheduledTaskManager(scheduledTaskRegistry,
                                                                              sliceInvoker,
                                                                              config.self(),
-                                                                             command -> clusterNode.apply(List.of(command)));
+                                                                             command -> clusterNode.apply(List.of(command)),
+                                                                             clusterNode.leaderManager());
         resourceProviderSetup.spiProvider()
                                          .onPresent(spi -> registerRuntimeExtensions(spi,
                                                                                      topicSubscriptionRegistry,

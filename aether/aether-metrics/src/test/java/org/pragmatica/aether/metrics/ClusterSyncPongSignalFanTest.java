@@ -17,10 +17,11 @@ import org.pragmatica.cluster.metrics.HealthHintWire;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.LeaderManager;
+import org.pragmatica.lang.Option;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -54,11 +55,26 @@ class ClusterSyncPongSignalFanTest {
     class FollowerGate {
         @Test
         void fan_whenNotLeader_doesNothing() {
-            var notLeader = new AtomicBoolean(false);
-            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, notLeader::get);
+            var leaderManager = new TestLeaderManager(false);
+            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager);
 
             fan.fan(pongWithObservations());
 
+            assertThat(emitted).isEmpty();
+        }
+
+        @Test
+        void fan_leaderTransition_reflectedWithoutDispatchingState() {
+            var leaderManager = new TestLeaderManager(true);
+            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager);
+
+            fan.fan(pongWithObservations());
+            assertThat(emitted).isNotEmpty();
+            emitted.clear();
+
+            // Flip SSOT — fan must reflect the change immediately on next call.
+            leaderManager.setLeader(false);
+            fan.fan(pongWithObservations());
             assertThat(emitted).isEmpty();
         }
     }
@@ -67,8 +83,8 @@ class ClusterSyncPongSignalFanTest {
     class LeaderFanOut {
         @Test
         void fan_whenLeader_emitsRemoteSwimHintPerObservation() {
-            var isLeader = new AtomicBoolean(true);
-            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, isLeader::get);
+            var leaderManager = new TestLeaderManager(true);
+            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager);
 
             fan.fan(pongWithObservations());
 
@@ -84,8 +100,8 @@ class ClusterSyncPongSignalFanTest {
 
         @Test
         void fan_whenLeader_emitsRemoteConnectivityPerObservation() {
-            var isLeader = new AtomicBoolean(true);
-            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, isLeader::get);
+            var leaderManager = new TestLeaderManager(true);
+            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager);
 
             fan.fan(pongWithObservations());
 
@@ -103,12 +119,45 @@ class ClusterSyncPongSignalFanTest {
 
         @Test
         void fan_emptyPong_producesNoSignals() {
-            var isLeader = new AtomicBoolean(true);
-            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, isLeader::get);
+            var leaderManager = new TestLeaderManager(true);
+            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager);
 
             fan.fan(new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "ON_DUTY", List.of(), List.of(), List.of()));
 
             assertThat(emitted).isEmpty();
         }
+    }
+
+    /// Controllable LeaderManager stub for SSOT testing.
+    static final class TestLeaderManager implements LeaderManager {
+        private volatile boolean leader;
+
+        TestLeaderManager(boolean initial) {
+            this.leader = initial;
+        }
+
+        void setLeader(boolean value) {
+            this.leader = value;
+        }
+
+        @Override public Option<NodeId> leader() {
+            return leader ? Option.some(OBSERVER) : Option.none();
+        }
+
+        @Override public boolean isLeader() {
+            return leader;
+        }
+
+        @Override public Option<Long> currentLeaderEpoch() {
+            return Option.none();
+        }
+
+        @Override public void onLeaderCommitted(NodeId leader) {}
+        @Override public void triggerElection() {}
+        @Override public void stop() {}
+        @Override public void nodeAdded(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded n) {}
+        @Override public void nodeRemoved(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved n) {}
+        @Override public void nodeDown(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown n) {}
+        @Override public void watchQuorumState(org.pragmatica.consensus.topology.QuorumStateNotification q) {}
     }
 }

@@ -14,9 +14,8 @@ import org.pragmatica.cluster.metrics.ConnectivityState;
 import org.pragmatica.cluster.metrics.HealthHintWire;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
+import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.lang.Contract;
-
-import java.util.function.BooleanSupplier;
 
 
 /// Leader-side fan-out of peer observations carried on `ClusterSyncPong`s.
@@ -26,19 +25,19 @@ import java.util.function.BooleanSupplier;
 /// one `HealthSignal.RemoteSwimHint` / `HealthSignal.RemoteConnectivity` per
 /// observation into the leader's health-signal sink.
 ///
-/// On followers (`isLeaderGate.getAsBoolean() == false`) the fan is a no-op —
+/// On followers (`leaderManager.isLeader() == false`) the fan is a no-op —
 /// only the Rabia leader feeds its `HealthReconciler` with decisions.
 ///
 /// See `aether/docs/specs/clustersync-refactor-spec.md` commit 1.
 @Contract public interface ClusterSyncPongSignalFan {
     void fan(ClusterSyncPong pong);
 
-    static ClusterSyncPongSignalFan clusterSyncPongSignalFan(HealthSignalSink sink, BooleanSupplier isLeaderGate) {
-        return pong -> fanIfLeader(pong, sink, isLeaderGate);
+    static ClusterSyncPongSignalFan clusterSyncPongSignalFan(HealthSignalSink sink, LeaderManager leaderManager) {
+        return pong -> fanIfLeader(pong, sink, leaderManager);
     }
 
-    private static void fanIfLeader(ClusterSyncPong pong, HealthSignalSink sink, BooleanSupplier isLeaderGate) {
-        if (!isLeaderGate.getAsBoolean()) {return;}
+    private static void fanIfLeader(ClusterSyncPong pong, HealthSignalSink sink, LeaderManager leaderManager) {
+        if (!leaderManager.isLeader()) {return;}
         pong.peerHealth().forEach(observation -> emitHealth(pong, observation, sink));
         pong.peerConnectivity().forEach(observation -> emitConnectivity(pong, observation, sink));
     }
