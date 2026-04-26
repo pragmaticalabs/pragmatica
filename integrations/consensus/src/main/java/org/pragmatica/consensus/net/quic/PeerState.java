@@ -20,6 +20,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.function.LongUnaryOperator;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
@@ -109,6 +110,19 @@ public final class PeerState {
     private long phaseChangedAtNanos;
     private boolean passive;
     private final Deque<byte[]> offlineBuffer = new ArrayDeque<>();
+
+    /// Wall-clock instant (ms) at which the missing-peer reconciler is next allowed to
+    /// attempt a re-dial of this peer. Zero means no reconciler attempt has been made yet
+    /// (any reconciler tick may dispatch immediately). Used by `QuicClusterNetwork`'s
+    /// periodic reconciler to back off unreachable peers without piling up redundant
+    /// dial attempts. Distinct from `ReconnectBackoff` (eviction-driven) which paces
+    /// rapid heartbeat-loop reconnects on a freshly evicted CONNECTED link.
+    private long reconcileNextAttemptMs;
+
+    /// Current reconcile-backoff window in ms; doubled on every reconciler dispatch
+    /// for this peer up to a configured cap, reset by `resetReconcileBackoff` on a
+    /// successful attach.
+    private long reconcileCurrentDelayMs;
 
     private PeerState(NodeId peerId, long nowNanos) {
         this.peerId = peerId;
@@ -257,6 +271,43 @@ public final class PeerState {
     /// Size of the offline buffer. Used for diagnostics and metrics.
     public synchronized int offlineBufferSize() {
         return offlineBuffer.size();
+    }
+
+    /// Returns true when the periodic missing-peer reconciler is allowed to dispatch a
+    /// re-dial for this peer at the supplied wall-clock instant. On allow, advances the
+    /// internal backoff state: doubles the current delay (capped at `capMs`), seeds the
+    /// next-attempt timestamp at `nowMs + jitterFn(nextDelay)`, and stores it. On disallow
+    /// the state is unchanged. Per-peer monitor protects against concurrent reconciler
+    /// ticks racing the same peer.
+    ///
+    /// `initialMs` and `capMs` are passed in by the caller to keep this class free of
+    /// configuration coupling. `jitterFn` is invoked exactly once on the *new* delay
+    /// (doubled, capped) so the deferred-attempt timestamp reflects the chosen jitter.
+    public synchronized boolean reconcileBackoffAllows(long nowMs,
+                                                       long initialMs,
+                                                       long capMs,
+                                                       LongUnaryOperator jitterFn) {
+        if (nowMs < reconcileNextAttemptMs) {
+            return false;
+        }
+        var nextDelay = reconcileCurrentDelayMs == 0L
+                       ? initialMs
+                       : Math.min(reconcileCurrentDelayMs * 2L, capMs);
+        reconcileCurrentDelayMs = nextDelay;
+        reconcileNextAttemptMs = nowMs + Math.max(1L, jitterFn.applyAsLong(nextDelay));
+        return true;
+    }
+
+    /// Reset the reconcile backoff. Called when a peer attaches successfully so a peer
+    /// that was stuck does not pay the doubled delay forever after recovery.
+    public synchronized void resetReconcileBackoff() {
+        reconcileCurrentDelayMs = 0L;
+        reconcileNextAttemptMs = 0L;
+    }
+
+    /// Current reconcile-backoff delay in ms; intended for tests/diagnostics.
+    public synchronized long reconcileCurrentDelayMs() {
+        return reconcileCurrentDelayMs;
     }
 
     private void changePhase(Phase next, long nowNanos) {

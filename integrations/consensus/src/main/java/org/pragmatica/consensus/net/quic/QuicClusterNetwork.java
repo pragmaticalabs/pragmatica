@@ -53,6 +53,11 @@ import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.concurrent.CancellableTask;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.JitterUtil;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -121,6 +126,18 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private static final double BACKOFF_JITTER_MAX = 1.5;
     private final Map<NodeId, ReconnectBackoff> reconnectBackoff = new ConcurrentHashMap<>();
     private volatile LongSupplier wallClockMs = System::currentTimeMillis;
+
+    /// Periodic missing-peer reconciler tunables. The reconciler runs every
+    /// `RECONCILE_TICK` and, for any configured peer whose `PeerState.phase()` is
+    /// not CONNECTED, dispatches a `connectPeer(...)` call gated by a per-peer
+    /// jittered exponential backoff (initial 5s, cap 60s — matches Theme I patterns).
+    /// Closes the asymmetric-recreation gap: when a node container is recreated
+    /// mid-cluster it may handshake with most peers but permanently miss one, leaving
+    /// no traffic to clear the sticky SUSPECTED snapshot state.
+    private static final TimeSpan RECONCILE_TICK = TimeSpan.timeSpan(5L).seconds();
+    private static final long RECONCILE_BACKOFF_INITIAL_MS = 5_000L;
+    private static final long RECONCILE_BACKOFF_CAP_MS = 60_000L;
+    private final CancellableTask reconcilerTask = CancellableTask.cancellableTask();
 
     /// Retained for API compatibility with existing callers. All hysteresis/grace-window
     /// buffering was removed in favour of authoritative single-writer semantics (spec §8) —
@@ -314,6 +331,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
             clientSslContext, Option.empty(), this::onMessageReceived
         );
         return server.start(port)
+                     .onSuccess(_ -> startMissingPeerReconciler())
                      .onFailure(this::onStartFailed)
                      .mapToUnit();
     }
@@ -324,9 +342,20 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return Promise.unitPromise();
         }
         log.debug("Stopping QuicClusterNetwork: notifying view change");
+        reconcilerTask.cancel();
         processViewChange(SHUTDOWN, self.id());
         return closePeerConnections()
             .flatMap(this::stopServerAndClient);
+    }
+
+    /// Schedule the periodic missing-peer reconciler. Idempotent — second invocation
+    /// (rare; `startOnPort` is gated by `isRunning.compareAndSet`) replaces the prior
+    /// task via `CancellableTask.set` which cancels the old future first.
+    @Contract private void startMissingPeerReconciler() {
+        var future = SharedScheduler.scheduleAtFixedRate(this::reconcileMissingPeersTick, RECONCILE_TICK, RECONCILE_TICK);
+        reconcilerTask.set(future);
+        log.debug("Missing-peer reconciler scheduled (tick={}ms, backoff initial={}ms, cap={}ms)",
+                  RECONCILE_TICK.millis(), RECONCILE_BACKOFF_INITIAL_MS, RECONCILE_BACKOFF_CAP_MS);
     }
 
     @Override
@@ -581,8 +610,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
 
         // Successful attach — clear any reconnect backoff so a future flap starts at the
-        // initial delay rather than carrying over the doubled value.
+        // initial delay rather than carrying over the doubled value. Same for the
+        // missing-peer reconciler backoff (handles the asymmetric-handshake recovery path).
         resetReconnectBackoff(peerId);
+        state.resetReconcileBackoff();
         installWritabilityHandler(connection, peerId);
         drainOfflineBufferInto(state, connection);
 
@@ -909,6 +940,75 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private long jittered(long delayMs) {
         var factor = BACKOFF_JITTER_MIN + (BACKOFF_JITTER_MAX - BACKOFF_JITTER_MIN) * ThreadLocalRandom.current().nextDouble();
         return Math.max(1L, (long) (delayMs * factor));
+    }
+
+    /// Periodic missing-peer reconciler tick. For every configured non-passive peer that is
+    /// not currently CONNECTED, dispatches `connectPeer(...)` (subject to per-peer jittered
+    /// exponential backoff) so the asymmetric-handshake hole — node A handshakes with B/C/D
+    /// but permanently misses E — self-heals without operator intervention. When all
+    /// configured peers are connected this is a no-op.
+    ///
+    /// Skips peers in CONNECTING phase (a dial is already in flight; existing dedup at
+    /// `connectPeer` would no-op anyway, but we save the topology lookup). Skips peers in
+    /// REMOVED phase (authoritatively departed; resurrecting them is the responsibility of
+    /// the topology / cluster-formation layer, not the transport reconciler).
+    ///
+    /// Package-private to allow tests to drive ticks deterministically without scheduling.
+    @SuppressWarnings("JBCT-PAT-01") // Periodic tick: walk topology, gate per-peer, dispatch dial
+    void reconcileMissingPeersTick() {
+        if (!isRunning.get()) {
+            return;
+        }
+        Result.lift(this::reconcileMissingPeersUnsafe)
+              .onFailure(cause -> log.warn("Missing-peer reconciler tick failed: {}", cause.message()));
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") // Iterate, gate, dispatch
+    private Unit reconcileMissingPeersUnsafe() {
+        var connected = connectedPeers();
+        var nowMs = wallClockMs.getAsLong();
+        for (var peerId : topologyManager.topology()) {
+            if (peerId.equals(self.id())) {continue;}
+            if (connected.contains(peerId)) {continue;}
+            if (topologyManager.isPassive(peerId)) {continue;}
+            if (!ConnectionDirection.shouldInitiate(self.id(), peerId)) {continue;}
+            considerPeerForReconcile(peerId, nowMs);
+        }
+        return unit();
+    }
+
+    private void considerPeerForReconcile(NodeId peerId, long nowMs) {
+        var existing = peers.get(peerId);
+        // CONNECTING means a dial is already in flight; REMOVED means authoritatively
+        // departed. Either way the reconciler must NOT fire — see commit 2e7b85dd1 dedup.
+        if (existing != null) {
+            var phase = existing.phase();
+            if (phase == PeerState.Phase.CONNECTING || phase == PeerState.Phase.REMOVED) {
+                return;
+            }
+        }
+        var state = existing == null ? getOrCreatePeer(peerId) : existing;
+        if (!state.reconcileBackoffAllows(nowMs, RECONCILE_BACKOFF_INITIAL_MS,
+                                          RECONCILE_BACKOFF_CAP_MS, this::reconcileJitter)) {
+            log.trace("Missing-peer reconciler suppressed by per-peer backoff for {}", peerId);
+            return;
+        }
+        topologyManager.get(peerId)
+                       .onPresent(this::reconcileDialPeer)
+                       .onEmpty(() -> log.debug("Missing-peer reconciler: no NodeInfo for {} — topology lookup empty", peerId));
+    }
+
+    /// Default jitter for the missing-peer reconciler. Light bands (0.8x–1.2x) — peers
+    /// don't need wide jitter at the 5-60s tempo; correlated retries are tolerable.
+    private long reconcileJitter(long delayMs) {
+        return JitterUtil.applyJitter(delayMs, JitterUtil.LIGHT_MIN_FACTOR, JitterUtil.LIGHT_MAX_FACTOR);
+    }
+
+    @Contract private void reconcileDialPeer(NodeInfo peer) {
+        log.info("Missing-peer reconciler: re-dialing configured peer {} (phase={})",
+                 peer.id(),
+                 Option.option(peers.get(peer.id())).map(PeerState::phase).map(Object::toString).or("ABSENT"));
+        connectPeer(peer);
     }
 
     /// Reset the per-peer reconnect backoff. Called on successful peer attach so a
