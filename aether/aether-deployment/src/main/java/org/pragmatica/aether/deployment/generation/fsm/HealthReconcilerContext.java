@@ -1022,10 +1022,23 @@ public final class HealthReconcilerContext {
     /// Reset the consecutive QUIC ping-miss counter on a fresh CONNECTED report so a peer that
     /// recovers does not accrue toward the FAULTY-promotion threshold from prior outages.
     /// Pairs with [`#promoteToFaultyIfThresholdReached`].
+    ///
+    /// Also self-heals sticky SUSPECTED state: SWIM may transiently mark a peer SUSPECTED
+    /// during cluster boot (probes fire before the peer's SWIM transport is ready). Without
+    /// this clear path, SUSPECTED only lifts on a fresh `SwimHint(HEALTHY)`, which SWIM may
+    /// never re-emit for a peer it considers stable. A live QUIC connection with zero
+    /// consecutive misses is positive liveness evidence — clear the SUSPECTED hint and the
+    /// in-memory snapshot's `healthHint=SUSPECTED` so `MembershipView.healthyOnDutyCount`
+    /// reflects reality. FAULTY remains sticky until SWIM-side `revivalGrace` clears it.
     private SignalOutcome handleRemoteConnected(ClusterGenerationSnapshot current,
                                                 NodeId peer,
                                                 TermAdvance termAdvance) {
         peerObservationStore.clearPingMisses(peer);
+        if (swimHints.get(peer) == HealthHint.SUSPECTED) {
+            log.info("Clearing sticky SUSPECTED for peer {} on positive QUIC liveness (CONNECTED, missed=0)", peer);
+            swimHints.remove(peer);
+            return clearSuspectedInMemory(current, peer, termAdvance);
+        }
         return SignalOutcome.unchanged(current, termAdvance);
     }
 
@@ -1058,10 +1071,13 @@ public final class HealthReconcilerContext {
 
     private SignalOutcome markSuspectedInMemory(ClusterGenerationSnapshot current, NodeId nodeId, TermAdvance termAdvance) {
         return Option.option(current.coreMembers().get(nodeId)).filter(member -> member.healthHint() != HealthHint.SUSPECTED)
-                            .map(member -> applyHealthHintChange(current,
-                                                                 nodeId,
-                                                                 member.withHealthHint(HealthHint.SUSPECTED),
-                                                                 termAdvance))
+                            .map(member -> {
+                                log.info("Marking peer {} healthHint=SUSPECTED (was {})", nodeId, member.healthHint());
+                                return applyHealthHintChange(current,
+                                                             nodeId,
+                                                             member.withHealthHint(HealthHint.SUSPECTED),
+                                                             termAdvance);
+                            })
                             .or(() -> SignalOutcome.unchanged(current, termAdvance));
     }
 
@@ -1075,6 +1091,7 @@ public final class HealthReconcilerContext {
                                               NodeId nodeId,
                                               CoreMember member,
                                               TermAdvance termAdvance) {
+        log.info("Clearing peer {} healthHint=HEALTHY (was {})", nodeId, member.healthHint());
         peerObservationStore.clearPingMisses(nodeId);
         return applyHealthHintChange(current, nodeId, member.withHealthHint(HealthHint.HEALTHY), termAdvance);
     }
