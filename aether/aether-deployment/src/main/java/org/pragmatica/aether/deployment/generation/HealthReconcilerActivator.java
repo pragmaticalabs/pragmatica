@@ -418,9 +418,17 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
     }
 
     private int countLifecycleAtoms() {
-        return (int) kvSnapshotSupplier.get().keySet().stream()
-                                          .filter(NodeLifecycleKey.class::isInstance)
-                                          .count();
+        // The merged KV snapshot may contain keys from sibling sealed hierarchies
+        // (e.g., consensus-layer LeaderKey alongside aether-slice AetherKey). A
+        // method-reference `Class::isInstance` triggers a synthetic cast that throws
+        // ClassCastException on cross-hierarchy keys. The lambda form sidesteps that.
+        var count = 0;
+        for (var k : kvSnapshotSupplier.get().keySet()) {
+            if (k instanceof NodeLifecycleKey) {
+                count++;
+            }
+        }
+        return count;
     }
 
     @Contract private void logClusterConfigSeed(ClusterConfigSeedPlan plan) {
