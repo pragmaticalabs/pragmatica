@@ -38,6 +38,11 @@ swim = 6100
 enabled = true
 retry_interval = "30s"
 startup_cooldown = "15s"
+# Integration-test tuning: faster provisioning gate for chaos suites. Production
+# default is 30s (Wave 3 / Theme B). The test cluster is dedicated with no real
+# flap risk; 5s materially shortens replacement-join SLA.
+provision_stability_window = "5s"
+provisioning_timeout = "60s"
 
 [runtime.default]
 type = "docker"

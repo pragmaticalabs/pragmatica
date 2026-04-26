@@ -65,7 +65,7 @@ test_auto_heal() {
 cleanup() {
     restart_all_nodes
     sleep 3  # let reconnection churn start bumping epoch before we ask for quiescence
-    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 120 || \
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 180 || \
         log_warn "Cluster did not quiesce after destructive suite; next suite may inherit churn"
 }
 

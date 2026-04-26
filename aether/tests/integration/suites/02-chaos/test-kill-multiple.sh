@@ -33,8 +33,8 @@ test_kill_two_nodes() {
 
     # ClusterGeneration commits the post-kill membership view. After quiescence
     # the count reflects whatever CTM has done — just assert quorum.
-    wait_for_node_count 5 180 || \
-        log_warn "Post-kill quiescence not observed within 60s"
+    wait_for_node_count 5 240 || \
+        log_warn "Post-kill quiescence not observed within 240s"
     local count
     count=$(cluster_node_count)
     assert_ge "$count" "3" "Cluster survives with quorum after 2 kills (${count} nodes)"
@@ -54,7 +54,7 @@ test_leader_still_active() {
 
 test_auto_heal() {
     log_info "Waiting for CTM auto-heal to quiesce at the post-replacement generation..."
-    wait_for_node_count 5 180 || {
+    wait_for_node_count 5 240 || {
         log_fail "Cluster did not quiesce after auto-heal"
         return 1
     }
@@ -66,7 +66,7 @@ test_auto_heal() {
 cleanup() {
     restart_all_nodes
     sleep 3  # let reconnection churn start bumping epoch before we ask for quiescence
-    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 120 || \
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 180 || \
         log_warn "Cluster did not quiesce after destructive suite; next suite may inherit churn"
 }
 

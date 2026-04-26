@@ -35,6 +35,9 @@ swim = 6100
 enabled = true
 retry_interval = "30s"
 startup_cooldown = "15s"
+# Integration-test tuning (Wave 3 / Theme B): faster provisioning gate for chaos.
+provision_stability_window = "5s"
+provisioning_timeout = "60s"
 
 [runtime.default]
 type = "docker"

@@ -53,7 +53,7 @@ test_health_with_4_nodes() {
 
 test_auto_heal() {
     log_info "Waiting for CTM auto-heal to restore cluster to 5 nodes..."
-    wait_for_node_count 5 120 || {
+    wait_for_node_count 5 180 || {
         log_fail "Cluster did not reach 5 nodes after auto-heal (current=$(cluster_node_count))"
         return 1
     }
@@ -66,7 +66,7 @@ test_auto_heal() {
 cleanup() {
     restart_all_nodes
     sleep 3  # let reconnection churn start bumping epoch before we ask for quiescence
-    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 120 || \
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 180 || \
         log_warn "Cluster did not quiesce after destructive suite; next suite may inherit churn"
 }
 

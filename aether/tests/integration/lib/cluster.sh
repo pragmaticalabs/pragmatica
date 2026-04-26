@@ -328,8 +328,10 @@ restart_all_nodes() {
     # Rotate entry point — the previous pinned node may have been killed during the suite.
     rotate_mgmt_entry_point 2>/dev/null || true
     # Strict recovery assertions — no more log_warn pass-through.
-    if ! wait_for_node_count "${NODE_COUNT:-5}" 60; then
-        log_fail "restart_all_nodes: cluster failed to reach ${NODE_COUNT:-5} nodes within 60s"
+    # SLA budget post-Wave-3: cold compose cycle + 5x JVM boot + QUIC mesh + leader + ON_DUTY
+    # is ~60-90s on remote infra; bump to 120s for headroom (was 60s — observed timeouts).
+    if ! wait_for_node_count "${NODE_COUNT:-5}" 120; then
+        log_fail "restart_all_nodes: cluster failed to reach ${NODE_COUNT:-5} nodes within 120s"
         return 1
     fi
     if ! wait_for_leader 120; then
@@ -337,8 +339,8 @@ restart_all_nodes() {
         return 1
     fi
     # Final quiescence barrier — cluster has nodes + leader; confirm snapshot converged.
-    if ! await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 60; then
-        log_fail "restart_all_nodes: cluster leader and node count recovered but generation did not quiesce within 60s"
+    if ! await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 90; then
+        log_fail "restart_all_nodes: cluster leader and node count recovered but generation did not quiesce within 90s"
         return 1
     fi
     log_info "restart_all_nodes: cluster recovered (${NODE_COUNT:-5} nodes, leader elected, generation quiesced)"

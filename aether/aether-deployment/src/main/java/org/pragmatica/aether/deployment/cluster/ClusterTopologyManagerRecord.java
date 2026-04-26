@@ -131,6 +131,15 @@ import static org.pragmatica.lang.Unit.unit;
 
     private static final int UNINITIALIZED_REAL_ACTUAL = -1;
 
+    /// Bootstrap-grace window after CTM activation during which auto-heal cannot fire even if
+    /// transient SWIM hysteresis flips peers to UNHEALTHY. Without this, the leader's first
+    /// `MembershipView.healthyOnDutyCount()` snapshot can show a false deficit (e.g., 2/5 with
+    /// 3 ON_DUTY_UNHEALTHY) for the entire `provisionStabilityWindow` and trigger phantom
+    /// provisioning that the cluster never recovers from. Applied only when the cluster
+    /// activates already at target size (clean boot); legitimate post-bootstrap node loss
+    /// still works because `bumpRealActualStability` resets the anchor on real changes.
+    private static final long BOOTSTRAP_GRACE_MS = 60_000L;
+
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
                                                                      AutoHealConfig config,
@@ -284,7 +293,13 @@ import static org.pragmatica.lang.Unit.unit;
     @SuppressWarnings("JBCT-RET-01")
     @Override public void onClusterConfigChanged() {
         if (!active.get()) {return;}
-        log.debug("CTM: ClusterConfigKey changed, triggering immediate reconciliation");
+        // Operator intent overrides the anti-flap stability gate (including bootstrap grace):
+        // explicit config changes are not transient hysteresis. Set the anchor far enough
+        // in the past that `stabilityElapsed` returns true on the next reconcile.
+        var nowMs = nowMs();
+        var windowMs = autoHealConfig.provisionStabilityWindow().millis();
+        realActualStableSinceMs.set(nowMs - windowMs);
+        log.debug("CTM: ClusterConfigKey changed, bypassing stability gate, triggering immediate reconciliation");
         reconcile();
     }
 
@@ -346,9 +361,21 @@ import static org.pragmatica.lang.Unit.unit;
         }
         if (effectiveActual >= desired) {
             transitionTo(new NodeReconcilerState.Converged());
-            log.info("CTM: Cluster at target size, skipping formation");
+            anchorBootstrapGrace();
+            log.info("CTM: Cluster at target size, skipping formation (bootstrap grace {}ms applied)", BOOTSTRAP_GRACE_MS);
         } else if (clusterWasFormed && effectiveActual >= desired - 1) {activateWithLeaderFailover(effectiveActual,
                                                                                                    desired);} else {activateWithFormation();}
+    }
+
+    /// Sets `realActualStableSinceMs` such that `stabilityElapsed(now)` returns false until
+    /// `BOOTSTRAP_GRACE_MS` has elapsed since this call. The math: anchor = nowMs +
+    /// (bootstrapGrace - provisionStabilityWindow); stabilityElapsed(t) returns true when
+    /// (t - anchor) >= window, i.e. (t - nowMs) >= bootstrapGrace.
+    private void anchorBootstrapGrace() {
+        var nowMs = nowMs();
+        var windowMs = autoHealConfig.provisionStabilityWindow().millis();
+        realActualStableSinceMs.set(nowMs + BOOTSTRAP_GRACE_MS - windowMs);
+        log.debug("CTM: bootstrap grace anchored — provisioning gate held closed for {}ms", BOOTSTRAP_GRACE_MS);
     }
 
     private int activationDesiredSize() {
