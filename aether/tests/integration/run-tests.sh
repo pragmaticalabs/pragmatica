@@ -595,6 +595,20 @@ detect_capabilities "$ENV_TYPE"
 A_SUITES=($(filter_suites "${CLUSTER_A_SUITES[@]}"))
 B_SUITES=($(filter_suites "${CLUSTER_B_SUITES[@]}"))
 
+# --- Step 6.5: Drop ghost CTM-provisioned containers from previous runs ---
+# Bash dynamic-scoping bug + Wave 3 changes have historically allowed CTM
+# to auto-provision phantom replacement containers (named aether-core-node-N-XXX)
+# that flap-loop in the topology, starve QUIC backpressure, and stall consensus.
+# A clean run must start with the docker-compose-defined nodes ONLY.
+if [ "$SKIP_DEPLOY" = false ] && [ "$ENV_TYPE" != "cloud" ]; then
+    log_step "Cleaning up ghost CTM-provisioned containers"
+    if [ "$ENV_TYPE" = "docker" ]; then
+        docker rm -f $(docker ps -aq --filter "name=aether-core-node-") 2>/dev/null || true
+    else
+        remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-core-node-) 2>/dev/null || true" 2>&1 | tail -1 || true
+    fi
+fi
+
 # --- Step 7: Deploy blueprints ---
 BLUEPRINT_START=$(date +%s)
 if [ "$SKIP_DEPLOY" = false ]; then

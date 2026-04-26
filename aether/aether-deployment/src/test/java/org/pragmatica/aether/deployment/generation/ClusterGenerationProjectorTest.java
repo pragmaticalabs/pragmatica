@@ -87,14 +87,18 @@ class ClusterGenerationProjectorTest {
         }
 
         @Test
-        void project_decommissionedLifecycle_mapsToFaultyHint() {
+        void project_decommissionedLifecycle_filteredFromProjection() {
+            // DECOMMISSIONED is a tombstone — the node has left the cluster. The projection
+            // must NOT include it; otherwise its FAULTY hint would propagate to
+            // ClusterResult.DEGRADED via deriveClusterQuiescence and `await-quiesced` could
+            // never reach QUIESCED until DecommissionedAtomGc removes the atom (24h default).
             var lifecycles = Map.of(NODE_A,
                                     NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED, "host-a", 9001));
             var input = inputWithLifecycles(lifecycles);
 
             var snapshot = PROJECTOR.project(input);
 
-            assertThat(snapshot.coreMembers().get(NODE_A).healthHint()).isEqualTo(HealthHint.FAULTY);
+            assertThat(snapshot.coreMembers()).doesNotContainKey(NODE_A);
         }
 
         @Test
@@ -361,8 +365,11 @@ class ClusterGenerationProjectorTest {
 
         @Test
         void project_faultyMember_clusterIsDegraded() {
+            // DECOMMISSIONED is now filtered out of the projection (it's a tombstone, not a
+            // member). To reach DEGRADED via FAULTY, use SHUTTING_DOWN — also maps to FAULTY
+            // and represents a member still nominally present.
             var lifecycles = Map.of(NODE_A,
-                                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
+                                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.SHUTTING_DOWN,
                                                                            "host-a",
                                                                            9001));
             var input = ProjectionInput.projectionInput(1L,

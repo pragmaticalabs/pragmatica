@@ -99,8 +99,10 @@ class ClusterGenerationProjectorSwimHintOverrideTest {
         }
 
         @Test
-        void decommissionedLifecycleWithSuspectedSwimHint_projectsAsFaulty_lifecycleIsWorse() {
-            // Lifecycle DECOMMISSIONED -> FAULTY baseline; swim hint SUSPECTED is weaker — must NOT downgrade.
+        void decommissionedLifecycle_filteredFromProjection_swimHintIrrelevant() {
+            // DECOMMISSIONED is now filtered out of the projection regardless of swim hint;
+            // the node has left the cluster. Verify: member is absent from coreMembers,
+            // swim hint is irrelevant.
             var lifecycles = Map.of(NODE_A,
                                      NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
                                                                             "host-a",
@@ -109,7 +111,7 @@ class ClusterGenerationProjectorSwimHintOverrideTest {
 
             var snapshot = projectWithSwimHints(lifecycles, swimHints);
 
-            assertThat(snapshot.coreMembers().get(NODE_A).healthHint()).isEqualTo(HealthHint.FAULTY);
+            assertThat(snapshot.coreMembers()).doesNotContainKey(NODE_A);
         }
 
         @Test

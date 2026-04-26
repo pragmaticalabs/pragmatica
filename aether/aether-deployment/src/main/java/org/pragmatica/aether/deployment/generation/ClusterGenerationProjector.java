@@ -16,6 +16,7 @@ import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.PartitionOwner;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
@@ -194,7 +195,17 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
 
     private static Map<NodeId, CoreMember> projectCoreMembers(ProjectionInput input) {
         var result = new LinkedHashMap<NodeId, CoreMember>();
-        input.lifecycles().forEach((nodeId, lifecycle) -> result.put(nodeId, toCoreMember(nodeId, lifecycle, input)));
+        // Skip DECOMMISSIONED lifecycle entries entirely. DECOMMISSIONED is a
+        // tombstone — the node has left the cluster permanently. Including it
+        // in the projection emits HealthHint.FAULTY which propagates to
+        // ClusterResult.DEGRADED via deriveClusterQuiescence, preventing
+        // QUIESCED from ever being reached and stalling `await-quiesced` until
+        // DecommissionedAtomGc removes the atom (24h default). The node is no
+        // longer part of the cluster and must not influence quiescence.
+        input.lifecycles().forEach((nodeId, lifecycle) -> {
+            if (lifecycle.state() == NodeLifecycleState.DECOMMISSIONED) {return;}
+            result.put(nodeId, toCoreMember(nodeId, lifecycle, input));
+        });
         return Map.copyOf(result);
     }
 

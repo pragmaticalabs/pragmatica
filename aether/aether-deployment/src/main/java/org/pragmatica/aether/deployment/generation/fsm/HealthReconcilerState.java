@@ -196,7 +196,13 @@ public sealed interface HealthReconcilerState extends FsmState<HealthReconcilerS
                                ClusterGenerationSnapshot snapshot,
                                Supplier<ClusterGenerationSnapshot> supplier) implements HealthReconcilerState {
         @Override public void onEntry() {
-            ctx.publishLeadingSnapshot(snapshot);
+            // Theme B Item 1 (RC fix): use the barrier-aware publish path here too.
+            // Without this, a reprojection-on-leader-gain (e.g., triggered by SnapshotSeeded
+            // immediately after LeaderChange) bypasses the first-publish barrier and lets a
+            // stale-replication-window snapshot escape — re-opening the phantom-CTM provisioning
+            // window the barrier was designed to close. The barrier is self-gated by
+            // firstPublishCompleted so subsequent publishes still go straight through.
+            ctx.publishLeadingSnapshotWithBarrier(snapshot);
             ctx.activatePeerObservationChannelOnFirstLeadingEntry();
             ctx.submitReprojection(startEpoch, supplier);
         }

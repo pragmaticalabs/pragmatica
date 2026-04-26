@@ -606,6 +606,22 @@ import static org.pragmatica.lang.Unit.unit;
 
     private void handleDeficit(int actual, int desired) {
         var nowMs = nowMs();
+        // Defense-in-depth: cross-check `actual` (snapshot-derived) against the
+        // QUIC observer's live peer count. The two views can disagree because the
+        // snapshot pipeline (lifecycle atoms → projection → publish) lags behind
+        // QUIC's synchronous Hello-handshake topology. If QUIC already sees enough
+        // healthy peers to satisfy `desired`, no real deficit exists — provisioning
+        // here would create ghost peers that flap-loop in the topology and starve
+        // consensus backpressure. This guard collapses ghost-provisioning runaway
+        // observed when MembershipView is mid-reproject during deploys.
+        var quicLive = observer.healthyActiveNodeCount();
+        if (quicLive >= desired) {
+            log.info("CTM: snapshot-derived deficit (actual={}, desired={}) but QUIC observer reports {} live peers — suppressing provisioning",
+                     actual,
+                     desired,
+                     quicLive);
+            return;
+        }
         if (!stabilityElapsed(nowMs)) {
             var elapsed = nowMs - realActualStableSinceMs.get();
             log.info("CTM: stability window not yet elapsed (elapsed={}ms, required={}ms, actual={}, desired={}); deferring provisioning dispatch",

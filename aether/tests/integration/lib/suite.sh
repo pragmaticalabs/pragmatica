@@ -9,19 +9,19 @@ parse_suite_conf() {
         echo "WARN: No suite.conf in ${suite_dir}" >&2
         return 1
     fi
-    # Reset defaults — `declare -g` forces these into global scope so sourcing
-    # suite.conf (which is plain `key=value` lines) cannot accidentally clobber a
-    # caller's local variable of the same name via Bash dynamic scoping. Prior
-    # bug: `cluster=non-destructive` from suite.conf overwrote run_suite's local
-    # `cluster="a"` argument, silently routing cluster-A suites to cluster-B
-    # endpoints and container names.
-    declare -g tags=""
-    declare -g cluster="non-destructive"
-    declare -g destructive="false"
-    declare -g requires=""
-    declare -g blueprint="test-echo"
-    declare -g estimated_duration="1m"
-    declare -g description=""
+    # Reset defaults. CRITICAL caller-side note: any function that calls this and
+    # has a local of the same name (`cluster`, `destructive`, `requires`, etc.)
+    # will have its local CLOBBERED by `source $conf_file` due to Bash dynamic
+    # scoping. This is why `run_suite` must name its argument `target_cluster`
+    # (not `cluster`) — see run-tests.sh:204. `declare -g` is bash 4+ only and
+    # silently fails on bash 3.2 (macOS), so we cannot enforce globalness here.
+    tags=""
+    cluster="non-destructive"
+    destructive="false"
+    requires=""
+    blueprint="test-echo"
+    estimated_duration="1m"
+    description=""
     # Source the conf file
     source "$conf_file"
 }
