@@ -950,21 +950,22 @@ public interface AetherNode extends ManageableNode {
                                                                                      sliceInvoker,
                                                                                      cacheDhtClient));
         var selfAddress = findSelfAddress(config);
-        var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManager(config.self(),
-                                                                                selfAddress,
-                                                                                delegateRouter,
-                                                                                sliceStore,
-                                                                                clusterNode,
-                                                                                kvStore,
-                                                                                invocationHandler,
-                                                                                config.sliceAction(),
-                                                                                nodeCodec,
-                                                                                Option.some(httpRoutePublisher),
-                                                                                Option.some(sliceInvoker),
-                                                                                config.timeouts().deployment()
-                                                                                               .activationChain(),
-                                                                                config.timeouts().deployment()
-                                                                                               .transitionRetryDelay());
+        var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
+                                                                                            selfAddress,
+                                                                                            delegateRouter,
+                                                                                            sliceStore,
+                                                                                            clusterNode,
+                                                                                            kvStore,
+                                                                                            invocationHandler,
+                                                                                            config.sliceAction(),
+                                                                                            nodeCodec,
+                                                                                            Option.some(httpRoutePublisher),
+                                                                                            Option.some(sliceInvoker),
+                                                                                            config.timeouts().deployment()
+                                                                                                           .activationChain(),
+                                                                                            config.timeouts().deployment()
+                                                                                                           .transitionRetryDelay(),
+                                                                                            snapshotSupplier);
         var serverBossGroup = clusterNode.network().server()
                                                  .map(org.pragmatica.net.tcp.Server::bossGroup);
         var serverWorkerGroup = clusterNode.network().server()

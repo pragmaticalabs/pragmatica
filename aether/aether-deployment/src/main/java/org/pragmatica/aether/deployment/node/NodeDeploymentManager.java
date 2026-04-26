@@ -16,6 +16,8 @@ import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
+import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
@@ -35,6 +37,7 @@ import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -51,6 +54,7 @@ import org.pragmatica.statemachine.Fsm;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -251,6 +255,43 @@ public interface NodeDeploymentManager {
                                                        Option<SliceInvokerFacade> sliceInvokerFacade,
                                                        TimeSpan activationChainTimeout,
                                                        TimeSpan transitionRetryDelay) {
+        return nodeDeploymentManager(self,
+                                     selfAddress,
+                                     router,
+                                     sliceStore,
+                                     cluster,
+                                     kvStore,
+                                     invocationHandler,
+                                     configuration,
+                                     nodeCodec,
+                                     httpRoutePublisher,
+                                     sliceInvokerFacade,
+                                     activationChainTimeout,
+                                     transitionRetryDelay,
+                                     Option::none);
+    }
+
+    /// Theme/Fix B (SSOT topology): factory accepting a `currentEpochSupplier` that the
+    /// adapter consults when writing the first ON_DUTY [`NodeLifecycleValue`] atom. The
+    /// supplier returns the current cluster generation epoch (e.g. derived from
+    /// [`ClusterGenerationSnapshot#epoch`]) so `observedCoreEpoch` carries a real
+    /// (rabiaTerm, localCounter) identity instead of [`Epoch#ZERO`]. Returning
+    /// [`Option#none`] preserves cold-boot behaviour during the pre-leader window: the
+    /// atom is later re-emitted (lifecycle re-registration) once a leader exists.
+    static NodeDeploymentManager nodeDeploymentManager(NodeId self,
+                                                       NodeAddress selfAddress,
+                                                       MessageRouter router,
+                                                       SliceStore sliceStore,
+                                                       ClusterNode<KVCommand<AetherKey>> cluster,
+                                                       KVStore<AetherKey, AetherValue> kvStore,
+                                                       InvocationHandler invocationHandler,
+                                                       SliceActionConfig configuration,
+                                                       SliceCodec nodeCodec,
+                                                       Option<HttpRoutePublisher> httpRoutePublisher,
+                                                       Option<SliceInvokerFacade> sliceInvokerFacade,
+                                                       TimeSpan activationChainTimeout,
+                                                       TimeSpan transitionRetryDelay,
+                                                       Supplier<Option<Epoch>> currentEpochSupplier) {
         var ctx = buildContext(self,
                                selfAddress,
                                router,
@@ -263,8 +304,43 @@ public interface NodeDeploymentManager {
                                httpRoutePublisher,
                                sliceInvokerFacade,
                                activationChainTimeout,
-                               transitionRetryDelay);
+                               transitionRetryDelay,
+                               currentEpochSupplier);
         return new DeploymentManagerAdapter(ctx);
+    }
+
+    /// Convenience factory for production wiring: accepts a snapshot supplier and projects
+    /// the current epoch from [`ClusterGenerationSnapshot#epoch`]. When the snapshot is
+    /// absent (pre-leader bootstrap) the supplier returns [`Option#none`] and the writer
+    /// falls back to [`Epoch#ZERO`].
+    static NodeDeploymentManager nodeDeploymentManagerFromSnapshot(NodeId self,
+                                                                   NodeAddress selfAddress,
+                                                                   MessageRouter router,
+                                                                   SliceStore sliceStore,
+                                                                   ClusterNode<KVCommand<AetherKey>> cluster,
+                                                                   KVStore<AetherKey, AetherValue> kvStore,
+                                                                   InvocationHandler invocationHandler,
+                                                                   SliceActionConfig configuration,
+                                                                   SliceCodec nodeCodec,
+                                                                   Option<HttpRoutePublisher> httpRoutePublisher,
+                                                                   Option<SliceInvokerFacade> sliceInvokerFacade,
+                                                                   TimeSpan activationChainTimeout,
+                                                                   TimeSpan transitionRetryDelay,
+                                                                   Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier) {
+        return nodeDeploymentManager(self,
+                                     selfAddress,
+                                     router,
+                                     sliceStore,
+                                     cluster,
+                                     kvStore,
+                                     invocationHandler,
+                                     configuration,
+                                     nodeCodec,
+                                     httpRoutePublisher,
+                                     sliceInvokerFacade,
+                                     activationChainTimeout,
+                                     transitionRetryDelay,
+                                     () -> snapshotSupplier.get().map(ClusterGenerationSnapshot::epoch));
     }
 
     private static NodeDeploymentContext buildContext(NodeId self,
@@ -279,7 +355,8 @@ public interface NodeDeploymentManager {
                                                       Option<HttpRoutePublisher> httpRoutePublisher,
                                                       Option<SliceInvokerFacade> sliceInvokerFacade,
                                                       TimeSpan activationChainTimeout,
-                                                      TimeSpan transitionRetryDelay) {
+                                                      TimeSpan transitionRetryDelay,
+                                                      Supplier<Option<Epoch>> currentEpochSupplier) {
         var ctxHolder = new AtomicReference<NodeDeploymentContext>();
         Function<Fsm<NodeDeploymentState, ClusterFsmEvent>, NodeDeploymentState> initialStateFactory =
                 fsm -> buildContextAndDormant(fsm,
@@ -296,7 +373,8 @@ public interface NodeDeploymentManager {
                                               httpRoutePublisher,
                                               sliceInvokerFacade,
                                               activationChainTimeout,
-                                              transitionRetryDelay);
+                                              transitionRetryDelay,
+                                              currentEpochSupplier);
         // Fsm constructor publishes itself into ctxHolder via initialStateFactory —
         // we only need the context here; the FSM reference lives on ctx.fsm().
         var _fsm = Fsm.fsm("node-deployment", self.id(), initialStateFactory);
@@ -317,7 +395,8 @@ public interface NodeDeploymentManager {
                                                               Option<HttpRoutePublisher> httpRoutePublisher,
                                                               Option<SliceInvokerFacade> sliceInvokerFacade,
                                                               TimeSpan activationChainTimeout,
-                                                              TimeSpan transitionRetryDelay) {
+                                                              TimeSpan transitionRetryDelay,
+                                                              Supplier<Option<Epoch>> currentEpochSupplier) {
         var ctx = new NodeDeploymentContext(fsm,
                                             self,
                                             selfAddress,
@@ -331,7 +410,8 @@ public interface NodeDeploymentManager {
                                             httpRoutePublisher,
                                             sliceInvokerFacade,
                                             activationChainTimeout,
-                                            transitionRetryDelay);
+                                            transitionRetryDelay,
+                                            currentEpochSupplier);
         ctxHolder.set(ctx);
         return ctx.dormant();
     }
@@ -425,14 +505,25 @@ public interface NodeDeploymentManager {
         }
 
         private void writeLifecycleOnDuty(NodeLifecycleKey lifecycleKey, int attempt) {
+            // Theme/Fix B (SSOT topology) — seed `observedCoreEpoch` from the current cluster
+            // generation epoch when one is observable, otherwise fall back to `Epoch.ZERO` (the
+            // pre-leader cold-boot window). The atom is later re-emitted via the lifecycle
+            // re-registration path once a leader exists; subsequent transition writers
+            // (HRC DRAINING/DECOMMISSIONED, CTM scale-down) preserve this epoch via
+            // metadata-preserving factories.
+            var seedEpoch = ctx.currentEpochSupplier().get().or(Epoch.ZERO);
             var value = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY,
+                                                              System.currentTimeMillis(),
                                                               ctx.selfAddress().host(),
                                                               ctx.selfAddress().port(),
+                                                              seedEpoch,
+                                                              HlcTimestamp.ZERO,
                                                               detectProvisioningSource());
             ctx.cluster().apply(List.of(new KVCommand.Put<>(lifecycleKey, value)))
-                      .onSuccess(_ -> log.info("Node {} registered lifecycle state: ON_DUTY (source={})",
+                      .onSuccess(_ -> log.info("Node {} registered lifecycle state: ON_DUTY (source={}, observedCoreEpoch={})",
                                                ctx.self().id(),
-                                               value.provisioningSource()))
+                                               value.provisioningSource(),
+                                               seedEpoch))
                       .onFailure(cause -> retryLifecycleOnDuty(lifecycleKey, attempt, cause));
         }
 

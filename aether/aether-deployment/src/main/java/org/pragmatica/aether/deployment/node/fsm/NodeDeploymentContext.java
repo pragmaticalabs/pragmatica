@@ -13,6 +13,7 @@ import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceStore;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -33,6 +34,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 /// Shared context for the NodeDeploymentManager FSM. Holds:
 ///
@@ -69,6 +71,7 @@ public final class NodeDeploymentContext {
     private final AtomicReference<Runnable> shutdownCallback;
     private final AtomicReference<Runnable> activeOnEntryCallback;
     private final LongSupplier clock;
+    private final Supplier<Option<Epoch>> currentEpochSupplier;
     private final NodeDeploymentState dormant;
     private final NodeDeploymentState stopped;
 
@@ -88,7 +91,29 @@ public final class NodeDeploymentContext {
                                  TimeSpan transitionRetryDelay) {
         this(fsm, self, selfAddress, sliceStore, configuration, nodeCodec, cluster, kvStore,
              invocationHandler, router, httpRoutePublisher, sliceInvokerFacade,
-             activationChainTimeout, transitionRetryDelay, System::currentTimeMillis);
+             activationChainTimeout, transitionRetryDelay, System::currentTimeMillis,
+             Option::none);
+    }
+
+    public NodeDeploymentContext(Fsm<NodeDeploymentState, ClusterFsmEvent> fsm,
+                                 NodeId self,
+                                 NodeAddress selfAddress,
+                                 SliceStore sliceStore,
+                                 SliceActionConfig configuration,
+                                 SliceCodec nodeCodec,
+                                 ClusterNode<KVCommand<AetherKey>> cluster,
+                                 KVStore<AetherKey, AetherValue> kvStore,
+                                 InvocationHandler invocationHandler,
+                                 MessageRouter router,
+                                 Option<HttpRoutePublisher> httpRoutePublisher,
+                                 Option<SliceInvokerFacade> sliceInvokerFacade,
+                                 TimeSpan activationChainTimeout,
+                                 TimeSpan transitionRetryDelay,
+                                 Supplier<Option<Epoch>> currentEpochSupplier) {
+        this(fsm, self, selfAddress, sliceStore, configuration, nodeCodec, cluster, kvStore,
+             invocationHandler, router, httpRoutePublisher, sliceInvokerFacade,
+             activationChainTimeout, transitionRetryDelay, System::currentTimeMillis,
+             currentEpochSupplier);
     }
 
     /// Full-arity constructor with injectable clock — for tests that need deterministic time.
@@ -107,6 +132,32 @@ public final class NodeDeploymentContext {
                                  TimeSpan activationChainTimeout,
                                  TimeSpan transitionRetryDelay,
                                  LongSupplier clock) {
+        this(fsm, self, selfAddress, sliceStore, configuration, nodeCodec, cluster, kvStore,
+             invocationHandler, router, httpRoutePublisher, sliceInvokerFacade,
+             activationChainTimeout, transitionRetryDelay, clock, Option::none);
+    }
+
+    /// Full-arity constructor with injectable clock and current-epoch supplier. The
+    /// `currentEpochSupplier` returns the current cluster generation epoch for seeding the
+    /// `observedCoreEpoch` field of the first ON_DUTY `NodeLifecycleValue` atom (Theme/Fix B —
+    /// SSOT topology). Returning [`Option#none`] yields the legacy [`Epoch#ZERO`] fallback,
+    /// preserving cold-boot behaviour during the pre-leader window.
+    public NodeDeploymentContext(Fsm<NodeDeploymentState, ClusterFsmEvent> fsm,
+                                 NodeId self,
+                                 NodeAddress selfAddress,
+                                 SliceStore sliceStore,
+                                 SliceActionConfig configuration,
+                                 SliceCodec nodeCodec,
+                                 ClusterNode<KVCommand<AetherKey>> cluster,
+                                 KVStore<AetherKey, AetherValue> kvStore,
+                                 InvocationHandler invocationHandler,
+                                 MessageRouter router,
+                                 Option<HttpRoutePublisher> httpRoutePublisher,
+                                 Option<SliceInvokerFacade> sliceInvokerFacade,
+                                 TimeSpan activationChainTimeout,
+                                 TimeSpan transitionRetryDelay,
+                                 LongSupplier clock,
+                                 Supplier<Option<Epoch>> currentEpochSupplier) {
         this.fsm = fsm;
         this.self = self;
         this.selfAddress = selfAddress;
@@ -125,6 +176,7 @@ public final class NodeDeploymentContext {
         this.shutdownCallback = new AtomicReference<>();
         this.activeOnEntryCallback = new AtomicReference<>();
         this.clock = clock;
+        this.currentEpochSupplier = currentEpochSupplier;
         this.dormant = new NodeDeploymentState.Dormant(this, List.of());
         this.stopped = new NodeDeploymentState.Stopped(this);
     }
@@ -262,5 +314,14 @@ public final class NodeDeploymentContext {
     /// `NodeDeploymentManager#isActive` adapter method and for lifecycle re-registration logic.
     public boolean isActive() {
         return fsm.current() instanceof NodeDeploymentState.Active;
+    }
+
+    /// Returns the current cluster generation epoch when one is observable, otherwise
+    /// [`Option#none`]. Used by the lifecycle ON_DUTY writer (Theme/Fix B) to seed
+    /// `NodeLifecycleValue.observedCoreEpoch` with a non-zero value so
+    /// `ClusterTopologyManagerRecord#nodeJoinEpoch` returns a real epoch and the
+    /// "newest-first" surplus-termination tiebreak functions.
+    public Supplier<Option<Epoch>> currentEpochSupplier() {
+        return currentEpochSupplier;
     }
 }
