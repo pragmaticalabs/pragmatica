@@ -285,7 +285,7 @@ import org.slf4j.LoggerFactory;
 
         private static void scheduleAtFixedRate(Context ctx, ScheduledTaskKey key, ScheduledTask task, TimeSpan interval) {
             var future = SharedScheduler.scheduleAtFixedRate(() -> executeTask(ctx, task), interval);
-            ctx.activeTimers.put(key, future);
+            replaceTimer(ctx, key, future);
             log.info("Started scheduled task {} with interval {}", key, task.interval());
         }
 
@@ -305,7 +305,7 @@ import org.slf4j.LoggerFactory;
 
         private static void registerCronFire(Context ctx, ScheduledTaskKey key, ScheduledTask task, CronExpression cron, TimeSpan delay) {
             var future = SharedScheduler.schedule(() -> executeCronTask(ctx, key, task, cron), delay);
-            ctx.activeTimers.put(key, future);
+            replaceTimer(ctx, key, future);
             log.info("Scheduled cron task {} next fire in {}ms", key, delay.millis());
         }
 
@@ -350,6 +350,17 @@ import org.slf4j.LoggerFactory;
                       future.cancel(false);
                       log.debug("Cancelled scheduled task timer: {}", key);
                   });
+        }
+
+        /// Atomically install `future` for `key`, cancelling any prior `ScheduledFuture` that the
+        /// map already held — guards against orphan timers if `startTimer` is invoked twice for the
+        /// same key without an intervening [`#cancelTimer`].
+        static void replaceTimer(Context ctx, ScheduledTaskKey key, ScheduledFuture<?> future) {
+            var prior = ctx.activeTimers.put(key, future);
+            if (prior != null) {
+                prior.cancel(false);
+                log.debug("Replaced scheduled task timer for key {} (prior future cancelled)", key);
+            }
         }
 
         static void cancelAllTimers(Context ctx) {

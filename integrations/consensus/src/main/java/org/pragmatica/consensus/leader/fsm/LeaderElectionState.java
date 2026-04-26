@@ -24,12 +24,19 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicReference;
 
 /// Sealed state hierarchy for the leader-election FSM. Each state is a record bound to the
-/// shared [`LeaderElectionContext`]. Data-free states (Dormant, QuorumWaiting, Electing,
-/// ReElecting, QuorumLost, Stopped) are instantiated once per FSM and stored on the context
-/// (the "per-FSM singleton" pattern). The single data-carrying state — `Led(leader)` — is
-/// instantiated fresh on every entry; each instance uniquely identifies a leadership tenure.
+/// shared [`LeaderElectionContext`]. Data-free states (Dormant, QuorumWaiting, QuorumLost,
+/// Stopped) are instantiated once per FSM and stored on the context (the "per-FSM singleton"
+/// pattern). Data-carrying states are instantiated fresh on every entry:
+///
+/// - `Led(leader)` — `leader` identifies the leadership tenure.
+/// - `Electing(tickFuture, proposalTimeoutFuture)` and `ReElecting(...)` — each owns the
+///   `ScheduledFuture` references for the eagerly-scheduled election tick and the in-flight
+///   proposal-timeout dispatcher. Both futures are cancelled in `onExit` / `onCasLost`, so a
+///   stale tick from a prior tenure can never fire after the FSM has moved on.
 ///
 /// All states accept [`ClusterFsmEvent`] as their event type; leader-election domain events
 /// ([`LeaderElectionEvents`]) also implement `ClusterFsmEvent` so they flow through the same
@@ -111,28 +118,48 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         }
     }
 
-    record Electing(LeaderElectionContext ctx) implements LeaderElectionState {
+    /// Data-carrying state. Fresh instance per entry; holds the eagerly-scheduled first-tick
+    /// `ScheduledFuture` plus an [`AtomicReference`] for subsequent reschedules (proposal retries,
+    /// topology changes) and a separate slot for the in-flight proposal-timeout dispatcher. Both
+    /// futures are cancelled in `onExit` / `onCasLost` to prevent stale ticks from firing after
+    /// the FSM has moved on.
+    record Electing(LeaderElectionContext ctx,
+                    AtomicReference<ScheduledFuture<?>> tickFuture,
+                    AtomicReference<ScheduledFuture<?>> proposalTimeoutFuture) implements LeaderElectionState {
+
+        public static Electing fresh(LeaderElectionContext ctx) {
+            var rank = ctx.rankOfSelf();
+            var delay = ctx.baseElectionDelay().millis() + rank * ctx.perRankDelay().millis();
+            log.info("Entering Electing: rank={}, first-tick delay={}ms", rank, delay);
+            var future = SharedScheduler.schedule(() -> dispatchSelf(ctx, new ElectionTick()),
+                                                  TimeSpan.timeSpan(delay).millis());
+            return new Electing(ctx, new AtomicReference<>(future), new AtomicReference<>());
+        }
+
         @Override
         public void onEntry() {
             ctx.resetElectionRetryCount();
             ctx.resetStuckElectionCount();
-            var rank = ctx.rankOfSelf();
-            var delay = ctx.baseElectionDelay().millis() + rank * ctx.perRankDelay().millis();
-            log.info("Entering Electing: rank={}, first-tick delay={}ms", rank, delay);
-            SharedScheduler.schedule(() -> dispatchSelf(ctx, new ElectionTick()),
-                                     TimeSpan.timeSpan(delay).millis());
         }
 
         @Override
         public void onExit() {
+            cancelFuture(tickFuture);
+            cancelFuture(proposalTimeoutFuture);
             ctx.clearProposalInFlight();
             ctx.resetElectionRetryCount();
         }
 
         @Override
+        public void onCasLost() {
+            cancelFuture(tickFuture);
+            cancelFuture(proposalTimeoutFuture);
+        }
+
+        @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
-                case ElectionTick _ -> tx.handle(() -> trySubmitProposal(ctx));
+                case ElectionTick _ -> tx.handle(() -> trySubmitProposal(ctx, this));
                 case ProposalSettled ps -> tx.handle(() -> handleProposalSettled(ctx, ps));
                 case LeaderCommitted lc -> adoptLeaderIfInTopology(ctx, lc, tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
@@ -194,25 +221,44 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         tx.transitionTo(new Led(ctx, event.leader()));
     }
 
-    record ReElecting(LeaderElectionContext ctx) implements LeaderElectionState {
+    /// Data-carrying state. Same lifecycle as [`Electing`]: holds the eagerly-scheduled first-tick
+    /// `ScheduledFuture` and a slot for the in-flight proposal-timeout dispatcher; both are
+    /// cancelled in `onExit` / `onCasLost`.
+    record ReElecting(LeaderElectionContext ctx,
+                      AtomicReference<ScheduledFuture<?>> tickFuture,
+                      AtomicReference<ScheduledFuture<?>> proposalTimeoutFuture) implements LeaderElectionState {
+
+        public static ReElecting fresh(LeaderElectionContext ctx) {
+            log.info("Entering ReElecting: scheduling tick in {}ms", ctx.proposalRetryDelay().millis());
+            var holder = new AtomicReference<ScheduledFuture<?>>();
+            scheduleElectionTickInto(ctx, holder);
+            return new ReElecting(ctx, holder, new AtomicReference<>());
+        }
+
         @Override
         public void onEntry() {
             ctx.resetStuckElectionCount();
             clearLeaderAndNotify(ctx);
-            log.info("Entering ReElecting: scheduling tick in {}ms", ctx.proposalRetryDelay().millis());
-            scheduleElectionTick(ctx);
         }
 
         @Override
         public void onExit() {
+            cancelFuture(tickFuture);
+            cancelFuture(proposalTimeoutFuture);
             ctx.clearProposalInFlight();
             ctx.resetElectionRetryCount();
         }
 
         @Override
+        public void onCasLost() {
+            cancelFuture(tickFuture);
+            cancelFuture(proposalTimeoutFuture);
+        }
+
+        @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
-                case ElectionTick _ -> tx.handle(() -> trySubmitProposal(ctx));
+                case ElectionTick _ -> tx.handle(() -> trySubmitProposal(ctx, this));
                 case ProposalSettled ps -> tx.handle(() -> handleProposalSettled(ctx, ps));
                 case LeaderCommitted lc -> adoptLeaderIfInTopology(ctx, lc, tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
@@ -301,22 +347,45 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
     private static void handleTopologyChange(LeaderElectionContext ctx, List<NodeId> topology) {
         ctx.setCurrentTopology(topology);
-        scheduleElectionTick(ctx);
+        rescheduleCurrentTick(ctx);
     }
 
-    private static void scheduleElectionTick(LeaderElectionContext ctx) {
+    /// Reschedules the election tick on the *current* Electing/ReElecting record, replacing any
+    /// prior pending tick on that record's holder. If the FSM is no longer in an electing state,
+    /// the schedule is a no-op (a stale `ProposalSettled.failure` arriving after the FSM has moved
+    /// on must NOT spawn a new orphan timer).
+    private static void rescheduleCurrentTick(LeaderElectionContext ctx) {
+        switch (ctx.fsm().current()) {
+            case Electing e -> scheduleElectionTickInto(ctx, e.tickFuture());
+            case ReElecting r -> scheduleElectionTickInto(ctx, r.tickFuture());
+            default -> log.debug("rescheduleCurrentTick called from non-electing state — skipped");
+        }
+    }
+
+    /// Schedules a fresh election tick and stores its `ScheduledFuture` into the supplied holder,
+    /// cancelling any prior future the holder owned. Called from both [`Electing.fresh`] /
+    /// [`ReElecting.fresh`] entry paths AND from [`#rescheduleCurrentTick`] during retries.
+    private static void scheduleElectionTickInto(LeaderElectionContext ctx,
+                                                  AtomicReference<ScheduledFuture<?>> holder) {
         var retry = ctx.incrementElectionRetryCount();
         var jitterMs = (long) (ctx.proposalRetryDelay().millis() * (1.0 + ctx.jitterSource().getAsDouble()));
         log.debug("Scheduling election tick #{} in {}ms", retry, jitterMs);
-        SharedScheduler.schedule(() -> dispatchSelf(ctx, new ElectionTick()),
-                                 TimeSpan.timeSpan(jitterMs).millis());
+        var future = SharedScheduler.schedule(() -> dispatchSelf(ctx, new ElectionTick()),
+                                              TimeSpan.timeSpan(jitterMs).millis());
+        var prior = holder.getAndSet(future);
+        if (prior != null) {
+            prior.cancel(false);
+        }
     }
 
-    private static void trySubmitProposal(LeaderElectionContext ctx) {
-        ctx.proposalHandler().onPresent(handler -> submitProposalWith(ctx, handler));
+    private static void trySubmitProposal(LeaderElectionContext ctx,
+                                          LeaderElectionState owner) {
+        ctx.proposalHandler().onPresent(handler -> submitProposalWith(ctx, owner, handler));
     }
 
-    private static void submitProposalWith(LeaderElectionContext ctx, LeaderProposalHandler handler) {
+    private static void submitProposalWith(LeaderElectionContext ctx,
+                                           LeaderElectionState owner,
+                                           LeaderProposalHandler handler) {
         if (ctx.currentTopology().isEmpty()) {
             log.debug("Topology empty — skipping proposal");
             return;
@@ -336,24 +405,47 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             log.debug("Proposal already in flight — skipping");
             return;
         }
-        sendProposal(ctx, handler, candidate);
+        sendProposal(ctx, owner, handler, candidate);
     }
 
     private static void sendProposal(LeaderElectionContext ctx,
+                                     LeaderElectionState owner,
                                      LeaderProposalHandler handler,
                                      NodeId candidate) {
         var epoch = ctx.nextProposalEpoch();
         var viewSeq = ctx.nextViewSequence();
         log.info("Submitting leader proposal: candidate={}, viewSequence={}, epoch={}",
                  candidate, viewSeq, epoch);
-        SharedScheduler.schedule(() -> dispatchSelf(ctx, new ProposalSettled(candidate, false,
-                                                                             "timeout@epoch=" + epoch)),
-                                 ctx.proposalTimeout());
+        var timeoutFuture = SharedScheduler.schedule(
+                () -> dispatchSelf(ctx, new ProposalSettled(candidate, false, "timeout@epoch=" + epoch)),
+                ctx.proposalTimeout());
+        storeProposalTimeoutFuture(owner, timeoutFuture);
         handler.propose(candidate, viewSeq)
                .onSuccess(_ -> dispatchSelf(ctx, new ProposalSettled(candidate, true,
                                                                      "submitted@epoch=" + epoch)))
                .onFailure(cause -> dispatchSelf(ctx, new ProposalSettled(candidate, false,
                                                                          cause.message() + "@epoch=" + epoch)));
+    }
+
+    /// Stores the proposal-timeout future onto the owning Electing/ReElecting record so that
+    /// `onExit` / `onCasLost` can cancel it. Replaces any prior timeout future the owner held
+    /// (cancels the old one), so a fresh proposal after a retry doesn't leak the prior timer.
+    private static void storeProposalTimeoutFuture(LeaderElectionState owner,
+                                                    ScheduledFuture<?> future) {
+        var holder = switch (owner) {
+            case Electing e -> e.proposalTimeoutFuture();
+            case ReElecting r -> r.proposalTimeoutFuture();
+            default -> null;
+        };
+        if (holder == null) {
+            log.debug("storeProposalTimeoutFuture: owner is not electing — cancelling timeout immediately");
+            future.cancel(false);
+            return;
+        }
+        var prior = holder.getAndSet(future);
+        if (prior != null) {
+            prior.cancel(false);
+        }
     }
 
     private static void handleProposalSettled(LeaderElectionContext ctx, ProposalSettled event) {
@@ -369,6 +461,13 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         }
         log.debug("Proposal failed ({}) — retry scheduled", event.detail());
         ctx.incrementStuckElectionCount();
-        scheduleElectionTick(ctx);
+        rescheduleCurrentTick(ctx);
+    }
+
+    private static void cancelFuture(AtomicReference<ScheduledFuture<?>> holder) {
+        var future = holder.getAndSet(null);
+        if (future != null) {
+            future.cancel(false);
+        }
     }
 }

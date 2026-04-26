@@ -133,16 +133,20 @@ public final class CertificateRenewalScheduler {
         @Override
         public void onEntry() {
             var delay = calculateRenewalDelay(ctx.currentNotAfter.get());
+            // Both branches schedule a tick AND store the future on the context — the immediate
+            // (delay <= 0) branch must NOT skip the store, otherwise stale ticks fire after a
+            // transition out of `Healthy` and the cancellation in `onExit` becomes a no-op.
+            var scheduleDelay = delay.isNegative() || delay.isZero()
+                    ? TimeSpan.timeSpan(0).millis()
+                    : TimeSpan.timeSpan(delay.toMillis()).millis();
+            var task = SharedScheduler.schedule(() -> ctx.dispatch(new RenewalEvent.Tick()),
+                                                scheduleDelay);
+            ctx.scheduledTask.set(Option.some(task));
             if (delay.isNegative() || delay.isZero()) {
                 log.info("Certificate validity window passed — renewing immediately");
-                SharedScheduler.schedule(() -> ctx.dispatch(new RenewalEvent.Tick()),
-                                         TimeSpan.timeSpan(0).millis());
-                return;
+            } else {
+                log.info("Next certificate renewal in {}", formatDuration(delay));
             }
-            var task = SharedScheduler.schedule(() -> ctx.dispatch(new RenewalEvent.Tick()),
-                                                TimeSpan.timeSpan(delay.toMillis()).millis());
-            ctx.scheduledTask.set(Option.some(task));
-            log.info("Next certificate renewal in {}", formatDuration(delay));
         }
 
         @Override

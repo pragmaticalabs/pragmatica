@@ -79,8 +79,9 @@ public final class LeaderElectionContext {
     // are `final` and CAS comparisons against them return the same reference.
     private final LeaderElectionState.Dormant dormant;
     private final LeaderElectionState.QuorumWaiting quorumWaiting;
-    private final LeaderElectionState.Electing electing;
-    private final LeaderElectionState.ReElecting reElecting;
+    // Electing / ReElecting are data-carrying (each carries a `ScheduledFuture` for the pending
+    // election tick + proposal-timeout). They MUST be fresh per entry so `onExit`/`onCasLost`
+    // cancel a tenure-specific future, not a shared one.
     private final LeaderElectionState.QuorumLost quorumLost;
     private final LeaderElectionState.Stopped stopped;
 
@@ -185,8 +186,6 @@ public final class LeaderElectionContext {
         this.consensusReadySupplier = consensusReadySupplier;
         this.dormant = new LeaderElectionState.Dormant(this);
         this.quorumWaiting = new LeaderElectionState.QuorumWaiting(this);
-        this.electing = new LeaderElectionState.Electing(this);
-        this.reElecting = new LeaderElectionState.ReElecting(this);
         this.quorumLost = new LeaderElectionState.QuorumLost(this);
         this.stopped = new LeaderElectionState.Stopped(this);
     }
@@ -272,8 +271,11 @@ public final class LeaderElectionContext {
 
     public LeaderElectionState.Dormant dormant() { return dormant; }
     public LeaderElectionState.QuorumWaiting quorumWaiting() { return quorumWaiting; }
-    public LeaderElectionState.Electing electing() { return electing; }
-    public LeaderElectionState.ReElecting reElecting() { return reElecting; }
+    /// Fresh data-carrying instance per call. Each instance owns its own pending-tick /
+    /// proposal-timeout `ScheduledFuture`s and cancels them on `onExit`/`onCasLost`.
+    public LeaderElectionState.Electing electing() { return LeaderElectionState.Electing.fresh(this); }
+    /// Fresh data-carrying instance per call. See [`#electing`].
+    public LeaderElectionState.ReElecting reElecting() { return LeaderElectionState.ReElecting.fresh(this); }
     public LeaderElectionState.QuorumLost quorumLost() { return quorumLost; }
     public LeaderElectionState.Stopped stopped() { return stopped; }
 
