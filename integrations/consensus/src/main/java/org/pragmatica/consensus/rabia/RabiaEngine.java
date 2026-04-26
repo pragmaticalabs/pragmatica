@@ -71,7 +71,10 @@ import static org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.S
 /// @param <C> Command type
 public class RabiaEngine<C extends Command> {
     private static final Logger log = LoggerFactory.getLogger(RabiaEngine.class);
-    private static final double SCALE = 0.5d;
+    /// Light jitter scale: ±20% around the configured sync retry interval.
+    /// Smaller than the default (±50%) to avoid disrupting protocol timing while still
+    /// breaking thundering-herd patterns when many nodes resync after a quorum hiccup.
+    private static final double SCALE = 0.2d;
     /// Default phase stall check interval.
     public static final TimeSpan DEFAULT_PHASE_STALL_CHECK = TimeSpan.timeSpan(500).millis();
 

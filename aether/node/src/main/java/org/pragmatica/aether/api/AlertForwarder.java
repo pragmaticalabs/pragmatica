@@ -12,6 +12,9 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.JitterUtil;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 
 import java.net.URI;
@@ -33,6 +36,8 @@ import org.slf4j.LoggerFactory;
 ///
 @SuppressWarnings("JBCT-RET-01") public class AlertForwarder {
     private static final Logger log = LoggerFactory.getLogger(AlertForwarder.class);
+    private static final long RETRY_BASE_MS = 200L;
+    private static final long RETRY_CAP_MS = 30_000L;
 
     private final WebhookConfig config;
     private final Option<HttpOperations> httpOps;
@@ -110,11 +115,22 @@ import org.slf4j.LoggerFactory;
 
     private Promise<Unit> retryOrFail(HttpOperations ops, String url, String payload, int attempt, String error) {
         if (attempt <config.retryCount()) {
-            log.debug("Retrying webhook {} (attempt {}/{})", url, attempt + 1, config.retryCount());
-            return sendWithRetry(ops, url, payload, attempt + 1);
+            var delayMs = jitteredBackoff(attempt);
+            log.debug("Retrying webhook {} (attempt {}/{}) after {}ms", url, attempt + 1, config.retryCount(), delayMs);
+            var promise = Promise.<Unit>promise();
+            SharedScheduler.schedule(() -> sendWithRetry(ops, url, payload, attempt + 1).onResult(promise::resolve),
+                                     TimeSpan.timeSpan(delayMs).millis());
+            return promise;
         }
         log.error("Failed to send to webhook {} after {} attempts: {}", url, config.retryCount(), error);
         return AlertForwarderError.WebhookError.webhookError(url, error).promise();
+    }
+
+    /// Compute jittered exponential backoff delay (base*2^attempt, capped, ±50% jitter).
+    /// Package-private for testing.
+    static long jitteredBackoff(int attempt) {
+        var base = Math.min(RETRY_BASE_MS * (1L << attempt), RETRY_CAP_MS);
+        return JitterUtil.applyJitter(base, JitterUtil.MIN_FACTOR_DEFAULT, JitterUtil.MAX_FACTOR_DEFAULT);
     }
 
     private String toJson(AlertEvent event) {

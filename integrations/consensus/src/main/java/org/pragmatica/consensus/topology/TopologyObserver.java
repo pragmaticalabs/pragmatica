@@ -12,6 +12,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.messaging.MessageReceiver;
@@ -256,10 +257,15 @@ public interface TopologyObserver extends TopologyManager {
                 var now = now();
                 var delay = backoff.backoffStrategy()
                                    .nextTimeout(newAttempts);
-                var nextAttempt = now.plusNanos(delay.nanos());
-                log.debug("Node {} connection failed (attempt {}), next attempt after {}: {}",
+                var jitteredDelayMs = JitterUtil.applyJitter(delay.millis(),
+                                                             JitterUtil.MIN_FACTOR_DEFAULT,
+                                                             JitterUtil.MAX_FACTOR_DEFAULT);
+                var jitteredDelay = TimeSpan.timeSpan(jitteredDelayMs).millis();
+                var nextAttempt = now.plusNanos(jitteredDelay.nanos());
+                log.debug("Node {} connection failed (attempt {}), next attempt after {} (jittered from {}): {}",
                           nodeId,
                           newAttempts,
+                          jitteredDelay,
                           delay,
                           cause.message());
                 return NodeState.suspected(state.info(), newAttempts, now, nextAttempt);

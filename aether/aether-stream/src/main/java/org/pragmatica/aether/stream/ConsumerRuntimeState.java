@@ -14,6 +14,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
 
 import java.util.List;
@@ -348,7 +349,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     }
 
     private static long computeBackoff(int attempt) {
-        return Math.min(BASE_BACKOFF_MS * (1L<<(attempt - 1)), MAX_BACKOFF_MS);
+        var base = Math.min(BASE_BACKOFF_MS * (1L<<(attempt - 1)), MAX_BACKOFF_MS);
+        return JitterUtil.applyJitter(base, JitterUtil.MIN_FACTOR_DEFAULT, JitterUtil.MAX_FACTOR_DEFAULT);
     }
 
     private static void logPollFailure(ConsumerKey key, org.pragmatica.lang.Cause cause) {

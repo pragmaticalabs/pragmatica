@@ -88,6 +88,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
@@ -1069,14 +1070,18 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
             var delaySeconds = Math.min(1L << (retryCount - 1), MAX_RETRY_DELAY_SECONDS);
-            log.warn("Transient failure for {} on {} (attempt {}/{}): {} — retrying in {}s",
+            var jitteredMs = JitterUtil.applyJitter(delaySeconds * 1000L,
+                                                    JitterUtil.MIN_FACTOR_DEFAULT,
+                                                    JitterUtil.MAX_FACTOR_DEFAULT);
+            log.warn("Transient failure for {} on {} (attempt {}/{}): {} — retrying in {}ms (base {}s)",
                      sliceKey.artifact(),
                      sliceKey.nodeId(),
                      retryCount,
                      MAX_RETRIES,
                      failureReason,
+                     jitteredMs,
                      delaySeconds);
-            SharedScheduler.schedule(this::reconcile, timeSpan(delaySeconds).seconds());
+            SharedScheduler.schedule(this::reconcile, timeSpan(jitteredMs).millis());
         }
 
         private void logMaxRetriesExceeded(SliceNodeKey sliceKey, String failureReason) {

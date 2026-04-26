@@ -10,6 +10,7 @@ package org.pragmatica.net.tcp.security;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmState;
@@ -183,9 +184,13 @@ public final class CertificateRenewalScheduler {
         @Override
         public void onEntry() {
             var delayMinutes = calculateRetryDelay(retryCount);
-            log.error("Scheduling certificate renewal retry #{} in {} minutes", retryCount, delayMinutes);
+            var jitteredMs = JitterUtil.applyJitter(delayMinutes * 60_000L,
+                                                    JitterUtil.MIN_FACTOR_DEFAULT,
+                                                    JitterUtil.MAX_FACTOR_DEFAULT);
+            log.error("Scheduling certificate renewal retry #{} in {}ms (base {} minutes)",
+                      retryCount, jitteredMs, delayMinutes);
             var task = SharedScheduler.schedule(() -> ctx.dispatch(new RenewalEvent.Tick()),
-                                                TimeSpan.timeSpan(delayMinutes).minutes());
+                                                TimeSpan.timeSpan(jitteredMs).millis());
             ctx.scheduledTask.set(Option.some(task));
         }
 

@@ -30,6 +30,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.Ack;
@@ -104,8 +106,16 @@ public final class SwimProtocol implements SwimMessageHandler {
             return SwimError.General.PROTOCOL_ALREADY_RUNNING.result();
         }
 
-        tickFuture.set(option(SharedScheduler.scheduleAtFixedRate(this::tick, config.startupDelay(), config.period())));
-        LOG.info("SWIM protocol started for node {} (first probe in {}ms)", selfId.id(), config.startupDelay().millis());
+        // Light jitter (±20%) on the startup offset only — period is intentionally fixed to keep
+        // failure-detection latency predictable. The jitter de-syncs simultaneous starts after a
+        // shared quorum-formation event so probe traffic is not thundering-herd.
+        var jitteredStartupMs = JitterUtil.applyJitter(config.startupDelay().millis(),
+                                                       JitterUtil.LIGHT_MIN_FACTOR,
+                                                       JitterUtil.LIGHT_MAX_FACTOR);
+        var startup = TimeSpan.timeSpan(jitteredStartupMs).millis();
+        tickFuture.set(option(SharedScheduler.scheduleAtFixedRate(this::tick, startup, config.period())));
+        LOG.info("SWIM protocol started for node {} (first probe in {}ms; jittered from base {}ms)",
+                 selfId.id(), jitteredStartupMs, config.startupDelay().millis());
         return Result.success(this);
     }
 
