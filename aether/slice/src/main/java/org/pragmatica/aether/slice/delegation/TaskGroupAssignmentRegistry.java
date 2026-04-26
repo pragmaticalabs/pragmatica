@@ -37,10 +37,10 @@ public sealed interface TaskGroupAssignmentRegistry permits TaskGroupAssignmentR
     @MessageReceiver void onTaskAssignmentRemove(ValueRemove<TaskAssignmentKey, TaskAssignmentValue> remove);
 
     static TaskGroupAssignmentRegistry taskGroupAssignmentRegistry(KVStore<AetherKey, AetherValue> kvStore) {
-        var map = new ConcurrentHashMap<TaskGroup, NodeId>();
-        kvStore.forEach(TaskAssignmentKey.class,
-                        TaskAssignmentValue.class,
-                        (key, value) -> map.put(key.taskGroup(), value.assignedTo()));
-        return new TaskGroupAssignmentRegistryImpl(map);
+        var registry = new TaskGroupAssignmentRegistryImpl(new ConcurrentHashMap<>());
+        registry.activateWithSnapshot(consumer -> kvStore.forEach(TaskAssignmentKey.class,
+                                                                  TaskAssignmentValue.class,
+                                                                  consumer));
+        return registry;
     }
 }

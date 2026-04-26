@@ -13,20 +13,97 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import java.util.Map;
+import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
 /// Implementation of [TaskGroupAssignmentRegistry] backed by a concurrent map.
-@SuppressWarnings("JBCT-RET-01") record TaskGroupAssignmentRegistryImpl(Map<TaskGroup, NodeId> assignments) implements TaskGroupAssignmentRegistry {
+///
+/// Theme F drain-and-subscribe race fix (let-s-plan-and-then-jolly-fox.md): the factory
+/// drains the KV-Store snapshot via `kvStore.forEach` and then returns; the messaging
+/// framework then wires the `@MessageReceiver` callbacks. Events fired in the window
+/// between forEach completion and receiver wiring would be lost; events fired during
+/// forEach itself could be applied twice (once via forEach observed value, once via the
+/// receiver). Solution: two-phase activation. Receivers are accepted from construction,
+/// but until `activate(...)` flips `activated=true` they are buffered in
+/// `pendingEvents` under `activationLock`. The factory invokes `activate(kvStore)` to
+/// hold the lock across forEach + buffer drain + flag flip — racefree across the
+/// snapshot-to-subscription boundary.
+@SuppressWarnings("JBCT-RET-01") final class TaskGroupAssignmentRegistryImpl implements TaskGroupAssignmentRegistry {
     private static final Logger log = LoggerFactory.getLogger(TaskGroupAssignmentRegistryImpl.class);
+
+    private final Map<TaskGroup, NodeId> assignments;
+
+    private final AtomicBoolean activated = new AtomicBoolean(false);
+
+    private final ConcurrentLinkedDeque<PendingEvent> pendingEvents = new ConcurrentLinkedDeque<>();
+
+    private final ReentrantLock activationLock = new ReentrantLock();
+
+    TaskGroupAssignmentRegistryImpl(Map<TaskGroup, NodeId> assignments) {
+        this.assignments = assignments;
+    }
 
     @Override public Result<NodeId> ownerFor(TaskGroup group) {
         return Option.option(assignments.get(group)).toResult(TaskAssignmentError.notAssigned(group));
     }
 
     @Override public void onTaskAssignmentPut(ValuePut<TaskAssignmentKey, TaskAssignmentValue> put) {
+        if (activated.get()) {
+            applyPut(put);
+            return;
+        }
+        activationLock.lock();
+        try {
+            if (activated.get()) {applyPut(put);} else {pendingEvents.add(new PendingEvent.Put(put));}
+        } finally {
+            activationLock.unlock();
+        }
+    }
+
+    @Override public void onTaskAssignmentRemove(ValueRemove<TaskAssignmentKey, TaskAssignmentValue> remove) {
+        if (activated.get()) {
+            applyRemove(remove);
+            return;
+        }
+        activationLock.lock();
+        try {
+            if (activated.get()) {applyRemove(remove);} else {pendingEvents.add(new PendingEvent.Remove(remove));}
+        } finally {
+            activationLock.unlock();
+        }
+    }
+
+    void activateWithSnapshot(Consumer<BiConsumer<TaskAssignmentKey, TaskAssignmentValue>> snapshotDrain) {
+        activationLock.lock();
+        try {
+            snapshotDrain.accept((key, value) -> assignments.put(key.taskGroup(), value.assignedTo()));
+            replayPending();
+            activated.set(true);
+        } finally {
+            activationLock.unlock();
+        }
+    }
+
+    private void replayPending() {
+        PendingEvent event;
+        while ((event = pendingEvents.poll()) != null) {dispatchPending(event);}
+    }
+
+    private void dispatchPending(PendingEvent event) {
+        switch (event){
+            case PendingEvent.Put put -> applyPut(put.put());
+            case PendingEvent.Remove remove -> applyRemove(remove.remove());
+        }
+    }
+
+    private void applyPut(ValuePut<TaskAssignmentKey, TaskAssignmentValue> put) {
         var key = put.cause().key();
         var value = put.cause().value();
         var taskGroup = key.taskGroup();
@@ -38,10 +115,16 @@ import org.slf4j.LoggerFactory;
                                                                                                                                         owner);}
     }
 
-    @Override public void onTaskAssignmentRemove(ValueRemove<TaskAssignmentKey, TaskAssignmentValue> remove) {
+    private void applyRemove(ValueRemove<TaskAssignmentKey, TaskAssignmentValue> remove) {
         var taskGroup = remove.cause().key()
                                     .taskGroup();
         var previous = assignments.remove(taskGroup);
         if (previous != null) {log.info("Task group {} assignment removed (was {})", taskGroup, previous);}
+    }
+
+    private sealed interface PendingEvent {
+        record Put(ValuePut<TaskAssignmentKey, TaskAssignmentValue> put) implements PendingEvent{}
+
+        record Remove(ValueRemove<TaskAssignmentKey, TaskAssignmentValue> remove) implements PendingEvent{}
     }
 }

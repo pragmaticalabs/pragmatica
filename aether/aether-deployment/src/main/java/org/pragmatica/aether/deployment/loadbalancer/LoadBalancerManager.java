@@ -32,7 +32,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
@@ -65,7 +68,10 @@ public interface LoadBalancerManager extends DelegatedComponent {
                       KVStore<AetherKey, AetherValue> kvStore,
                       int appHttpPort,
                       Set<String> trackedNodeIps,
-                      Map<String, Set<NodeId>> routeNodes) implements LoadBalancerManagerState {
+                      Map<String, Set<NodeId>> routeNodes,
+                      AtomicBoolean activated,
+                      ConcurrentLinkedDeque<PendingRouteEvent> pendingEvents,
+                      ReentrantLock activationLock) implements LoadBalancerManagerState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
 
             @Override public void onTopologyChange(TopologyChangeNotification topologyChange) {
@@ -77,6 +83,32 @@ public interface LoadBalancerManager extends DelegatedComponent {
             }
 
             @Override public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
+                if (activated.get()) {
+                    applyPut(valuePut);
+                    return;
+                }
+                activationLock.lock();
+                try {
+                    if (activated.get()) {applyPut(valuePut);} else {pendingEvents.add(new PendingRouteEvent.Put(valuePut));}
+                } finally {
+                    activationLock.unlock();
+                }
+            }
+
+            @Override public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
+                if (activated.get()) {
+                    applyRemove(valueRemove);
+                    return;
+                }
+                activationLock.lock();
+                try {
+                    if (activated.get()) {applyRemove(valueRemove);} else {pendingEvents.add(new PendingRouteEvent.Remove(valueRemove));}
+                } finally {
+                    activationLock.unlock();
+                }
+            }
+
+            private void applyPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
                 var key = valuePut.cause().key();
                 var value = valuePut.cause().value();
                 var nodeId = key.nodeId();
@@ -88,7 +120,7 @@ public interface LoadBalancerManager extends DelegatedComponent {
                 }
             }
 
-            @Override public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
+            private void applyRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
                 var key = valueRemove.cause().key();
                 var nodeId = key.nodeId();
                 var affectedRoutes = routeNodes.entrySet().stream()
@@ -107,25 +139,44 @@ public interface LoadBalancerManager extends DelegatedComponent {
             }
 
             void reconcile() {
-                var allNodeIps = new HashSet<String>();
-                var routes = new ArrayList<RouteChange>();
-                var aggregated = new HashMap<String, Set<NodeId>>();
-                kvStore.forEach(NodeRoutesKey.class,
-                                NodeRoutesValue.class,
-                                (key, value) -> aggregateNodeRoutes(key, value, aggregated));
-                routeNodes.clear();
-                routeNodes.putAll(aggregated);
-                aggregated.forEach((identity, nodeIds) -> collectRouteForReconciliation(identity,
-                                                                                        nodeIds,
-                                                                                        allNodeIps,
-                                                                                        routes));
-                replaceTrackedIps(allNodeIps);
-                log.info("Reconciling load balancer: {} routes, {} node IPs", routes.size(), allNodeIps.size());
-                loadBalancerState(allNodeIps, routes).onSuccess(state -> provider.reconcile(state)
-                                                                                           .onFailure(cause -> log.error("Load balancer reconciliation failed: {}",
-                                                                                                                         cause.message())))
-                                 .onFailure(cause -> log.error("Failed to build load balancer state: {}",
-                                                               cause.message()));
+                activationLock.lock();
+                try {
+                    var aggregated = new HashMap<String, Set<NodeId>>();
+                    kvStore.forEach(NodeRoutesKey.class,
+                                    NodeRoutesValue.class,
+                                    (key, value) -> aggregateNodeRoutes(key, value, aggregated));
+                    routeNodes.clear();
+                    routeNodes.putAll(aggregated);
+                    replayPendingEvents();
+                    activated.set(true);
+                    var allNodeIps = new HashSet<String>();
+                    var routes = new ArrayList<RouteChange>();
+                    routeNodes.forEach((identity, nodeIds) -> collectRouteForReconciliation(identity,
+                                                                                            nodeIds,
+                                                                                            allNodeIps,
+                                                                                            routes));
+                    replaceTrackedIps(allNodeIps);
+                    log.info("Reconciling load balancer: {} routes, {} node IPs", routes.size(), allNodeIps.size());
+                    loadBalancerState(allNodeIps, routes).onSuccess(state -> provider.reconcile(state)
+                                                                                               .onFailure(cause -> log.error("Load balancer reconciliation failed: {}",
+                                                                                                                             cause.message())))
+                                     .onFailure(cause -> log.error("Failed to build load balancer state: {}",
+                                                                   cause.message()));
+                } finally {
+                    activationLock.unlock();
+                }
+            }
+
+            private void replayPendingEvents() {
+                PendingRouteEvent event;
+                while ((event = pendingEvents.poll()) != null) {dispatchPending(event);}
+            }
+
+            private void dispatchPending(PendingRouteEvent event) {
+                switch (event){
+                    case PendingRouteEvent.Put put -> applyPut(put.put());
+                    case PendingRouteEvent.Remove remove -> applyRemove(remove.remove());
+                }
             }
 
             private void replaceTrackedIps(Set<String> newIps) {
@@ -212,6 +263,12 @@ public interface LoadBalancerManager extends DelegatedComponent {
                 }
             }
         }
+
+        sealed interface PendingRouteEvent {
+            record Put(ValuePut<NodeRoutesKey, NodeRoutesValue> put) implements PendingRouteEvent{}
+
+            record Remove(ValueRemove<NodeRoutesKey, NodeRoutesValue> remove) implements PendingRouteEvent{}
+        }
     }
 
     static LoadBalancerManager loadBalancerManager(NodeId self,
@@ -234,7 +291,10 @@ public interface LoadBalancerManager extends DelegatedComponent {
                                                                       kvStore,
                                                                       appHttpPort,
                                                                       ConcurrentHashMap.newKeySet(),
-                                                                      new ConcurrentHashMap<>());
+                                                                      new ConcurrentHashMap<>(),
+                                                                      new AtomicBoolean(false),
+                                                                      new ConcurrentLinkedDeque<>(),
+                                                                      new ReentrantLock());
                 state.set(activeState);
                 activeState.reconcile();
                 return Promise.unitPromise();

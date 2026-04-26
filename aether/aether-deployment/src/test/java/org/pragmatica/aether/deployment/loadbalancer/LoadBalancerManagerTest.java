@@ -198,6 +198,84 @@ class LoadBalancerManagerTest {
         }
     }
 
+    /// Theme F drain-and-subscribe race fix — the receiver path must buffer events
+    /// fired during `reconcile()`'s `forEach` drain and replay them exactly once.
+    @Nested
+    class DrainAndSubscribeRace {
+        @Test
+        void midDrainPut_isAppliedExactlyOnceAfterReconcile() {
+            topologyManager.register(node1, "10.0.0.1", 8080);
+            topologyManager.register(node2, "10.0.0.2", 8080);
+
+            // Pre-seed kvStore with node1's route. node2's route will be injected
+            // mid-drain via a stub kvStore wrapper.
+            var routeKey1 = NodeRoutesKey.nodeRoutesKey(node1, TEST_ARTIFACT);
+            var routeValue1 = NodeRoutesValue.nodeRoutesValue(List.of(
+                RouteEntry.activeRoute("GET", "/api/v1/", "list")));
+            kvStore.process(new KVCommand.Put<>(routeKey1, routeValue1));
+
+            var midDrainKvStore = new MidDrainKvStore(kvStore);
+            var midDrainManager = LoadBalancerManager.loadBalancerManager(selfNode,
+                                                                           midDrainKvStore,
+                                                                           topologyManager,
+                                                                           provider,
+                                                                           8080);
+            midDrainKvStore.armMidDrainEvent(midDrainManager,
+                                              putEvent(node2, "GET", "/api/v1/"));
+            midDrainManager.activate().await();
+
+            // The mid-drain event must be visible in the final state. node1 came from
+            // forEach, node2 came from the buffered receiver event.
+            assertThat(provider.reconcileCalls).hasSize(1);
+            var finalState = provider.reconcileCalls.getFirst();
+            assertThat(finalState.activeNodeIps())
+                .containsExactlyInAnyOrder("10.0.0.1", "10.0.0.2");
+
+            // The buffered event was applied during replay, not lost.
+            assertThat(midDrainKvStore.midDrainFired).isTrue();
+        }
+
+        private ValuePut<NodeRoutesKey, NodeRoutesValue> putEvent(NodeId nodeId,
+                                                                  String method,
+                                                                  String path) {
+            var key = NodeRoutesKey.nodeRoutesKey(nodeId, TEST_ARTIFACT);
+            var route = RouteEntry.activeRoute(method, path, "list");
+            var value = NodeRoutesValue.nodeRoutesValue(List.of(route));
+            return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
+        }
+    }
+
+    /// KVStore wrapper that fires a receiver event during `forEach`, simulating a
+    /// notification arriving mid-snapshot-drain.
+    private static final class MidDrainKvStore extends KVStore<AetherKey, AetherValue> {
+        private final KVStore<AetherKey, AetherValue> delegate;
+        private LoadBalancerManager manager;
+        private ValuePut<NodeRoutesKey, NodeRoutesValue> midDrainEvent;
+        boolean midDrainFired;
+
+        MidDrainKvStore(KVStore<AetherKey, AetherValue> delegate) {
+            super(null, null, null);
+            this.delegate = delegate;
+        }
+
+        void armMidDrainEvent(LoadBalancerManager manager,
+                              ValuePut<NodeRoutesKey, NodeRoutesValue> event) {
+            this.manager = manager;
+            this.midDrainEvent = event;
+        }
+
+        @Override
+        public <KK, VV> void forEach(Class<KK> keyClass,
+                                      Class<VV> valueClass,
+                                      java.util.function.BiConsumer<KK, VV> consumer) {
+            delegate.forEach(keyClass, valueClass, consumer);
+            if (manager != null && midDrainEvent != null && !midDrainFired) {
+                midDrainFired = true;
+                manager.onNodeRoutesPut(midDrainEvent);
+            }
+        }
+    }
+
     // === Helpers ===
 
     private void activateAsLeader() {

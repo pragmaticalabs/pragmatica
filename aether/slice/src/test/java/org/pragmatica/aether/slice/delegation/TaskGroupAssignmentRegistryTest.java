@@ -94,6 +94,30 @@ class TaskGroupAssignmentRegistryTest {
         assertOwner(registry.ownerFor(DEPLOYMENT), NODE_B);
     }
 
+    /// Theme F drain-and-subscribe race — receiver events fired BEFORE the snapshot
+    /// drain completes MUST be buffered and applied exactly once during activation.
+    /// We construct an un-activated impl directly, fire a receiver (buffered), then
+    /// activate with a snapshot containing different entries — and assert both the seed
+    /// entries AND the buffered event are visible after activation, with no duplicates.
+    @Test
+    void preActivationReceiver_isBufferedAndAppliedExactlyOnce() {
+        var assignments = new java.util.concurrent.ConcurrentHashMap<TaskGroup, NodeId>();
+        var impl = new TaskGroupAssignmentRegistryImpl(assignments);
+        // Buffered: fires before activation. Must be deferred until activate-time replay.
+        impl.onTaskAssignmentPut(putEvent(DEPLOYMENT, NODE_B));
+        // Now activate with a separate seed entry. Both must be present afterwards.
+        impl.activateWithSnapshot(consumer -> consumer.accept(
+                TaskAssignmentKey.taskAssignmentKey(STRATEGIES),
+                TaskAssignmentValue.taskAssignmentValue(NODE_A)));
+
+        assertOwner(impl.ownerFor(STRATEGIES), NODE_A);
+        assertOwner(impl.ownerFor(DEPLOYMENT), NODE_B);
+
+        // After activation, further receiver events apply directly (not double-applied).
+        impl.onTaskAssignmentPut(putEvent(STORAGE, NODE_A));
+        assertOwner(impl.ownerFor(STORAGE), NODE_A);
+    }
+
     private static void assertOwner(Result<NodeId> result, NodeId expected) {
         result.onFailure(cause -> Assertions.fail("Expected success, got: " + cause.message()))
               .onSuccess(node -> assertThat(node).isEqualTo(expected));
