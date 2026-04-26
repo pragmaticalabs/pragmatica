@@ -162,6 +162,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         @Override
         public void onEntry() {
             log.info("Node {} NodeDeploymentManager activated", ctx.self().id());
+            // Theme M / M1 — register lifecycle ON_DUTY deterministically on entry into Active,
+            // regardless of whether FSM dispatch is synchronous or async. Replaces the previous
+            // post-dispatch `if (current instanceof Active)` heuristic in the adapter.
+            ctx.activeOnEntryCallback().onPresent(Runnable::run);
             // INVARIANT: Active.onEntry runs only at first-time activation OR post-drain rejoin.
             // In both cases, KV-store has zero slice assignments owned by this node:
             //   - first-time activation: leader hasn't issued any assignments yet,

@@ -635,6 +635,17 @@ public interface AetherNode extends ManageableNode {
                                                       ? "enabled"
                                                       : "disabled", 46) + "|");
                 log.info("{}", "+-----------------------------------------------------------------+");
+                logCloudBootstrapHintIfNoStaticSeeds(peerCount);
+            }
+
+            // Theme M / M4 — when static seed peers = 0, the cluster cannot self-form a quorum
+            // (no nodes to vote). Operator must run `aether cluster bootstrap` after enough
+            // cloud-target nodes have started. Surface this as a single explicit hint at startup
+            // so it isn't lost behind silent "waiting for quorum" loops.
+            private void logCloudBootstrapHintIfNoStaticSeeds(int peerCount) {
+                if (peerCount > 0) {return;}
+                log.info("No static seed peers configured — cluster requires operator bootstrap.");
+                log.info("Run `aether cluster bootstrap <aether-cluster.toml>` after cloud nodes start.");
             }
 
             private static String pad(String value, int width) {

@@ -228,6 +228,41 @@ class NodeDeploymentFsmTest {
         }
     }
 
+    /// Theme M / M1 — `Active.onEntry` invokes the registered active-on-entry callback
+    /// deterministically, so consumers (e.g. the lifecycle ON_DUTY registrar) fire on every
+    /// Active entry without depending on FSM-dispatch synchrony.
+    @Nested
+    class ActiveOnEntryCallback {
+        @Test
+        void onEntry_invokesRegisteredCallback_onceOnQuorumEstablished() {
+            var calls = new AtomicLong(0);
+            ctx.setActiveOnEntryCallback(calls::incrementAndGet);
+            harness.dispatch(new QuorumEstablished());
+            assertThat(harness.state()).isInstanceOf(NodeDeploymentState.Active.class);
+            assertThat(calls.get()).as("callback fires exactly once on entry into Active").isEqualTo(1L);
+        }
+
+        @Test
+        void onEntry_callbackFiresAgain_onPostDormantRejoin() {
+            var calls = new AtomicLong(0);
+            ctx.setActiveOnEntryCallback(calls::incrementAndGet);
+            harness.dispatch(new QuorumEstablished());
+            harness.dispatch(new QuorumDisappeared());
+            assertThat(harness.state()).isInstanceOf(NodeDeploymentState.Dormant.class);
+            harness.dispatch(new QuorumEstablished());
+            assertThat(harness.state()).isInstanceOf(NodeDeploymentState.Active.class);
+            assertThat(calls.get())
+                    .as("callback fires once per Active entry — first activation + post-drain rejoin")
+                    .isEqualTo(2L);
+        }
+
+        @Test
+        void onEntry_withoutCallbackRegistered_doesNotThrow() {
+            harness.dispatch(new QuorumEstablished());
+            assertThat(harness.state()).isInstanceOf(NodeDeploymentState.Active.class);
+        }
+    }
+
     // --- test fixtures ---
 
     private static ValuePut<NodeArtifactKey, NodeArtifactValue> buildLoadArtifactPut() {

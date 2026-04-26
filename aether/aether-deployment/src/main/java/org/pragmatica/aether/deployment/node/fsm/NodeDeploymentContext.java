@@ -67,6 +67,7 @@ public final class NodeDeploymentContext {
     private final TimeSpan transitionRetryDelay;
     private final AtomicLong quorumSequence;
     private final AtomicReference<Runnable> shutdownCallback;
+    private final AtomicReference<Runnable> activeOnEntryCallback;
     private final LongSupplier clock;
     private final NodeDeploymentState dormant;
     private final NodeDeploymentState stopped;
@@ -122,6 +123,7 @@ public final class NodeDeploymentContext {
         this.transitionRetryDelay = transitionRetryDelay;
         this.quorumSequence = new AtomicLong(0);
         this.shutdownCallback = new AtomicReference<>();
+        this.activeOnEntryCallback = new AtomicReference<>();
         this.clock = clock;
         this.dormant = new NodeDeploymentState.Dormant(this, List.of());
         this.stopped = new NodeDeploymentState.Stopped(this);
@@ -241,6 +243,19 @@ public final class NodeDeploymentContext {
 
     @Contract public void setShutdownCallback(Runnable callback) {
         shutdownCallback.set(callback);
+    }
+
+    /// Theme M / M1 — callback invoked deterministically from
+    /// [`NodeDeploymentState.Active#onEntry`]. Used by the [`NodeDeploymentManager`] adapter to
+    /// register the node's lifecycle ON_DUTY atom on every Active entry (first activation and
+    /// post-drain rejoin). Replacing the previous `dispatchQuorumEstablished` post-dispatch
+    /// heuristic that depended on FSM dispatch being synchronous.
+    public Option<Runnable> activeOnEntryCallback() {
+        return Option.option(activeOnEntryCallback.get());
+    }
+
+    @Contract public void setActiveOnEntryCallback(Runnable callback) {
+        activeOnEntryCallback.set(callback);
     }
 
     /// True iff the FSM's current state is [`NodeDeploymentState.Active`]. Exposed for the

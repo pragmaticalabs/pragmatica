@@ -348,6 +348,8 @@ public interface NodeDeploymentManager {
 
         DeploymentManagerAdapter(NodeDeploymentContext ctx) {
             this.ctx = ctx;
+            // Theme M / M1 — wire deterministic ON_DUTY registration into Active.onEntry.
+            ctx.setActiveOnEntryCallback(this::registerLifecycleOnDuty);
         }
 
         @Contract @Override public void onQuorumStateChange(QuorumStateNotification quorumStateNotification) {
@@ -367,11 +369,10 @@ public interface NodeDeploymentManager {
         }
 
         private void dispatchQuorumEstablished() {
+            // Theme M / M1 — registerLifecycleOnDuty() now fires deterministically from
+            // Active.onEntry (wired via ctx.setActiveOnEntryCallback in the adapter ctor),
+            // independent of whether FSM dispatch is synchronous.
             ctx.dispatch(new ClusterFsmEvent.QuorumEstablished());
-            var current = ctx.fsm().current();
-            if (current instanceof NodeDeploymentState.Active) {
-                registerLifecycleOnDuty();
-            }
         }
 
         @Contract @Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {

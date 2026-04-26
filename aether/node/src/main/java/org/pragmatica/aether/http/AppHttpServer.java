@@ -367,6 +367,8 @@ class AppHttpServerAdapter implements AppHttpServer {
             log.info("App HTTP server is disabled");
             return Promise.success(unit());
         }
+        // Theme M / M2 — fail fast if RouteRegistry / route table supplier wiring was missed.
+        verifyRouteTableSupplierWired(routeRegistry, context);
         log.info("Starting App HTTP server on port {} (protocol: {})", config.port(), config.httpProtocol());
         context.dispatch(new AppHttpEvents.StartRequested());
         var protocol = config.httpProtocol();
@@ -376,6 +378,21 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                          : Promise.success(unit()))
                           : startH3Server();
         return startPromise.onSuccess(_ -> onStartCompleted());
+    }
+
+    /// Theme M / M2 — package-private precondition exposed for unit testing. Production
+    /// wiring goes through [`#start`]; tests call this directly to verify the guard.
+    static void verifyRouteTableSupplierWired(HttpRouteRegistry routeRegistry, AppHttpContext context) {
+        java.util.Objects.requireNonNull(routeRegistry,
+                                         "routeRegistry must be wired before AppHttpServer.start()");
+        java.util.Objects.requireNonNull(context,
+                                         "AppHttpContext must be wired before AppHttpServer.start()");
+        java.util.Objects.requireNonNull(context.routeTableSupplier(),
+                                         "context.routeTableSupplier must be wired before AppHttpServer.start()");
+        if (context.routeTableSupplier() == AppHttpContext.EMPTY_ROUTE_TABLE_SENTINEL) {
+            throw new IllegalStateException("AppHttpServer.start(): routeTableSupplier is the default "
+                                            + "RouteTable::empty sentinel — RouteRegistry wiring missed");
+        }
     }
 
     private void onStartCompleted() {

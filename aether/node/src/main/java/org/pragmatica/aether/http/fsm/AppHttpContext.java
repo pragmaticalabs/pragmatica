@@ -35,7 +35,12 @@ public final class AppHttpContext {
     /// data. Returns an empty table; the FSM will still fire `RouteTablePublished` carrying the
     /// empty snapshot. Tests that construct contexts directly use this to avoid depending on the
     /// real registry.
-    private static final Supplier<RouteTable> EMPTY_ROUTE_TABLE = RouteTable::empty;
+    ///
+    /// Theme M / M2 — exposed so the [`org.pragmatica.aether.http.AppHttpServer#start`] precondition
+    /// can detect this sentinel and refuse to start when production wiring was missed.
+    public static final Supplier<RouteTable> EMPTY_ROUTE_TABLE_SENTINEL = RouteTable::empty;
+
+    private static final Supplier<RouteTable> EMPTY_ROUTE_TABLE = EMPTY_ROUTE_TABLE_SENTINEL;
 
     /// Default quorum supplier — reports "not established" so `publishQuorumStateIfEstablished`
     /// becomes a no-op. The adapter overrides this with the live observation.
@@ -77,6 +82,12 @@ public final class AppHttpContext {
 
     public AppHttpState starting() {
         return starting;
+    }
+
+    /// Theme M / M2 — exposed so [`org.pragmatica.aether.http.AppHttpServer#start`] can verify the
+    /// supplier was wired (non-null and not the [`#EMPTY_ROUTE_TABLE_SENTINEL`] default).
+    public Supplier<RouteTable> routeTableSupplier() {
+        return routeTableSupplier;
     }
 
     // --- Route / quorum republish helpers ---
