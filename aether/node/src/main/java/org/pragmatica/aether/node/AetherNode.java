@@ -72,6 +72,7 @@ import org.pragmatica.aether.metrics.MinuteAggregator;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.GenerationChangedSink;
+import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.node.generation.NodeSnapshotCache;
@@ -160,6 +161,7 @@ import org.pragmatica.dht.DistributedDHTClient;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
 import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
 import org.pragmatica.consensus.net.quic.QuicDisconnectListener;
+import org.pragmatica.consensus.net.quic.QuicPeerStateListener;
 import org.pragmatica.consensus.net.quic.QuicTlsProvider;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -211,7 +213,9 @@ import org.slf4j.LoggerFactory;
 /// Main entry point for an Aether cluster node.
 /// Assembles all components: consensus, KV-store, slice management, deployment managers.
 public interface AetherNode extends ManageableNode {
-    String VERSION = "1.0.0-alpha";
+    Logger LOG = LoggerFactory.getLogger(AetherNode.class);
+
+    String VERSION = "1.0.0-rc1";
 
     NodeId self();
     Promise<Unit> start();
@@ -1165,7 +1169,7 @@ public interface AetherNode extends ManageableNode {
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
         attachQuicFollowerWiring(clusterNode.network(), isLeaderSupplier, peerObservationStore, leaderEpochSupplier);
         attachQuicHealthReporter(clusterNode.network(), peerObservationStore);
-        attachQuicPeerStateListener(clusterNode.network(), clusterTopologyManager);
+        attachQuicPeerStateListener(clusterNode.network(), clusterTopologyManager, stableHealthSink, leaderEpochSupplier);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForReconciler(change,
                                                                                        leaderTerm,
@@ -1465,22 +1469,50 @@ public interface AetherNode extends ManageableNode {
     /// (Issue 1) suppresses duplicate `TopologyChangeNotification.NodeAdded` for transient
     /// reconnects — without this hook, CTM would not observe reconnect churn at all.
     private static void attachQuicPeerStateListener(ClusterNetwork network,
-                                                    org.pragmatica.aether.deployment.cluster.ClusterTopologyManager ctm) {
+                                                    ClusterTopologyManager ctm,
+                                                    HealthSignalSink healthSink,
+                                                    Supplier<Epoch> epochSupplier) {
         if (! (network instanceof QuicClusterNetwork quicNetwork)) {return;}
-        var listener = new org.pragmatica.consensus.net.quic.QuicPeerStateListener() {
+        var listener = new QuicPeerStateListener() {
             @Override public void onPeerJoined(NodeId nodeId) {
+                LOG.info("QuicPeerState: onPeerJoined({}) — bumping CTM stability + emitting SwimHint(HEALTHY)", nodeId);
                 ctm.onQuicPeerJoined(nodeId);
+                emitHealthyHint(nodeId);
             }
 
             @Override public void onPeerReconnected(NodeId nodeId) {
+                LOG.info("QuicPeerState: onPeerReconnected({}) — bumping CTM stability + emitting SwimHint(HEALTHY)", nodeId);
                 ctm.onQuicPeerJoined(nodeId);
+                emitHealthyHint(nodeId);
             }
 
             @Override public void onPeerLeft(NodeId nodeId) {
+                LOG.info("QuicPeerState: onPeerLeft({}) — notifying CTM", nodeId);
                 ctm.onQuicPeerLeft(nodeId);
+            }
+
+            /// Emit a local-observation `SwimHint(HEALTHY)` so the existing
+            /// `clearSuspectedInMemory` path triggers when the leader's own QUIC channel to a
+            /// peer becomes alive. Without this, a peer transiently SWIM-suspected during
+            /// boot stays SUSPECTED in the snapshot forever — the only existing clear path
+            /// is `RemoteConnectivity(CONNECTED)` piggybacked on a follower's pong, but
+            /// followers only push SUSPECT/FAULTY observations to the buffer (HEALTHY is
+            /// the implicit baseline that's never broadcast). Local QUIC liveness is
+            /// strictly stronger evidence than any third-party observation — use it.
+            private void emitHealthyHint(NodeId peer) {
+                var epoch = epochSupplier.get();
+                healthSink.emit(new HealthSignal.SwimHint(peer, HealthHint.HEALTHY, epoch));
             }
         };
         quicNetwork.setPeerStateListener(listener);
+        // Catch-up emission: peers may have completed handshake BEFORE this listener was
+        // attached (event-loss window). Emit a SwimHint(HEALTHY) for each currently-connected
+        // peer so the HealthReconciler's swimHints map is initialized to HEALTHY rather than
+        // sticky SUSPECTED carried over from any earlier signal.
+        quicNetwork.connectedPeers().forEach(peer -> {
+            LOG.info("QuicPeerState: catch-up SwimHint(HEALTHY) for already-connected peer {}", peer);
+            healthSink.emit(new HealthSignal.SwimHint(peer, HealthHint.HEALTHY, epochSupplier.get()));
+        });
     }
 
     private static void attachQuicFollowerWiring(ClusterNetwork network,

@@ -191,6 +191,9 @@ public final class ClusterSyncContext {
                                        currentEpoch.rabiaTerm(),
                                        currentEpoch.localCounter(),
                                        payload);
+        org.slf4j.LoggerFactory.getLogger(ClusterSyncContext.class)
+            .info("ClusterSync: sending PING to {} (rabiaTerm={}, epoch={}:{})",
+                  peer, rabiaTerm, currentEpoch.rabiaTerm(), currentEpoch.localCounter());
         network.send(peer, ping);
         return currentEpoch;
     }

@@ -19,6 +19,8 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.utility.RingBuffer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
@@ -100,6 +102,8 @@ public interface ClusterSyncCollector {
 
 /// Implementation of ClusterSyncCollector.
 class ClusterSyncCollectorImpl implements ClusterSyncCollector {
+    private static final Logger log = LoggerFactory.getLogger(ClusterSyncCollectorImpl.class);
+
     private final long slidingWindowMs;
     private final int ringBufferCapacity;
     private final NodeId self;
@@ -198,15 +202,23 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     }
 
     @Override@Contract public void onClusterSyncPing(ClusterSyncPing ping) {
-        if (!acceptPingFencing(ping)) {return;}
+        log.info("ClusterSync: received PING from {} (rabiaTerm={}, epoch={}:{})",
+                 ping.sender(), ping.rabiaTerm(), ping.epochTerm(), ping.epochCounter());
+        if (!acceptPingFencing(ping)) {
+            log.warn("ClusterSync: PING from {} rejected by fencing (rabiaTerm={} < observed={})",
+                     ping.sender(), ping.rabiaTerm(), observedRabiaTerm.get());
+            return;
+        }
         ping.allMetrics().forEach(this::storeRemoteMetrics);
         var incomingEpoch = Epoch.epoch(ping.epochTerm(), ping.epochCounter());
         advanceEpochAndCacheSnapshot(incomingEpoch, ping.snapshot());
         var pong = buildPong();
+        log.info("ClusterSync: sending PONG to {} (epoch={}:{})", ping.sender(), pong.observedEpochTerm(), pong.observedEpochCounter());
         network.send(ping.sender(), pong);
     }
 
     @Override@Contract public void onClusterSyncPong(ClusterSyncPong pong) {
+        log.info("ClusterSync: received PONG from {} (epoch={}:{})", pong.sender(), pong.observedEpochTerm(), pong.observedEpochCounter());
         if (!pong.sender().equals(self)) {
             remoteMetrics.put(pong.sender(), pong.metrics());
             addToHistory(pong.sender(), pong.metrics());
