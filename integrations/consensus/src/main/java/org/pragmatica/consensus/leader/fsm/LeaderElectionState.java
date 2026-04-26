@@ -28,15 +28,20 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
 /// Sealed state hierarchy for the leader-election FSM. Each state is a record bound to the
-/// shared [`LeaderElectionContext`]. Data-free states (Dormant, QuorumWaiting, QuorumLost,
-/// Stopped) are instantiated once per FSM and stored on the context (the "per-FSM singleton"
-/// pattern). Data-carrying states are instantiated fresh on every entry:
+/// shared [`LeaderElectionContext`]. Data-free states (Dormant, QuorumLost, Stopped) are
+/// instantiated once per FSM and stored on the context (the "per-FSM singleton" pattern).
+/// Data-carrying states are instantiated fresh on every entry:
 ///
 /// - `Led(leader)` — `leader` identifies the leadership tenure.
 /// - `Electing(tickFuture, proposalTimeoutFuture)` and `ReElecting(...)` — each owns the
 ///   `ScheduledFuture` references for the eagerly-scheduled election tick and the in-flight
 ///   proposal-timeout dispatcher. Both futures are cancelled in `onExit` / `onCasLost`, so a
 ///   stale tick from a prior tenure can never fire after the FSM has moved on.
+/// - `QuorumWaiting(pollFuture)` — owns a periodic `ScheduledFuture` that re-queries
+///   [`LeaderElectionContext#consensusReadySupplier`] at a 1Hz cadence. The supplier wraps a
+///   level signal (e.g. `RabiaEngine::isActive`); the periodic re-check eliminates the
+///   dead-time between consensus engine activation and the next external topology event.
+///   The future is cancelled in `onExit` / `onCasLost`.
 ///
 /// All states accept [`ClusterFsmEvent`] as their event type; leader-election domain events
 /// ([`LeaderElectionEvents`]) also implement `ClusterFsmEvent` so they flow through the same
@@ -85,7 +90,25 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         }
     }
 
-    record QuorumWaiting(LeaderElectionContext ctx) implements LeaderElectionState {
+    /// Data-carrying state. Fresh instance per entry; holds an [`AtomicReference`] for a
+    /// periodic `ScheduledFuture` that re-queries [`LeaderElectionContext#consensusReadySupplier`]
+    /// at a 1Hz cadence. The supplier wraps a level signal (e.g. `RabiaEngine::isActive`) — the
+    /// periodic re-check is the only path by which the FSM observes the false→true transition
+    /// when no incidental topology event arrives. The future is cancelled in `onExit` /
+    /// `onCasLost` to prevent leaks. The synchronous check on entry is preserved so the fast
+    /// path doesn't pay any polling latency.
+    record QuorumWaiting(LeaderElectionContext ctx,
+                         AtomicReference<ScheduledFuture<?>> pollFuture) implements LeaderElectionState {
+
+        /// Polling interval for the consensus-readiness re-check. The FSM bounds retries via
+        /// state transitions (any `QuorumDisappeared` / `Shutdown` cancels the timer; any
+        /// `NodeAdded` / `NodeGone` keeps the timer alive on the same record).
+        public static final TimeSpan POLL_INTERVAL = TimeSpan.timeSpan(1).seconds();
+
+        public static QuorumWaiting fresh(LeaderElectionContext ctx) {
+            return new QuorumWaiting(ctx, new AtomicReference<>());
+        }
+
         @Override
         public void onEntry() {
             // Query the consensus engine's readiness state directly (SSOT). If consensus is
@@ -95,7 +118,26 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             if (ctx.consensusReadySupplier().get()) {
                 log.info("Consensus engine reports ready on entry to QuorumWaiting — advancing");
                 dispatchSelf(ctx, new ConsensusReady());
+                return;
             }
+            // Otherwise schedule a periodic re-check. The supplier wraps a level signal that may
+            // become true asynchronously after entry; without this poll the FSM would sit
+            // leaderless until an incidental topology event nudges it.
+            log.debug("Consensus engine not ready on entry — scheduling periodic re-check at {}ms",
+                      POLL_INTERVAL.millis());
+            var future = SharedScheduler.scheduleAtFixedRate(() -> pollConsensusReady(ctx),
+                                                              POLL_INTERVAL);
+            pollFuture.set(future);
+        }
+
+        @Override
+        public void onExit() {
+            cancelFuture(pollFuture);
+        }
+
+        @Override
+        public void onCasLost() {
+            cancelFuture(pollFuture);
         }
 
         @Override
@@ -115,6 +157,19 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case LeaderCommitted lc -> adoptLeaderIfInTopology(ctx, lc, tx);
                 default -> tx.ignore();
             }
+        }
+    }
+
+    /// Periodic re-check of consensus readiness. Re-queries the supplier; on `true` it
+    /// dispatches `ConsensusReady` into the FSM so the handler can advance to
+    /// `Electing` / `ReElecting`. The dispatch path is idempotent in non-`QuorumWaiting`
+    /// states (Dormant absorbs as `NO_ACTION_DORMANT`; QuorumLost absorbs the same way;
+    /// Electing/ReElecting/Led/Stopped fall through to `tx.ignore()`), so a tick that races
+    /// the FSM's own state transition is harmless.
+    private static void pollConsensusReady(LeaderElectionContext ctx) {
+        if (ctx.consensusReadySupplier().get()) {
+            log.info("Consensus engine became ready during QuorumWaiting poll — advancing");
+            dispatchSelf(ctx, new ConsensusReady());
         }
     }
 

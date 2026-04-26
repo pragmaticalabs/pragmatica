@@ -32,8 +32,10 @@ import java.util.function.Supplier;
 /// - Mutable bookkeeping that is NOT guard-visible (retry counters, viewSequence, proposal epoch).
 /// - Atomic `currentTopology` shared across states — every state reads the latest topology via
 ///   this reference; `NodeAdded`/`NodeGone` mutate it directly (not as state transitions).
-/// - State instances for the per-FSM "singletons" (`dormant`, `quorumWaiting`, `quorumLost`,
-///   `stopped`, `electing`, `reElecting`) so CAS comparisons against them are stable.
+/// - State instances for the per-FSM "singletons" (`dormant`, `quorumLost`, `stopped`) so CAS
+///   comparisons against them are stable. Data-carrying states (`electing`, `reElecting`,
+///   `quorumWaiting`) are constructed fresh on every entry; each owns its own
+///   `ScheduledFuture`(s) cancelled on `onExit` / `onCasLost`.
 ///
 /// Thread safety: atomic fields are thread-safe on their own. The context is referenced by all
 /// state instances for a given FSM; states mutate atomic fields directly inside their handlers.
@@ -78,10 +80,10 @@ public final class LeaderElectionContext {
     // Built in the constructor via the constructor-driven initial-state factory, so the fields
     // are `final` and CAS comparisons against them return the same reference.
     private final LeaderElectionState.Dormant dormant;
-    private final LeaderElectionState.QuorumWaiting quorumWaiting;
-    // Electing / ReElecting are data-carrying (each carries a `ScheduledFuture` for the pending
-    // election tick + proposal-timeout). They MUST be fresh per entry so `onExit`/`onCasLost`
-    // cancel a tenure-specific future, not a shared one.
+    // Electing / ReElecting / QuorumWaiting are data-carrying (each carries one or more
+    // `ScheduledFuture`s — election tick / proposal timeout / consensus-ready poll). They MUST
+    // be fresh per entry so `onExit` / `onCasLost` cancel a tenure-specific future, not a
+    // shared one.
     private final LeaderElectionState.QuorumLost quorumLost;
     private final LeaderElectionState.Stopped stopped;
 
@@ -185,7 +187,6 @@ public final class LeaderElectionContext {
         this.rabiaTermSupplier = rabiaTermSupplier;
         this.consensusReadySupplier = consensusReadySupplier;
         this.dormant = new LeaderElectionState.Dormant(this);
-        this.quorumWaiting = new LeaderElectionState.QuorumWaiting(this);
         this.quorumLost = new LeaderElectionState.QuorumLost(this);
         this.stopped = new LeaderElectionState.Stopped(this);
     }
@@ -270,7 +271,9 @@ public final class LeaderElectionContext {
     // --- Per-FSM state instances ---
 
     public LeaderElectionState.Dormant dormant() { return dormant; }
-    public LeaderElectionState.QuorumWaiting quorumWaiting() { return quorumWaiting; }
+    /// Fresh data-carrying instance per call. Each instance owns its own consensus-readiness
+    /// poll `ScheduledFuture` and cancels it on `onExit`/`onCasLost`.
+    public LeaderElectionState.QuorumWaiting quorumWaiting() { return LeaderElectionState.QuorumWaiting.fresh(this); }
     /// Fresh data-carrying instance per call. Each instance owns its own pending-tick /
     /// proposal-timeout `ScheduledFuture`s and cancels them on `onExit`/`onCasLost`.
     public LeaderElectionState.Electing electing() { return LeaderElectionState.Electing.fresh(this); }
