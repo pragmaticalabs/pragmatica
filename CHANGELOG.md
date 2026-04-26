@@ -182,6 +182,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Consumer timeout** — Auto-unsubscribe consumers idle for 60s
 - **QUIC auto-reconnect** — `TopologyObserver` re-adds configured core nodes removed from topology on each reconciliation cycle. Fixes LB losing connections to restarted nodes
 - **CTM env propagation** — `DockerComputeProvider` propagates `AETHER_INSECURE_DEV_MODE` and `AETHER_CLUSTER_SECRET` to provisioned containers
+- **QUIC missing-peer reconciler** — `QuicClusterNetwork` now ticks every 5s and dispatches `connectPeer` for any configured peer absent from `connectedPeers()`. Recovers from container-recreation reconnect asymmetry where a recreated peer re-handshakes with N-1 peers but silently misses one (sticky SUSPECTED never clears via per-pong fan because no traffic flows). Per-peer jittered exponential backoff (5s initial → 60s cap) held on `PeerState`; `CONNECTING` / `REMOVED` / wrong-direction skipped; cancellable on shutdown. Validated end-to-end by smoke gate recovery on the remote integration suite
+- **`swimHints` projection TTL (60s default)** — `HealthReconcilerContext.swimHints` map entries now decay after `swim_hints_ttl` (configurable via `[operations.auto_heal]`). Defense-in-depth so sticky SUSPECTED self-heals when transport recovery is delayed; aligns with the project invariant "state reconstructible from KV-Store" — the in-memory projection map no longer holds non-decaying state forever. SWIM's own SUSPECT/FAULT signals remain authoritative
 
 ### Changed
 - **`build.sh`** — Exports `AETHER_INSECURE_DEV_MODE=true` for development builds
