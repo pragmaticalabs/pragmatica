@@ -23,6 +23,8 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -35,7 +37,15 @@ import java.util.stream.Stream;
 ///
 /// See `aether/docs/specs/cluster-generation-spec.md` §14.1.
 public final class ClusterAwaitQuiescedRoute implements RouteSource {
+    private static final Logger log = LoggerFactory.getLogger(ClusterAwaitQuiescedRoute.class);
+
     private static final TimeSpan POLL_INTERVAL = TimeSpan.timeSpan(200).millis();
+
+    /// Log snapshot state every Nth poll (200ms × 25 = 5s) so when await-quiesced
+    /// times out we have observable evidence of WHY: e.g., snapshot epoch stuck below
+    /// target, or quiescence stuck at DEGRADED. Without this the failure mode (HTTP
+    /// 500 on timeout) is opaque from the operator side.
+    private static final int LOG_EVERY_N_POLLS = 25;
 
     private static final TimeSpan DEFAULT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
 
@@ -111,22 +121,65 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
     private Promise<AwaitQuiescedResponse> awaitQuiesced(Epoch requested, TimeSpan timeout) {
         var startNanos = System.nanoTime();
         var deadlineNanos = startNanos + timeout.nanos();
-        return pollUntilReadyOrTimeout(requested, startNanos, deadlineNanos);
+        log.debug("await-quiesced: requested={}, timeout={}ms", requested, timeout.millis());
+        return pollUntilReadyOrTimeout(requested, startNanos, deadlineNanos, 0);
     }
 
     private Promise<AwaitQuiescedResponse> pollUntilReadyOrTimeout(Epoch requested,
                                                                    long startNanos,
-                                                                   long deadlineNanos) {
+                                                                   long deadlineNanos,
+                                                                   int pollCount) {
         var snapshot = nodeSupplier.get().currentGenerationSnapshot();
+        if (pollCount > 0 && pollCount % LOG_EVERY_N_POLLS == 0) {
+            logProgress(requested, snapshot, pollCount, startNanos);
+        }
         return snapshot.filter(s -> matchesQuiesced(s, requested)).map(s -> Promise.success(buildResponse(s, startNanos)))
-                              .or(() -> waitOrTimeout(requested, startNanos, deadlineNanos));
+                              .or(() -> waitOrTimeout(requested, startNanos, deadlineNanos, pollCount));
     }
 
-    private Promise<AwaitQuiescedResponse> waitOrTimeout(Epoch requested, long startNanos, long deadlineNanos) {
-        if (System.nanoTime() >= deadlineNanos) {return timeoutResponse();}
+    private Promise<AwaitQuiescedResponse> waitOrTimeout(Epoch requested,
+                                                          long startNanos,
+                                                          long deadlineNanos,
+                                                          int pollCount) {
+        if (System.nanoTime() >= deadlineNanos) {
+            logTimeout(requested, pollCount, startNanos);
+            return timeoutResponse();
+        }
         return Promise.<Boolean>promise(POLL_INTERVAL,
                                         p -> p.succeed(true))
-                      .flatMap(_ -> pollUntilReadyOrTimeout(requested, startNanos, deadlineNanos));
+                      .flatMap(_ -> pollUntilReadyOrTimeout(requested, startNanos, deadlineNanos, pollCount + 1));
+    }
+
+    private static void logProgress(Epoch requested,
+                                    Option<ClusterGenerationSnapshot> snapshot,
+                                    int pollCount,
+                                    long startNanos) {
+        var elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
+        snapshot.onPresent(s -> log.info("await-quiesced still waiting (poll={}, elapsed={}ms): requested={}, observed=epoch={} quiescence={}",
+                                          pollCount,
+                                          elapsedMs,
+                                          requested,
+                                          s.epoch(),
+                                          s.quiescence()))
+                .onEmpty(() -> log.info("await-quiesced still waiting (poll={}, elapsed={}ms): requested={}, observed=NO_SNAPSHOT",
+                                         pollCount,
+                                         elapsedMs,
+                                         requested));
+    }
+
+    private void logTimeout(Epoch requested, int pollCount, long startNanos) {
+        var elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
+        var snapshot = nodeSupplier.get().currentGenerationSnapshot();
+        snapshot.onPresent(s -> log.warn("await-quiesced TIMEOUT (polls={}, elapsed={}ms): requested={}, final=epoch={} quiescence={}",
+                                          pollCount,
+                                          elapsedMs,
+                                          requested,
+                                          s.epoch(),
+                                          s.quiescence()))
+                .onEmpty(() -> log.warn("await-quiesced TIMEOUT (polls={}, elapsed={}ms): requested={}, final=NO_SNAPSHOT",
+                                         pollCount,
+                                         elapsedMs,
+                                         requested));
     }
 
     private static boolean matchesQuiesced(ClusterGenerationSnapshot snapshot, Epoch requested) {
