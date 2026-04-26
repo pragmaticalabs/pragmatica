@@ -100,6 +100,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                                             DeploymentMap.deploymentMap(),
                                                             snapshotSource,
                                                             configStore::current,
+                                                            nodeId -> Option.none(),
                                                             configStore::apply);
     }
 

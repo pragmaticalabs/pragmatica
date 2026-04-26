@@ -95,6 +95,7 @@ class ClusterTopologyManagerConfigChangeReconcileTest {
                                                               DeploymentMap.deploymentMap(),
                                                               snapshotSource,
                                                               configStore::current,
+                                                              nodeId -> Option.none(),
                                                               configStore::apply);
     }
 

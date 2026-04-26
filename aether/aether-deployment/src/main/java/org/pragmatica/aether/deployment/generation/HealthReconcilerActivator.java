@@ -99,6 +99,7 @@ public interface HealthReconcilerActivator {
                                                                                   ClusterGenerationProjector.clusterGenerationProjector(),
                                                                                   Map::of,
                                                                                   () -> 0L,
+                                                                                  Option::<Long>none,
                                                                                   clock,
                                                                                   Option.<ClusterNode<KVCommand<AetherKey>>>none(),
                                                                                   reconciler::self,
@@ -121,6 +122,7 @@ public interface HealthReconcilerActivator {
                                                    projector,
                                                    kvSnapshotSupplier,
                                                    rabiaTermSupplier,
+                                                   Option::<Long>none,
                                                    hlcClock,
                                                    Option.<ClusterNode<KVCommand<AetherKey>>>none(),
                                                    reconciler::self,
@@ -145,6 +147,7 @@ public interface HealthReconcilerActivator {
                                                    projector,
                                                    kvSnapshotSupplier,
                                                    rabiaTermSupplier,
+                                                   Option::<Long>none,
                                                    hlcClock,
                                                    Option.some(cluster),
                                                    selfSupplier,
@@ -170,6 +173,38 @@ public interface HealthReconcilerActivator {
                                                    projector,
                                                    kvSnapshotSupplier,
                                                    rabiaTermSupplier,
+                                                   Option::<Long>none,
+                                                   hlcClock,
+                                                   Option.some(cluster),
+                                                   selfSupplier,
+                                                   initialCoreSizeSupplier,
+                                                   new AtomicBoolean(false),
+                                                   new AtomicInteger(),
+                                                   new AtomicLong(0L),
+                                                   new AtomicLong(0L),
+                                                   new AtomicReference<>());
+    }
+
+    /// Theme E #189: factory accepting an explicit `leaderEpochSupplier` (typically
+    /// `LeaderManager::currentLeaderEpoch`). The bootstrap path captures the epoch at
+    /// start and re-checks before issuing the partition write — if the epoch advanced
+    /// during planning, the write is dropped and the next leader retries.
+    static HealthReconcilerActivator healthReconcilerActivator(HealthReconciler reconciler,
+                                                               BooleanSupplier isLeaderSupplier,
+                                                               ClusterGenerationProjector projector,
+                                                               Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier,
+                                                               Supplier<Long> rabiaTermSupplier,
+                                                               Supplier<Option<Long>> leaderEpochSupplier,
+                                                               HlcClock hlcClock,
+                                                               ClusterNode<KVCommand<AetherKey>> cluster,
+                                                               Supplier<NodeId> selfSupplier,
+                                                               Supplier<Integer> initialCoreSizeSupplier) {
+        return new HealthReconcilerActivatorRecord(reconciler,
+                                                   isLeaderSupplier,
+                                                   projector,
+                                                   kvSnapshotSupplier,
+                                                   rabiaTermSupplier,
+                                                   leaderEpochSupplier,
                                                    hlcClock,
                                                    Option.some(cluster),
                                                    selfSupplier,
@@ -187,6 +222,7 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
                                        ClusterGenerationProjector projector,
                                        Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier,
                                        Supplier<Long> rabiaTermSupplier,
+                                       Supplier<Option<Long>> leaderEpochSupplier,
                                        HlcClock hlcClock,
                                        Option<ClusterNode<KVCommand<AetherKey>>> cluster,
                                        Supplier<NodeId> selfSupplier,
@@ -241,6 +277,10 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
 
     @Contract private void applyLeaderChangeBootstrapBatch(ClusterNode<KVCommand<AetherKey>> clusterNode,
                                                            ClusterGenerationSnapshot seeded) {
+        // Theme E #189: capture leader epoch at planning start so we can detect a leader
+        // change that races with our bootstrap apply. If the epoch advances between here
+        // and the actual `apply()` call, abort the write — the next leader will retry.
+        var capturedEpoch = leaderEpochSupplier.get();
         var batch = new ArrayList<KVCommand<AetherKey>>();
         var corePlan = planCoreBootstrap(seeded);
         var configPlan = planClusterConfigSeed();
@@ -250,6 +290,12 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
             // Nothing to commit — invariants already satisfied. Fire the bootstrap-committed
             // callback immediately so CTM activation is chained without an empty batch round-trip.
             fireBootstrapCommitted();
+            return;
+        }
+        if (leaderEpochChanged(capturedEpoch)) {
+            log.info("Leader epoch changed during DHT bootstrap planning (captured={}, current={}); skipping partition write — next leader will retry",
+                     capturedEpoch,
+                     leaderEpochSupplier.get());
             return;
         }
         corePlan.onPresent(this::logCoreBootstrap);
@@ -264,6 +310,16 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
                                                 HealthReconcilerActivator.BOOTSTRAP_MAX_ATTEMPTS,
                                                 cause.message()))
                    .onSuccess(_ -> onLeaderChangeBootstrapCommitted(hasCore, commandCount));
+    }
+
+    /// Returns true when the current leader epoch differs from the value captured at the
+    /// start of bootstrap planning. A `none()` for either side is treated as "no change"
+    /// so test paths that don't supply an epoch retain pre-Theme-E behavior.
+    private boolean leaderEpochChanged(Option<Long> captured) {
+        if (captured.isEmpty()) {return false;}
+        var current = leaderEpochSupplier.get();
+        if (current.isEmpty()) {return false;}
+        return ! captured.unwrap().equals(current.unwrap());
     }
 
     @Contract private void onLeaderChangeBootstrapCommitted(boolean hasCore, int commandCount) {
@@ -448,6 +504,13 @@ record HealthReconcilerActivatorRecord(HealthReconciler reconciler,
 
     @Contract private void writeCoreBootstrap(ClusterNode<KVCommand<AetherKey>> clusterNode,
                                               CoreBootstrapPlan plan) {
+        var capturedEpoch = leaderEpochSupplier.get();
+        if (leaderEpochChanged(capturedEpoch)) {
+            log.info("Leader epoch changed during DHT bootstrap retry (captured={}, current={}); skipping partition write",
+                     capturedEpoch,
+                     leaderEpochSupplier.get());
+            return;
+        }
         logCoreBootstrap(plan);
         bootstrapAttempts.incrementAndGet();
         clusterNode.apply(List.of(plan.command())).onFailure(cause -> log.warn("Core DhtPartitionOwnership bootstrap failed (attempt {}/{}): {}",

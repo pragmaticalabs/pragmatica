@@ -102,6 +102,7 @@ import static org.pragmatica.lang.Unit.unit;
                                                                      DeploymentMap deploymentMap,
                                                                      GenerationSnapshotSource snapshotSource,
                                                                      Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                                     Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                                      DrainCoordinator drainCoordinator,
                                                                      AtomicReference<NodeReconcilerState> stateRef,
@@ -125,6 +126,7 @@ import static org.pragmatica.lang.Unit.unit;
                                                                      DeploymentMap deploymentMap,
                                                                      GenerationSnapshotSource snapshotSource,
                                                                      Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                                     Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                                      DrainCoordinator drainCoordinator) {
         return new ClusterTopologyManagerRecord(observer,
@@ -133,6 +135,7 @@ import static org.pragmatica.lang.Unit.unit;
                                                 deploymentMap,
                                                 snapshotSource,
                                                 clusterConfigReader,
+                                                lifecycleReader,
                                                 commandApplier,
                                                 drainCoordinator,
                                                 new AtomicReference<>(new NodeReconcilerState.Inactive("not yet activated")),
@@ -146,13 +149,14 @@ import static org.pragmatica.lang.Unit.unit;
 
     /// Backward-compatible factory: constructs a CTM with the rc1 [`NoOpDrainCoordinator`].
     /// Production wiring (`AetherNode`) and tests can pass a real coordinator via the
-    /// arity-8 overload above when rc2 #189 lands.
+    /// arity-9 overload above when rc2 #189 lands.
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
                                                                      AutoHealConfig config,
                                                                      DeploymentMap deploymentMap,
                                                                      GenerationSnapshotSource snapshotSource,
                                                                      Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                                     Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier) {
         return clusterTopologyManagerRecord(observer,
                                              lifecycleManager,
@@ -160,6 +164,7 @@ import static org.pragmatica.lang.Unit.unit;
                                              deploymentMap,
                                              snapshotSource,
                                              clusterConfigReader,
+                                             lifecycleReader,
                                              commandApplier,
                                              new NoOpDrainCoordinator());
     }
@@ -785,25 +790,46 @@ import static org.pragmatica.lang.Unit.unit;
         handleTerminationSuccess(nodeId);
     }
 
-    /// Phase 1 write: DRAINING atom carries forward the address from the topology
-    /// observer's `NodeInfo` so downstream consumers (drain coordinator, peers) can
-    /// still route during the drain. `observedCoreEpoch` is left at `ZERO` here —
-    /// Theme E (#189) hardens this with a read-modify-write that pulls the epoch from
-    /// the prior lifecycle atom in KV; for rc1 the metadata-preserving factory is
-    /// invoked with the addressing fields populated, leaving epoch hardening for
-    /// Theme E without changing the call shape.
+    /// Phase 1 write: DRAINING atom carries forward `host`/`port`/`observedCoreEpoch`/
+    /// `provisioningSource` from the prior lifecycle atom in KV (Theme E single-writer
+    /// invariant — preserves metadata on every transition). Falls back to the topology
+    /// observer's `NodeInfo` for host/port if no prior atom is present (defensive path
+    /// — the lifecycle atom is normally seeded at provision time, so absence indicates
+    /// either a fresh test harness or a corrupted KV state).
     private void writeDrainingAtom(NodeId nodeId) {
-        var info = observer.get(nodeId);
-        var host = info.map(i -> i.address().host()).or("");
-        var port = info.map(i -> i.address().port()).or(0);
-        var value = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING, host, port, Epoch.ZERO);
+        var prior = lifecycleReader.apply(nodeId);
+        var value = buildDrainingAtom(nodeId, prior);
         @SuppressWarnings("unchecked") var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId),
                                                                                                                                     value);
         commandApplier.apply(List.of(command))
                             .onFailure(cause -> log.warn("CTM: failed to write DRAINING atom for {}: {}",
                                                          nodeId,
                                                          cause.message()))
-                            .onSuccess(_ -> log.info("CTM: wrote DRAINING atom for {} ({}:{})", nodeId, host, port));
+                            .onSuccess(_ -> log.info("CTM: wrote DRAINING atom for {} ({}:{}, epoch={}, source={})",
+                                                     nodeId,
+                                                     value.host(),
+                                                     value.port(),
+                                                     value.observedCoreEpoch(),
+                                                     value.provisioningSource()));
+    }
+
+    private NodeLifecycleValue buildDrainingAtom(NodeId nodeId, Option<NodeLifecycleValue> prior) {
+        if (prior.isEmpty()) {
+            log.warn("CTM: no prior NodeLifecycleValue for {} when writing DRAINING — falling back to topology observer for host/port",
+                     nodeId);
+            var info = observer.get(nodeId);
+            var host = info.map(i -> i.address().host()).or("");
+            var port = info.map(i -> i.address().port()).or(0);
+            return NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING, host, port, Epoch.ZERO);
+        }
+        var p = prior.unwrap();
+        return NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING,
+                                                     System.currentTimeMillis(),
+                                                     p.host(),
+                                                     p.port(),
+                                                     p.observedCoreEpoch(),
+                                                     p.transitionedAt(),
+                                                     p.provisioningSource());
     }
 
     private void handleTerminationSuccess(NodeId nodeId) {
@@ -813,17 +839,47 @@ import static org.pragmatica.lang.Unit.unit;
         reconcile();
     }
 
+    /// DECOMMISSIONED atom write — Theme E single-writer SSOT invariant. Reads the prior
+    /// `NodeLifecycleValue` from KV via `lifecycleReader` and forwards the metadata
+    /// fields (host, port, observedCoreEpoch, provisioningSource) so downstream
+    /// consumers and any subsequent lifecycle audit can still resolve the node's
+    /// addressing and provisioning provenance after termination. Falls back to the
+    /// previous metadata-erasing shape only when no prior atom exists (defensive
+    /// branch — logs a warning).
     private void writeDecommissionedAtom(NodeId nodeId) {
-        var value = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
-                                                          "",
-                                                          0,
-                                                          ProvisioningSource.CTM);
+        var prior = lifecycleReader.apply(nodeId);
+        var value = buildDecommissionedAtom(nodeId, prior);
         @SuppressWarnings("unchecked") var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId),
                                                                                                                                     value);
         commandApplier.apply(List.of(command))
                             .onFailure(cause -> log.warn("CTM: failed to write DECOMMISSIONED atom for {}: {}",
                                                          nodeId,
-                                                         cause.message()));
+                                                         cause.message()))
+                            .onSuccess(_ -> log.info("CTM: wrote DECOMMISSIONED atom for {} ({}:{}, epoch={}, source={})",
+                                                     nodeId,
+                                                     value.host(),
+                                                     value.port(),
+                                                     value.observedCoreEpoch(),
+                                                     value.provisioningSource()));
+    }
+
+    private NodeLifecycleValue buildDecommissionedAtom(NodeId nodeId, Option<NodeLifecycleValue> prior) {
+        if (prior.isEmpty()) {
+            log.warn("CTM: no prior NodeLifecycleValue for {} when writing DECOMMISSIONED — writing default empty metadata (defensive fallback)",
+                     nodeId);
+            return NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
+                                                          "",
+                                                          0,
+                                                          ProvisioningSource.CTM);
+        }
+        var p = prior.unwrap();
+        return NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
+                                                     System.currentTimeMillis(),
+                                                     p.host(),
+                                                     p.port(),
+                                                     p.observedCoreEpoch(),
+                                                     p.transitionedAt(),
+                                                     p.provisioningSource());
     }
 
     private void provisionNodes(int count) {

@@ -229,8 +229,35 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     private Promise<List<Long>> applyLifecycleCommand(NodeId nodeId, NodeLifecycleState newState) {
         var key = NodeLifecycleKey.nodeLifecycleKey(nodeId);
-        AetherValue value = NodeLifecycleValue.nodeLifecycleValue(newState);
+        AetherValue value = buildLifecycleAtom(readPriorLifecycle(key), newState);
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
         return nodeSupplier.get().apply(List.of(command));
+    }
+
+    private org.pragmatica.lang.Option<NodeLifecycleValue> readPriorLifecycle(NodeLifecycleKey key) {
+        return nodeSupplier.get().kvStore()
+                               .get(key)
+                               .filter(v -> v instanceof NodeLifecycleValue)
+                               .map(v -> (NodeLifecycleValue) v);
+    }
+
+    /// Theme E single-writer SSOT: forwards `host`/`port`/`observedCoreEpoch`/
+    /// `provisioningSource` from the prior `NodeLifecycleValue` so operator-driven
+    /// transitions (drain, activate, shutdown) do not erase metadata seeded at
+    /// provision time. Falls back to a metadata-bare atom only when no prior atom
+    /// exists (defensive — emits a warning via the deprecated factory's contract).
+    /// Package-private so tests can exercise the pure pre/post relation without
+    /// constructing the full `ManageableNode` surface.
+    static NodeLifecycleValue buildLifecycleAtom(org.pragmatica.lang.Option<NodeLifecycleValue> prior,
+                                                 NodeLifecycleState newState) {
+        if (prior.isEmpty()) {return NodeLifecycleValue.nodeLifecycleValue(newState);}
+        var p = prior.unwrap();
+        return NodeLifecycleValue.nodeLifecycleValue(newState,
+                                                     System.currentTimeMillis(),
+                                                     p.host(),
+                                                     p.port(),
+                                                     p.observedCoreEpoch(),
+                                                     p.transitionedAt(),
+                                                     p.provisioningSource());
     }
 }

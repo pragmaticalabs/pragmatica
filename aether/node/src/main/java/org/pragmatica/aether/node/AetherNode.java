@@ -840,6 +840,10 @@ public interface AetherNode extends ManageableNode {
         metricsCollector.setPeerObservationBuffer(peerObservationStore);
         Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT).filter(v -> v instanceof AetherValue.ClusterConfigValue)
                                                                                                 .map(v -> (AetherValue.ClusterConfigValue) v);
+        java.util.function.Function<NodeId, Option<AetherValue.NodeLifecycleValue>> lifecycleReader =
+            nodeId -> kvStore.get(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId))
+                             .filter(v -> v instanceof AetherValue.NodeLifecycleValue)
+                             .map(v -> (AetherValue.NodeLifecycleValue) v);
         java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> clusterCommandApplier = commands -> clusterNode.apply(commands);
         var leaderAwareSnapshotSource = org.pragmatica.aether.node.generation.LeaderAwareSnapshotSource.leaderAwareSnapshotSource(isLeaderSupplier,
                                                                                                                                   () -> isLeaderSupplier.getAsBoolean()
@@ -857,6 +861,7 @@ public interface AetherNode extends ManageableNode {
                                                                                    deploymentMap,
                                                                                    leaderAwareSnapshotSource,
                                                                                    clusterConfigReader,
+                                                                                   lifecycleReader,
                                                                                    clusterCommandApplier,
                                                                                    drainCoordinator);
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());

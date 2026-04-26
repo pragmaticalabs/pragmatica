@@ -101,6 +101,7 @@ class ClusterTopologyManagerScaleDownDrainTest {
                                                               DeploymentMap.deploymentMap(),
                                                               snapshotSource,
                                                               configStore::current,
+                                                              nodeId -> Option.none(),
                                                               configStore::apply,
                                                               drainCoordinator);
     }
@@ -167,6 +168,7 @@ class ClusterTopologyManagerScaleDownDrainTest {
                                                                   DeploymentMap.deploymentMap(),
                                                                   snapshotSource,
                                                                   configStore::current,
+                                                                  nodeId -> Option.none(),
                                                                   configStore::apply,
                                                                   coordinator);
         publishSurplus(5);

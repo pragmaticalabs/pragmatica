@@ -103,6 +103,7 @@ class ClusterTopologyManagerProvisioningSlotTimeoutTest {
                                                               DeploymentMap.deploymentMap(),
                                                               snapshotSource,
                                                               configStore::current,
+                                                              nodeId -> Option.none(),
                                                               configStore::apply);
     }
 

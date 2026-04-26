@@ -9,6 +9,7 @@ import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
@@ -58,6 +59,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          DeploymentMap deploymentMap,
                                                          GenerationSnapshotSource snapshotSource,
                                                          Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                         Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
                                                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier) {
         return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
                                                                          lifecycleManager,
@@ -65,6 +67,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          deploymentMap,
                                                                          snapshotSource,
                                                                          clusterConfigReader,
+                                                                         lifecycleReader,
                                                                          commandApplier);
     }
 
@@ -74,6 +77,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          DeploymentMap deploymentMap,
                                                          GenerationSnapshotSource snapshotSource,
                                                          Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                         Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
                                                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                          DrainCoordinator drainCoordinator) {
         return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
@@ -82,6 +86,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          deploymentMap,
                                                                          snapshotSource,
                                                                          clusterConfigReader,
+                                                                         lifecycleReader,
                                                                          commandApplier,
                                                                          drainCoordinator);
     }

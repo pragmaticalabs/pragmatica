@@ -41,6 +41,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 
 import org.slf4j.Logger;
@@ -76,8 +77,8 @@ public sealed interface TaskAssignmentCoordinator {
     }
 
     record NoOpCoordinator() implements TaskAssignmentCoordinator {
-        @Override public void onLeaderChange(LeaderChange leaderChange) {}
-        @Override public void onTopologyChange(TopologyChangeNotification notification) {}
+        @Contract @Override public void onLeaderChange(LeaderChange leaderChange) {}
+        @Contract @Override public void onTopologyChange(TopologyChangeNotification notification) {}
         @Override public Map<TaskGroup, TaskAssignmentValue> assignments() { return Map.of(); }
         @Override public Promise<Unit> reassign(TaskGroup group, NodeId target) { return Promise.UNIT; }
     }
@@ -167,6 +168,7 @@ public sealed interface TaskAssignmentCoordinator {
             return new Active(ctx,
                               new ConcurrentHashMap<>(),
                               new ConcurrentHashMap<>(),
+                              new ConcurrentHashMap<>(),
                               CancellableTask.cancellableTask());
         }
     }
@@ -174,6 +176,7 @@ public sealed interface TaskAssignmentCoordinator {
     record Active(Context ctx,
                   Map<TaskGroup, TaskAssignmentValue> assignmentMap,
                   Map<TaskGroup, Set<NodeId>> failedNodes,
+                  Map<TaskGroup, ReentrantLock> reassignmentLocks,
                   CancellableTask reconcileTimer) implements CoordinatorState {
         private static final Logger log = LoggerFactory.getLogger(Active.class);
 
@@ -262,19 +265,48 @@ public sealed interface TaskAssignmentCoordinator {
 
         private void assignGroups(List<TaskGroup> groups, List<NodeId> healthyNodes) {
             var commands = new ArrayList<KVCommand<AetherKey>>();
-            for (var group : groups) {
+            for (var group : groups) {appendCommandIfStillNeeded(group, healthyNodes, commands);}
+            if (!commands.isEmpty()) {
+                ctx.clusterNode.apply(commands)
+                               .onFailure(cause -> log.error("Consensus proposal failed for task assignments: {}",
+                                                             cause.message()));
+            }
+        }
+
+        /// Theme E #189: per-group lock guards the snapshot → decide → re-read → Put
+        /// transaction so a concurrent writer flipping the assignment to ACTIVE cannot
+        /// race past us between `needsReassignment` and the consensus apply. Inside the
+        /// lock we re-read the live KV value; if status is now ACTIVE the reassignment
+        /// is dropped — the cluster has already converged.
+        @Contract private void appendCommandIfStillNeeded(TaskGroup group,
+                                                          List<NodeId> healthyNodes,
+                                                          List<KVCommand<AetherKey>> commands) {
+            var lock = reassignmentLocks.computeIfAbsent(group, _ -> new ReentrantLock());
+            lock.lock();
+            try {
+                var liveStatus = readLiveStatus(group);
+                if (liveStatus == AssignmentStatus.ACTIVE) {
+                    log.debug("Task group {} flipped to ACTIVE during reassignment decision, skipping Put",
+                              group);
+                    return;
+                }
                 var target = selectLeastLoadedNode(group, healthyNodes).or(ctx.self);
                 log.info("Assigning task group {} to node {}", group, target);
                 var key = TaskAssignmentKey.taskAssignmentKey(group);
                 var value = TaskAssignmentValue.taskAssignmentValue(target);
                 assignmentMap.put(group, value);
                 commands.add(new KVCommand.Put<>(key, value));
+            } finally {
+                lock.unlock();
             }
-            if (!commands.isEmpty()) {
-                ctx.clusterNode.apply(commands)
-                               .onFailure(cause -> log.error("Consensus proposal failed for task assignments: {}",
-                                                             cause.message()));
-            }
+        }
+
+        private AssignmentStatus readLiveStatus(TaskGroup group) {
+            var key = TaskAssignmentKey.taskAssignmentKey(group);
+            return ctx.kvStore.get(key)
+                              .filter(v -> v instanceof TaskAssignmentValue)
+                              .map(v -> ((TaskAssignmentValue) v).status())
+                              .or((AssignmentStatus) null);
         }
 
         private Option<NodeId> selectLeastLoadedNode(TaskGroup group, List<NodeId> healthyNodes) {
@@ -330,12 +362,12 @@ public sealed interface TaskAssignmentCoordinator {
     }
 
     record TaskAssignmentCoordinatorAdapter(Context ctx, Fsm<CoordinatorState, ClusterFsmEvent> fsm) implements TaskAssignmentCoordinator {
-        @Override
+        @Contract @Override
         public void onLeaderChange(LeaderChange leaderChange) {
             fsm.dispatch(new ClusterFsmEvent.LeaderChange(leaderChange.leaderId(), leaderChange.localNodeIsLeader()));
         }
 
-        @Override
+        @Contract @Override
         public void onTopologyChange(TopologyChangeNotification notification) {
             switch (notification) {
                 case NodeRemoved(NodeId node, var topology) ->
